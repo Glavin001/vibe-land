@@ -99,6 +99,16 @@ function jointMaterial(b,kind,area,length){
 function connection(ta,tb,wa,wb){
  // A non-bearing partition stops 25 mm under the ceiling; its top plate meets the wall's end on.
  if(ta==='top-plate'&&tb==='top-plate'&&(/partition/.test(wa)||/partition/.test(wb)))return null;
+ // An upper-floor partition stands on the floor and is not fixed to the walls it meets: on a
+ // floor that deflects, a partition nailed to stiffer walls at its ends bridges the floor and
+ // hangs it from them (its stud-to-plate end nails pulled 1.8x their long-term capacity).
+ if(wa&&wb&&wa!==wb&&(/^partition.*-[1-9]$/.test(wa)||/^partition.*-[1-9]$/.test(wb)))return null;
+ // Likewise the upper centre wall, on the floor over the lower one, meets the end walls (on the
+ // stiffer rim) unfixed: the floor settles under it more than the rim does, and nailed to them
+ // its junction laps took three times their long-term capacity on the first tick.
+ if(wa&&wb&&wa!==wb&&(/^centre-[1-9]$/.test(wa)||/^centre-[1-9]$/.test(wb)))return null;
+ // Bottom plates of walls that meet butt end on, each nailed down on its own, not to each other.
+ if(ta==='bottom-plate'&&tb==='bottom-plate'&&wa!==wb)return null;
  const has=(x,y)=>(ta===x&&tb===y)||(ta===y&&tb===x),either=s=>s.has(ta)||s.has(tb),both=s=>s.has(ta)&&s.has(tb),one=t=>ta===t||tb===t;
  const masonry=new Set(['brick-veneer','veneer-lintel-course']);
  if(both(masonry)||(either(masonry)&&one('foundation')))return 'mortar';
@@ -120,7 +130,7 @@ function connection(ta,tb,wa,wb){
  if(has('rafter','ceiling-joist'))return 'heel';
  if(has('rafter','ridge-board'))return 'ridge';
  if(has('ceiling-joist','ceiling-joist'))return 'joist-splice';
- if(has('top-plate','top-plate'))return 'plate-lap';
+ if(has('top-plate','top-plate'))return /-[1-9]$/.test(wa)||/-[1-9]$/.test(wb)?'plate-lap-plated':'plate-lap';
  if(both(STUDS))return 'stud-lap';
  if(both(TIMBER))return 'lap';
  throw Error(`No connection for ${ta} - ${tb}`);
@@ -180,7 +190,8 @@ export function buildVeneerHouse(options={}){
   }
   // Plates: one member, a seam mid-bay every 2.4 m (where a plate is spliced), so no stud or joist straddles one.
   const upright=w.members.filter(m=>STUDS.has(m.type)).map(m=>m.u),free=u=>{while(upright.some(([p,q])=>u>p-.01&&u<q+.01))u+=.05;return u;};
-  const plate=(type,a,c,ya,yb)=>{const pieceId=b.pieceId++,seams=[a];for(let u=w.u0+S.spacing/2+2.4;u<c-.3;u+=2.4)if(u>a+.3&&free(u)<c-.3)seams.push(free(u));seams.push(c);
+  // No length under 1.2 m: a short plate is a sub-kilogram chunk under four studs and two anchors.
+  const plate=(type,a,c,ya,yb)=>{const pieceId=b.pieceId++,seams=[a];for(let u=w.u0+S.spacing/2+2.4;u<c-1.2;u+=2.4){const f=free(u);if(f>seams.at(-1)+1.2&&f<c-1.2)seams.push(f);}seams.push(c);
    for(let i=0;i<seams.length-1;i++)add(type,seams[i],seams[i+1],ya,yb,{pieceId,along:99});};
   for(const [a,c] of cuts)plate('bottom-plate',a,c,w.y0,yBP);
   plate('top-plate',w.u0,w.u1,yTP,w.top);
@@ -279,39 +290,47 @@ export function buildVeneerHouse(options={}){
   const front=ground?[win(-4,-2.2),door(1.6,2.5),win(3.3,4.2)]:[win(-4,-2.2),win(-.6,.6),win(3,4.2)];
   const back=ground?[win(-3.8,-2.6),door(-.6,.3),win(2,3.8)]:[win(-3.8,-2.6),win(2,3.8)];
   const side=[win(-2.6,-1.4),win(1.4,2.6)];
-  const P1=-1.8,P2=1.2,jw=D;
+  // Partitions on the slab only. Upstairs, on a floor that deflects, a partition is the stiffest
+  // thing on it and the floor hangs from it (its studs pulled off their plate at 1.7x their
+  // long-term capacity, 2026-10-06): the upper rooms are divided by the centre wall alone.
+  const P1=-1.8,P2=1.2,jw=D,parts=ground,J=u=>parts?[{u,width:jw}]:[];
   const spec=[
-   {name:tag('front'),face:'front',axis:'x',at:[-Z,-Zi],u0:-X,u1:X,y0,top,openings:front,junctions:[{u:P1,width:jw}],out:-1},
-   {name:tag('back'),face:'back',axis:'x',at:[Zi,Z],u0:-X,u1:X,y0,top,openings:back,junctions:[{u:P2,width:jw}],out:1},
+   {name:tag('front'),face:'front',axis:'x',at:[-Z,-Zi],u0:-X,u1:X,y0,top,openings:front,junctions:J(P1),out:-1},
+   {name:tag('back'),face:'back',axis:'x',at:[Zi,Z],u0:-X,u1:X,y0,top,openings:back,junctions:J(P2),out:1},
    {name:tag('left'),face:'left',axis:'z',at:[-X,-Xi],u0:-Zi,u1:Zi,y0,top,openings:side,junctions:[{u:0,width:jw}],out:-1},
    {name:tag('right'),face:'right',axis:'z',at:[Xi,X],u0:-Zi,u1:Zi,y0,top,openings:side.map(o=>({...o,u0:-o.u1,u1:-o.u0})),junctions:[{u:0,width:jw}],out:1},
-   {name:tag('centre'),axis:'x',at:[-D/2,D/2],u0:-Xi,u1:Xi,y0,top,openings:[door(-3.4,-2.6),door(2.4,3.2)],junctions:[{u:P1,width:jw},{u:P2,width:jw}],bearing:true},
-   {name:tag('partition-front'),axis:'z',at:[P1-D/2,P1+D/2],u0:-Zi,u1:-D/2,y0,top:top-.025,openings:[door(-2.4,-1.6)]},
-   {name:tag('partition-back'),axis:'z',at:[P2-D/2,P2+D/2],u0:D/2,u1:Zi,y0,top:top-.025,openings:[door(1.8,2.6)]},
+   {name:tag('centre'),axis:'x',at:[-D/2,D/2],u0:-Xi,u1:Xi,y0,top,openings:[door(-3.4,-2.6),door(2.4,3.2)],junctions:[...J(P1),...J(P2)],bearing:true},
+   ...(parts?[{name:tag('partition-front'),axis:'z',at:[P1-D/2,P1+D/2],u0:-Zi,u1:-D/2,y0,top:top-.025,openings:[door(-2.4,-1.6)]},
+   {name:tag('partition-back'),axis:'z',at:[P2-D/2,P2+D/2],u0:D/2,u1:Zi,y0,top:top-.025,openings:[door(1.8,2.6)]}]:[]),
   ];
   for(const w of spec)frameWall(w);
   // Gypsum board: exterior walls' inner faces, both faces of the centre wall and partitions.
-  const ly0=y0+S.plate+.003,ly1=top-.025,hole=(o)=>({u0:o.u0,u1:o.u1,y0:o.y0,y1:o.y1}),junction=(u,wd=jw)=>({u0:u-wd/2-S.lining,u1:u+wd/2+S.lining,y0:-1,y1:99});
+  const ly0=y0+S.plate+.003,ly1=top-.025,hole=(o)=>({u0:o.u0,u1:o.u1,y0:o.y0,y1:o.y1}),junction=(u,wd=jw)=>parts?[{u0:u-wd/2-S.lining,u1:u+wd/2+S.lining,y0:-1,y1:99}]:[];
   const inner=Zi-T-S.lining,innerX=Xi-T-S.lining;
-  lining({axis:'x',plane:-Zi,side:1,u0:-Xi,u1:Xi,origin:-X+W/2,y0:ly0,y1:ly1,wall:spec[0].name,holes:[...front.map(hole),junction(P1)]});
-  lining({axis:'x',plane:Zi,side:-1,u0:-Xi,u1:Xi,origin:-X+W/2,y0:ly0,y1:ly1,wall:spec[1].name,holes:[...back.map(hole),junction(P2)]});
-  lining({axis:'z',plane:-Xi,side:1,u0:-inner,u1:inner,origin:-Zi+W/2,y0:ly0,y1:ly1,wall:spec[2].name,holes:[...spec[2].openings.map(hole),junction(0)]});
-  lining({axis:'z',plane:Xi,side:-1,u0:-inner,u1:inner,origin:-Zi+W/2,y0:ly0,y1:ly1,wall:spec[3].name,holes:[...spec[3].openings.map(hole),junction(0)]});
-  lining({axis:'x',plane:-D/2,side:-1,u0:-innerX,u1:innerX,origin:-Xi+W/2,y0:ly0,y1:ly1,wall:spec[4].name,holes:[...spec[4].openings.map(hole),junction(P1)]});
-  lining({axis:'x',plane:D/2,side:1,u0:-innerX,u1:innerX,origin:-Xi+W/2,y0:ly0,y1:ly1,wall:spec[4].name,holes:[...spec[4].openings.map(hole),junction(P2)]});
+  lining({axis:'x',plane:-Zi,side:1,u0:-Xi,u1:Xi,origin:-X+W/2,y0:ly0,y1:ly1,wall:spec[0].name,holes:[...front.map(hole),...junction(P1)]});
+  lining({axis:'x',plane:Zi,side:-1,u0:-Xi,u1:Xi,origin:-X+W/2,y0:ly0,y1:ly1,wall:spec[1].name,holes:[...back.map(hole),...junction(P2)]});
+  lining({axis:'z',plane:-Xi,side:1,u0:-inner,u1:inner,origin:-Zi+W/2,y0:ly0,y1:ly1,wall:spec[2].name,holes:[...spec[2].openings.map(hole),{u0:-jw/2-S.lining,u1:jw/2+S.lining,y0:-1,y1:99}]});
+  lining({axis:'z',plane:Xi,side:-1,u0:-inner,u1:inner,origin:-Zi+W/2,y0:ly0,y1:ly1,wall:spec[3].name,holes:[...spec[3].openings.map(hole),{u0:-jw/2-S.lining,u1:jw/2+S.lining,y0:-1,y1:99}]});
+  lining({axis:'x',plane:-D/2,side:-1,u0:-innerX,u1:innerX,origin:-Xi+W/2,y0:ly0,y1:ly1,wall:spec[4].name,holes:[...spec[4].openings.map(hole),...junction(P1)]});
+  lining({axis:'x',plane:D/2,side:1,u0:-innerX,u1:innerX,origin:-Xi+W/2,y0:ly0,y1:ly1,wall:spec[4].name,holes:[...spec[4].openings.map(hole),...junction(P2)]});
   const pEnd=D/2+T+S.lining;
-  for(const [x,u0,u1,o] of [[P1,-inner,-pEnd,spec[5].openings],[P2,pEnd,inner,spec[6].openings]])for(const side of [-1,1])
+  if(parts)for(const [x,u0,u1,o] of [[P1,-inner,-pEnd,spec[5].openings],[P2,pEnd,inner,spec[6].openings]])for(const side of [-1,1])
    lining({axis:'z',plane:x+side*D/2,side,u0,u1,origin:(x<0?-Zi:D/2)+W/2,y0:ly0,y1:top-.025,wall:spec[x<0?5:6].name,holes:o.map(hole)});
   storeys.push({floor,top,spec});
   floor=top;
   if(s<C.storeys-1){
-   // Platform floor: rim joists on the top plates, 240 x 45 joists at 600 lapped over the centre wall, 22 mm particleboard.
-   const yJ=top+S.floorJoist;
-   const rim=(min,max,split,face,u)=>{const m=member('rim-joist',min,max,{split,face,wall:`${face}-rim`});m.u=u;m.y=[top,yJ];};
-   rim([-X,top,-Z],[X,yJ,-Z+W],[4,1,1],'front',[-X,X]);rim([-X,top,Z-W],[X,yJ,Z],[4,1,1],'back',[-X,X]);
-   rim([-X,top,-Z+W],[-X+W,yJ,Z-W],[1,1,3],'left',[-Z+W,Z-W]);rim([X-W,top,-Z+W],[X,yJ,Z-W],[1,1,3],'right',[-Z+W,Z-W]);
-   for(const x of joistLines()){for(const [za,zb] of [[-Z+W,0],[0,Z-W]])member('floor-joist',[x,top,za],[x+W,yJ,zb]);}
-   for(let x=-X;x<X-EPS;x+=2.4)for(let z=-Z;z<Z-EPS;z+=1.2){const xb=Math.min(x+2.4,X),zb=Math.min(z+1.2,Z);member('subfloor',[x+S.lining/2,yJ,z+S.lining/2],[xb-S.lining/2,yJ+S.subfloor,zb-S.lining/2],{material:MAT.flooring});}
+   // Platform floor: a doubled rim (2 / 240 x 45 plus the flooring's depth, IRC R502.3) on
+   // the top plates, under the upper walls' plates so they bear straight down onto it; 240 x 45
+   // joists at 600 framed into it and lapped over the centre wall; 22 mm particleboard inside it.
+   const yJ=top+S.floorJoist,yF=yJ+S.subfloor,R=2*W;
+   const rim=(min,max,split,face,u)=>{const m=member('rim-joist',min,max,{split,face,wall:`${face}-rim`});m.u=u;m.y=[top,yF];};
+   rim([-X,top,-Z],[X,yF,-Z+R],[4,1,1],'front',[-X,X]);rim([-X,top,Z-R],[X,yF,Z],[4,1,1],'back',[-X,X]);
+   rim([-X,top,-Z+R],[-X+R,yF,Z-R],[1,1,3],'left',[-Z+R,Z-R]);rim([X-R,top,-Z+R],[X,yF,Z-R],[1,1,3],'right',[-Z+R,Z-R]);
+   for(const [k,x] of joistLines().entries())if(k>0&&k<16)for(const [za,zb] of [[-Z+R,0],[0,Z-R]])member('floor-joist',[x,top,za],[x+W,yJ,zb]);
+   const fx=[-X+R,X-R],fz=[-Z+R,Z-R];
+   // Sheets 2.4 x 1.2, jointed on the centre line (under the centre wall) and every 1.2 m out from it.
+   const zc=[fz[0],-2.4,-1.2,0,1.2,2.4,fz[1]];
+   for(let x=fx[0];x<fx[1]-EPS;x+=2.4)for(let k=0;k<zc.length-1;k++){const z=zc[k],zb=zc[k+1],xb=Math.min(x+2.4,fx[1]);if(xb-x<.2)continue;member('subfloor',[x+S.lining/2,yJ,z+S.lining/2],[xb-S.lining/2,yF,zb-S.lining/2],{material:MAT.flooring});}
    ceiling(top,'floor-joist');
    floor=yJ+S.subfloor;
   }
@@ -339,13 +358,15 @@ export function buildVeneerHouse(options={}){
  // (None at the gables: the gable-end frame stands on that plate.)
  for(const [k,x] of joistLines().entries())if(k>0&&k<16)for(const [za,zb] of [[-Z,0],[0,Z]])member('ceiling-joist',[x,yTop,za],[x+W,yTop+S.joist,zb]);
  ceiling(yTop,'ceiling-joist');
- for(const x of rafterLines())for(const sgn of [-1,1]){
+ const verge=new Set();
+ for(const [k,x] of rafterLines().entries())for(const sgn of [-1,1]){
   const P=pts=>pts.map(([y,az])=>[y,sgn*az]),pid=b.pieceId++;
   // Seat-and-lower length, upper length: two convex pieces of one rafter. (No tails: the
   // eave's tiles are carried by the lower course strip, whose weight sits over the rafter;
   // a 1.7 kg tail under a 13 kg strip was where the stress solve stalled.)
-  prism('rafter','x',x,x+W,P([[yTop,Z],[yTop,Zi],[yb(zm),zm],[yt(zm),zm],[yt(Z),Z]]),{pieceId:pid});
-  prism('rafter','x',x,x+W,P([[yb(zm),zm],[yb(zr),zr],[yt(zr),zr],[yt(zm),zm]]),{pieceId:pid});
+  const parts=[prism('rafter','x',x,x+W,P([[yTop,Z],[yTop,Zi],[yb(zm),zm],[yt(zm),zm],[yt(Z),Z]]),{pieceId:pid}),
+   prism('rafter','x',x,x+W,P([[yb(zm),zm],[yb(zr),zr],[yt(zr),zr],[yt(zm),zm]]),{pieceId:pid})];
+  if(k===0||k===16)for(const m of parts)for(const n of m.nodes)verge.add(n);
  }
  // Ridge board: lengths butt-spliced mid-bay between rafters, about every 2.4 m. It only
  // locates the rafters; the rafter pairs and the ceiling-joist ties carry the roof.
@@ -393,7 +414,9 @@ export function buildVeneerHouse(options={}){
   if(s.nodePieces[bond.node0]===s.nodePieces[bond.node1])continue;   // within one member: its own material
   let kind=connection(ta,tb,wallOf[bond.node0]??'',wallOf[bond.node1]??'');
   // The birdsmouth's plumb heel cut stands against the plate's outer face; the seat is what is nailed.
-  if(kind==='rafter-seat'&&Math.abs(bond.normal.y)<.5)kind=null;if(kind===null){bond.drop=true;continue;}bond.kind=kind;if(!kinds.has(kind))kinds.set(kind,[]);kinds.get(kind).push(bond);
+  if(kind==='rafter-seat'&&Math.abs(bond.normal.y)<.5)kind=null;
+  // A verge rafter lies on its gable frame for its whole length; the ridge board stops against it.
+  if(kind==='ridge'&&(verge.has(bond.node0)||verge.has(bond.node1)))kind=null;if(kind===null){bond.drop=true;continue;}bond.kind=kind;if(!kinds.has(kind))kinds.set(kind,[]);kinds.get(kind).push(bond);
  }
  const kindMaterial={mortar:MAT.mortar,glazing:M.glassJoint};
  for(const [kind,list] of kinds){
@@ -427,7 +450,7 @@ export function buildVeneerHouse(options={}){
 /** Particleboard flooring nailed to joists: like the gypsum, per area (AS 1860.2: nails at 150 mm on edges, 300 mm in the field). */
 function jointMaterialFlooring(b,length){
  const area=.3*.045,f={compression:BEARING.compression,tension:NAIL_WITHDRAWAL()/area,shear:770/area};
- return b.table.push({...structuredClone(b.table[M.frame]),name:'flooring-nail-joint',color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:BEARING.elasticModulus/S.subfloor*length,
+ return b.table.push({...structuredClone(b.table[M.frame]),name:'flooring-nail-joint',color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:719e3/area*length,
   compressionElastic:LONG_TERM*f.compression,compressionFatal:f.compression,tensionElastic:LONG_TERM*f.tension,tensionFatal:f.tension,shearElastic:LONG_TERM*f.shear,shearFatal:f.shear})-1;
 }
 const NAIL_WITHDRAWAL=()=>347;

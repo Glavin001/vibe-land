@@ -193,6 +193,12 @@ export const CONNECTIONS = {
   // wall's, 2 face nails (R602.3(1) "2-16d face nails"). The model's plates
   // meet end on, so the nails' lateral capacity is the butt's tension too.
   'plate-lap': { per: 'joint', tension: 2 * NAIL.lateral, shear: 2 * NAIL.lateral, compression: BEARING.compression, slip: 2 * SLIP.nail },
+  // The same joint nail-plated as well, where the upper storey's walls meet
+  // on the floor platform, whose settlement loads them: AS 1684.2 allows a
+  // nail plate at top-plate joints; a 75 x 150 mm toothed plate each face,
+  // ~2.5 kN characteristic each in tension or shear in softwood
+  // (manufacturers' tables).
+  'plate-lap-plated': { per: 'joint', tension: 2 * NAIL.lateral + 2 * 2500, shear: 2 * NAIL.lateral + 2 * 2500, compression: BEARING.compression, slip: 2 * SLIP.nail },
   // Studs nailed face to face: king to jack, junction backers, a partition's
   // end stud to its backer (R602.3(1) "16d at 24 in. o.c."): one nail per
   // 600 mm of a 90 mm face.
