@@ -14,9 +14,19 @@ function profile(elastic, fatal, shearRatio, modulus) {
     elasticModulus: modulus * MPa, residualAreaFraction: 0,
   });
 }
-export const STRENGTH_PROFILE_VERSION = 'vehicle-joints-2';
+export const STRENGTH_PROFILE_VERSION = 'vehicle-joints-3';
 export const jointMaterials = Object.freeze({
   steel: profile(120, 300, .58, 200000),
+  // A wheel's lug studs (the wheel-mount attachment): property class 10.9
+  // (ISO 898-1: proof 830 MPa, ultimate 1040 MPa; ultimate shear ~0.62 of
+  // tensile). The generic steel joint above is a weld or a structural bolt
+  // at joint efficiency; a wheel is clamped by high-tensile studs, whose
+  // cross-section is about what the measured wheel/hub interface is (a heavy
+  // hub's ten M22 studs: 38 cm^2; the monster truck's interface: 38 cm^2).
+  // As a steel joint, every nearby blast that rocked a car tore its wheels
+  // off first (vehicle test bed, 2026-10-06: a roof graze put 666 kN on a
+  // 665 kN wheel mount).
+  stud: profile(830, 1040, .62, 210000),
   alloy: profile(55, 140, .58, 69000),
   rubber: profile(2, 12, .7, 10),
   upholstery: profile(.08, .4, .6, 2),
@@ -41,13 +51,18 @@ export function jointStrength(a, b) {
  * interfaces cannot be represented consistently and are excluded as grazes. */
 export const SOLVER_MIN_BOND_AREA_M2 = 1e-4;
 
+/** Joints whose fastener sets their strength, whatever the parts are made of
+ * (mechanical-joints.mjs attachment kinds). */
+export const attachmentMaterials = Object.freeze({ 'wheel-mount': 'stud' });
+
 export function structuralBonds(parts, contacts) {
   const byId=new Map(parts.map(part=>[part.id,part]));
   return contacts.filter(contact=>contact.validatedSurface && contact.area>0).map(contact=>{
     const a=byId.get(contact.a), b=byId.get(contact.b);
     if (!a || !b) throw new Error('Bond references an unknown part');
     if (!Number.isFinite(contact.area) || !contact.normal?.every(Number.isFinite)) throw new Error('Invalid measured bond surface');
-    return {...contact, strength:jointStrength(a.material,b.material)};
+    const fastener = attachmentMaterials[contact.attachment];
+    return {...contact, strength:fastener ? {...jointMaterials[fastener]} : jointStrength(a.material,b.material)};
   });
 }
 

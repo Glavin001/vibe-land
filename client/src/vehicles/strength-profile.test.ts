@@ -31,3 +31,15 @@ it('preserves measured area and rejects zero-area contacts as structural joints'
   expect(bonds).toHaveLength(1);expect(bonds[0].area).toBe(contact.area);
   expect(bonds[0].strength.tensionFatal*bonds[0].area).toBe(600000);
 });
+
+it('rates a wheel mount by its lug studs, not by the tyre or the hub casting',()=>{
+  const parts=[{id:'wheel',material:'rubber'},{id:'hub',material:'dark'}];
+  const contact={a:'wheel',b:'hub',area:.0038,normal:[1,0,0],validatedSurface:true};
+  const [plain]=structuralBonds(parts,[contact]);
+  const [mount]=structuralBonds(parts,[{...contact,attachment:'wheel-mount'}]);
+  expect(plain.strength).toEqual(jointStrength('rubber','dark'));
+  // Property class 10.9: ultimate 1040 MPa, shear 0.62 of it.
+  expect(mount.strength.tensionFatal).toBe(1040e6);
+  expect(mount.strength.shearFatal).toBeCloseTo(1040e6*.62);
+  expect(mount.strength.tensionFatal).toBeGreaterThan(3*jointStrength('steel','steel').tensionFatal);
+});

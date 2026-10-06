@@ -3,6 +3,7 @@ mod garage;
 mod garage_bombardment;
 mod city_fleet;
 mod city_fleet_tests;
+mod vehicle_testbed;
 mod structure_qualification;
 mod vehicle_tuning;
 mod grass_layout;

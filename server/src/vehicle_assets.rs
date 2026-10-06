@@ -14,7 +14,7 @@ use tokio::{io::AsyncWriteExt, process::Command, sync::Semaphore};
 mod fracture;
 pub mod lint;
 pub mod rig;
-pub use fracture::{AssetBond, AssetFunction, AssetMassProperties, FractureLayout};
+pub use fracture::{AssetBond, AssetBondStrength, AssetFunction, AssetMassProperties, FractureLayout};
 
 type ApiError = (StatusCode, String);
 static WORKERS: Semaphore = Semaphore::const_new(1);

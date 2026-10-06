@@ -40,6 +40,7 @@ export const common = {
  * efficiency (welds, bolts, adhesive) of roughly 0.4-0.9. */
 export const jointReferences = {
   steel:      { fatalMPa: [180, 450], modulusMPa: [190000, 210000], note: 'mild/structural steel UTS 400-550 MPa x joint efficiency' },
+  stud:       { fatalMPa: [800, 1220], modulusMPa: [190000, 215000], note: 'wheel studs, ISO 898-1 property class 8.8 (UTS 800 MPa) to 12.9 (1220 MPa)' },
   alloy:      { fatalMPa: [110, 270], modulusMPa: [68000, 72000], note: '6061-T6 UTS ~310 MPa x joint efficiency' },
   rubber:     { fatalMPa: [8, 30], modulusMPa: [1, 20], note: 'vulcanised rubber UTS 15-30 MPa; modulus 1-10 MPa (reinforced up to ~20)' },
   composite:  { fatalMPa: [20, 200], modulusMPa: [2000, 40000], note: 'glass/carbon FRP and moulded shells, bonded or bolted' },
