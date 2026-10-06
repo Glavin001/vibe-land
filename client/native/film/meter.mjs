@@ -48,28 +48,12 @@ export function coneClearance(st, cx, cz, { hl, hw, cone }) {
  * result() the summary.
  */
 export function createMeter(ep, { hl = 2.45, hw = 1.5, cone = 0.16 } = {}) {
-  const hit = new Set(), firstHit = [], touched = new Set();
-  let awakeBefore = null;
+  const hit = new Set(), firstHit = [];
   const cones = ep.cones ?? [];
   let minClear = Infinity, errSq = 0, errN = 0, errMax = 0, maxLat = 0, latWin = [], t0 = null, t1 = null, last = null, gatePassed = null;
   const seg = (ep.circle?.segments ?? []).map((g) => ({ ...g, pts: [], lat: [], speed: [], err: [] }));
   return {
-    sample(st, t, { leg = 0, s = null, e = null, tracking = true, awake = null } = {}) {
-      // Physics' own word: a cone the truck touched wakes up (the scene is
-      // otherwise asleep). When the awake count rises, the nearest cone within
-      // a metre of the footprint is the one it touched.
-      if (awake != null) {
-        if (awakeBefore != null && awake > awakeBefore) {
-          let best = null;
-          for (let i = 0; i < cones.length; i += 1) {
-            if (touched.has(i)) continue;
-            const c = coneClearance(st, cones[i][0], cones[i][1], { hl, hw, cone });
-            if (c < 1.0 && (!best || c < best.c)) best = { i, c };
-          }
-          if (best) touched.add(best.i);
-        }
-        awakeBefore = awake;
-      }
+    sample(st, t, { leg = 0, s = null, e = null, tracking = true } = {}) {
       for (let i = 0; i < cones.length; i += 1) {
         const [cx, cz] = cones[i];
         if (Math.abs(cx - st.p[0]) > 8 || Math.abs(cz - st.p[2]) > 8) continue;
@@ -98,15 +82,16 @@ export function createMeter(ep, { hl = 2.45, hw = 1.5, cone = 0.16 } = {}) {
         if (along(last.p) < 0 && along(st.p) >= 0) {
           const lat = (st.p[0] - x) * Math.cos(psi) - (st.p[2] - z) * Math.sin(psi);
           gatePassed = { offset: +lat.toFixed(2), clean: Math.abs(lat) + hw <= half };
+          if (ep.timeToGate && t1 == null) t1 = t;
         }
       }
       last = st;
     },
-    finish(t) { if (t1 == null && !ep.timing) t1 = t; },
+    finish(t) { if (t1 == null && !ep.timing && !ep.timeToGate) t1 = t; },
     result() {
       const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
       return {
-        conesHit: hit.size, conesTouched: awakeBefore == null ? null : touched.size, cones: cones.length, firstHits: firstHit.slice(0, 6), minConeClearance: Number.isFinite(minClear) ? +minClear.toFixed(2) : null,
+        conesHit: hit.size, cones: cones.length, firstHits: firstHit.slice(0, 6), minConeClearance: Number.isFinite(minClear) ? +minClear.toFixed(2) : null,
         pathRms: errN ? +Math.sqrt(errSq / errN).toFixed(3) : null, pathMax: +errMax.toFixed(2), maxLatG: +(maxLat / 9.81).toFixed(3),
         seconds: t0 != null && t1 != null ? +(t1 - t0).toFixed(2) : null, gate: gatePassed,
         segments: seg.map((g) => {

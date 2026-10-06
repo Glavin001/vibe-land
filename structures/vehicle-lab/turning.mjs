@@ -262,6 +262,60 @@ export const HB_TUNE = [
   return { ...ep, slot: [fx, fz, 0], legs: ep.legs.map(shift), cones: [], gate: null, seconds: 16 };
 });
 
+/**
+ * A tight course mixing them, south of the lanes (x 55-165, z -250..-120):
+ * four slalom cones 18 m apart at 8 m/s, a 90 degree handbrake turn right
+ * from 12 m/s (released at 30 deg, round at 7 m/s: it ends 9 m on and 7.5 m
+ * over, hb-tune), a lane change 3.5 m left and back at 10 m/s, a hairpin
+ * round a cone on a 10 m radius, and back west through the finish gate.
+ * Timed from the start to the gate.
+ */
+function tightCourse() {
+  const x0 = 65, z0 = -245, zc = -215, sp = 18, A = SLALOM.amplitude, zT = -140;
+  const ramp = (z) => smoothstep5((z - (zc - 26)) / 20) * (1 - smoothstep5((z - (zc + 3 * sp + 4)) / 14));
+  const first = [];
+  for (let z = z0; z <= zT; z += 1) first.push([x0 + A * Math.cos((Math.PI * (z - zc)) / sp) * ramp(z), z]);
+  const approach = track(first, (path) => {
+    const v = speedProfile(path, { vmax: 12, latAcc: 7, accel: 5, decel: 5 });
+    for (let i = 0; i < path.n; i += 1) if (path.z[i] >= zc - sp && path.z[i] <= zc + 3 * sp + 4) v[i] = Math.min(v[i], 8);
+    v[path.n - 1] = 12; return v;
+  });
+  // East along the exit line, the lane change, the hairpin (right, round to the west) and back.
+  const zE = zT + 9.5, xE = x0 + 7.5, shift = 3.5, xL = 92;
+  const d = (x) => (x < xL ? 0 : x < xL + 20 ? shift * smoothstep5((x - xL) / 20) : x < xL + 30 ? shift : x < xL + 50 ? shift * (1 - smoothstep5((x - xL - 30) / 20)) : 0);
+  const east = [];
+  for (let x = xE - 2; x <= 150; x += 1) east.push([x, zE + d(x)]);
+  const R = 10, back = route({ x: 150, z: zE, psi: Math.PI / 2 }, [{ arc: Math.PI, R }, { line: 75 }]).points;
+  const exit = track([...east, ...back.slice(1)], (path) => speedProfile(path, { vmax: 11, latAcc: 6.5, accel: 5, decel: 5.5, endSpeed: 0 }), { stop: true });
+  const cones = [0, 1, 2, 3].map((i) => [x0, zc + sp * i]);
+  cones.push([x0 - 4.5, zT], [x0 + 4.5, zT]);
+  for (const x of [xL + 21, xL + 29]) cones.push([x, zE + shift - 2.15], [x, zE + shift + 2.15]);
+  cones.push([150, zE - R]); // the hairpin's pivot
+  const gate = { x: 90, z: zE - 2 * R, psi: -Math.PI / 2, half: 3.5 };
+  cones.push([gate.x, gate.z - 3.5], [gate.x, gate.z + 3.5]);
+  return {
+    id: 'tight-course', caption: 'A tight course: slalom, handbrake turn, lane change, hairpin', slot: [x0, z0, 0], seconds: 45,
+    legs: [approach, { kind: 'handbrake', turn: Math.PI / 2, hbAngle: (30 * Math.PI) / 180, hbSpeed: 0, hbMax: 2, powerSpeed: 7, lead: 0.2 }, exit],
+    cones, gate, timeToGate: true, camera: { chase: { back: 16, up: 10, ahead: 6 } },
+  };
+}
+
+/**
+ * What counts as a hit (mode cone-check): straight through a cone at 6 m/s,
+ * and past cones whose middles are 1.40, 1.55, 1.70 and 1.90 m from its
+ * line -- the footprint test says the first two are hit (half width 1.5 m
+ * and the cone's 0.16), the game says which it actually moved.
+ */
+function coneCheck() {
+  const x0 = -100, z0 = -250;
+  const cones = [[x0, -215], [x0 + 1.4, -200], [x0 - 1.55, -188], [x0 + 1.7, -176], [x0 - 1.9, -164]];
+  return {
+    id: 'cone-check', caption: 'Which cones a pass hits', slot: [x0, z0, 0], seconds: 22, cones,
+    legs: [track(line(x0, z0, 0, 110), (path) => speedProfile(path, { vmax: 6, accel: 4, decel: 4, endSpeed: 0 }), { stop: true })],
+    camera: { chase: { back: 12, up: 6, ahead: 6 } }, check: true,
+  };
+}
+
 /** The course episodes, in film order. */
 export const COURSES = [
   skidpad(), figureEight(), laneChange(14),
@@ -270,6 +324,8 @@ export const COURSES = [
   handbrakeTurn({ id: 'handbrake-180', x0: 20, turn: Math.PI, speed: 18.5, on: 10, over: 9.3, caption: 'A 180° handbrake turn from 67 km/h',
     maneuver: { hbAngle: 60 * deg, hbSpeed: 0, hbMax: 2, powerSpeed: 6.5, lead: 0.2 } }),
   ...SLALOM.speeds.map((v, k) => slalom(v, k)),
+  tightCourse(),
+  coneCheck(),
 ];
 
 /** Every cone in the scene (build-lab.mjs): [x, z] and the course it marks. */
@@ -295,16 +351,25 @@ export function turningCones() {
  */
 export const AVOID = { speed: 14, length: 340, z0: 300, x0: 300, spacing: 45, film: [225, -240], first: 4, last: 16, gapMin: 1.6, gapRand: 1.6, flight: 2.74 };
 
-export function avoidEpisode(seed, k = 0, { reveal = Infinity, at = null } = {}) {
+/**
+ * `hard`: rocks every 0.9-1.9 s instead of 1.6-3.2, up to 3 m either side of
+ * the path instead of 1.2, and half of them with a second rock 6-8 m to one
+ * side at the same moment (a dodge one way only, or brake).
+ */
+export function avoidEpisode(seed, k = 0, { reveal = Infinity, at = null, blind = false, hard = false } = {}) {
   const [x, z0] = at ?? [AVOID.x0 + AVOID.spacing * k, AVOID.z0], start = { x, z: z0, psi: 0 };
   const routePath = makePath(route(start, [{ line: AVOID.length }]).points);
   const rand = seeded(seed);
   const times = [];
-  for (let t = AVOID.first + rand() * 1.5; t < AVOID.last; t += AVOID.gapMin + rand() * AVOID.gapRand) times.push(+t.toFixed(2));
-  const hazards = hazardsOnNominal(routePath, AVOID.speed, start, times, { rand }).map((h) => ({ ...h, x: +h.x.toFixed(2), z: +h.z.toFixed(2) }));
+  const [gapMin, gapRand] = hard ? [0.9, 1.0] : [AVOID.gapMin, AVOID.gapRand];
+  for (let t = AVOID.first + rand() * 1.5; t < AVOID.last; t += gapMin + rand() * gapRand) times.push(+t.toFixed(2));
+  let hazards = hazardsOnNominal(routePath, AVOID.speed, start, times, { rand, jitterSide: hard ? 3 : 1.2 });
+  if (hard) hazards = hazards.flatMap((h) => (rand() < 0.5 ? [h] : [h, { ...h, x: h.x + (rand() < 0.5 ? -1 : 1) * (6 + 2 * rand()) }]));
+  hazards = hazards.map((h) => ({ ...h, x: +h.x.toFixed(2), z: +h.z.toFixed(2) }));
   return {
-    id: `avoid-${seed}`, seed, caption: `Meteors where it would have been: ${hazards.length}, each known in advance`, slot: [x, z0, 0],
-    seconds: AVOID.last + 5, avoid: { route: routePath, speed: AVOID.speed, hazards, reveal }, cones: [],
+    id: `avoid-${seed}${hard ? '-hard' : ''}${blind ? '-blind' : ''}`, seed,
+    caption: blind ? `Not looking: ${hazards.length} meteors where it would be, the same road at 50 km/h` : `Meteors where it would have been: ${hazards.length}, each known in advance`,
+    slot: [x, z0, 0], seconds: AVOID.last + 5, avoid: { route: routePath, speed: AVOID.speed, hazards, reveal, blind }, cones: [],
     camera: { chase: { back: 20, up: 13, ahead: 14 } },
   };
 }
@@ -316,12 +381,15 @@ export function episodesFor(mode) {
   if (mode === 'hb-tune') return HB_TUNE;
   // avoid: the filmed run (seed 7); avoid-stats: seeds 1..20 for the success rate;
   // avoid-late: the same seeds, each rock known only from its launch (2.74 s before it lands).
-  if (mode === 'avoid') return [avoidEpisode(7, 0, { at: AVOID.film })];
+  // avoid: the filmed run (seed 7) after the same rocks on a truck that does not look (blind, beside it).
+  if (mode === 'avoid') return [avoidEpisode(7, 0, { at: [AVOID.film[0] - 50, AVOID.film[1]], blind: true }), avoidEpisode(7, 0, { at: AVOID.film })];
+  if (mode === 'avoid-hard') return Array.from({ length: 20 }, (_, k) => avoidEpisode(k + 1, k, { hard: true }));
+  if (mode === 'avoid-blind') return Array.from({ length: 20 }, (_, k) => avoidEpisode(k + 1, k, { blind: true }));
   if (mode === 'avoid-stats') return Array.from({ length: 20 }, (_, k) => avoidEpisode(k + 1, k));
   if (mode === 'avoid-late') return Array.from({ length: 20 }, (_, k) => avoidEpisode(k + 1, k, { reveal: AVOID.flight }));
   if (mode === 'course') return COURSES;
-  if (mode === 'turns') return COURSES.filter((c) => !c.id.startsWith('slalom'));
-  if (mode === 'slalom') return COURSES.filter((c) => c.id.startsWith('slalom'));
+  if (mode === 'turns') return COURSES.filter((c) => !c.id.startsWith('slalom') && !c.check && c.id !== 'tight-course');
+  if (mode === 'slalom') return COURSES.filter((c) => c.id.startsWith('slalom') || c.id === 'tight-course');
   const one = COURSES.find((c) => c.id === mode);
   if (one) return [one];
   throw new Error(`no turning run '${mode}' (sysid, sysid2, hb-tune, course, turns, slalom, avoid, avoid-stats, avoid-late, or a course id: ${COURSES.map((c) => c.id).join(', ')})`);

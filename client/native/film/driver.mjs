@@ -103,7 +103,7 @@ export const GAINS = { predict: 0.12, lookMin: 4.5, lookTime: 0.55, yawGain: 0.1
  * brake to a stop at the end), gains (overrides) }. step(state) returns the keys
  * { forward, strafe, handbrake } and what it saw (info).
  */
-export function createDriver({ gains = GAINS, model = MONSTER } = {}) {
+export function createDriver({ gains = GAINS, model = MONSTER, window = 25 } = {}) {
   let plan = null, hint = null, done = false;
   const base = { ...GAINS, ...gains };
   return {
@@ -119,9 +119,9 @@ export function createDriver({ gains = GAINS, model = MONSTER } = {}) {
       const tp = g.predict, psiP = st.psi + r * tp, mid = st.psi + (r * tp) / 2;
       const vl = st.vl ?? 0;
       const px = st.p[0] + tp * (v * Math.sin(mid) + vl * Math.cos(mid)), pz = st.p[2] + tp * (v * Math.cos(mid) - vl * Math.sin(mid));
-      const now = project(plan.path, st.p[0], st.p[2], hint);
+      const now = project(plan.path, st.p[0], st.p[2], hint, window);
       hint = now.s;
-      const pr = project(plan.path, px, pz, now.s);
+      const pr = project(plan.path, px, pz, now.s, Math.max(4, Math.abs(v) * tp + 2));
       const course = Math.abs(v) > 1 ? psiP + Math.atan2(vl, Math.abs(v)) * Math.sign(v) : psiP;
       const L = Math.max(g.lookMin, g.lookTime * Math.abs(v));
       const ref = pointAt(plan.path, pr.s + Math.min(L * 0.5, 3));

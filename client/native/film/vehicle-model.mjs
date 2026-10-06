@@ -103,9 +103,22 @@ export function keyFor(kappa, v, p = MONSTER) {
   const want = Math.abs(kappa);
   if (want < 1e-9) return { u: 0, saturated: false };
   if (want >= Math.abs(curvatureOf(lock, p))) return { u: -sign(kappa), saturated: true };
-  let lo = 0, hi = lock;
-  for (let k = 0; k < 40; k += 1) { const mid = (lo + hi) / 2; if (Math.abs(curvatureOf(mid, p)) < want) lo = mid; else hi = mid; }
-  return { u: (-sign(kappa) * (lo + hi)) / 2 / lock, saturated: false };
+  return { u: (-sign(kappa) * lockForCurvature(want, p)) / lock, saturated: false };
+}
+
+/** |curvature| -> lock, inverted from a table of the (monotonic) curvature map. */
+const TABLES = new WeakMap();
+function lockForCurvature(want, p) {
+  let t = TABLES.get(p);
+  if (!t) {
+    const n = 512, k = new Float64Array(n + 1);
+    for (let i = 0; i <= n; i += 1) k[i] = Math.abs(curvatureOf(i / n, p));
+    t = { n, k }; TABLES.set(p, t);
+  }
+  let lo = 0, hi = t.n;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (t.k[mid] < want) lo = mid; else hi = mid; }
+  const f = (want - t.k[lo]) / Math.max(1e-12, t.k[hi] - t.k[lo]);
+  return (lo + Math.max(0, Math.min(1, f))) / t.n;
 }
 
 /** The tightest curvature on offer at speed v (full key). */
