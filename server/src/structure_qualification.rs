@@ -240,7 +240,13 @@ mod tests {
                 if rows_path.is_some() {
                     let rows = world.native_bond_stress_rows(0).unwrap_or_default();
                     let mut first = first_broken.borrow_mut();
+                    let before = first.len();
                     for r in &rows { if r.broken || r.remaining_area <= 0. { first.entry(r.bond_index).or_insert(*tick); } }
+                    // And the first tick that breaks many at once (the stage's own verdict stresses).
+                    let burst = first.len() - before > 50 && !snapshots.borrow().iter().any(|v| v["burst"] == true);
+                    if burst { snapshots.borrow_mut().push(serde_json::json!({"tick": *tick, "burst": true, "rows": rows.iter().map(|r| serde_json::json!({"bond": r.bond_index, "node0": r.node0, "node1": r.node1, "material": r.material,
+                        "area": r.area, "utilisation": r.utilisation, "compression": r.compression, "tension": r.tension, "shear": r.shear,
+                        "normal": r.stress_normal, "bend": r.stress_bend, "damage": r.damage, "remaining": r.remaining_area, "broken": r.broken})).collect::<Vec<_>>()})); }
                     if *tick == 2 || *tick == rest {
                         let rows: Vec<_> = rows.iter().map(|r| serde_json::json!({"bond": r.bond_index, "node0": r.node0, "node1": r.node1, "material": r.material,
                             "area": r.area, "utilisation": r.utilisation, "compression": r.compression, "tension": r.tension, "shear": r.shear,
@@ -256,9 +262,6 @@ mod tests {
             tallies
         };
         let idle = run(&mut arena, &mut city, &mut tick, rest);
-        if let Some(path) = &rows_path {
-            std::fs::write(path, serde_json::to_vec(&serde_json::json!({"snapshots": *snapshots.borrow(), "firstBroken": *first_broken.borrow()})).unwrap()).unwrap();
-        }
         // Whether it stands as well as converges: a structure can converge and
         // fall down (Bayline's billboard). The authored-structure gate allows
         // under 0.5% of bonds broken at rest (authored_structures_sim.rs).
@@ -279,6 +282,9 @@ mod tests {
         arena.launch_ball_from_muzzle(origin, (aim - origin) / t + Vector3::new(0., 0.5 * 9.81 * t, 0.),
             crate::city::city_ball_radius_m(), crate::city::city_ball_mass_kg(), 600).expect("ball");
         let impact = run(&mut arena, &mut city, &mut tick, after);
+        if let Some(path) = &rows_path {
+            std::fs::write(path, serde_json::to_vec(&serde_json::json!({"snapshots": *snapshots.borrow(), "firstBroken": *first_broken.borrow(), "restTicks": rest})).unwrap()).unwrap();
+        }
         let name = |s: u32, n: u32| {
             let structure = manifest.structures.iter().find(|x| x.structure_id == s);
             let y = structure.and_then(|x| x.chunks.get(n as usize)).map_or(f32::NAN, |c| c.centroid[1]);

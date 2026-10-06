@@ -29,6 +29,8 @@ const CAPTIONS = {
   'near-miss': 'Meteors into the houses either side as it passes', 'debris-cab': '700 kg of debris into the cab',
   'debris-wheel': '700 kg of debris into a wheel', 'graze-cab': 'A meteor grazes the cab', coast: 'Let go of at speed',
   cannonball: 'Hit by a cannonball', meteor: 'Hit by a meteor', drift: 'A handbrake turn at 54 km/h',
+  'framed-house': 'Flat out into a brick-veneer timber-frame house',
+  'cannonball-framed-house': 'A cannonball through a brick-veneer house', 'meteor-framed-house': 'A meteor through a brick-veneer house',
 };
 
 /** The outcome of a trial in a line, from its measurements. */
@@ -119,7 +121,7 @@ function trialShot(trial, index, meta, ground) {
       bondsBroken: s.broken.length - start.broken.length, bondsBrokenAfterDriveAway: s.broken.length, cornerBondsBroken: null,
       partsOff: s.partsOff, wheelsLost: [0, 1, 2, 3].filter((w) => !(s.wheelMask & (1 << w))).length,
       rideHeightEnd: s.p[1] - groundAt(), bodyMass: [start.mass, s.mass],
-      sceneBroken: { [trial.at.split('/')[1] === 'house' ? 'house' : trial.at.split('/')[1] === 'wall' ? 'wall' : 'scene']: (ctx.e2e.snapshot()?.city?.brokenBonds ?? 0) - cityBefore },
+      sceneBroken: { [['house', 'framed-house', 'wall'].includes(trial.at.split('/')[1]) ? trial.at.split('/')[1] : 'scene']: (ctx.e2e.snapshot()?.city?.brokenBonds ?? 0) - cityBefore },
       endPosition: s.p, brokenIndices: [...broken].slice(0, 50),
     });
     ctx.log(`measure ${JSON.stringify(m)}`);

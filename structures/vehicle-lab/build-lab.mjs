@@ -28,6 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { composeScene, Builder } from '../town-kit/src/geometry.mjs';
 import { M, mortarJoints } from '../town-kit/src/materials.mjs';
+import { buildVeneerBungalow } from '../town-kit/src/veneer-houses.mjs';
 import { LANES, PADS, START_Z, LANE_LENGTH, DEBRIS, TRIALS, slotOf } from './trials.mjs';
 import { assertStrikesClear } from '../../client/native/film/shots.mjs';
 
@@ -51,7 +52,10 @@ function buildGround() {
   for (const lane of LANES) {
     const x0 = lane.x - HALF_LANE, x1 = lane.x + HALF_LANE;
     const z0 = START_Z - 10, z1 = START_Z + (lane.length ?? LANE_LENGTH);
-    if (lane.paved) {
+    if (lane.paved && lane.paveTo != null) {
+      b.box({ min: [x0, -0.16, z0], max: [x1, 0, lane.paveTo], material: M.footing, fixed: true, type: 'foundation' });
+      b.box({ min: [x0, 0, z0], max: [x1, 0.025, lane.paveTo], material: asphalt, type: 'road', split: [2, 1, Math.round((lane.paveTo - z0) / 4)] });
+    } else if (lane.paved) {
       // Vibe Town's street: 2.5 cm of asphalt in ~4 m pieces on a fixed subgrade.
       b.box({ min: [x0, -0.16, z0], max: [x1, 0, z1], material: M.footing, fixed: true, type: 'foundation' });
       b.box({ min: [x0, 0, z0], max: [x1, 0.025, z1], material: asphalt, type: 'road', split: [2, 1, Math.round((z1 - z0) / 4)] });
@@ -157,6 +161,7 @@ export function buildLab() {
     const o = lane.obstacle;
     if (o.kind === 'wall') placements.push({ ...buildWall(o), position: [lane.x, 0, o.z], yaw: 0, group: `wall@${lane.id}` });
     if (o.kind === 'house') placements.push({ ...skyline('house-1story.json'), position: [lane.x, 0, o.z], yaw: 0, group: `house@${lane.id}` });
+    if (o.kind === 'framed-house') placements.push({ pack: buildVeneerBungalow().pack, position: [lane.x, 0, o.z], yaw: 0, group: `framed-house@${lane.id}` });
     if (o.kind === 'street') {
       o.strikes = [];
       for (const [k, { side, file }] of o.houses.entries()) {

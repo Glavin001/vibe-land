@@ -25,12 +25,13 @@
  * is y 0.15; the veneer's outer faces are x +-5.0 and z +-3.9.
  */
 import {Builder,composeScene,round,v} from './geometry.mjs';
-import {M,MORTAR_JOINT,C24,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,WALL_TIE,LONG_TERM,BEARING} from './materials.mjs';
+import {M,MORTAR_JOINT,C24,GYPSUM,OSB,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,WALL_TIE,LONG_TERM,BEARING} from './materials.mjs';
 import {cornerReferencedHulls} from './parts/hull-origins.mjs';
 
 /** Sizes, metres. Sawn sizes are the AS 1684 / EN 336 metric ones. */
 export const SIZES={
- veneer:.09,cavity:.05,           // 90 mm brick, 50 mm cavity (NHBC 6.2: >= 50 mm with timber frame)
+ veneer:.09,cavity:.05,           // 90 mm brick, 50 mm from the studs (39 mm clear of the sheathing; AS 3700: >= 25 mm)
+ sheathing:.011,                  // 11 mm OSB bracing on the exterior walls' outer face
  stud:.045,wall:.09,spacing:.6,   // 90 x 45 studs at 600 mm centres
  plate:.045,topPlate:.09,         // single bottom plate, doubled top plate
  studLength:2.4,                  // 2.4 m studs: a 2.4 m ceiling
@@ -53,7 +54,7 @@ const range=(a,b)=>Array.from({length:b-a},(_,i)=>a+i);
 const STUDS=new Set(['stud','king-stud','jack-stud','cripple-stud','junction-stud']);
 const HORIZONTAL=new Set(['bottom-plate','top-plate','header','sill-trimmer','rim-joist']);
 const TIMBER=new Set([...STUDS,...HORIZONTAL,'ceiling-joist','floor-joist','rafter','ridge-board']);
-export const STRUCTURAL_TYPES=['foundation',...STUDS,...HORIZONTAL,'ceiling-joist','floor-joist','subfloor','rafter','ridge-board','gable-frame'];
+export const STRUCTURAL_TYPES=['foundation',...STUDS,...HORIZONTAL,'ceiling-joist','floor-joist','subfloor','rafter','ridge-board','gable-frame','wall-sheathing'];
 export const SKIN_TYPES=['brick-veneer','veneer-lintel-course','drywall','ceiling-lining'];
 export const COSMETIC_TYPES=[...SKIN_TYPES,'gable-cladding','roof-covering','window-frame','door-frame','glazing'];
 
@@ -67,13 +68,14 @@ function materialsFor(b){
  const gable=add({...structuredClone(base),name:'gable-weatherboard',color:'#e4dccb',textureKey:'white-concrete',density:WEATHERBOARD.density*.025/S.gable});
  // Gable-end framing as one panel: 90 x 45 studs at 600 (7.5% of the panel) and noggings.
  const gableFrame=add({...structuredClone(base),name:'gable-frame',color:'#b48a5c',textureKey:'aged-timber',...C24,density:C24.density*(S.stud/S.spacing+.01)});
+ const osb=add({...structuredClone(base),name:'osb-sheathing',color:'#c9a96e',textureKey:'aged-timber',...OSB});
  const flooring=add({...structuredClone(base),name:'particleboard-flooring',color:'#c4a77d',textureKey:'aged-timber',...C24,density:680,elasticModulus:3e9});
  const tie=add({...structuredClone(base),name:'wall-tie',color:'#9aa3a6',textureKey:'metal',density:7850,residualAreaFraction:0,
   compressionElastic:LONG_TERM*WALL_TIE.compression/WALL_TIE.area,compressionFatal:WALL_TIE.compression/WALL_TIE.area,
   tensionElastic:LONG_TERM*WALL_TIE.tension/WALL_TIE.area,tensionFatal:WALL_TIE.tension/WALL_TIE.area,
   shearElastic:LONG_TERM*WALL_TIE.shear/WALL_TIE.area,shearFatal:WALL_TIE.shear/WALL_TIE.area,
   elasticModulus:WALL_TIE.stiffness*WALL_TIE.length/WALL_TIE.area});
- return {timber,veneer,mortar,drywall,tile,gable,gableFrame,flooring,tie};
+ return {timber,veneer,mortar,drywall,tile,gable,gableFrame,osb,flooring,tie};
 }
 
 /**
@@ -104,6 +106,8 @@ function connection(ta,tb,wa,wb){
  if(both(masonry)||(either(masonry)&&one('foundation')))return 'mortar';
  if(one('glazing'))return 'glazing';
  if(one('drywall')||one('ceiling-lining'))return 'drywall-screw';
+ // Sheathing is nailed to the frame; its edges only meet the window and door frames.
+ if(one('wall-sheathing'))return one('window-frame')||one('door-frame')||one('foundation')?null:'sheathing-nail';
  // A door jamb stands beside the cut end of the bottom plate; nothing fixes it there.
  if(one('door-frame')&&(one('bottom-plate')||one('foundation')))return null;
  if(one('window-frame')||one('door-frame'))return 'window-fixing';
@@ -252,7 +256,7 @@ export function buildVeneerHouse(options={}){
  /** Gypsum board on one face of a wall: full-height sheets, 1.2 m wide, around openings and junctions. */
  function lining(f){
   // Sheet joints fall on stud centrelines, as they are hung (f.origin: the wall's first stud centre).
-  const T=S.drywall,g=S.lining/2,cuts=[f.u0,f.u1];for(let u=f.origin+1.2;u<f.u1-.1;u+=1.2)if(u>f.u0+.1)cuts.push(u);
+  const T=f.thickness??S.drywall,g=S.lining/2,cuts=[f.u0,f.u1];for(let u=f.origin+1.2;u<f.u1-.1;u+=1.2)if(u>f.u0+.1)cuts.push(u);
   for(const h of f.holes)for(const u of [h.u0,h.u1])if(u>f.u0+EPS&&u<f.u1-EPS)cuts.push(u);
   const us=[...new Set(cuts.map(round))].sort((x,y)=>x-y);
   for(let i=0;i<us.length-1;i++){
@@ -261,7 +265,7 @@ export function buildVeneerHouse(options={}){
    if(c-a<.05+2*g)continue;
    for(const [p,q] of ys){
     const pa=f.side>0?f.plane:f.plane-T,pb=pa+T,[mn,mx]=f.axis==='x'?[[a+g,p,pa],[c-g,q,pb]]:[[pa,p,a+g],[pb,q,c-g]];
-    member('drywall',mn,mx,{material:MAT.drywall});
+    member(f.type??'drywall',mn,mx,{material:f.material??MAT.drywall,wall:f.wall??null});
    }
   }
  }
@@ -290,6 +294,11 @@ export function buildVeneerHouse(options={}){
    {name:tag('partition-back'),axis:'z',at:[P2-D/2,P2+D/2],u0:D/2,u1:Zi,y0,top:top-.025,openings:[door(1.8,2.6)]},
   ];
   for(const w of spec)frameWall(w);
+  // OSB bracing over each exterior wall's outer face, plates included, jointed on studs.
+  for(const w of spec.filter(w=>w.face)){
+   const out=w.out,plane=out<0?w.at[0]:w.at[1],origin=w.u0+W/2;
+   lining({axis:w.axis,plane,side:out,u0:w.u0,u1:w.u1,origin,y0:w.y0,y1:w.top,holes:w.openings.map(o=>({u0:o.u0,u1:o.u1,y0:o.y0,y1:o.y1})),type:'wall-sheathing',material:MAT.osb,thickness:S.sheathing,wall:w.name});
+  }
   // Gypsum board: exterior walls' inner faces, both faces of the centre wall and partitions.
   const ly0=y0+S.plate+.003,ly1=top-.025,hole=(o)=>({u0:o.u0,u1:o.u1,y0:o.y0,y1:o.y1}),junction=(u,wd=jw)=>({u0:u-wd/2-S.lining,u1:u+wd/2+S.lining,y0:-1,y1:99});
   const inner=Zi-T-S.lining,innerX=Xi-T-S.lining;
@@ -376,12 +385,13 @@ export function buildVeneerHouse(options={}){
  // one panel per half: it carries the verge rafter), weatherboard on battens over the cavity
  // outside it, flush with the brick, under the verge.
  for(const sx of [-1,1])for(const sgn of [-1,1]){
-  const lo=sx<0?-X:Xi,P=pts=>pts.map(([y,az])=>[y,sgn*az]);
-  prism('gable-frame','x',lo,lo+D,P([[yTop,Zi],[yTop,zr],[yb(zr),zr]]),{material:MAT.gableFrame});
+  // Sheathed on its outer face like the walls below it.
+  const lo=sx<0?-X-S.sheathing:Xi,P=pts=>pts.map(([y,az])=>[y,sgn*az]);
+  prism('gable-frame','x',lo,lo+D+S.sheathing,P([[yTop,Zi],[yTop,zr],[yb(zr),zr]]),{material:MAT.gableFrame});
  }
  const gy0=Math.max(storeys.at(-1).top-S.topPlate+.001,veneerTop+.01);
  for(const sx of [-1,1])for(const sgn of [-1,1]){
-  const lo=sx<0?-X-S.gable:X,hi=lo+S.gable,P=pts=>pts.map(([y,az])=>[y,sgn*az]);
+  const lo=sx<0?-X-S.gable:X+S.sheathing,hi=sx<0?-X-S.sheathing:X+S.gable,P=pts=>pts.map(([y,az])=>[y,sgn*az]);
   prism('gable-cladding','x',lo,hi,P([[gy0,Z],[gy0,0],[yt(0)-.004,0],[yt(Z)-.004,Z]]),{material:MAT.gable});
  }
 

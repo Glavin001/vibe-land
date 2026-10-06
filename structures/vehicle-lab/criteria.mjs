@@ -148,8 +148,8 @@ export function judge(report, baseline = null, meta = null) {
         const grazed = t.startsWith('graze');
         row(t, 'bonds broken', run.bondsBroken, grazed ? 'measured' : `<= ${Math.floor(DENT_SHARE * bonds)}`, grazed || run.bondsBroken <= DENT_SHARE * bonds,
           grazed ? 'a 110 t rock touched it: what it touched may go' : `a near miss dents (${DENT_SHARE * 100}% of its bonds)`, b?.bondsBroken);
-      } else if (t === 'wall' || t === 'house') {
-        const target = t === 'wall' ? 'wall' : 'house';
+      } else if (t === 'wall' || t === 'house' || t === 'framed-house') {
+        const target = t;
         row(t, 'impact speed (m/s) after 50 m', fmt(run.impactSpeed), 'measured', run.impactSpeed != null, 'a Vibe Town street is 48 m long', b && fmt(b.impactSpeed));
         row(t, `${target} damaged (bonds)`, run.sceneBroken?.[target] ?? 0, '>= 1', (run.sceneBroken?.[target] ?? 0) >= 1, 'it can hurt things', b?.sceneBroken?.[target]);
         row(t, 'car damaged (bonds)', run.bondsBroken, '>= 1', run.bondsBroken >= 1, 'and is hurt by them', b?.bondsBroken);
@@ -161,6 +161,13 @@ export function judge(report, baseline = null, meta = null) {
         // Into a house it may end up inside it, on its rubble: measured there.
         const away = run.driveAway?.metres ?? 0;
         row(t, 'drives away (m in 4.5 s)', fmt(run.driveAway?.metres), t === 'wall' ? '>= 3' : 'measured', t !== 'wall' || away >= 3, t === 'wall' ? 'still drivable' : 'a car that ends up inside a house may stay there', b && fmt(b.driveAway?.metres));
+        if (monster && t === 'framed-house') {
+          // Through the front wall: the truck's middle (its pose) past the
+          // brick face, z 20.1 (the brick skin and the stud wall behind it
+          // are 0.23 m). It may stop inside, slowed by what it pushes.
+          const face = 20.1, past = run.maxZ - face;
+          row(t, 'gets through the front wall (m, middle past the brick face)', fmt(past), '>= 0', past >= 0, 'the monster truck flat out goes through a stud wall and its brick skin', b && fmt(b.maxZ - face));
+        }
         if (monster && t === 'house') {
           // A monster truck flat out drives through a one-storey house: its
           // middle past the back wall (house depth 7.8 m from the front at z 20).
@@ -184,12 +191,13 @@ export function judge(report, baseline = null, meta = null) {
         const floor = 0.010 * 9.81 * 5;
         row(t, 'speed lost coasting 5 s (m/s)', lost == null ? '-' : `${fmt(v5)} -> ${fmt(v10)}`, `${fmt(floor)}-6`, lost != null && lost >= floor && lost <= 6,
           'rolling resistance and drag, no pedal', b && b.speedAt?.['5s'] != null ? `${fmt(b.speedAt['5s'])} -> ${fmt(b.speedAt['10s'])}` : null);
-      } else if (t === 'cannonball-house' || t === 'meteor-house' || t === 'truck-ball-house') {
+      } else if (['cannonball-house', 'meteor-house', 'truck-ball-house', 'cannonball-framed-house', 'meteor-framed-house'].includes(t)) {
         // Through the front wall at least (the ball: 1 m past its face); the
         // meteor through the whole house (8 m: past the back wall).
-        const need = t === 'meteor-house' ? 8 : 1, past = run.attack?.pastTarget;
-        row(t, 'gets past the front wall (m)', fmt(past), `>= ${need}`, past != null && past >= need, t === 'meteor-house' ? 'a meteor goes through a house' : 'a cannonball goes through a wall', b && fmt(b.attack?.pastTarget));
-        row(t, 'house damaged (bonds)', run.sceneBroken?.house ?? 0, '>= 20', (run.sceneBroken?.house ?? 0) >= 20, 'and breaks it on the way', b?.sceneBroken?.house);
+        const meteor = t.startsWith('meteor'), need = meteor ? 8 : 1, past = run.attack?.pastTarget;
+        const house = t.endsWith('framed-house') ? 'framed-house' : 'house';
+        row(t, 'gets past the front wall (m)', fmt(past), `>= ${need}`, past != null && past >= need, meteor ? 'a meteor goes through a house' : 'a cannonball goes through a wall', b && fmt(b.attack?.pastTarget));
+        row(t, 'house damaged (bonds)', run.sceneBroken?.[house] ?? 0, '>= 20', (run.sceneBroken?.[house] ?? 0) >= 20, 'and breaks it on the way', b?.sceneBroken?.[house]);
       } else if (t === 'cannonball') {
         // Partly destroyed: damaged, but still a car -- an axle at least, and
         // it drives (the meteor's line is that it is not).

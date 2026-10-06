@@ -51,6 +51,12 @@ export const LANES = [
   { id: 'wall', name: 'Masonry wall', x: 32, paved: true, length: 120, obstacle: { kind: 'wall', z: 20, width: 7, height: 2.5, thickness: 0.25, block: [0.5, 0.5] } },
   // Elm Park's one-storey house (house-1story, 89 t), its 10 m side across the lane.
   { id: 'house', name: 'One-storey house', x: 56, paved: true, length: 120, obstacle: { kind: 'house', z: 24 } },
+  // The town kit's brick-veneer timber-frame bungalow (veneer-houses.mjs,
+  // 20 t: a C24 stud frame carrying the roof, a 90 mm brick skin tied to it,
+  // gypsum board inside), the same 10 x 7.8 m and placement: its front face
+  // at z 20.1, back face 27.9. Paved up to just short of its slab (the slab
+  // is part of the house), east of the street lane.
+  { id: 'framed-house', name: 'Brick-veneer timber-frame house', x: 124, paved: true, paveTo: 19.5, length: 120, obstacle: { kind: 'framed-house', z: 24 } },
   // Vibe Town's North Street where the chase runs (structures/vibe-town:
   // house fronts 10.3 m from the road's centre, a one-storey house on one
   // side and a two-storey house on the other), for the near miss.
@@ -190,6 +196,17 @@ export const TRIALS = [
   { id: 'meteor-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
     attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [56, 2.0, 20.1], from: 180, slope: 0.3, distance: 140 },
     why: 'a meteor through a house: it goes through, and the house comes down' },
+  // The brick-veneer house (lane/framed-house: front face z 20.1, x 124): the
+  // monster flat out into its front wall between a window and the door, and
+  // the same two shots as the old house's, a window's width off its middle.
+  { id: 'framed-house', at: 'lane/framed-house', start: -30, drive: { kind: 'floor' }, seconds: 8, impactZ: 20, driveAway: { reverse: 1.5, seconds: 3 },
+    why: 'floored from 50 m out into a brick-veneer timber-frame house: through the brick skin and the studs behind it' },
+  { id: 'cannonball-framed-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 4,
+    attack: { kind: 'shot', projectile: 'cannonball', at: 0.5, target: [122, 1.4, 20.1], from: 180, slope: 0.02, distance: 30 },
+    why: 'a cannonball through a brick-veneer house: in at the front, on through it' },
+  { id: 'meteor-framed-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
+    attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 2.0, 20.1], from: 180, slope: 0.3, distance: 140 },
+    why: 'a meteor through a brick-veneer house: it goes through' },
   { id: 'cannonball', at: 'pad/cannonball', drive: { kind: 'park' }, seconds: 6, attack: { kind: 'cannonball', at: 1 }, driveAway: { seconds: 3 },
     why: "the city cannonball into the parked car's side at body height: partly destroyed, still drivable" },
   { id: 'meteor', at: 'pad/meteor', drive: { kind: 'park' }, seconds: 8, attack: { kind: 'meteor', at: 1 },
