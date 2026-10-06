@@ -102,11 +102,27 @@ or its front end still drives on what it has.
   of the chassis bounds' frontal area) -- `CoastResistance` in
   server/src/physx_runtime.rs, off with VIBE_VEHICLE_COAST_RESISTANCE=0.
   Trial `coast`: the monster truck 24.3 -> 22.3 m/s over 5 s (was 24.3 -> 24.3).
+  Its floor is rolling resistance alone (0.010 g: 0.49 m/s in 5 s): a 5 t
+  truck loses 0.3 m/s^2 at 24 m/s, half of it to the air, and a 1.5 m/s floor
+  was a 1-3 t car's.
 - **Half a car will not drive.** After the wall, the cars that keep their rear
   axle (wheel and drive masks 12, engine connected) creep 0.3-1 m in 4.5 s: two
   wheels carry half the AWD drive torque (customization.mjs splits it over four)
   against the nose dragging on the ground (~0.75 x half its weight). The derby
   and the circuit car (RWD: full torque on the rear) drive away.
+- **The monster truck at its real weight** (2026-10-06): massed as modelled
+  (a sand-rail cage under a pickup body on 57 x 22 in tyres) it weighed
+  2794 kg on 217 kg wheels; a Monster Jam truck is 4500-5500 kg on 293 kg
+  wheels. `client/src/vehicles/mass-budget.mjs` puts it at 5000 kg: each
+  road wheel at 293 kg, everything else x1.99, every bond's area by the mass
+  it joins (x1.41-1.99), so stress per joint is what the geometry gave. The
+  drive setup is mass-derived (x1.79 torques, springs, dampers), and every
+  drive trial matches to the tenth of a second; drift 1.78 rad/s, 23.5 deg,
+  -76.8 deg (was 1.73, 21.1, -74.2). Rest, steps, ramps, debris, rubble and
+  near misses break what they broke before or less. Into the wall it goes
+  20 m past (was 12 m) and keeps two wheels; the house still stops it at the
+  front wall (z 18.4, was 18.1). `VIBE_VEHICLE_MASS_BUDGET=0` masses it as
+  modelled, for A/B.
 - **Tried and rejected** for the wall: corner bonds x2-x3.4 (the wheels go with
   the front end, not at their mounts), the monster's real mass (x1.6) with and
   without sections to match, and wheel hulls inset so tyres meet walls and

@@ -172,11 +172,17 @@ export function judge(report, baseline = null, meta = null) {
           row(t, 'goes through (m past the wall)', fmt(through), '>= 3', through >= 3, 'the monster truck is the hardest to stop', b && fmt(b.maxZ - 20));
         }
       } else if (t === 'coast') {
-        // Let go of at speed: a coasting car in neutral loses ~0.3-1.2 m/s^2
-        // to its tyres and the air (a boxy truck at the top), so 1.5-6 m/s
-        // in 5 s from 20-30 m/s. Free-rolling Vehicle2 lost ~0 (2026-10-06).
+        // Let go of at speed: a coasting car in neutral loses ~0.1-1.2 m/s^2
+        // to its tyres and the air (a boxy truck at the top). Free-rolling
+        // Vehicle2 lost ~0 (2026-10-06). The floor is rolling resistance
+        // alone at the road tyre's low end, 0.010 g for 5 s (0.49 m/s): that
+        // part does not depend on mass, while drag's share falls with it. A
+        // 5 t monster truck at 24 m/s loses 0.15 m/s^2 to its tyres (0.015 g)
+        // and 0.15 to the air, 1.47 m/s in 5 s; the old floor, 1.5 m/s
+        // (0.3 m/s^2), was a 1-3 t car's.
         const v5 = run.speedAt?.['5s'], v10 = run.speedAt?.['10s'], lost = v5 != null && v10 != null ? v5 - v10 : null;
-        row(t, 'speed lost coasting 5 s (m/s)', lost == null ? '-' : `${fmt(v5)} -> ${fmt(v10)}`, '1.5-6', lost != null && lost >= 1.5 && lost <= 6,
+        const floor = 0.010 * 9.81 * 5;
+        row(t, 'speed lost coasting 5 s (m/s)', lost == null ? '-' : `${fmt(v5)} -> ${fmt(v10)}`, `${fmt(floor)}-6`, lost != null && lost >= floor && lost <= 6,
           'rolling resistance and drag, no pedal', b && b.speedAt?.['5s'] != null ? `${fmt(b.speedAt['5s'])} -> ${fmt(b.speedAt['10s'])}` : null);
       } else if (t === 'cannonball-house' || t === 'meteor-house' || t === 'truck-ball-house') {
         // Through the front wall at least (the ball: 1 m past its face); the

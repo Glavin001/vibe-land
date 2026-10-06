@@ -15,6 +15,8 @@ import { meshMassProperties, massPropertiesToActor, combineMassProperties } from
 import { encodeModel } from './dune/model-codec.mjs';
 import { requireChunkMotion } from './dune/pose-deltas.mjs';
 import { mergeLightChunks, MIN_CHUNK_KG } from './chunk-merge.mjs';
+import { massBudget, budgetScales, bondScale, MASS_BUDGET_VERSION } from './mass-budget.mjs';
+import { ROAD_WHEEL } from './reality.mjs';
 
 let submittedConfiguration;
 async function main() {
@@ -24,7 +26,10 @@ const request = JSON.parse(Buffer.concat(input).toString('utf8'));
 submittedConfiguration = request.configuration;
 const configuration = normalizeConfiguration(request.configuration);
 const root = resolve(process.argv[2]);
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-14',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration)})).digest('hex');
+// A budgeted build's masses are part of its asset; unbudgeted builds keep
+// their cached hashes (an absent key does not change the JSON).
+const budget = massBudget(configuration.model);
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-14',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration),...(budget&&{massBudget:{version:MASS_BUDGET_VERSION,...budget}})})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
@@ -68,6 +73,21 @@ catch (error) {
  const chunkMass = part => (part.visualIds ?? [part.id]).reduce((n, id) => n + visuals.get(id).mass, 0);
  const chunkMerges = mergeLightChunks(bundle.parts, bonds, chunkMass, MIN_CHUNK_KG);
  if (chunkMerges.unmerged.length) process.stderr.write(`chunks under ${MIN_CHUNK_KG} kg with no same-motion neighbour: ${chunkMerges.unmerged.map(u => `${u.name} ${u.kg.toFixed(2)} kg`).join(', ')}\n`);
+ // The build's mass budget (mass-budget.mjs), on the merged chunks: each
+ // chunk's visual parts by its factor, each bond's area by the mass it joins.
+ let massBudgetReport = null;
+ if (budget) {
+   const authored = new Map(bundle.parts.map(part => [part.id, chunkMass(part)]));
+   const scales = budgetScales(bundle.parts, part => authored.get(part.id), budget);
+   for (const bond of bonds) {
+     bond.massScale = bondScale(bond, id => authored.get(id), id => scales.get(id));
+     bond.area *= bond.massScale;
+   }
+   for (const part of bundle.parts) for (const id of part.visualIds) visuals.get(id).mass *= scales.get(part.id);
+   const wheel = bundle.parts.find(p => ROAD_WHEEL.test(p.name)), rest = bundle.parts.find(p => !ROAD_WHEEL.test(p.name));
+   massBudgetReport = { version: MASS_BUDGET_VERSION, ...budget, authoredKg: [...authored.values()].reduce((n, m) => n + m, 0),
+     authoredWheelKg: authored.get(wheel.id), wheelScale: scales.get(wheel.id), restScale: scales.get(rest.id) };
+ }
  const massProperties = new Map(visual.parts.map(part => [part.id,
    massPropertiesToActor(meshMassProperties(part.position, part.indices, part.mass), geometry.originHeight)]));
  for (const part of bundle.parts) requireChunkMotion(part, part.visualIds.map(id => visuals.get(id).motion));
@@ -98,7 +118,7 @@ catch (error) {
    jointTopology: 'rig-anchored-joints-3',
    excludedContacts: excludedContacts.map(({a,b,reason})=>({a,b,reason})),
    shapeCount: parts.reduce((n,p)=>n+p.shapes.length,0), bondCount: bonds.length, contactCount: surfaces.length,
-   minChunkKg: MIN_CHUNK_KG, mergedChunks: chunkMerges.merged, unmergedLightChunks: chunkMerges.unmerged,
+   minChunkKg: MIN_CHUNK_KG, mergedChunks: chunkMerges.merged, unmergedLightChunks: chunkMerges.unmerged, massBudget: massBudgetReport,
    strengthProfileVersion: STRENGTH_PROFILE_VERSION, strengthQualification: 'pending-native-tests',
    mass: parts.reduce((n,p)=>n+p.mass,0), bounds,
    massProperties: combineMassProperties(parts.map(p=>p.massProperties)),

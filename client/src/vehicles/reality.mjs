@@ -20,7 +20,7 @@ export const classes = {
   rally:   { real: 'Rally2 hatchback', massKg: [1230, 1450], wheelKg: [15, 25], topSpeed: [45, 55], accel: [5, 8], travelM: [0.20, 0.30], travelNote: 'Rally2 gravel 200-300 mm',
     note: 'Rally2 minimum 1230 kg; gravel wheel and tyre 15-25 kg; 0-100 km/h 3.5-5.5 s' },
   monster: { real: 'Monster Jam truck', massKg: [4500, 5500], wheelKg: [280, 360], topSpeed: [25, 32], accel: [3, 8], travelM: [0.60, 0.80], travelNote: 'Monster Jam 26-30 in',
-    note: 'Monster Jam ~5400 kg; 66 in BKT tyre ~290 kg plus wheel; tops ~30 m/s' },
+    note: 'Monster Jam: 10,000 lb rule minimum, 12,000 lb (5443 kg) competition truck; 66 x 43 in BKT tyre on its wheel 645 lb (293 kg); 30 in shock travel; up to 100 mph (Monster Jam World Finals by the numbers, 2024)' },
   derby:   { real: 'Stripped full-size sedan (demolition derby)', massKg: [1500, 2000], wheelKg: [15, 25], topSpeed: [40, 55], accel: [2.5, 5], travelM: [0.15, 0.25], travelNote: 'road sedan 6-10 in',
     note: 'body-on-frame sedans 1600-2000 kg stripped; steel wheel and tyre 15-25 kg' },
   sprint:  { real: '410 winged sprint car', massKg: [600, 700], wheelKg: [10, 25], topSpeed: [55, 70], accel: [7, 11], travelM: [0.08, 0.16], travelNote: 'sprint car torsion bars 3-6 in',
@@ -63,11 +63,16 @@ function row(metric, value, range, note, id) {
   return { metric, value, range, factor, status: ok ? 'ok' : conceded ? 'concession' : 'finding', note: conceded ? conceded.reason : note };
 }
 
+/** A road wheel's chunk (tyre, rim, beadlocks), not the steering wheel
+ * assembly, which the audit used to average in (the monster's 217 kg wheels
+ * read as 174 kg). */
+export const ROAD_WHEEL = /^(Front|Rear) (left|right) wheel assembly$/;
+
 /** Grounding rows for one prepared build (metadata.json + driving setup). */
 export function auditBuild(id, model, metadata, driving) {
   const c = classes[model];
   if (!c) throw new Error(`No real-world class for model ${model}`);
-  const wheels = metadata.parts.filter(p => /wheel assembly$/.test(p.name));
+  const wheels = metadata.parts.filter(p => ROAD_WHEEL.test(p.name));
   const wheelKg = wheels.reduce((n, p) => n + p.mass, 0) / Math.max(1, wheels.length);
   const corner = metadata.mass / 4;
   const tireRadius = metadata.dimensions?.tireRadius ?? 0.4;
