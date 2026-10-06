@@ -41,6 +41,7 @@ let dustBurstSerial = 1;
 import { setCapturePose } from './scene/captureCamera';
 import { getMatchStats } from './app/connectPhase';
 import { markShaderWarmupDone, shaderBuilds } from './graphics/webgpu/shaderBuildMonitor';
+import { townKitSnapshot } from './city/townKitState';
 import { cityTapeRecorder, saveCityTape } from './city/cityTape';
 import { uploadTape } from './city/hotspotWatch';
 import { sendDebugReport } from './city/debugReport';
@@ -532,6 +533,8 @@ export interface VibeE2EBridge {
   matchStats(): unknown;
   /** First-time shader builds on the WebGPU path; `late` ones happened during play. */
   shaderBuilds(): ReturnType<typeof shaderBuilds>;
+  /** The town-kit details layer (tree leaves, canopies): loaded, or why not. */
+  townKit(): ReturnType<typeof townKitSnapshot>;
   /** Count every shader build from now on as late (a test that skips the loading screen). */
   markShaderWarmupDone(): void;
   cityStructures(): Array<{
@@ -796,6 +799,7 @@ const bridge: VibeE2EBridge = {
   },
   matchStats: () => getMatchStats(),
   shaderBuilds: () => shaderBuilds(),
+  townKit: () => townKitSnapshot(),
   markShaderWarmupDone: () => markShaderWarmupDone(),
   cityStructures: () => refs.cityStructures,
   dustBurst: (next) => {

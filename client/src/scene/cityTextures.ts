@@ -283,6 +283,58 @@ function readContext(width: number, height: number): OffscreenCanvasRenderingCon
   }) as OffscreenCanvasRenderingContext2D | null;
 }
 
+/** A `data:` URL's bytes, decoded here: the native app's fetch is not known to take one. */
+function dataUrlBlob(url: string): Blob {
+  const comma = url.indexOf(',');
+  const header = url.slice(5, comma), body = url.slice(comma + 1);
+  const type = header.split(';')[0] || 'application/octet-stream';
+  if (!header.endsWith(';base64')) return new Blob([decodeURIComponent(body)], { type });
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const clean = body.replace(/[^A-Za-z0-9+/]/g, '');
+  const bytes = new Uint8Array(Math.floor((clean.length * 3) / 4));
+  let bits = 0, value = 0, at = 0;
+  for (const char of clean) {
+    value = (value << 6) | alphabet.indexOf(char);
+    bits += 6;
+    if (bits >= 8) { bits -= 8; bytes[at++] = (value >> bits) & 0xff; }
+  }
+  return new Blob([bytes.subarray(0, at)], { type });
+}
+
+/**
+ * An image as a mipmapped RGBA texture, decoded the way the city's sheets are
+ * (fetch, createImageBitmap, a 2d context): THREE.TextureLoader needs a DOM
+ * <img>, which the native app does not have -- there its promise never
+ * settles. Rows are flipped to match an image texture's default flipY.
+ */
+export async function loadImageTexture(url: string): Promise<THREE.DataTexture> {
+  let blob: Blob;
+  if (url.startsWith('data:')) blob = dataUrlBlob(url);
+  else {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`${url} -> ${response.status}`);
+    blob = await response.blob();
+  }
+  const bitmap = await createImageBitmap(blob);
+  try {
+    const { width, height } = bitmap;
+    const context = readContext(width, height);
+    if (!context) throw new Error(`no 2d context to decode ${url.slice(0, 64)}`);
+    context.drawImage(bitmap, 0, 0);
+    const pixels = context.getImageData(0, 0, width, height).data;
+    const data = new Uint8Array(width * height * 4), row = width * 4;
+    for (let y = 0; y < height; y += 1) data.set(pixels.subarray((height - 1 - y) * row, (height - y) * row), y * row);
+    const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
+    texture.generateMipmaps = true;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.needsUpdate = true;
+    return texture;
+  } finally {
+    bitmap.close();
+  }
+}
+
 async function loadSheet(url: string, texture: THREE.DataArrayTexture, size: number): Promise<void> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${url} -> ${response.status}`);

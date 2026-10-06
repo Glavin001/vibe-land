@@ -62,8 +62,15 @@ export type FogSettings = {
 export const MIN_FOG_INTENSITY = 0.25;
 export const MAX_FOG_INTENSITY = 5;
 
+/**
+ * The native single-player app starts without fog for now, whatever an
+ * earlier run saved, so the whole scene reads from above and afar (the fog
+ * toggle in the debug overlay still turns it on). The web build is unchanged.
+ */
+const NATIVE_FOG_OFF = import.meta.env.MODE === 'native';
+
 export const DEFAULT_FOG_SETTINGS: FogSettings = {
-  enabled: true,
+  enabled: !NATIVE_FOG_OFF,
   density: fogDensityForAoi(),
   color: null,
   weather: 'clear',
@@ -117,7 +124,7 @@ function parseFiniteNumber(raw: unknown, fallback: number, min = -Infinity, max 
 export function parseFogSettings(raw: unknown): FogSettings | null {
   if (!raw || typeof raw !== 'object') return null;
   const candidate = raw as Partial<FogSettings> & Record<string, unknown>;
-  const enabled = typeof candidate.enabled === 'boolean' ? candidate.enabled : DEFAULT_FOG_SETTINGS.enabled;
+  const enabled = !NATIVE_FOG_OFF && typeof candidate.enabled === 'boolean' ? candidate.enabled : DEFAULT_FOG_SETTINGS.enabled;
   const density = typeof candidate.density === 'number' && Number.isFinite(candidate.density) && candidate.density > 0
     ? candidate.density
     : DEFAULT_FOG_SETTINGS.density;

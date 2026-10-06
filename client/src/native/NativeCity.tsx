@@ -4,6 +4,7 @@
 
 import { Suspense } from 'react';
 
+import { useFogSettings } from '../graphics/fogSettings';
 import { loadInputBindings } from '../input/bindings';
 import { FrameClock } from '../scene/FrameClock';
 import { GameWorld } from '../scene/GameWorld';
@@ -17,6 +18,9 @@ import { NativeWeaponHud } from './NativeWeaponHud';
 const inputBindings = loadInputBindings();
 
 export function NativeCity({ matchId = 'city-default' }: { matchId?: string }) {
+  // The player's fog and weather, as the web app passes them (off by default
+  // on native for now: graphics/fogSettings).
+  const fog = useFogSettings();
   return (
     <>
       <FrameClock />
@@ -32,6 +36,10 @@ export function NativeCity({ matchId = 'city-default' }: { matchId?: string }) {
           matchId={matchId}
           worldDocument={CITY_WORLD_DOCUMENT}
           inputBindings={inputBindings}
+          fogEnabled={fog.enabled}
+          fogDensity={fog.density}
+          fogColor={fog.color ?? undefined}
+          weather={fog.weather}
           onWelcome={(id) => console.log(`[native] joined as player ${id}`)}
           onDisconnect={(reason) => console.warn(`[native] disconnected: ${reason ?? 'unknown'}`)}
         />

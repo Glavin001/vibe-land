@@ -1,5 +1,11 @@
 import * as THREE from 'three';
+import {loadImageTexture} from './cityTextures';
 import {animateOutdoorMaterial,OUTDOOR_WIND_MARGIN} from './outdoorWind';
+
+export type OutdoorLeafOptions={color:string;map:THREE.Texture;side:THREE.Side;alphaTest:number;roughness:number};
+/** The WebGPU leaf material (outdoorLeafNodes.ts, via @render-backend/install); WebGL keeps three's own. */
+let leafMaterial:((options:OutdoorLeafOptions)=>THREE.MeshStandardMaterial)|null=null;
+export function registerOutdoorLeafMaterial(factory:(options:OutdoorLeafOptions)=>THREE.MeshStandardMaterial){leafMaterial=factory;}
 
 type VisualMesh={positions:number[];normals:number[];uvs:number[];indices:number[];material:{color:string;texture?:'oak'|'pine';foliage?:boolean;wind?:boolean;windHeight?:number}};
 type Attachment={owner:number;matrix:number[];cell?:[number,number];levels:{distance:number;meshes:string[]}[]};
@@ -34,7 +40,7 @@ export class OutdoorAttachments {
   for(const kind of ['oak','pine'] as const){
    if(!Object.values(data.meshes).some(m=>m.material.texture===kind))continue;
    const url=kind==='oak'?new URL('../../../structures/town-kit/vendor/ez-tree/textures/oak.png',import.meta.url):new URL('../../../structures/town-kit/vendor/ez-tree/textures/pine.png',import.meta.url);
-   const texture=await new THREE.TextureLoader().loadAsync(url.href);texture.colorSpace=THREE.SRGBColorSpace;textureMap.set(kind,texture);this.textures.push(texture);
+   const texture=await loadImageTexture(url.href);texture.colorSpace=THREE.SRGBColorSpace;textureMap.set(kind,texture);this.textures.push(texture);
   }
   const groups=new Map<string,{id:string;uses:{entry:number;lod:number}[]}>();
   for(const a of data.attachments){
@@ -52,7 +58,8 @@ export class OutdoorAttachments {
    const spec=data.meshes[id],geo=new THREE.BufferGeometry();
    geo.setAttribute('position',new THREE.Float32BufferAttribute(spec.positions,3));geo.setAttribute('normal',new THREE.Float32BufferAttribute(spec.normals,3));geo.setAttribute('uv',new THREE.Float32BufferAttribute(spec.uvs,2));geo.setIndex(spec.indices);geo.computeBoundingSphere();geo.computeBoundingBox();
    const foliage=!!spec.material.foliage,texture=spec.material.texture?textureMap.get(spec.material.texture):undefined;
-   const mat=new THREE.MeshStandardMaterial({color:spec.material.color,map:texture??null,alphaTest:foliage?.35:0,side:foliage?THREE.DoubleSide:THREE.FrontSide,roughness:.95});
+   const mat=foliage&&texture&&leafMaterial?leafMaterial({color:spec.material.color,map:texture,side:THREE.DoubleSide,alphaTest:.35,roughness:.95})
+    :new THREE.MeshStandardMaterial({color:spec.material.color,map:texture??null,alphaTest:foliage?.35:0,side:foliage?THREE.DoubleSide:THREE.FrontSide,roughness:.95});
    const shadow={map:texture??null,alphaTest:foliage?.35:0,side:mat.side};
    const depth=new THREE.MeshDepthMaterial({...shadow,depthPacking:THREE.RGBADepthPacking});
    const distance=new THREE.MeshDistanceMaterial(shadow);
@@ -93,6 +100,11 @@ export class OutdoorAttachments {
    for(const mesh of this.meshes)mesh.count=0;
    for(const entry of this.entries)if(entry.lod>=0)for(const slot of entry.slots[entry.lod]){const index=slot.mesh.count++;slot.mesh.setMatrixAt(index,entry.world);slot.mesh.setColorAt(index,entry.tint);}
    for(const mesh of this.meshes){
+    // An empty LOD still costs a renderer's whole per-object path in every
+    // pass (bindings, pipeline, attribute checks), shadows included: two of
+    // every three meshes here at any time. Out of the scene graph walk instead.
+    mesh.visible=mesh.count>0;
+    if(!mesh.visible)continue;
     mesh.instanceMatrix.needsUpdate=true;if(mesh.instanceColor)mesh.instanceColor.needsUpdate=true;
     // Debris can leave its original cell. Refit after every pose/LOD change,
     // including wind padding, so both camera and shadow culling stay correct.
