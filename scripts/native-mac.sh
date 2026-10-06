@@ -110,15 +110,16 @@ case "$SCENE" in
     stale=0
     for source in "$ROOT"/structures/vibe-town/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
     [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vibe-town/build-town.mjs"
-    # Eleven cars: eight in Elm Park's driveways, two in the Market Quarter's
-    # car park, a monster truck at North Street's west end for chases (the
-    # builder's .slots, with headings). The spawn is Main Street's
+    # Twenty-two cars (the builder's .slots, with headings): eight at the
+    # street end of Elm Park's driveways, two in the Market Quarter's car park,
+    # a monster truck at North Street's west end for chases, and eleven parked
+    # along the streets films run down. The spawn is Main Street's
     # west end. Stress iterations: 16, as every structure here was qualified
     # at (scripts/perf/qualify_structures.py) -- the showcase's owner-approved
     # exception; VIBE_CITY_NATIVE_STRESS_ITERATIONS overrides it.
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_VISUALS="$pack.visuals.json" \
       VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \
-      VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-derby,trophy,desert,circuit,derby,trophy,buggy,desert,monster,circuit,monster}" \
+      VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-derby,trophy,desert,circuit,derby,trophy,buggy,desert,monster,circuit,monster,derby,circuit,trophy,buggy,desert,derby,monster,circuit,trophy,derby,buggy}" \
       VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:-$(cat "$pack.slots")}" \
       VIBE_CITY_SPAWN_X=-146 VIBE_CITY_SPAWN_Z=0 \
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \

@@ -57,23 +57,36 @@ export function chaseShots(place, { title, trace = false, final = true } = {}) {
   // end, and the next one presses it again in the same frame).
   const weave = WEAVE.slice(0, -1).map(([t, steer], k) => [t, drive({ forward: 1, strafe: steer, seconds: WEAVE[k + 1][0] - t })]);
   const coast = [WEAVE.at(-1)[0], drive({ forward: 1, seconds: 4 })];
-  // North Street's houses, each struck as the truck comes within 12 m of it,
-  // the meteor coming in over the road and on away from it (north-side
-  // houses from the south, 180; south-side from the north, 0): the blast
-  // throws the house back, off the street.
+  // Near misses: North Street's houses, each hit in the wall facing the
+  // street, half way up, as the truck comes within 8 m of it -- by a rock
+  // that comes in low (slope 0.25: 19 degrees at impact) over the far side's
+  // roofs and across the road just ahead of the truck, a few metres over it,
+  // and on into the house (north-side houses from the south, 180; south-side
+  // from the north, 0), throwing it back off the street. The game's steep
+  // meteors landed short, in front gardens and on the road beside the truck,
+  // which read as near the truck rather than at the houses (2026-10-06).
+  const wall = (house) => [house.position[0], house.top * 0.5, house.side === 'north' ? house.min[2] + 1.5 : house.max[2] - 1.5];
   const houses = place.all
     .filter((p) => p.kind === 'house' && p.street === 'North Street')
-    .map((p) => [truckReaches(p.position[0] - 12), p])
+    .map((p) => [truckReaches(p.position[0] - 8), p])
     .filter(([t]) => t > 2.6 && t < 6.3);
-  const strikes = houses.map(([t, house]) => [t, strike({ at: house, from: house.side === 'north' ? 180 : 0 })]);
-  // The last one catches it: 2.4 m off its right side (south), coming in
-  // from the south -- a clip, not a direct hit, that throws it north. Aimed
-  // live, late: launched 1 s out at where the truck will be by then (its
-  // speed and acceleration). Aimed 2.74 s out from the measured RUN, the
-  // weave had carried it 4 m from the mark by the time the rock arrived.
-  const hit = 6.8, [hx, hz] = truckAt(hit);
+  const strikes = houses.map(([t, house]) => [t, strike({ at: wall(house), from: house.side === 'north' ? 180 : 0, slope: 0.25 })]);
+  // And a car at the street end of a south-side driveway (car-20), the same
+  // way: in across the road just ahead of the truck, into the car, the car
+  // into its house.
+  const parked = place('car-20');
+  strikes.push([truckReaches(parked.position[0] - 8), strike({ at: [parked.position[0], 1.0, parked.position[2]], from: 0, slope: 0.25 })]);
+  // The last one catches it: square on its right side (south), at body
+  // height, coming in flatter than the game's meteors (slope 0.6: ~32 degrees,
+  // 84% of its momentum sideways) -- a shove to its left, north, hard into
+  // the house. A clip 2.4 m off its side on the ground only lifted it into
+  // the wall (2026-10-06). Aimed live, late: launched 0.5 s out at where the
+  // truck will be by then (its speed and acceleration). Aimed 2.74 s out from
+  // the measured RUN, the weave had carried it 4 m from the mark; 1 s out,
+  // a truck slowed by a near miss's debris was only grazed.
+  const hit = 6.8;
   const last = !final ? [] : [
-    [hit, strikeNear(car, { side: -2.4, height: 1.0, from: 180, flight: 1.0, flash: true })],
+    [hit, strikeNear(car, { height: 1.0, from: 180, flight: 0.5, slope: 0.6, flash: true })],
     [hit - 0.2, slowmo(2.2, 0.5)],
   ];
   const traceCues = trace ? Array.from({ length: 90 }, (_, k) => [k * 0.1, (ctx) => {
@@ -84,11 +97,14 @@ export function chaseShots(place, { title, trace = false, final = true } = {}) {
     name: 'the-chase', lookOffset: [9, 1.2, 0], lag: 0.3,
     cues: [...weave, coast, ...strikes, ...last, ...traceCues],
   });
-  // The hit, side on: a cut to the road ahead, east of where the truck is
-  // caught, looking back up the street at it -- the meteor in from the left
-  // (south), the truck thrown right (north) into the house.
-  // From 6 m up, a little south: the street sign and the parked car on that
-  // corner stay out of the middle of the frame.
-  const theHit = hold({ position: [hx + 16, 6, hz - 6], lookAt: [hx - 1, 1.6, hz + 1.5] }, 3.2, { name: 'the-hit' });
+  // The hit, from across the street: a cut to the south side's front
+  // gardens, level with where the truck will be hit, looking north at it --
+  // the truck crosses the frame, the meteor comes in over the camera, and the
+  // truck is driven away from it into the house. Placed from where the truck
+  // really is as the shot starts (a track released at once: fixed there,
+  // turning to follow it); placed from RUN, a truck slowed by debris was hit
+  // 10 m short, out of frame. Looking along the street instead, the near
+  // houses hid it (2026-10-06).
+  const theHit = track(car, [13, 4.5, -12], 3.2, { name: 'the-hit', lookOffset: [0, 1.5, 3], lag: 0.12, release: 0 });
   return [getIn, chase, theHit];
 }

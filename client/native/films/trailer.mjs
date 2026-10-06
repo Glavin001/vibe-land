@@ -82,8 +82,11 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     { position: [runX0 - runSpeed * runSeconds * 0.5, 3.2, 0.8], lookAt: [runX0 - runSpeed * runSeconds * 0.5 - 30, 2.6, -0.5] },
     { position: [runX0 - runSpeed * runSeconds, 3.8, -0.8], lookAt: [runX0 - runSpeed * runSeconds - 30, 2.4, 1] },
   ], runSeconds, {
-    name: 'main-street-run', ease: 'none',
+    // The player under the camera: cars are streamed near the player.
+    name: 'main-street-run', ease: 'none', player: 'camera',
     cues: [
+      // A car parked on the shoulder ahead, hit square from across the street.
+      [(runX0 - place('car-16').position[0] - 16) / runSpeed, strike({ at: 'car-16', from: 0, slope: 0.3 })],
       ...landAhead(row('Main Street', 'north'), { x0: runX0, speed: runSpeed, lead: 14 }),
       ...landAhead(row('Main Street', 'south', ['grocery']), { x0: runX0, speed: runSpeed, lead: 12 }),
       // The bus station: the three shelters at once, in slow motion.
@@ -101,7 +104,7 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     { position: [40, 4.2, 24.5], lookAt: [10, 2, 23] },
     { position: [14, 5.5, 23.5], lookAt: [-10, 3, 20] },
   ], 6, {
-    name: 'market-square', ease: 'none',
+    name: 'market-square', ease: 'none', player: 'camera',
     cues: [
       ...[42, 32, 22, 12].map((x, k) => [0.9 + k * 1.05, strike({ at: [x, 1.4, 22.5] })]),
       ...landAhead(row('North Street', 'south'), { x0: 62, speed: 8, lead: 10, until: 5.6 }),
@@ -121,6 +124,8 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
   ], parkSeconds, {
     name: 'elm-park-run', ease: 'none', player: 'camera',
     cues: [
+      // A car parked on the shoulder ahead, hit from across the street.
+      [(parkX0 - place('car-13').position[0] - 18) / parkSpeed, strike({ at: 'car-13', from: 180, slope: 0.3 })],
       ...landAhead(houses('Main Street', 'north'), { x0: parkX0, speed: parkSpeed, lead: 20 }),
       ...landAhead(houses('Main Street', 'south'), { x0: parkX0, speed: parkSpeed, lead: 26 }),
       // Beside car-4: it goes over, in slow motion.

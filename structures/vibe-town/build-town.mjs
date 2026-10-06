@@ -200,7 +200,10 @@ function layout() {
         // Front path to the door; driveway down the east side.
         paths.push([x - 0.8, x + 0.8, ...[z0 + side * WALK, z0 + side * 10.2].sort((p, q) => p - q)]);
         paths.push([x + 6, x + 9.4, ...[z0 + side * WALK, z0 + side * 20].sort((p, q) => p - q)]);
-        if (CARS.has(`${z0}:${side}:${i}`)) slots.push([x + 7.7, z0 + side * 13, side > 0 ? 180 : 0]);
+        // At the street end of the driveway (9.2 m out: just off the
+        // pavement), where a camera on the road sees it -- at 13 m the house
+        // hid it from most of the street.
+        if (CARS.has(`${z0}:${side}:${i}`)) slots.push([x + 7.7, z0 + side * 9.2, side > 0 ? 180 : 0]);
         // Mailbox at the kerb of the garden, a tree in the front garden.
         place(ASSETS.prop('mailbox'), x + 4.5, z0 + side * 7.2, facing(side), 'mailbox');
         place(ASSETS.tree(...FRONT_TREES[(lot + i) % FRONT_TREES.length]), x - 3.4, z0 + side * 8.3, 0, 'tree');
@@ -245,6 +248,16 @@ function layout() {
   // car-10, the chase car: North Street's west end, in the eastbound lane,
   // facing down the street (films drive it the length of Elm Park).
   slots.push([-144, 46, 90]);
+  // car-11 on: the street's own -- parked on the shoulders (2.6 m off the
+  // centre line, facing the way traffic would), and more at the street end
+  // of driveways, all where films run: Main Street through Elm Park and the
+  // Market Quarter, and North Street's south side (the chase truck keeps to
+  // the south lane, then weaves north: nothing parked in its way).
+  slots.push(
+    [-125, -2.6, 90], [-88, 2.6, 270], [-58, -2.6, 90], [-25, 2.6, 270], // Main Street, Elm Park
+    [16, -2.6, 90], [38, 2.6, 270], [58, -2.6, 90], [80, 2.6, 270], // Main Street, Market Quarter
+    [-92.3, 38.8, 0], [-43.3, 38.8, 0], [-60.3, 38.8, 0], // North Street, south-side driveways
+  );
   place(ASSETS.prop('billboard'), 112, 73, 0, 'billboard');
   // South Street: shops facing north, then a grocer; a library-sized green with trees.
   shopRow(-48, 1, 10, ['CAFE', 'TOYS', 'BOOKS', 'DELI', 'BAKERY', 'BARBER', 'FLORIST'], ['sage', 'ochre', 'blue', 'rose', 'cream']);

@@ -195,13 +195,18 @@ function strikePoint(at, ctx, height) {
  * the real meteor, simulated from launch: `from` only picks where it comes
  * in from, and so which way the blast throws what it hits.
  */
-function launchMeteor(ctx, target, from, flight = METEOR_FLIGHT_S) {
+/** The game's meteor slope: 240 m up for every 300 m out. */
+export const METEOR_SLOPE = 0.8;
+
+function launchMeteor(ctx, target, from, flight = METEOR_FLIGHT_S, slope = METEOR_SLOPE) {
   if (from == null) { ctx.session.meteor(target[0], target[1], target[2]); return; }
-  // `flight` seconds out on the same slope (300 out : 240 up) at 140 m/s:
-  // the default is the game's own range; shorter, a late shot that leaves a
-  // moving target less time to be somewhere else.
-  const b = (from * Math.PI) / 180, g = -9.81, k = flight / METEOR_FLIGHT_S;
-  const start = [target[0] + Math.sin(b) * 300 * k, target[1] + 240 * k, target[2] + Math.cos(b) * 300 * k];
+  // From `flight` seconds away at 140 m/s, `slope` m up for every metre out
+  // (the game's 0.8 by default): shorter, a late shot that leaves a moving
+  // target less time to be somewhere else; flatter, a rock that comes in
+  // low, across a street and into a wall, and hits sideways.
+  const b = (from * Math.PI) / 180, g = -9.81, dist = 140 * flight;
+  const out = dist / Math.hypot(1, slope), up = out * slope;
+  const start = [target[0] + Math.sin(b) * out, target[1] + up, target[2] + Math.cos(b) * out];
   const T = Math.hypot(...start.map((v, k) => v - target[k])) / 140;
   const velocity = start.map((v, k) => (target[k] - v) / T - (k === 1 ? g * T * 0.5 : 0));
   ctx.session.replayEvent(JSON.stringify({ kind: 'meteor', start, velocity, target, flight_s: T }));
@@ -213,13 +218,14 @@ function launchMeteor(ctx, target, from, flight = METEOR_FLIGHT_S) {
  * bearing it comes from (launchMeteor); `flash` adds a white flash to the cut
  * at the impact. Impacts shake a camera near them (shoot's `shake`).
  */
-export function strike({ at, height, from, flash: white = false }) {
+export function strike({ at, height, from, slope, flash: white = false }) {
   const name = typeof at === 'string' ? at : at?.id ?? 'a point';
+  if (slope != null && from == null) throw new Error('strike: `slope` needs `from` (the bearing it comes from)');
   return {
     label: `strike ${name}${from != null ? ` from ${from}` : ''}`,
     steps: [[-METEOR_FLIGHT_S, (ctx) => {
       const p = strikePoint(at, ctx, height), lands = ctx.t + METEOR_FLIGHT_S;
-      launchMeteor(ctx, p, from);
+      launchMeteor(ctx, p, from, METEOR_FLIGHT_S, slope);
       ctx.impact(p, lands);
       if (white) ctx.edit({ type: 'flash', at: lands, seconds: 0.15 });
     }]],
@@ -232,7 +238,7 @@ export function strike({ at, height, from, flash: white = false }) {
  * and `side` metres to its right (negative: left). `side` 0, `ahead` 0 is a
  * direct hit if it keeps its speed. Like strike(), the cue's time is the impact.
  */
-export function strikeNear(target, { ahead = 0, side = 0, height = 0.8, from, flight = METEOR_FLIGHT_S, flash: white = false } = {}) {
+export function strikeNear(target, { ahead = 0, side = 0, height = 0.8, from, flight = METEOR_FLIGHT_S, slope, flash: white = false } = {}) {
   if (flight !== METEOR_FLIGHT_S && from == null) throw new Error('strikeNear: a short `flight` needs `from` (the bearing it comes from)');
   return {
     label: `strike near ${typeof target === 'string' ? target : target}${from != null ? ` from ${from}` : ''}`,
@@ -251,7 +257,7 @@ export function strikeNear(target, { ahead = 0, side = 0, height = 0.8, from, fl
         v.position[2] + fz * (run + ahead) + fx * side,
       ];
       const lands = ctx.t + flight;
-      launchMeteor(ctx, p, from, flight);
+      launchMeteor(ctx, p, from, flight, slope);
       ctx.impact(p, lands);
       if (white) ctx.edit({ type: 'flash', at: lands, seconds: 0.15 });
     }]],
