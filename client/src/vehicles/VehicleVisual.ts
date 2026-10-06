@@ -3,6 +3,13 @@ import { LiveGeometry, LiveAssembly } from './dune/live-geometry.mjs';
 import { VisualRig } from './dune/visual-rig.mjs';
 import { materials } from './dune/buggy.mjs';
 import { geometryKey, modelParameters, normalizeConfiguration, resolveVehicleGeometry, sourceCornerForWheel, type VehicleConfiguration } from './configuration.mjs';
+import { LooseParts, type BodyPose } from './looseParts';
+
+/** What drives a car's visual: its wheels and its broken-off bodies (a PKT_VEHICLE_RIG). */
+export interface VehicleRigState {
+  wheels: readonly { travelM: number; steeringRad: number; rotationRad: number; grounded: boolean }[];
+  detached?: readonly BodyPose[];
+}
 
 /** One renderer for workshop, live sessions, and replays. Owns all GPU resources. */
 export class VehicleVisual {
@@ -21,8 +28,11 @@ export class VehicleVisual {
   /** Visual part ids per native fracture part index (metadata.json parts[].visualIds). */
   private fractureGroups: string[][] | null = null;
   private readonly partMatrix = new Map<string, THREE.Matrix4>();
-  /** Visual ids drawn loose last frame, so a part back on the car is restored. */
-  private detachedIds = new Set<string>();
+  /** The parts that broke off: bodies of their own, drawn in world space. */
+  private readonly loose = new LooseParts(this.assembly);
+  /** The rig last applied, and the wheel state last posed: work only on change. */
+  private appliedRig: VehicleRigState | null = null;
+  private readonly wheelState = new Float64Array(16).fill(Number.NaN);
   private explosion = 0;
   constructor(configuration: VehicleConfiguration, private readonly actorSpace = false) {
     this.configure(configuration);
@@ -31,6 +41,12 @@ export class VehicleVisual {
       this.group.position.y = -resolveVehicleGeometry(configuration).originHeight;
     }
   }
+  /**
+   * The car's broken-off parts, in world space. The caller places it in the
+   * world beside the car's group, not under it: a loose part does not move
+   * with the car.
+   */
+  get debris(): THREE.Group { return this.loose.group; }
   get partCount(): number { return this.model.parts.length; }
   get parts(): {id: string; name: string; system: string}[] { return this.model.parts; }
   configure(value: VehicleConfiguration): void {
@@ -48,6 +64,11 @@ export class VehicleVisual {
     if (this.actorSpace) this.group.position.y = -resolveVehicleGeometry(config).originHeight;
     if (key === this.key) return;
     this.rig?.restore();
+    // A new model: its parts start on the car, and the next rig is drawn in full.
+    this.loose.discard();
+    this.partMatrix.clear();
+    this.appliedRig = null;
+    this.wheelState.fill(Number.NaN);
     // Dimension-specific template keys must not accumulate while dragging sliders.
     this.assembly.dispose();
     this.source.dispose();
@@ -74,25 +95,33 @@ export class VehicleVisual {
   }
   setFractureGroups(groups: string[][]): void { this.fractureGroups = groups; }
   hasFractureGroups(): boolean { return !!this.fractureGroups; }
-  /** Draw parts that broke off at their server world poses. Call after setWheelState. */
-  setDetached(detached: {part:number; position:[number,number,number]; rotation:[number,number,number,number]}[]): void {
-    if (!this.fractureGroups || (!detached.length && !this.detachedIds.size)) return;
-    this.group.updateWorldMatrix(true, false);
-    const toLocal = this.group.matrixWorld.clone().invert(), actor = this.group.matrix;
-    if (!this.partMatrix.size) for (const part of this.model.parts) this.partMatrix.set(part.id, part.matrix);
-    const world = new THREE.Matrix4(), quat = new THREE.Quaternion(), pos = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
-    const matrices = new Map<string, THREE.Matrix4>();
-    for (const d of detached) {
-      const ids = this.fractureGroups[d.part]; if (!ids) continue;
-      world.compose(pos.set(...d.position), quat.set(...d.rotation), one);
-      const base = toLocal.clone().multiply(world).multiply(actor);
-      for (const id of ids) { const m = this.partMatrix.get(id); if (m) matrices.set(id, base.clone().multiply(m)); }
+  /**
+   * Apply a rig: pose the wheels and draw the broken-off bodies. Work is done
+   * only for what changed since the last rig -- the wheel state, and each body
+   * whose pose moved -- so a parked car or a settled wreck costs nothing, and
+   * the same rig applied again (every frame until the next one) is free.
+   */
+  applyRig(rig: VehicleRigState): void {
+    if (rig === this.appliedRig) return;
+    this.setWheelState(rig.wheels);
+    const bodies = rig.detached ?? [];
+    if (!bodies.length) {
+      if (this.loose.size) this.loose.reset(id => this.restingMatrix(id));
+    } else if (this.fractureGroups) {
+      this.group.updateMatrix();
+      if (!this.partMatrix.size) for (const part of this.model.parts) this.partMatrix.set(part.id, part.matrix);
+      this.loose.apply(bodies, this.fractureGroups, this.group.matrix, id => this.partMatrix.get(id));
+    } else {
+      // Which visual parts a body carries is not known yet (metadata.json):
+      // apply this rig again once it is.
+      return;
     }
-    // Parts back on the car (a respawned car): their rest matrices again.
-    const loose = new Set(matrices.keys());
-    for (const id of this.detachedIds) if (!loose.has(id)) { const m = this.partMatrix.get(id); if (m) matrices.set(id, m.clone()); }
-    this.detachedIds = loose;
-    this.assembly.setDetached(matrices);
+    this.appliedRig = rig;
+  }
+  /** A part's pose back on the car: its motion pose, or its authored one. */
+  private restingMatrix(id: string): THREE.Matrix4 {
+    const part = this.model.parts.find((p: { id: string }) => p.id === id);
+    return part?.motion && this.rig ? this.rig.matrixFor(part).clone() : (part?.matrix ?? new THREE.Matrix4());
   }
   /**
    * Diagnostics: where the first `max` loose parts are DRAWN (world
@@ -100,29 +129,20 @@ export class VehicleVisual {
    * vehicle trace to catch parts flickering between two places.
    */
   drawnLooseParts(max = 16): { id: string; position: [number, number, number]; center: [number, number, number]; rotation: [number, number, number, number] }[] {
-    const wanted = new Set([...this.detachedIds].sort().slice(0, max));
-    if (!wanted.size) return [];
-    const out: { id: string; position: [number, number, number]; center: [number, number, number]; rotation: [number, number, number, number] }[] = [];
-    const m = new THREE.Matrix4(), v = new THREE.Vector3(), q = new THREE.Quaternion(), scale = new THREE.Vector3(), c = new THREE.Vector3();
-    for (const mesh of (this.assembly as unknown as { meshes: THREE.InstancedMesh[] }).meshes) {
-      mesh.updateWorldMatrix(true, false);
-      // A part's origin can sit far from its geometry (parts are authored in
-      // the car's frame), so a spinning part's origin swings where the part
-      // itself does not: `center` is where the geometry is drawn.
-      if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
-      const parts = mesh.userData.parts as { id: string }[];
-      for (let index = 0; index < parts.length; index++) {
-        if (!wanted.has(parts[index].id)) continue;
-        mesh.getMatrixAt(index, m);
-        m.premultiply(mesh.matrixWorld).decompose(v, q, scale);
-        c.copy(mesh.geometry.boundingSphere!.center).applyMatrix4(m);
-        out.push({ id: parts[index].id, position: [v.x, v.y, v.z], center: [c.x, c.y, c.z], rotation: [q.x, q.y, q.z, q.w] });
-      }
-    }
-    return out.sort((a, b) => a.id.localeCompare(b.id));
+    return this.loose.drawn(max);
   }
-  setWheelState(wheels: {travelM: number; steeringRad: number; rotationRad: number; grounded: boolean}[]): void {
+  setWheelState(wheels: readonly {travelM: number; steeringRad: number; rotationRad: number; grounded: boolean}[]): void {
     if (wheels.length !== 4) return;
+    // The suspension is solved only when the wheels moved.
+    let same = true;
+    wheels.forEach((w, i) => {
+      const at = i * 4, grounded = w.grounded ? 1 : 0;
+      if (this.wheelState[at] !== w.travelM || this.wheelState[at + 1] !== w.steeringRad
+        || this.wheelState[at + 2] !== w.rotationRad || this.wheelState[at + 3] !== grounded) same = false;
+      this.wheelState[at] = w.travelM; this.wheelState[at + 1] = w.steeringRad;
+      this.wheelState[at + 2] = w.rotationRad; this.wheelState[at + 3] = grounded;
+    });
+    if (same) return;
     const pose = { chassis: { position: [0,0,0], rotation: [0,0,0,1] },
       wheels: Object.fromEntries(sourceCornerForWheel.map((id, i) => [id, {
         // A wheel the server no longer simulates arrives at neutral travel;
@@ -133,6 +153,7 @@ export class VehicleVisual {
     this.assembly.applyMotion(this.rig);
   }
   dispose(): void {
+    this.loose.dispose();
     this.assembly.dispose(); this.source.dispose();
     Object.values(this.palette).forEach(m => m.dispose());
     this.bodyPaint.dispose(); this.wheelPaint.dispose();

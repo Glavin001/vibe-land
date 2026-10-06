@@ -65,25 +65,107 @@ describe('detached vehicle parts', () => {
     expect(decodeVehicleRig(bytes.subarray(0, 58)).detached).toEqual([]);
     expect(() => decodeVehicleRig(bytes.subarray(0, 92))).toThrow();
   });
-  it('draws a detached part at its world pose independent of the chassis', async () => {
+  // Broken-off parts are their own physics bodies: drawn in world space from
+  // the body pose, written only when a new rig changes that body, never
+  // re-derived from the car's pose.
+  async function setup() {
     const THREE = await import('three');
     const { VehicleVisual } = await import('./VehicleVisual');
     const { defaultConfiguration } = await import('./configuration.mjs');
     const visual = new VehicleVisual(defaultConfiguration('buggy'), true);
+    const world = new THREE.Group();
     const chassis = new THREE.Group(); chassis.add(visual.group);
+    world.add(chassis, visual.debris);
     chassis.position.set(5, 1, -2); chassis.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.7);
-    const part = visual.parts[3] as unknown as { id: string; matrix: THREE.Matrix4 };
-    visual.setFractureGroups([[], [], [], [part.id]]);
-    const world = new THREE.Matrix4().compose(new THREE.Vector3(10, 0.5, 4), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 1.1), new THREE.Vector3(1, 1, 1));
-    const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(); world.decompose(p, q, s);
-    visual.setDetached([{ part: 3, position: [p.x, p.y, p.z], rotation: [q.x, q.y, q.z, q.w] }]);
-    // Find the part's instance and compare its world matrix with W * actor * part.matrix.
-    chassis.updateMatrixWorld(true);
-    let drawn: THREE.Matrix4 | null = null;
-    visual.group.traverse(o => { const mesh = o as THREE.InstancedMesh; const parts = mesh.userData?.parts as { id: string }[] | undefined;
-      const index = parts?.findIndex(x => x.id === part.id) ?? -1; if (index >= 0) { const m = new THREE.Matrix4(); mesh.getMatrixAt(index, m); drawn = mesh.matrixWorld.clone().multiply(m); } });
-    expect(drawn).not.toBeNull();
-    const expected = world.clone().multiply(visual.group.matrix).multiply(part.matrix);
-    drawn!.elements.forEach((v, i) => expect(v).toBeCloseTo(expected.elements[i], 5));
+    const parts = visual.parts as unknown as { id: string; matrix: THREE.Matrix4; motion: { role: string } | null }[];
+    const plain = parts.find(p => !p.motion)!;
+    const wheel = parts.find(p => p.motion?.role === 'wheel')!;
+    visual.setFractureGroups([[], [], [], [plain.id], [wheel.id]]);
+    const pose = (x: number, angle = 1.1) => {
+      const m = new THREE.Matrix4().compose(new THREE.Vector3(x, 0.5, 4), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), angle), new THREE.Vector3(1, 1, 1));
+      const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(); m.decompose(p, q, s);
+      return { matrix: m, position: [p.x, p.y, p.z] as [number, number, number], rotation: [q.x, q.y, q.z, q.w] as [number, number, number, number] };
+    };
+    const wheels = (spin: number) => [0, 1, 2, 3].map(() => ({ travelM: 0.05, steeringRad: 0.1, rotationRad: spin, grounded: true }));
+    /** Where `id` is drawn in the world: its debris instance if loose, else its car instance (null when hidden). */
+    const drawnOf = (root: THREE.Object3D, id: string) => {
+      world.updateMatrixWorld(true);
+      let drawn: THREE.Matrix4 | null = null;
+      root.traverse(o => {
+        const mesh = o as THREE.InstancedMesh; const list = mesh.userData?.parts as { id: string }[] | undefined;
+        const index = list?.findIndex(x => x.id === id) ?? -1;
+        if (index < 0 || index >= mesh.count) return;
+        const m = new THREE.Matrix4(); mesh.getMatrixAt(index, m);
+        if (m.determinant() !== 0) drawn = mesh.matrixWorld.clone().multiply(m);
+      });
+      return drawn as THREE.Matrix4 | null;
+    };
+    const versions = (root: THREE.Object3D) => { const out: number[] = []; root.traverse(o => { const m = o as THREE.InstancedMesh; if (m.instanceMatrix) out.push(m.instanceMatrix.version); }); return out; };
+    return { THREE, visual, chassis, plain, wheel, pose, wheels, drawnOf, versions };
+  }
+  const close = (a: { elements: number[] } | null, b: { elements: number[] }) => {
+    expect(a).not.toBeNull(); a!.elements.forEach((v, i) => expect(v).toBeCloseTo(b.elements[i], 5));
+  };
+
+  it('draws a broken-off part in world space at its body pose, wherever the car goes', async () => {
+    const { THREE, visual, chassis, plain, pose, wheels, drawnOf } = await setup();
+    const body = pose(10);
+    visual.applyRig({ wheels: wheels(0), detached: [{ part: 3, position: body.position, rotation: body.rotation }] });
+    const expected = body.matrix.clone().multiply(visual.group.matrix).multiply(plain.matrix);
+    close(drawnOf(visual.debris, plain.id), expected);
+    expect(drawnOf(visual.group, plain.id)).toBeNull();
+    // The car drives off: the piece stays where its body is.
+    chassis.position.set(40, 1, 30); chassis.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), 2.4);
+    close(drawnOf(visual.debris, plain.id), expected);
+  });
+
+  it('does no work for a rig it has applied, or for bodies and wheels that did not move', async () => {
+    const { visual, pose, wheels, versions } = await setup();
+    const body = pose(10);
+    const rig = { wheels: wheels(0), detached: [{ part: 3, position: body.position, rotation: body.rotation }] };
+    visual.applyRig(rig);
+    const car = versions(visual.group), loose = versions(visual.debris);
+    visual.applyRig(rig);
+    visual.applyRig({ wheels: wheels(0), detached: [{ part: 3, position: [...body.position], rotation: [...body.rotation] }] });
+    expect(versions(visual.group)).toEqual(car);
+    expect(versions(visual.debris)).toEqual(loose);
+    // One body moves: only the loose parts are written, not the car.
+    const moved = pose(11);
+    visual.applyRig({ wheels: wheels(0), detached: [{ part: 3, position: moved.position, rotation: moved.rotation }] });
+    expect(versions(visual.group)).toEqual(car);
+    expect(versions(visual.debris)).not.toEqual(loose);
+  });
+
+  it('keeps a broken-off wheel off the car when the suspension moves', async () => {
+    const { visual, wheel, pose, wheels, drawnOf } = await setup();
+    const body = pose(3, 0.2);
+    visual.applyRig({ wheels: wheels(0), detached: [{ part: 4, position: body.position, rotation: body.rotation }] });
+    visual.applyRig({ wheels: wheels(1.5), detached: [{ part: 4, position: body.position, rotation: body.rotation }] });
+    expect(drawnOf(visual.group, wheel.id)).toBeNull();
+    close(drawnOf(visual.debris, wheel.id), body.matrix.clone().multiply(visual.group.matrix).multiply(wheel.matrix));
+  });
+
+  it('puts every part back on the car when it respawns', async () => {
+    const { visual, plain, pose, wheels, drawnOf } = await setup();
+    const body = pose(10);
+    visual.applyRig({ wheels: wheels(0), detached: [{ part: 3, position: body.position, rotation: body.rotation }] });
+    visual.applyRig({ wheels: wheels(0), detached: [] });
+    expect(drawnOf(visual.debris, plain.id)).toBeNull();
+    const onCar = drawnOf(visual.group, plain.id);
+    close(onCar, visual.group.matrixWorld.clone().multiply(plain.matrix));
+  });
+
+  it('applies a rig that arrived before the fracture groups once they are known', async () => {
+    const THREE = await import('three');
+    const { VehicleVisual } = await import('./VehicleVisual');
+    const { defaultConfiguration } = await import('./configuration.mjs');
+    const visual = new VehicleVisual(defaultConfiguration('buggy'), true);
+    const part = (visual.parts as unknown as { id: string; motion: unknown }[]).find(p => !p.motion)!;
+    const rig = { wheels: [0, 1, 2, 3].map(() => ({ travelM: 0, steeringRad: 0, rotationRad: 0, grounded: true })), detached: [{ part: 0, position: [1, 2, 3] as [number, number, number], rotation: [0, 0, 0, 1] as [number, number, number, number] }] };
+    visual.applyRig(rig);
+    visual.setFractureGroups([[part.id]]);
+    visual.applyRig(rig);
+    let loose = 0; visual.debris.traverse(o => { const m = o as THREE.InstancedMesh; if (m.instanceMatrix) loose += m.count; });
+    expect(loose).toBe(1);
   });
 });
