@@ -1,0 +1,193 @@
+// The vehicle test bed in the app (scripts/native-mac.sh vehicle-lab
+// [--build B]): the lab scene (structures/vehicle-lab) with one car of the
+// build per chosen trial, parked at its lane or pad; each trial played in
+// turn as a shot of the film toolkit (client/native/film): the camera
+// follows the car, the player gets in and drives it as the trial says, the
+// meteors and the cannonball are the game's own. Every 0.1 s the car's
+// server state (session.vehicleDebug) is read and each trial's measurements
+// logged as `measure {json}` -- the shape server/src/vehicle_testbed.rs
+// reports -- for structures/vehicle-lab/native-report.mjs to judge with
+// criteria.mjs. FILM_CHECK=1 (the default there) keeps two stills a second.
+//
+/* global VEHICLE_LAB_TRIALS, VEHICLE_LAB_BUILD */
+import { boot } from './film/film.mjs';
+import { track, enter } from './film/shots.mjs';
+import { placeResolver } from './film/places.mjs';
+
+const TRIALS = typeof VEHICLE_LAB_TRIALS === 'string' ? VEHICLE_LAB_TRIALS.split(',') : [];
+const BUILD = typeof VEHICLE_LAB_BUILD === 'string' ? VEHICLE_LAB_BUILD : 'monster';
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** The car's server state, parsed: position, velocity, rotation, wheels, damage. */
+function readCar(ctx, index) {
+  let d;
+  try { d = JSON.parse(ctx.session.vehicleDebug(index)); } catch { return null; }
+  const v2 = d.vehicle2 ?? {};
+  const [qx, qy, qz, qw] = v2.rotation ?? [0, 0, 0, 1];
+  // Rotated +z (forward) and +y (up).
+  const forward = [2 * (qx * qz + qw * qy), 2 * (qy * qz - qw * qx), 1 - 2 * (qx * qx + qy * qy)];
+  const upY = 1 - 2 * (qx * qx + qz * qz);
+  const broken = (d.bonds ?? []).filter((b) => b.remainingArea <= 0 || b.verdictBroken).map((b) => b.index);
+  const off = new Set((d.hulls ?? []).filter((h) => h.actor !== 0).map((h) => h.part));
+  const parts = new Set((d.hulls ?? []).map((h) => h.part)).size;
+  return {
+    p: v2.position ?? [0, 0, 0], v: v2.linearVelocity ?? [0, 0, 0], w: v2.angularVelocity ?? [0, 0, 0], forward, upY,
+    broken, partsOff: off.size, parts, bonds: (d.bonds ?? []).length, wheelMask: d.vehicle?.wheelMask ?? 15,
+    mass: (d.actors ?? []).find((a) => a.actor === 0)?.mass,
+  };
+}
+
+/** One trial as a shot: the camera on its car, its driving and attacks as cues, measured every 0.1 s. */
+function trialShot(trial, index, meta, ground) {
+  const car = `car-${index}`;
+  const lead = 1.4; // getting in
+  const seconds = trial.seconds;
+  const m = { car: BUILD, trial: trial.id, seconds, harness: 'native' };
+  let start = null, last = null, prevT = null, cityBefore = 0;
+  let launched = false, driftStart = null, driftHeading0 = 0;
+  const speedOf = (s) => Math.hypot(s.v[0], s.v[2]);
+  const headingOf = (s) => Math.atan2(s.forward[0], s.forward[2]);
+  const groundAt = () => ground(trial);
+  const sample = (ctx, t) => {
+    const s = readCar(ctx, index);
+    if (!s) return;
+    positions.set(index, s.p);
+    if (!start) {
+      start = s; cityBefore = ctx.e2e.snapshot()?.city?.brokenBonds ?? 0;
+      Object.assign(m, { bonds: s.bonds, parts: s.parts, mass: s.mass, brokenAtSettle: s.broken.length, topSpeed: 0, maxZ: s.p[2],
+        startZ: s.p[2], rideHeightStart: s.p[1] - groundAt(), stalledSeconds: 0, goal: trial.goal ?? null, goalSeconds: null, peakDecelG: 0, minUpY: 1 });
+    }
+    const speed = speedOf(s);
+    m.topSpeed = Math.max(m.topSpeed, speed);
+    m.maxZ = Math.max(m.maxZ, s.p[2]);
+    m.minUpY = Math.min(m.minUpY, s.upY);
+    if (trial.goal != null && m.goalSeconds == null && s.p[2] >= trial.goal) m.goalSeconds = t;
+    if (trial.impactZ != null && m.impactSpeed == null && s.p[2] + 2.5 >= trial.impactZ - 0.2) { m.impactSpeed = speed; m.impactSeconds = t; }
+    if (last && prevT != null && t > prevT) {
+      const dv = Math.hypot(...s.v.map((c, k) => c - last.v[k]));
+      m.peakDecelG = Math.max(m.peakDecelG, dv / (t - prevT) / 9.81);
+      const throttle = trial.drive.kind !== 'park';
+      if (throttle && speed < 0.5 && m.goalSeconds == null && t > 1) m.stalledSeconds += t - prevT;
+    }
+    if (trial.drive.kind === 'drift' && driftStart != null && t <= driftStart + trial.drive.seconds) {
+      m.drift ??= { entrySpeed: 0, peakYawRate: 0, peakSlipDeg: 0 };
+      m.drift.peakYawRate = Math.max(m.drift.peakYawRate, Math.abs(s.w[1]));
+      if (speed > 2) {
+        const f = Math.hypot(s.forward[0], s.forward[2]);
+        const cos = (s.forward[0] * s.v[0] + s.forward[2] * s.v[2]) / (f * speed);
+        m.drift.peakSlipDeg = Math.max(m.drift.peakSlipDeg, (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI);
+      }
+    }
+    last = s; prevT = t;
+    return s;
+  };
+  const finish = (ctx) => {
+    const s = readCar(ctx, index) ?? last;
+    if (!s || !start) { ctx.log(`measure ${JSON.stringify({ ...m, error: 'no car' })}`); return; }
+    const broken = new Set(s.broken);
+    Object.assign(m, {
+      bondsBroken: s.broken.length - start.broken.length, bondsBrokenAfterDriveAway: s.broken.length, cornerBondsBroken: null,
+      partsOff: s.partsOff, wheelsLost: [0, 1, 2, 3].filter((w) => !(s.wheelMask & (1 << w))).length,
+      rideHeightEnd: s.p[1] - groundAt(), bodyMass: [start.mass, s.mass],
+      sceneBroken: { [trial.at.split('/')[1] === 'house' ? 'house' : trial.at.split('/')[1] === 'wall' ? 'wall' : 'scene']: (ctx.e2e.snapshot()?.city?.brokenBonds ?? 0) - cityBefore },
+      endPosition: s.p, brokenIndices: [...broken].slice(0, 50),
+    });
+    ctx.log(`measure ${JSON.stringify(m)}`);
+  };
+  // Cues: get in (driving trials), drive, attack, sample.
+  const cues = [];
+  const driving = trial.drive.kind !== 'park';
+  if (driving) cues.push([0, enter(car)]);
+  for (let k = 0; k * 0.1 <= lead + seconds; k += 1) {
+    const t = k * 0.1 - lead;
+    cues.push([k * 0.1, (ctx) => {
+      const s = t >= 0 ? sample(ctx, t) : null;
+      if (!s || !driving) return;
+      // The trial's driving, re-decided every 0.1 s from the car's own speed.
+      const d = trial.drive, speed = speedOf(s);
+      let forward = 0, strafe = 0, brake = false;
+      if (d.kind === 'floor') forward = 1;
+      else if (d.kind === 'cruise') forward = speed < d.speed ? 1 : 0;
+      else if (d.kind === 'drift') {
+        if (driftStart == null && speed >= d.speed) { driftStart = t; driftHeading0 = headingOf(s); m.drift = { entrySpeed: speed, peakYawRate: 0, peakSlipDeg: 0 }; }
+        if (driftStart == null) forward = 1;
+        else if (t < driftStart + d.seconds) { strafe = 1; brake = true; }
+        else if (m.drift.exitSpeed == null) {
+          m.drift.exitSpeed = speed; m.drift.speedKept = speed / m.drift.entrySpeed;
+          m.drift.headingChangeDeg = (((headingOf(s) - driftHeading0) * 180) / Math.PI);
+        }
+      }
+      ctx.drive.move({ forward, strafe });
+      if (brake) ctx.drive.jump(150);
+    }]);
+  }
+  const a = trial.attack;
+  if (!driving) {
+    // The player beside the parked car (the game streams what is near the
+    // player): 25 m off for a meteor, 12 m to its right for the cannonball.
+    cues.push([0, (ctx) => {
+      const s = readCar(ctx, index);
+      if (!s) return;
+      const right = [s.forward[2], 0, -s.forward[0]], d = a?.kind === 'meteor' ? 25 : 12;
+      ctx.e2e.dropAt({ position: [s.p[0] + right[0] * d, s.p[1] + 0.6, s.p[2] + right[2] * d], yaw: Math.atan2(-right[0], -right[2]), pitch: 0 });
+    }]);
+  }
+  if (a?.kind === 'cannonball') {
+    // The game's cannonball from 12 m to the car's right, aimed at its chassis.
+    let target = null;
+    cues.push([lead + a.at - 0.3, (ctx) => { ctx.e2e.setShotMode('cannonball'); const s = readCar(ctx, index); if (s) { target = s.p; ctx.drive.lookAt(...s.p); } }]);
+    cues.push([lead + a.at - 0.2, (ctx) => { if (target) ctx.drive.lookAt(...target); }]);
+    cues.push([lead + a.at, (ctx) => ctx.drive.fire({ holdMs: 60 })]);
+  } else if (a?.kind === 'meteor') {
+    cues.push([lead + a.at, (ctx) => { const s = readCar(ctx, index); if (s) ctx.session.meteor(s.p[0], s.p[1], s.p[2]); }]);
+  } else if (a?.kind === 'strikes') {
+    // Launched when the car will be at carZ after the flight (shots.mjs launchMeteor's arc).
+    for (let k = 0; k * 0.05 <= seconds; k += 1) cues.push([lead + k * 0.05, (ctx) => {
+      if (launched) return;
+      const s = readCar(ctx, index);
+      if (!s || s.p[2] + s.v[2] * a.flight < a.carZ) return;
+      launched = true;
+      const lane = meta.lanes.find((l) => `lane/${l.id}` === trial.at);
+      for (const strike of lane.obstacle.strikes) {
+        const b = (strike.from * Math.PI) / 180, out = (140 * a.flight) / Math.hypot(1, a.slope), target = strike.target;
+        const start = [target[0] + Math.sin(b) * out, target[1] + out * a.slope, target[2] + Math.cos(b) * out];
+        const T = Math.hypot(...start.map((v, i) => v - target[i])) / 140;
+        const velocity = start.map((v, i) => (target[i] - v) / T + (i === 1 ? 9.81 * T * 0.5 : 0));
+        ctx.session.replayEvent(JSON.stringify({ kind: 'meteor', start, velocity, target, flight_s: T }));
+      }
+    }]);
+  }
+  cues.push([lead + seconds, (ctx) => {
+    finish(ctx);
+    ctx.drive.move({ forward: 0, strafe: 0 });
+    if (ctx.e2e.snapshot()?.drivenVehicleId != null) ctx.drive.interact();
+  }]);
+  // Behind and above the car, a little to its left; held where it is once a
+  // meteor or the cannonball is coming (a thrown car is not chased into a wall).
+  const follow = () => lastPosition(index, meta, trial);
+  return track(follow, [-5, 3.2, -9], lead + seconds + 0.4, { name: trial.id, lookOffset: [0, 1, 4], lag: 0.3, cues,
+    ...(a && ['meteor', 'cannonball'].includes(a.kind) ? { release: lead + a.at } : {}) });
+}
+
+/** Where each car was last read (the camera's target), from its slot until read. */
+const positions = new Map();
+function lastPosition(index, meta, trial) { return positions.get(index) ?? [trial.slot[0], 1, trial.slot[1]]; }
+
+async function main() {
+  const meta = JSON.parse(await (await fetch('file://../../structures/vehicle-lab/out/vehicle-lab.meta.json')).text());
+  const trials = TRIALS.map((id) => meta.trials.find((t) => t.id === id)).filter(Boolean);
+  const places = [...meta.places, ...trials.map((t, i) => ({ id: `car-${i}`, kind: 'car', position: [t.slot[0], 0, t.slot[1]], heading: t.slot[2] }))];
+  const place = placeResolver(places);
+  const paved = (trial) => {
+    const lane = meta.lanes.find((l) => `lane/${l.id}` === trial.at);
+    return lane?.paved ? 0.025 : 0;
+  };
+  const film = await boot({ scene: 'lab', place, settle: 2 });
+  film.log(`vehicle lab: ${BUILD} x ${trials.length}: ${trials.map((t) => t.id).join(', ')}`);
+  await film.play(trials.map((t, i) => trialShot(t, i, meta, paved)));
+}
+
+main().catch((error) => {
+  console.log(`[film] FAILED: ${error?.stack ?? error}`);
+  setTimeout(() => process.exit(1), 300);
+});

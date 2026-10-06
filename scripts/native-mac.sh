@@ -17,6 +17,7 @@
 #   scripts/native-mac.sh structures    # does each structure of the scene converge at rest
 #   scripts/native-mac.sh film-check    # film mode: exact ticks and clock per frame, then real time
 #   scripts/native-mac.sh film-determinism # the same film twice from tick 0: what must match does
+#   scripts/native-mac.sh vehicle-lab [--build B] # the vehicle test bed in the app (structures/vehicle-lab)
 #   scripts/native-mac.sh runtime|sim|bundle
 #
 # --scene NAME (any subcommand) picks the city:
@@ -29,6 +30,9 @@
 #                   ten-storey high-rise, houses east and on a hill, a jump
 #                   kicker and six destructible cars -- every structure one
 #                   that converges and stands at rest (scripts/perf/qualify_structures.py)
+#   lab             the vehicle test bed (structures/vehicle-lab): lanes of steps,
+#                   ramps, debris, a rubble pile, a wall and a house; pads for the
+#                   handbrake turn, the cannonball and the meteor (vehicle-lab sets it)
 #   town            Vibe Town (structures/vibe-town): Elm Park's 42 houses with
 #                   cars in the driveways, the Market Quarter's shops, towers,
 #                   cinema, library, bus station and market square -- every
@@ -61,6 +65,7 @@ while [ $# -gt 0 ]; do
   if [ "$1" = "--scene" ] && [ $# -gt 1 ]; then SCENE="$2"; shift 2; else args+=("$1"); shift; fi
 done
 set -- "${args[@]+"${args[@]}"}"
+[ "${1:-}" = vehicle-lab ] && SCENE=lab
 case "$SCENE" in
   city) ;;
   skyline)
@@ -105,6 +110,17 @@ case "$SCENE" in
       VIBE_CITY_SPAWN_X=-135 VIBE_CITY_SPAWN_Z=0 \
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
       VITE_TOWN_KIT_SCENE=vibe-showcase ;;
+  lab)
+    pack="$ROOT/structures/vehicle-lab/out/vehicle-lab"
+    stale=0
+    for source in "$ROOT"/structures/vehicle-lab/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
+    [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vehicle-lab/build-lab.mjs"
+    # One car per trial (vehicle-lab picks the trials and sets these); the
+    # fleet's 64 stress iterations; the spawn at the flat lane's start.
+    export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \
+      VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-monster}" \
+      VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:-$(cat "$pack.slots")}" \
+      VIBE_CITY_SPAWN_X=-120 VIBE_CITY_SPAWN_Z=-90 ;;
   town)
     pack="$ROOT/structures/vibe-town/out/vibe-town"
     stale=0
@@ -124,7 +140,7 @@ case "$SCENE" in
       VIBE_CITY_SPAWN_X=-146 VIBE_CITY_SPAWN_Z=0 \
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
       VITE_TOWN_KIT_SCENE=vibe-town ;;
-  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, town)" >&2; exit 2 ;;
+  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, lab, town)" >&2; exit 2 ;;
 esac
 [ "$SCENE" = city ] || echo "scene: $SCENE (${VIBE_CITY_SCENE})"
 
@@ -486,7 +502,7 @@ film() {
     --define:FILM_PREVIEW="$([ "$preview" = 1 ] && echo true || echo false)" --define:FILM_SEQUENCE="$sequence" \
     --define:FILM_LOCKSTEP="$lockstep" --define:FILM_SEED="$seed" \
     --define:FILM_CHECK="$([ "$check" = 1 ] && echo true || echo false)" --define:FILM_SHOTS="\"${FILM_SHOTS:-}\"" \
-    --outfile="$BUNDLE_DIR/film.js"
+    ${FILM_DEFINES:-} --outfile="$BUNDLE_DIR/film.js"
   (launch film.js "${capture[@]}" "$@") 2>&1 | tee "$log" \
     | grep --line-buffered -E '\[film|\[Video\] (Using|Recording|Dropped|Recording complete)|FAILED|Error' \
     | grep --line-buffered -vE '\] (stats|impact|truck) \{' || true
@@ -593,6 +609,24 @@ case "${1:-run}" in
   trace-writes) shift || true; runtime; sim; bundle; trace_writes "$@" ;;
   shots) shift || true; runtime; sim; bundle; shots "$@" ;;
   structures) shift || true; structures "$@" ;;
+  vehicle-lab) shift || true
+    # The vehicle test bed in the app: one car of the build per trial
+    # (VEHICLE_LAB_TRIALS, default a lap of everything that drives, hits and
+    # is hit), the film toolkit's camera on each in turn, two stills a second
+    # (FILM_CHECK=0 for a video), then the measurements judged against
+    # structures/vehicle-lab/criteria.mjs. The headless test bed with every
+    # trial and every build: scripts/vehicle-testbed.sh.
+    build=monster
+    if [ "${1:-}" = --build ]; then build="$2"; shift 2; fi
+    trials="${VEHICLE_LAB_TRIALS:-rest,accel,step-50,ramp-30,debris-fast,rubble,wall,house,near-miss,cannonball,meteor,drift}"
+    meta="$ROOT/structures/vehicle-lab/out/vehicle-lab.meta.json"
+    slots=$(node -e 'const m=require(process.argv[1]);process.stdout.write(process.argv[2].split(",").map(id=>{const t=m.trials.find(t=>t.id===id);if(!t)throw Error("no trial "+id);return t.slot.join(",")}).join(";"))' "$meta" "$trials")
+    export VIBE_CITY_DESTRUCTIBLE_VEHICLES=$(node -e 'process.stdout.write(Array(process.argv[2].split(",").length).fill(process.argv[1]).join(","))' "$build" "$trials") \
+      VIBE_CITY_FLEET_SLOTS="$slots" FILM_CHECK="${FILM_CHECK-1}" \
+      FILM_DEFINES="--define:VEHICLE_LAB_TRIALS=\"$trials\" --define:VEHICLE_LAB_BUILD=\"$build\""
+    runtime; sim; film_bundle; film vehicle-lab "$@"
+    log=$(ls -t "$ROOT"/target/native-video/vehicle-lab-*.log | head -1)
+    node "$ROOT/structures/vehicle-lab/native-report.mjs" "$log" ;;
   drive) shift || true
     # One car per surface, in drive-check.mjs's SURFACES order.
     export VIBE_CITY_DESTRUCTIBLE_VEHICLES=monster,desert,derby \

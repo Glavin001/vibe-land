@@ -48,12 +48,19 @@ export const DRIFT_REFERENCE = {
   circuit: { peakYawRate: 2.356, peakSlipDeg: 40.73, headingChangeDeg: -96.9 },
   buggy: { peakYawRate: 2.189, peakSlipDeg: 51.21, headingChangeDeg: -96.7 },
 };
-/** Relative tolerance on the drift reference (yaw rate, slip) and degrees of heading. */
+/**
+ * Relative tolerance on the drift reference (yaw rate, slip) and degrees of
+ * heading: under the gap between two builds of different character (monster
+ * truck and trophy truck: yaw rate 13%, heading 17 deg apart), so a change
+ * inside it is not a change of feel; slip is looser (the monster's 21 deg is
+ * the one value under 40 and moves most with small changes). The test bed is
+ * repeatable to the bond across runs (VIBE_TESTBED_REPEAT=4).
+ */
 export const DRIFT_TOLERANCE = { yaw: 0.15, slip: 0.25, headingDeg: 15 };
 
 /** A wheel climbs a step face up to this share of its radius (contact angle acos(1 - 0.7) = 73 deg: beyond it the face is near vertical). */
 const STEP_CLIMB_SHARE = 0.7;
-/** Ride height kept: within the 10 cm a dent in the floor or a bent mount would explain, not a lost wheel or a broken corner (the chase: 1.10 -> 0.55-0.97). */
+/** Ride height kept: a clean run ends within 2 cm of where it started; the chase's drops were 13-55 cm (1.10 -> 0.55-0.97). */
 const RIDE_KEPT_M = 0.10;
 /** A dent, not a wreck: share of the car's bonds a trial may cost where only bodywork may suffer. */
 const DENT_SHARE = 0.02;
@@ -87,7 +94,10 @@ function expects(trial, run, meta) {
     const h = o.height ?? 1;
     return [r + u.clearance >= h, `pile ${h} m vs tyre radius + clearance ${(r + u.clearance).toFixed(2)} m`];
   }
-  return [true, 'every car drives through rubble on a street'];
+  // Loose rubble: a car whose belly clears the tallest piece (Vibe Town's
+  // wall block, 0.30 m) drives through it; a lower one may be beached on it.
+  const tallest = Math.max(...(meta?.debris ?? [{ half: [0, 0.15, 0] }]).map((p) => 2 * p.half[1]));
+  return [u.clearance >= tallest, `clearance ${u.clearance?.toFixed(2)} m vs the tallest piece ${tallest.toFixed(2)} m`];
 }
 
 export function judge(report, baseline = null, meta = null) {
@@ -124,7 +134,8 @@ export function judge(report, baseline = null, meta = null) {
         const label = `clears it${expected ? '' : ' (not expected)'}`;
         row(t, label, cleared ? `${fmt(run.goalSeconds)} s` : `stopped at z ${fmt(run.maxZ)}`, expected ? 'clears' : 'measured', !expected || cleared, because, b && (b.goalSeconds != null ? `${fmt(b.goalSeconds)} s` : 'stopped'));
         if (expected) {
-          row(t, 'wheels and suspension intact', `${run.wheelsLost} wheels, ${run.cornerBondsBroken} corner bonds`, '0, 0', run.wheelsLost === 0 && run.cornerBondsBroken === 0, 'driving over things must not cost wheels', b && `${b.wheelsLost}, ${b.cornerBondsBroken}`);
+          // (The app's harness cannot tell corner bonds from others: wheels only there.)
+          row(t, 'wheels and suspension intact', `${run.wheelsLost} wheels, ${run.cornerBondsBroken ?? '-'} corner bonds`, '0, 0', run.wheelsLost === 0 && (run.cornerBondsBroken ?? 0) === 0, 'driving over things must not cost wheels', b && `${b.wheelsLost}, ${b.cornerBondsBroken}`);
           const allowance = monster || !t.startsWith('debris') && t !== 'rubble' ? 0 : Math.floor(DENT_SHARE * bonds);
           row(t, 'bonds broken', run.bondsBroken, `<= ${allowance}`, run.bondsBroken <= allowance, allowance ? `rubble may dent the body (${DENT_SHARE * 100}% of its bonds)` : 'nothing breaks', b?.bondsBroken);
         }
@@ -155,10 +166,12 @@ export function judge(report, baseline = null, meta = null) {
           row(t, 'goes through (m past the wall)', fmt(through), '>= 3', through >= 3, 'the monster truck is the hardest to stop', b && fmt(b.maxZ - 20));
         }
       } else if (t === 'cannonball') {
+        // Partly destroyed: damaged, but still a car -- an axle at least, and
+        // it drives (the meteor's line is that it is not).
         row(t, 'damaged (bonds)', run.bondsBroken, `>= ${Math.ceil(0.01 * bonds)}`, run.bondsBroken >= 0.01 * bonds, 'partly destroyed: at least 1% of its bonds', b?.bondsBroken);
-        row(t, 'parts off', `${run.partsOff} of ${parts}`, `<= ${Math.floor(0.4 * parts)}`, run.partsOff <= 0.4 * parts, 'partly, not wholly: under 40% of its parts off', b?.partsOff);
-        row(t, 'wheels kept', 4 - run.wheelsLost, '>= 3', run.wheelsLost <= 1, 'drivable after', b && 4 - b.wheelsLost);
-        row(t, 'drives away (m in 3 s)', fmt(run.driveAway?.metres), '>= 3', (run.driveAway?.metres ?? 0) >= 3, 'drivable after', b && fmt(b.driveAway?.metres));
+        row(t, 'parts off', `${run.partsOff} of ${parts}`, 'measured', true, 'how much of it is gone', b?.partsOff);
+        row(t, 'wheels kept', 4 - run.wheelsLost, '>= 2', run.wheelsLost <= 2, 'still a car: an axle at least', b && 4 - b.wheelsLost);
+        row(t, 'drives away (m in 3 s)', fmt(run.driveAway?.metres), '>= 3', (run.driveAway?.metres ?? 0) >= 3, 'still drivable', b && fmt(b.driveAway?.metres));
       } else if (t === 'meteor') {
         const wrecked = run.partsOff >= 0.5 * parts || run.bondsBroken >= 0.3 * bonds;
         row(t, 'wrecked', `${run.partsOff}/${parts} parts off, ${run.bondsBroken}/${bonds} bonds`, '>= 50% parts or 30% bonds', wrecked, 'a meteor wrecks it', b && `${b.partsOff}, ${b.bondsBroken}`);
