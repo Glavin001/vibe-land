@@ -8,8 +8,15 @@
 // what the blasts do to it and where it is thrown is the simulation's.
 import { hold, track, strike, strikeNear, enter, drive, card, slowmo } from '../film/film.mjs';
 
-/** The driving: full throttle, then weaving (steer -1 left .. 1 right) from 3 s in. */
-const WEAVE = [[3.0, 0.45], [3.55, -0.5], [4.1, 0.5], [4.65, -0.45], [5.2, 0.4], [5.75, -0.4], [6.3, 0]];
+/**
+ * The driving: full throttle, then weaving from 3 s in (steer +1 turns it
+ * north, toward the north-side houses, about half a second after the
+ * input), and a last drift north from 5.2 s that puts it a few metres from
+ * those houses when the last meteor arrives, so the hit drives it into one.
+ * Hit out in the south lane, it was wrecked where it stood, 12 m short of
+ * any house; a swerve from 6.3 s had not begun by the hit (2026-10-06).
+ */
+const WEAVE = [[3.0, 0.45], [3.55, -0.5], [4.1, 0.5], [4.65, -0.45], [5.2, 0.4], [5.75, 0.25], [6.5, 0]];
 
 /**
  * The truck's measured path on that driving and those strikes
@@ -58,35 +65,40 @@ export function chaseShots(place, { title, trace = false, final = true } = {}) {
   const weave = WEAVE.slice(0, -1).map(([t, steer], k) => [t, drive({ forward: 1, strafe: steer, seconds: WEAVE[k + 1][0] - t })]);
   const coast = [WEAVE.at(-1)[0], drive({ forward: 1, seconds: 4 })];
   // Near misses: North Street's houses, each hit in the wall facing the
-  // street, half way up, as the truck comes within 8 m of it -- by a rock
-  // that comes in low (slope 0.25: 19 degrees at impact) over the far side's
-  // roofs and across the road just ahead of the truck, a few metres over it,
+  // street, half way up, as the truck is 10 m past it -- by
+  // a rock that comes in low (slope 0.25: 19 degrees at impact) over the far
+  // side's roofs and across the road between the truck and the chase camera,
   // and on into the house (north-side houses from the south, 180; south-side
-  // from the north, 0), throwing it back off the street. The game's steep
-  // meteors landed short, in front gardens and on the road beside the truck,
-  // which read as near the truck rather than at the houses (2026-10-06).
+  // from the north, 0), throwing it back off the street (2026-10-06):
+  // - the game's steep meteors landed short, in front gardens and on the
+  //   road beside the truck: near the truck, not at the houses;
+  // - crossing just AHEAD of the truck, the house came back onto the road in
+  //   front of it, and in a full take it stalled there twice;
+  // - 4 m behind it, the rock and the blast caught its back end, and it lost
+  //   its wheels (scripts/vehicle-testbed.sh measures what it should take).
   const wall = (house) => [house.position[0], house.top * 0.5, house.side === 'north' ? house.min[2] + 1.5 : house.max[2] - 1.5];
   const houses = place.all
     .filter((p) => p.kind === 'house' && p.street === 'North Street')
-    .map((p) => [truckReaches(p.position[0] - 8), p])
+    .map((p) => [truckReaches(p.position[0] + 10), p])
     .filter(([t]) => t > 2.6 && t < 6.3);
   const strikes = houses.map(([t, house]) => [t, strike({ at: wall(house), from: house.side === 'north' ? 180 : 0, slope: 0.25 })]);
   // And a car at the street end of a south-side driveway (car-20), the same
-  // way: in across the road just ahead of the truck, into the car, the car
+  // way: in across the road behind the truck, into the car, the car
   // into its house.
   const parked = place('car-20');
-  strikes.push([truckReaches(parked.position[0] - 8), strike({ at: [parked.position[0], 1.0, parked.position[2]], from: 0, slope: 0.25 })]);
+  strikes.push([truckReaches(parked.position[0] + 10), strike({ at: [parked.position[0], 1.0, parked.position[2]], from: 0, slope: 0.25 })]);
   // The last one catches it: square on its right side (south), at body
-  // height, coming in flatter than the game's meteors (slope 0.6: ~32 degrees,
-  // 84% of its momentum sideways) -- a shove to its left, north, hard into
-  // the house. A clip 2.4 m off its side on the ground only lifted it into
+  // height, coming in flat (slope 0.35: ~20 degrees, 94% of its momentum
+  // sideways; the drift north leaves 18 m to clear the far side's roofs) --
+  // a shove to its left, north, hard into the house. At slope 0.6 it lifted
+  // the truck up the house's front more than through it. A clip 2.4 m off its side on the ground only lifted it into
   // the wall (2026-10-06). Aimed live, late: launched 0.5 s out at where the
   // truck will be by then (its speed and acceleration). Aimed 2.74 s out from
   // the measured RUN, the weave had carried it 4 m from the mark; 1 s out,
   // a truck slowed by a near miss's debris was only grazed.
   const hit = 6.8;
   const last = !final ? [] : [
-    [hit, strikeNear(car, { height: 1.0, from: 180, flight: 0.5, slope: 0.6, flash: true })],
+    [hit, strikeNear(car, { height: 0.9, from: 180, flight: 0.5, slope: 0.35, flash: true })],
     [hit - 0.2, slowmo(2.2, 0.5)],
   ];
   const traceCues = trace ? Array.from({ length: 90 }, (_, k) => [k * 0.1, (ctx) => {
