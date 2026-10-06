@@ -10,8 +10,11 @@ structure -- and each is qualified alone (structure_qualification.rs
 `city_structures_qualify`) for `--ticks` server ticks at rest, under the native
 app's stress settings. A structure whose stress solve does not converge keeps
 the GPU solving it every idle tick (the stage skips only converged ones), so the
-share of unconverged solves is the verdict: PASS at or under --max-unconverged
-percent.
+share of unconverged solves is one test, PASS at or under --max-unconverged
+percent. The other is that it stands: a structure can converge and fall down
+(Bayline's billboard), so bonds broken at rest must stay at or under
+--max-broken percent of its bonds (0.5%, the authored-structure gate in
+authored_structures_sim.rs).
 
 SCENE is a file in destruction/assets/scenes (e.g. `parking-garage`); PACK is a
 path. Structures with no anchor (free-standing props) are listed and skipped:
@@ -116,14 +119,17 @@ def qualify(binary, pack_path, ticks):
          'city_structures_qualify', '--ignored', '--nocapture', '--test-threads=1'],
         cwd=os.path.join(ROOT, 'server'), env=env, capture_output=True, text=True)
     text = result.stdout + result.stderr
-    rest = re.search(r'at rest: (.*)', text)
+    stands = re.search(r'stands at rest: broken bonds (\d+) of (\d+) \(([\d.]+)%\), awake bodies (\d+)', text)
+    broken = float(stands.group(3)) if stands else None
+    awake = int(stands.group(4)) if stands else None
+    rest = re.search(r'at rest: ((?!broken).*)', text)
     if rest is None:
-        return None, 'no verdict (see a run by hand)'
+        return None, broken, awake, 'no verdict (see a run by hand)'
     line = rest.group(1)
     if line.startswith('converges'):
-        return 0.0, line
+        return 0.0, broken, awake, line
     m = re.match(r'(\d+) of (\d+) solves unconverged', line)
-    return (100.0 * int(m.group(1)) / int(m.group(2)) if m else None), line
+    return (100.0 * int(m.group(1)) / int(m.group(2)) if m else None), broken, awake, line
 
 
 def main():
@@ -131,6 +137,7 @@ def main():
     parser.add_argument('packs', nargs='+')
     parser.add_argument('--ticks', type=int, default=300, help='server ticks at rest per structure (300 = 5 s)')
     parser.add_argument('--max-unconverged', type=float, default=10.0, help='PASS at or under this percent')
+    parser.add_argument('--max-broken', type=float, default=0.5, help='PASS at or under this percent of bonds broken at rest')
     parser.add_argument('--json', help='also write the results here')
     args = parser.parse_args()
 
@@ -142,19 +149,30 @@ def main():
             for name, part, anchors, nodes, label in split(path, tmp):
                 if anchors == 0:
                     results.append({'pack': spec, 'structure': name, 'label': label, 'nodes': nodes,
-                                    'verdict': 'FREE', 'unconverged_pct': None, 'detail': 'no anchor: a free body, nothing to solve at rest'})
+                                    'verdict': 'FREE', 'unconverged_pct': None, 'broken_pct': None, 'awake_bodies': None,
+                                    'detail': 'no anchor: a free body, nothing to solve at rest'})
                 else:
-                    pct, detail = qualify(binary, part, args.ticks)
-                    verdict = 'ERROR' if pct is None else ('PASS' if pct <= args.max_unconverged else 'FAIL')
+                    pct, broken, awake, detail = qualify(binary, part, args.ticks)
+                    if pct is None or broken is None:
+                        verdict = 'ERROR'
+                    elif pct > args.max_unconverged:
+                        verdict = 'FAIL'
+                    elif broken > args.max_broken:
+                        verdict = 'FALLS'
+                    else:
+                        verdict = 'PASS'
                     results.append({'pack': spec, 'structure': name, 'label': label, 'nodes': nodes,
-                                    'verdict': verdict, 'unconverged_pct': pct, 'detail': detail})
+                                    'verdict': verdict, 'unconverged_pct': pct, 'broken_pct': broken,
+                                    'awake_bodies': awake, 'detail': detail})
                 r = results[-1]
                 pct = '-' if r['unconverged_pct'] is None else f"{r['unconverged_pct']:.1f}%"
-                print(f"{r['verdict']:5} {pct:>6}  {r['structure'][:28]:28} {r['label'][:16]:16} {r['nodes']:6} chunks  {r['detail'][:90]}", flush=True)
+                brk = '-' if r['broken_pct'] is None else f"{r['broken_pct']:.2f}%"
+                print(f"{r['verdict']:5} unconv {pct:>6} broken {brk:>6}  {r['structure'][:26]:26} {r['label'][:14]:14} {r['nodes']:6} chunks  {r['detail'][:70]}", flush=True)
     if args.json:
         json.dump(results, open(args.json, 'w'), indent=1)
-    failed = [r for r in results if r['verdict'] in ('FAIL', 'ERROR')]
-    print(f"{len(results) - len(failed)} of {len(results)} structures pass (<= {args.max_unconverged}% unconverged over {args.ticks} ticks)")
+    failed = [r for r in results if r['verdict'] in ('FAIL', 'FALLS', 'ERROR')]
+    print(f"{len(results) - len(failed)} of {len(results)} structures pass "
+          f"(<= {args.max_unconverged}% unconverged, <= {args.max_broken}% bonds broken, over {args.ticks} ticks at rest)")
     sys.exit(1 if failed else 0)
 
 

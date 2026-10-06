@@ -13,6 +13,7 @@
 #   scripts/native-mac.sh perf          # frame and sim timings through heavy destruction
 #   scripts/native-mac.sh app           # build target/native-app/out/vibe-land.app
 #   scripts/native-mac.sh shots         # the scene from above and from the player, target/native-scene/
+#   scripts/native-mac.sh structures    # does each structure of the scene converge at rest
 #   scripts/native-mac.sh runtime|sim|bundle
 #
 # --scene NAME (any subcommand) picks the city:
@@ -21,9 +22,10 @@
 #                   432 Park, the parking garage, Villa Savoye, two houses)
 #   bayline         Bayline Town with Gardens & Market (structures/town-kit,
 #                   as `npm run play:bayline-gardens` runs it on the web)
-#   showcase        Bayline Heights (structures/showcase): the town, a parking
-#                   garage with a roof ramp, Villa Savoye on a hill, a jump
-#                   kicker, and six destructible cars
+#   showcase        Bayline Heights (structures/showcase): the town, the Algedra
+#                   tower, a ten-storey high-rise, a house on a hill, a jump
+#                   kicker and six destructible cars -- every structure one
+#                   that converges at rest (scripts/perf/qualify_structures.py)
 #
 # MYSTRAL_ROOT: the mystralnative checkout (default ../mystralnative), built
 # from its `vibe-land` integration branch. Extra `run` args go to `mystral run`
@@ -88,7 +90,7 @@ case "$SCENE" in
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_VISUALS="$pack.visuals.json" \
       VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \
       VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-monster,desert,derby,circuit,buggy,trophy}" \
-      VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:--122,7;-122,-7;-112,7;-112,-7;96,98;-48,72}" \
+      VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:--122,7;-122,-7;-112,7;-112,-7;110,40;-48,72}" \
       VIBE_CITY_SPAWN_X=-135 VIBE_CITY_SPAWN_Z=0 \
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
       VITE_TOWN_KIT_SCENE=vibe-showcase ;;
@@ -253,6 +255,13 @@ drive() {
   echo "native drive check passed (log: $log)"
 }
 
+# Does each structure of the scene converge at rest (scripts/perf/qualify_structures.py)?
+# A structure that does not keeps the GPU re-solving it every idle tick.
+structures() {
+  local pack="${VIBE_CITY_SCENE:-high-rise-3f-local.json}"
+  python3 "$ROOT/scripts/perf/qualify_structures.py" "$pack" "$@"
+}
+
 # The scene from above and from the player (client/native/scene-shot.mjs).
 shots() {
   iife
@@ -336,6 +345,7 @@ case "${1:-run}" in
   input) shift || true; runtime; sim; bundle; input "$@" ;;
   trace-writes) shift || true; runtime; sim; bundle; trace_writes "$@" ;;
   shots) shift || true; runtime; sim; bundle; shots "$@" ;;
+  structures) shift || true; structures "$@" ;;
   drive) shift || true
     # One car per surface, in drive-check.mjs's SURFACES order.
     export VIBE_CITY_DESTRUCTIBLE_VEHICLES=monster,desert,derby \

@@ -214,11 +214,20 @@ mod tests {
         let dt = 1.0 / 60.0;
         let mut tick = 0u32;
         let mut on = false;
+        // Bonds broken so far (the stage's count is a running total, so the
+        // largest value seen), and the body count after the first tick, for
+        // "does it stand".
+        let broken_total = std::cell::Cell::new(0u64);
+        let clusters_first = std::cell::Cell::new(None::<u32>);
         let mut run = |arena: &mut crate::movement::PhysicsArena, city: &mut crate::city::CityRuntime, tick: &mut u32, n: u32| {
             let mut tallies: BTreeMap<u32, SolveTally> = ids.iter().map(|i| (*i, SolveTally::default())).collect();
             for _ in 0..n {
                 arena.step_vehicles_and_dynamics(dt);
                 let _ = city.step(*tick, dt, gravity, arena.physx_world_mut());
+                broken_total.set(broken_total.get().max(u64::from(city.stats().broken_bonds)));
+                if clusters_first.get().is_none() {
+                    clusters_first.set(arena.physx_world_mut().and_then(|w| w.native_last_status().ok()).map(|n| n.cluster_count));
+                }
                 *tick += 1;
                 let world = arena.physx_world_mut().unwrap();
                 if !on { on = world.native_set_stress_solve_report(1).unwrap_or(false); continue; }
@@ -229,6 +238,18 @@ mod tests {
             tallies
         };
         let idle = run(&mut arena, &mut city, &mut tick, rest);
+        // Whether it stands as well as converges: a structure can converge and
+        // fall down (Bayline's billboard). The authored-structure gate allows
+        // under 0.5% of bonds broken at rest (authored_structures_sim.rs).
+        {
+            let bonds: usize = manifest.structures.iter().map(|s| s.bonds.len()).sum();
+            let world = arena.physx_world_mut().expect("physx world");
+            let awake = world.stats().map(|w| w.active_dynamic_bodies).unwrap_or(0);
+            let clusters = world.native_last_status().map(|n| n.cluster_count).unwrap_or(0);
+            let broken = broken_total.get();
+            eprintln!("stands at rest: broken bonds {broken} of {bonds} ({:.2}%), awake bodies {awake}, clusters {} -> {clusters}",
+                100.0 * broken as f64 / bonds.max(1) as f64, clusters_first.get().unwrap_or(0));
+        }
         let s = &manifest.structures[target as usize];
         let aim = Vector3::new(s.world_position[0], 3.0, s.world_position[2]);
         let origin = aim + Vector3::new(20., 0.5, 0.);
