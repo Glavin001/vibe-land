@@ -43,6 +43,8 @@ export type KeyboardBindings = {
   crouch: KeyboardCodeBinding;
   interact: KeyboardCodeBinding;
   resetVehicle: KeyboardCodeBinding;
+  /** On foot: reset the city (the same key as resetVehicle, which is in a car only). */
+  resetWorld: KeyboardCodeBinding;
   blockRemove: KeyboardCodeBinding;
   blockPlace: KeyboardCodeBinding;
   materialSlot1: KeyboardCodeBinding;
@@ -100,6 +102,7 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     crouch: 'KeyC',
     interact: 'KeyE',
     resetVehicle: 'KeyR',
+    resetWorld: 'KeyR',
     blockRemove: 'KeyQ',
     blockPlace: 'KeyF',
     materialSlot1: 'Digit1',

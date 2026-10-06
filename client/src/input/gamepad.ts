@@ -137,6 +137,7 @@ export class GamepadInputSource {
       meleePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.meleeButton),
       weaponSwitch: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.switchWeaponButton) ? 1 : 0,
       weaponSlot: 0,
+      resetWorldPressed: false,
     };
 
     this.previous = {

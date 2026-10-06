@@ -198,6 +198,7 @@ export class KeyboardMouseInputSource {
       materialSlot1Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot1),
       materialSlot2Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot2),
       meleePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.melee),
+      resetWorldPressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.resetWorld),
       weaponSwitch: context === 'onFoot' ? Math.sign(this.wheelSteps) : 0,
       weaponSlot: context !== 'onFoot' ? 0
         : this.justPressedKeys.has(keyboard.weaponSlot1) ? 1

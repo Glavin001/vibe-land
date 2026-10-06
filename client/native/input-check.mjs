@@ -12,6 +12,7 @@
 //   recapture after Escape, a click captures the pointer again
 //   weapon    2 picks the cannon, the scroll wheel steps to the meteor and
 //             back, 1 picks the rifle
+//   reset     after cannon shots break a building, R on foot rebuilds the city
 //
 // Prints one PASS/FAIL line per check and a VERDICT.
 
@@ -139,6 +140,30 @@ async function run() {
   await press('Digit3', '3');
   const want = ['cannonball', 'meteor', 'cannonball', 'rifle', 'meteor'];
   record('weapon', seen.join(',') === want.join(','), `2, wheel down, wheel up, 1, 3 -> ${seen.join(', ')} (want ${want.join(', ')})`);
+
+  // reset: break a building with the cannon (aimed through the drive bridge),
+  // then a real R key press.
+  const drive = await waitFor('the drive bridge', () => globalThis.__VIBE_DRIVE__);
+  const bonds = () => e2e.snapshot()?.city?.brokenBonds ?? 0;
+  const target = [...e2e.cityStructures()].sort((a, b) => {
+    const p = e2e.snapshot().position;
+    return Math.hypot(a.position[0] - p[0], a.position[2] - p[2]) - Math.hypot(b.position[0] - p[0], b.position[2] - p[2]);
+  })[0];
+  e2e.setShotMode('cannonball');
+  for (let shot = 0; shot < 4 && bonds() < 20; shot += 1) {
+    drive.lookAt(target.position[0], Math.min(target.top ?? 4, 4), target.position[2]);
+    await sleep(200);
+    drive.fire({ holdMs: 60 });
+    await sleep(1500);
+  }
+  drive.clear();
+  const broken = bonds();
+  key('keydown', 'KeyR', 'r');
+  await sleep(80);
+  key('keyup', 'KeyR', 'r');
+  await waitFor('the city to rebuild', () => bonds() < broken, 15_000).catch(() => null);
+  await sleep(1000);
+  record('reset', broken > 0 && bonds() < broken, `broken bonds ${broken} before R, ${bonds()} after`);
 
   // A frame for the eye: the HUD (crosshair, FPS panel, weapon) as the player sees it.
   if (typeof __mystralSaveScreenshot === 'function') {

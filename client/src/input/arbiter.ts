@@ -25,6 +25,7 @@ export function hasMeaningfulInput(snapshot: ActionSnapshot | null): boolean {
     || snapshot.meleePressed
     || snapshot.weaponSwitch !== 0
     || snapshot.weaponSlot !== 0
+    || snapshot.resetWorldPressed
   );
 }
 

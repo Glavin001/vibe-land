@@ -178,6 +178,7 @@ export function sampleAgentDrive(
     meleePressed: false,
     weaponSwitch: 0,
     weaponSlot: 0,
+    resetWorldPressed: false,
   };
 }
 

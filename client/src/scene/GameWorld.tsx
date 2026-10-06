@@ -23,6 +23,7 @@ import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { setE2EDrawnWorldSource, sendE2EDropRequest, updateE2EBridgeFrameState } from '../e2eBridge';
 import { addDebugE2eMs } from '../city/renderStats';
 import { applyWeaponInput, shotMode, shotWeapon } from '../city/shotMode';
+import { requestCityReset } from '../city/cityReset';
 import { isRecording, recordFrame } from '../netlab/recorder';
 import { isAgentDriveActive, sampleAgentDrive } from '../agentDrive';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
@@ -135,6 +136,9 @@ import {
   updatePooledShotTraceVisuals,
   type ShotTraceVisualSlot,
 } from './shotTraces';
+
+/** One city reset per second at most (a held or bounced R key). */
+const CITY_RESET_COOLDOWN_MS = 1000;
 
 const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
 const CROSSHAIR_MAX_DISTANCE = 1000;
@@ -941,6 +945,7 @@ function resolvedInputFromBotIntent(
     meleePressed: false,
     weaponSwitch: 0,
     weaponSlot: 0,
+    resetWorldPressed: false,
   };
 }
 
@@ -966,6 +971,7 @@ function makeIdleResolvedInput(
     meleePressed: false,
     weaponSwitch: 0,
     weaponSlot: 0,
+    resetWorldPressed: false,
   };
 }
 
@@ -1185,6 +1191,7 @@ export function GameWorld({
   const nextShotIdRef = useRef(1);
   const nextLocalFireMsRef = useRef(0);
   const nextLocalMeleeMsRef = useRef(0);
+  const nextCityResetMsRef = useRef(0);
   const nextSwingIdRef = useRef(1);
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
   const localShotTraceRef = useRef<LocalShotTrace | null>(null);
@@ -1997,6 +2004,12 @@ export function GameWorld({
 
     // --- Vehicle spawn/despawn sync ---
     prediction.syncVehicleAuthority();
+
+    // --- Reset the city on R (on foot; in a car R resets the car) ---
+    if (resolvedInput.resetWorldPressed && worldDocument === CITY_WORLD_DOCUMENT && now >= nextCityResetMsRef.current) {
+      nextCityResetMsRef.current = now + CITY_RESET_COOLDOWN_MS;
+      void requestCityReset().then((sent) => { if (!sent) console.warn('[city] reset unavailable from this page'); });
+    }
 
     // --- Enter/Exit vehicle on E press ---
     if (resolvedInput.interactPressed) {

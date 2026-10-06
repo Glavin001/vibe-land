@@ -31,6 +31,8 @@ export type ActionSnapshot = {
   weaponSwitch: number;
   /** Weapon picked directly this frame, 1-based (number keys); 0 none. */
   weaponSlot: number;
+  /** Reset the city this frame (R on foot; in a car R resets the car). */
+  resetWorldPressed: boolean;
 };
 
 export type InputSample = {
@@ -59,4 +61,5 @@ export type ResolvedGameInput = SemanticInputState & {
   meleePressed: boolean;
   weaponSwitch: number;
   weaponSlot: number;
+  resetWorldPressed: boolean;
 };

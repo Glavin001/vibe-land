@@ -16,6 +16,7 @@ import { BODY_DEBUG_STATES, setBodyDebugEnabled, setBodyDebugStates } from './bo
 import { formatPerfSweep, formatPerfSweepMobile, formatStormSweep, runPerfSweep, runStormSweep } from './perfSweep';
 import { renderStats } from './renderStats';
 import { nextShotMode, onShotModeChange, setShotMode, shotMode, type ShotMode } from './shotMode';
+import { requestCityReset } from './cityReset';
 import { isTouchDevice } from '../device';
 
 /** Matches the server's CityStatsSnapshot in server/src/main.rs. */
@@ -726,17 +727,9 @@ export function CityStatsOverlay({
           disabled={resetState === 'sending'}
           onClick={async () => {
             setResetState('sending');
-            try {
-              const response = await fetch(
-                `${statsBaseUrl ?? ''}/city-reset/${encodeURIComponent(matchId)}`,
-                { method: 'POST' },
-              );
-              // The server rebuilds on its next tick and re-bootstraps every
-              // client, so a success here means "accepted", not "done".
-              setResetState(response.ok ? 'sent' : 'failed');
-            } catch {
-              setResetState('failed');
-            }
+            // The server rebuilds on its next tick and re-bootstraps every
+            // client, so a success here means "accepted", not "done".
+            setResetState((await requestCityReset(matchId, statsBaseUrl ?? '')) ? 'sent' : 'failed');
             window.setTimeout(() => setResetState('idle'), 2000);
           }}
           style={{ ...toggleButton, position: 'static', width: '100%' }}

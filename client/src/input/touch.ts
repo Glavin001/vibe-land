@@ -167,6 +167,7 @@ export class TouchInputSource {
       meleePressed: false,
       weaponSwitch: 0,
       weaponSlot: 0,
+      resetWorldPressed: false,
     };
 
     // Edge-triggered flags auto-clear after each sample (matches keyboardMouse.ts:125-129).
