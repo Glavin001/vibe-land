@@ -378,6 +378,15 @@ function namePlaces(placements, pack, slots, labels) {
   for (const [x, name] of Object.entries(AVENUE_NAMES))
     places.push({ id: `street/${slug(name)}`, kind: 'street', name, from: [Number(x), 0, SOUTH], to: [Number(x), 0, NORTH], position: [Number(x), 0, 0] });
   for (const { title, position } of labels) places.push({ id: slug(title), kind: 'district', name: title, position });
+  // Trees, for films' sight lines (client/native/film checks what blocks a
+  // shot): trunk and branches' bounds, 0.8 m wider all round for the leaves,
+  // which are only drawn.
+  let trees = 0;
+  for (const box of boxes(placements, pack)) {
+    if (!box.group.startsWith('tree@') || !Number.isFinite(box.lo[0])) continue;
+    const lo = box.lo.map((v, k) => (k === 1 ? 0 : v - 0.8)), hi = box.hi.map((v, k) => v + (k === 1 ? 0.5 : 0.8));
+    places.push({ id: `tree-${++trees}`, kind: 'tree', position: [round((lo[0] + hi[0]) / 2), 0, round((lo[2] + hi[2]) / 2)], min: lo.map(round), max: hi.map(round), top: round(hi[1]) });
+  }
   return places;
 }
 

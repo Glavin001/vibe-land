@@ -6,7 +6,7 @@
 // Only the inputs are scripted: the truck's throttle and steering, and each
 // meteor's target and the bearing it comes in from. Where the truck goes,
 // what the blasts do to it and where it is thrown is the simulation's.
-import { hold, track, strike, strikeNear, enter, drive, card, slowmo } from '../film/film.mjs';
+import { hold, track, watch, strike, strikeNear, enter, drive, card } from '../film/film.mjs';
 
 /**
  * The driving: full throttle, then weaving from 3 s in (steer +1 turns it
@@ -52,7 +52,7 @@ export function truckReaches(x) {
 }
 
 /**
- * [get-in, the-chase, the-hit]. `title`: a card over the get-in hold (the trailer's
+ * [get-in, the-chase, ahead-of-it, the-hit]. `title`: a card over the get-in hold (the trailer's
  * "RUN"). `trace`: log the truck's position every 0.1 s. `final: false`
  * leaves out the last meteor -- with trace, the measuring run for RUN.
  */
@@ -118,7 +118,7 @@ export function chaseShots(place, { title, trace = false, final = true } = {}) {
   // the house line instead, it waited out to 7 s and landed at the crossing,
   // past the house.
   const hit = 6.8, flight = 0.5, FIRE_X = -31;
-  const finalStrike = strikeNear(car, { height: 0.9, from: 180, flight, slope: 0.35, flash: true });
+  const finalStrike = strikeNear(car, { height: 0.9, from: 180, flight, slope: 0.35 });
   const last = !final ? [] : [[6.2, {
     label: 'the last meteor, when the truck is at FIRE_X',
     steps: Array.from({ length: 17 }, (_, k) => [k * 0.05, (ctx) => {
@@ -127,24 +127,42 @@ export function chaseShots(place, { title, trace = false, final = true } = {}) {
       state.hitAt = ctx.t;
       ctx.log(`the last meteor: truck at ${v.position.map((c) => c.toFixed(1)).join(', ')}`);
       finalStrike.steps[0][1](ctx);
-      ctx.edit({ type: 'slowmo', rate: 0.5, from: ctx.t + flight - 0.2, to: ctx.t + flight + 2.0 });
+      // Slow motion from just before it lands until the truck is in the
+      // house. Half speed and no slower: the recording is 60 fps and the cut
+      // 30, so below 0.5 frames repeat and the motion stutters.
+      ctx.edit({ type: 'slowmo', rate: 0.5, from: ctx.t + flight - 0.35, to: ctx.t + flight + 2.6 });
     }]),
   }]];
   const traceCues = trace ? Array.from({ length: 90 }, (_, k) => [k * 0.1, (ctx) => {
     const id = ctx.e2e.snapshot()?.drivenVehicleId, v = id != null ? ctx.vehicles.get(id) : null;
     if (v) ctx.log(`truck ${JSON.stringify({ t: +(k * 0.1).toFixed(1), x: +v.position[0].toFixed(2), y: +v.position[1].toFixed(2), z: +v.position[2].toFixed(2), speed: +Math.hypot(v.velocity[0], v.velocity[2]).toFixed(1) })}`);
   }]) : [];
-  const chase = track(car, [-13, 4.6, 0.6], hit - 0.55, {
+  // Three cameras (2026-10-06, after a take where every near miss happened
+  // off screen behind a following camera, and the hit came a breath after a
+  // cut):
+  // - behind it, while it gets going (until the first near miss);
+  // - ahead of it, on the road, looking back past it: the truck coming on and
+  //   the houses going up behind it, where the near misses land;
+  // - a fixed camera on the south verge east of the house it is driven into,
+  //   from 1.5 s before the last meteor lands: the truck seen coming, the
+  //   rock in from the left (south), the truck into the house on the right.
+  // The cues all ride on the first shot (cue times run on past its end).
+  const LEAD_AT = 3.0, HIT_AT = hit - 1.5;
+  const chase = track(car, [-13, 4.6, 0.6], LEAD_AT, {
     name: 'the-chase', lookOffset: [9, 1.2, 0], lag: 0.3,
     cues: [...weave, steering, ...strikes, ...last, ...traceCues],
   });
-  // The hit, from the road ahead: a cut to 22 m in front of the truck, in
-  // the south lane, 3.5 m up, looking back at it -- the truck coming on, the
-  // meteor in from the left (south), the truck driven to the right (north)
-  // into the house. Placed from where the truck really is as the shot starts
-  // (a track released at once: fixed there, turning to follow it); placed
-  // from RUN, a truck slowed by debris was hit 10 m short, out of frame. From
-  // the south side's gardens, a front-garden tree hid it (2026-10-06).
-  const theHit = track(car, [22, 3.5, -5], 3.2, { name: 'the-hit', lookOffset: [0, 1.5, 2], lag: 0.12, release: 0 });
-  return [getIn, chase, theHit];
+  // ~17 m ahead (the lag keeps the camera ~7 m short of the offset at 23 m/s),
+  // over the middle of the road, 4.5 m up: in the south lane at 3.4 m it
+  // passed the front gardens' trees.
+  const ahead = track(car, [24, 4.5, -1.5], HIT_AT - LEAD_AT, { name: 'ahead-of-it', lookOffset: [-6, 1.2, 0.5], lag: 0.3 });
+  // The house the truck is driven into (elm-park/house-42) stands at x -17
+  // on the north side, a tree (tree-57) before its west half, where the
+  // meteor catches the truck. The camera stands in North Street 14 m east of
+  // the house, 5 m up: the clearest lines to the truck coming on, the hit
+  // and the house (the sight-line search in film/lint.mjs's terms); the
+  // truck stops in the house, short of it. From the garden beside house-35,
+  // that house's side wall filled a third of the frame.
+  const theHit = watch([-3, 5, 46], car, 4.4, { name: 'the-hit', lookOffset: [0, 1.2, 0], lag: 0.2, lookAt: [-40, 1.5, 52] });
+  return [getIn, chase, ahead, theHit];
 }

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { catmullRom, easeProgress, posePath } from './spline.mjs';
 import { placeResolver, point, offset } from './places.mjs';
-import { hold, path, orbit, fire, timeline, cameraProblems } from './shots.mjs';
+import { hold, path, orbit, fire, timeline, cameraProblems, sightBlocked } from './shots.mjs';
 
 const close = (a, b, eps = 1e-6) => a.every((v, k) => Math.abs(v - b[k]) < eps);
 
@@ -101,10 +101,23 @@ test('camera problems: under the street, inside a building', () => {
     path([{ position: [-20, 3, 20], lookAt: [0, 0, 0] }, { position: [20, 0.5, 20], lookAt: [0, 0, 0] }], 4, { name: 'down' }),
     hold({ position: [0, 20, 0], lookAt: 'house-1' }, 1, { name: 'clear' }),
   ]).build({ place });
-  const problems = cameraProblems(tl, place.all);
+  const problems = cameraProblems(tl, place.all).filter((p) => !/view is/.test(p));
   assert.equal(problems.length, 2, problems.join('; '));
   assert.match(problems[0], /through's camera is inside house-1/);
   assert.match(problems[1], /down's camera is 0\.\d m high/);
+});
+
+test('sight lines: a tree in front of the subject blocks it, the subject itself does not', () => {
+  const house = { id: 'house-1', kind: 'house', min: [-5, 0, -5], max: [5, 8, 5] };
+  const tree = { id: 'tree-1', kind: 'tree', min: [-14, 0, -3], max: [-10, 9, 3] };
+  const pose = { position: [-30, 4, 0], lookAt: [0, 4, 0] };
+  const seen = sightBlocked(pose, [house, tree]);
+  assert.ok(seen.fraction >= 0.6, String(seen.fraction));
+  assert.deepEqual(seen.by, ['tree-1']);
+  assert.equal(sightBlocked({ position: [0, 4, 30], lookAt: [0, 4, 0] }, [house, tree]).fraction, 0);
+  const place = placeResolver([{ ...house, position: [0, 0, 0], top: 8 }, { ...tree, position: [-12, 0, 0], top: 9 }]);
+  const tl = timeline([hold(pose, 2, { name: 'leaves' })]).build({ place });
+  assert.match(cameraProblems(tl, place.all).join('; '), /leaves's view is \d+% blocked \(tree-1\)/);
 });
 
 // The scene's real places, when it has been built (structures/vibe-town/build-town.mjs).

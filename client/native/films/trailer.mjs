@@ -4,20 +4,28 @@
 // camera -- the towers, a run down Main Street through exploding shops, the
 // market square, a faster run through Elm Park, a car thrown, and the rise
 // over a town under a meteor storm. Recorded at 60 fps so slow-motion spans
-// keep every frame; the cut (titles, cards, flashes, letterbox, slow motion)
+// keep every frame; the cut (titles, cards, fades, letterbox, slow motion)
 // is applied after recording (scripts/film/post.py) from the edit list.
 //
 // Every strike is timed by when it LANDS (strike/barrage: 2.74 s after
 // launch), most of them just ahead of a moving camera: `landAhead` puts a
 // building's impact `lead` metres before the camera reaches it.
-import { shoot, hold, path, orbit, strike, barrage, title, card, slowmo, flash, fade, goto } from '../film/film.mjs';
+//
+// Readable, not relentless (2026-10-06 review of the first full cut): no
+// white flashes (they hid the impacts), about one hit at a time down each
+// street (every other building), a gentler shake, and the chase filmed from
+// where its near misses and its last hit can be seen (chase-shots.mjs).
+// Down the street runs each hit lands 25-40 m ahead of the camera, not 12-20:
+// close in, the camera reached each building as rubble, or flew through the
+// cloud of it.
+import { shoot, hold, path, orbit, strike, barrage, title, card, slowmo, fade, goto } from '../film/film.mjs';
 import { chaseShots } from './chase-shots.mjs';
 
 // No haze: from altitude the far ground fades white under it. The high
 // shots look steeply down instead (~55 degrees at the top of the rise), so
 // even with the letterbox the horizon -- and the ground plane's far edge
 // below it -- stays out of frame.
-shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 }, ({ place }) => {
+shoot({ scene: 'town', shake: { strength: 0.5, radius: 90 }, letterbox: 2.39 }, ({ place }) => {
   const all = place.all;
   const towers = (n) => place(`market-quarter/tower-${n}`);
   /** Buildings along a street side, ordered by x (west first). */
@@ -37,6 +45,8 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
   const landAhead = (buildings, { x0, speed, lead = 16, from = 0.3, until = Infinity, every = 0 }) => buildings
     .map((b, k) => [(x0 - b.position[0] - lead) / speed + k * every, strike({ at: b })])
     .filter(([t]) => t >= from && t <= until);
+  /** Every other one: a hit at a time, each given room to be seen. */
+  const alternate = (list, odd = 0) => list.filter((_, k) => k % 2 === odd);
 
   // ---------------------------------------------------------------- 1. cold open
   // Main Street's east end at eye height, creeping west: still, peaceful.
@@ -49,8 +59,8 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     cues: [
       [0, fade('in', 1.2)],
       [0.8, title('THEY BUILT A TOWN', 2.8)],
-      // The tower beside the camera, top storeys: flash, shake, slow motion.
-      [4.6, strike({ at: towers(3), height: 24, flash: true })],
+      // The tower beside the camera, top storeys: shake, slow motion.
+      [4.6, strike({ at: towers(3), height: 24 })],
       [4.4, slowmo(1.6, 0.5)],
     ],
   });
@@ -65,11 +75,10 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     name: 'towers',
     cues: [
       [0.5, strike({ at: towers(2), height: 27 })],
-      [1.1, strike({ at: towers(2), height: 14, flash: true })],
-      [1.0, slowmo(1.4, 0.5)],
-      [2.6, strike({ at: towers(1), height: 26 })],
-      [3.2, strike({ at: towers(1), height: 12 })],
-      [3.9, strike({ at: towers(3), height: 9 })],
+      [1.3, strike({ at: towers(2), height: 14 })],
+      [1.2, slowmo(1.4, 0.5)],
+      [3.0, strike({ at: towers(1), height: 20 })],
+      [4.3, strike({ at: towers(3), height: 9 })],
     ],
   });
 
@@ -86,28 +95,29 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     name: 'main-street-run', ease: 'none', player: 'camera',
     cues: [
       // A car parked on the shoulder ahead, hit square from across the street.
-      [(runX0 - place('car-16').position[0] - 16) / runSpeed, strike({ at: 'car-16', from: 0, slope: 0.3 })],
-      ...landAhead(row('Main Street', 'north'), { x0: runX0, speed: runSpeed, lead: 14 }),
-      ...landAhead(row('Main Street', 'south', ['grocery']), { x0: runX0, speed: runSpeed, lead: 12 }),
+      [(runX0 - place('car-16').position[0] - 26) / runSpeed, strike({ at: 'car-16', from: 0, slope: 0.3 })],
+      ...landAhead(alternate(row('Main Street', 'north')), { x0: runX0, speed: runSpeed, lead: 26 }),
+      ...landAhead(row('Main Street', 'south', ['grocery']), { x0: runX0, speed: runSpeed, lead: 24 }),
       // The bus station: the three shelters at once, in slow motion.
       [(runX0 - 20 - 14) / runSpeed, barrage([[12, 1.2, -8.2], [20, 1.2, -8.2], [28, 1.2, -8.2]], { every: 0.12 })],
       [(runX0 - 20 - 14) / runSpeed - 0.2, slowmo(1.2, 0.5)],
-      [(runX0 - 20 - 14) / runSpeed, flash(0.12)],
     ],
   });
 
   // ---------------------------------------------------------------- 4. the market square
   // A hard cut into the square between the shop rows, gliding west low over
   // the stalls as they and the North Street shops behind them go up.
+  // From just west of the square's corner trees (starting at x 62, it began
+  // inside one), slower: two of the four stalls (x 12-42), each given its moment.
   const market = path([
-    { position: [62, 6, 23.5], lookAt: [30, 2.5, 23.5] },
-    { position: [40, 4.2, 24.5], lookAt: [10, 2, 23] },
+    { position: [48, 5.5, 23.5], lookAt: [20, 2.5, 23.5] },
+    { position: [32, 4.4, 24.5], lookAt: [4, 2, 23] },
     { position: [14, 5.5, 23.5], lookAt: [-10, 3, 20] },
   ], 6, {
     name: 'market-square', ease: 'none', player: 'camera',
     cues: [
-      ...[42, 32, 22, 12].map((x, k) => [0.9 + k * 1.05, strike({ at: [x, 1.4, 22.5] })]),
-      ...landAhead(row('North Street', 'south'), { x0: 62, speed: 8, lead: 10, until: 5.6 }),
+      ...[32, 12].map((x, k) => [1.2 + k * 2.4, strike({ at: [x, 1.4, 22.5] })]),
+      ...landAhead(alternate(row('North Street', 'south'), 1), { x0: 48, speed: 5.7, lead: 10, until: 5.6 }),
     ],
   });
 
@@ -125,11 +135,12 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     name: 'elm-park-run', ease: 'none', player: 'camera',
     cues: [
       // A car parked on the shoulder ahead, hit from across the street.
-      [(parkX0 - place('car-13').position[0] - 18) / parkSpeed, strike({ at: 'car-13', from: 180, slope: 0.3 })],
-      ...landAhead(houses('Main Street', 'north'), { x0: parkX0, speed: parkSpeed, lead: 20 }),
-      ...landAhead(houses('Main Street', 'south'), { x0: parkX0, speed: parkSpeed, lead: 26 }),
+      [(parkX0 - place('car-13').position[0] - 30) / parkSpeed, strike({ at: 'car-13', from: 180, slope: 0.3 })],
+      // North and south side by turns, never both at once.
+      ...landAhead(alternate(houses('Main Street', 'north')), { x0: parkX0, speed: parkSpeed, lead: 34 }),
+      ...landAhead(alternate(houses('Main Street', 'south'), 1), { x0: parkX0, speed: parkSpeed, lead: 40 }),
       // Beside car-4: it goes over, in slow motion.
-      [(parkX0 - car4[0] - 12) / parkSpeed, strike({ at: [car4[0] - 3, 0.6, car4[2] + 2.5], flash: true })],
+      [(parkX0 - car4[0] - 12) / parkSpeed, strike({ at: [car4[0] - 3, 0.6, car4[2] + 2.5] })],
       [(parkX0 - car4[0] - 12) / parkSpeed - 0.15, slowmo(1.5, 0.5)],
     ],
   });
@@ -138,13 +149,15 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
   // Round a parked car at bonnet height as its house, then the street beside it, is hit.
   const car1 = place('car-1');
   const carHouse = place('house', { nearest: [car1.position[0] - 7.7, car1.position[2] + 2.5] });
-  // From the street side (bearings 110-200: east round to south), its house
-  // behind it, far enough out that the car stays in frame when it is thrown.
-  const theCar = orbit({ centre: car1, radius: 16, height: 4, from: 110, to: 200, lookHeight: 1.6 }, 5, {
+  // From the street side (bearings 135-215: south-east round to south-west),
+  // its house behind it, far enough out that the car stays in frame when it
+  // is thrown. From the east (110) a garden tree stood in front of it, and
+  // at 16 m the camera went through the tree across the street.
+  const theCar = orbit({ centre: car1, radius: 14, height: 4, from: 135, to: 215, lookHeight: 1.6 }, 5, {
     name: 'the-car',
     cues: [
       [0, goto([car1.position[0] + 6, 1.2, car1.position[2] - 9])],
-      [1.2, strike({ at: carHouse, flash: true })],
+      [1.2, strike({ at: carHouse })],
       [2.4, strike({ at: [car1.position[0] + 1.5, 0.5, car1.position[2] + 3.5] })],
       [2.2, slowmo(1.8, 0.5)],
     ],
@@ -153,7 +166,7 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
   // ---------------------------------------------------------------- 7. the chase
   // The monster truck through Elm Park, houses going up either side, then
   // the truck itself (films/chase-shots.mjs).
-  const [getIn, chase, theHit] = chaseShots(place, { title: 'RUN', trace: true });
+  const [getIn, chase, ahead, theHit] = chaseShots(place, { title: 'RUN', trace: true });
 
   // ---------------------------------------------------------------- 8. the rise
   // Straight up out of Elm Park and back over the whole town while a storm
@@ -163,16 +176,17 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     ...houses('South Street', 'north'), ...houses('South Street', 'south'),
     towers(4), towers(5), place('market-quarter/cinema-1'), place('market-quarter/library-1'),
     ...row('South Street', 'north'), ...row('North Street', 'south').slice(0, 3),
-  ].filter((p, k) => k % 2 === 0);
+  ].filter((p, k) => k % 3 === 0);
   const rise = path([
-    { position: [-118, 2.5, -40], lookAt: [-100, 8, -10] },
+    // From South Street (out of its north side's front gardens, the houses filled the frame).
+    { position: [-122, 2.5, -48], lookAt: [-95, 7, -42] },
     { position: [-112, 30, -62], lookAt: [-80, 0, -10] },
     { position: [-95, 62, -95], lookAt: [-62, 0, -35] },
     { position: [-72, 100, -92], lookAt: [-42, 0, -30] },
   ], 10, {
     name: 'the-rise', ramp: 0.2,
     cues: [
-      [1.0, barrage(storm, { every: 0.22 })],
+      [1.0, barrage(storm, { every: 0.4 })],
       [8.0, title('VIBE TOWN', 3.6, { size: 'big' })],
     ],
   });
@@ -198,6 +212,7 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     market,
     getIn,
     chase,
+    ahead,
     theHit,
     between('NOWHERE IS SAFE', 1.4, { position: [-6, 3, 0.6], lookAt: [-36, 2.4, 0] }),
     parkRun,

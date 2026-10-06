@@ -8,4 +8,4 @@ import { chaseShots } from './chase-shots.mjs';
 // CHASE_TRACE: the truck's position every 0.1 s in the log, to see where the hit throws it.
 /* global CHASE_TRACE */
 const trace = typeof CHASE_TRACE === 'boolean' ? CHASE_TRACE : true;
-shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 } }, ({ place }) => chaseShots(place, { trace }));
+shoot({ scene: 'town', shake: { strength: 0.5, radius: 90 } }, ({ place }) => chaseShots(place, { trace }));

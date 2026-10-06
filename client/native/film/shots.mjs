@@ -81,6 +81,28 @@ export const track = (target, offset, seconds, opts = {}) => shot('track', secon
 });
 
 /**
+ * A fixed camera at `position` turning to follow a vehicle (as track:
+ * `target`, `lookOffset`, `lag`): for watching a car come on and what
+ * happens to it from where the audience should stand, which a following
+ * camera cannot frame. `lookAt` (optional): looked at until the vehicle is
+ * found.
+ */
+export const watch = (position, target, seconds, opts = {}) => shot('watch', seconds, opts, (ctx) => {
+  const at = point(position, ctx.place), lookUp = opts.lookOffset ?? [0, 0.5, 0], lag = opts.lag ?? 0.25;
+  const fallback = opts.lookAt ? point(opts.lookAt, ctx.place) : null;
+  let smooth = null, last = null;
+  return (t) => {
+    const p = vehicleOf(target, ctx)?.position ?? (smooth ? null : fallback ?? point(target, ctx.place));
+    if (p) {
+      if (!smooth || last == null || t < last) smooth = [...p];
+      else { const k = lag > 0 ? 1 - Math.exp(-(t - last) / lag) : 1; smooth = smooth.map((v, i) => v + (p[i] - v) * k); }
+    }
+    last = t;
+    return { position: at, lookAt: add(smooth, lookUp) };
+  };
+});
+
+/**
  * The live vehicle a film means: a vehicle id, or a parking place (car-N:
  * the car nearest that spot when first asked, then that car wherever it
  * goes). Each frame's position and velocity come from the runner (ctx.vehicles).
@@ -343,6 +365,46 @@ export function timeline(shots) {
 }
 
 /**
+ * What blocks a pose's view: five rays from the camera, one at the point it
+ * looks at and four across the frame at that distance (a quarter of the way
+ * out to each edge), tested against the scene's trees and buildings
+ * (places with bounds; trees padded for their leaves). Whatever contains the
+ * looked-at point is the subject, not in the way. Returns the fraction of
+ * rays blocked and what blocked them.
+ */
+export function sightBlocked(pose, occluders) {
+  const [cx, cy, cz] = pose.position, [lx, ly, lz] = pose.lookAt;
+  const d = [lx - cx, ly - cy, lz - cz], dist = Math.hypot(...d) || 1;
+  const f = d.map((v) => v / dist);
+  let r = [f[2], 0, -f[0]];
+  const rl = Math.hypot(...r) || 1;
+  r = r.map((v) => v / rl);
+  const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+  const half = dist * 0.35 * 0.5; // a quarter of the way to the edge of a ~70 degree frame
+  const targets = [[0, 0], [1, 0], [-1, 0], [0, 0.6], [0, -0.6]].map(([a, b]) => [lx + r[0] * a * half + u[0] * b * half, ly + r[1] * a * half + u[1] * b * half, lz + r[2] * a * half + u[2] * b * half]);
+  const inside = (b, p) => p.every((v, k) => v >= b.min[k] - 0.5 && v <= b.max[k] + 0.5);
+  const candidates = occluders.filter((b) => !inside(b, pose.lookAt));
+  const by = new Set();
+  let blocked = 0;
+  for (const t of targets) {
+    const dir = t.map((v, k) => v - pose.position[k]);
+    const hit = candidates.find((b) => {
+      let t0 = 0.02, t1 = 0.92; // not the camera's own spot, not at the subject
+      for (let k = 0; k < 3; k += 1) {
+        if (Math.abs(dir[k]) < 1e-9) { if (pose.position[k] < b.min[k] || pose.position[k] > b.max[k]) return false; continue; }
+        let a = (b.min[k] - pose.position[k]) / dir[k], c = (b.max[k] - pose.position[k]) / dir[k];
+        if (a > c) [a, c] = [c, a];
+        t0 = Math.max(t0, a); t1 = Math.min(t1, c);
+        if (t0 > t1) return false;
+      }
+      return true;
+    });
+    if (hit) { blocked += 1; by.add(hit.id); }
+  }
+  return { fraction: blocked / targets.length, by: [...by] };
+}
+
+/**
  * Where the camera goes somewhere a film should not: under 1 m (a spline
  * swooping down to a street can dip through it) or inside a building (named
  * places with bounds). Sampled every 0.1 s; one line per shot and problem.
@@ -351,14 +413,24 @@ export function cameraProblems(tl, places = []) {
   const boxes = places.filter((p) => p.min && p.max);
   const problems = [];
   for (const s of tl.shots) {
-    const found = new Map();
+    const found = new Map(), blockers = new Map();
+    let samples = 0, blocked = 0;
     for (let t = 0; t <= s.duration + 1e-9; t += 0.1) {
-      const [x, y, z] = s.pose(Math.min(t, s.duration)).position;
+      const pose = s.pose(Math.min(t, s.duration));
+      const [x, y, z] = pose.position;
       if (y < 1 && !found.has('low')) found.set('low', `is ${y.toFixed(1)} m high at ${(s.start + t).toFixed(1)}s`);
       const inside = boxes.find((b) => x > b.min[0] && x < b.max[0] && y > b.min[1] && y < b.max[1] && z > b.min[2] && z < b.max[2]);
       if (inside && !found.has(inside.id)) found.set(inside.id, `is inside ${inside.id} at ${(s.start + t).toFixed(1)}s`);
+      const sight = sightBlocked(pose, boxes);
+      samples += 1; blocked += sight.fraction;
+      for (const id of sight.by) blockers.set(id, (blockers.get(id) ?? 0) + 1);
     }
     for (const text of found.values()) problems.push(`shot ${s.name}'s camera ${text}`);
+    // A view a quarter blocked or more, on average over the shot (destruction may clear it).
+    if (samples && blocked / samples >= 0.25) {
+      const top = [...blockers].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => id).join(', ');
+      problems.push(`shot ${s.name}'s view is ${Math.round((100 * blocked) / samples)}% blocked (${top})`);
+    }
   }
   return problems;
 }

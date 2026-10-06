@@ -25,12 +25,12 @@
 import { loadPlaces, placeResolver, point, offset } from './places.mjs';
 import { hold as filmHold } from './shots.mjs';
 import {
-  hold, path, orbit, track, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, slowmo,
-  flash, fade, METEOR_FLIGHT_S, timeline, cameraProblems,
+  hold, path, orbit, track, watch, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, slowmo,
+  flash, fade, METEOR_FLIGHT_S, timeline, cameraProblems, sightBlocked,
 } from './shots.mjs';
 
 export {
-  hold, path, orbit, track, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, slowmo,
+  hold, path, orbit, track, watch, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, slowmo,
   flash, fade, METEOR_FLIGHT_S, point, offset,
 };
 
@@ -295,6 +295,16 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
       ctx.vehicles = seen;
       lastT = t;
     };
+    // How much of each shot's view something stands in front of, as filmed
+    // (live poses: tracks follow the real cars). A line per shot at its end.
+    const occluders = place.all.filter((p) => p.min && p.max);
+    let sight = { shot: -1, samples: 0, blocked: 0, by: new Map() };
+    let posed = null, strayFrames = 0;
+    const reportSight = () => {
+      if (sight.shot < 0 || !sight.samples) return;
+      const pct = Math.round((100 * sight.blocked) / sight.samples), top = [...sight.by].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => id);
+      log(`${pct >= 25 ? 'WARNING: ' : ''}sight ${tl.shots[sight.shot].name}: view ${pct}% blocked${top.length ? ` (${top.join(', ')})` : ''}`);
+    };
     const step = (t) => {
       trackVehicles(t);
       while (next < tl.cues.length && tl.cues[next].time <= t) {
@@ -305,14 +315,37 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
         try { cue.run(ctx); } catch (error) { log(`cue ${cue.label} FAILED: ${error?.message ?? error}`); }
       }
       const i = tl.shotAt(t);
-      if (i !== shown) { shown = i; const s = tl.shots[i]; log(`shot ${i + 1}/${tl.shots.length} ${s.name} at ${t.toFixed(1)}s`); }
+      if (i !== shown) {
+        reportSight();
+        sight = { shot: i, samples: 0, blocked: 0, by: new Map() };
+        shown = i; const s = tl.shots[i]; log(`shot ${i + 1}/${tl.shots.length} ${s.name} at ${t.toFixed(1)}s`);
+      }
       const pose = tl.poseAt(Math.min(t, tl.duration));
+      if (Math.round(t * fps) % 6 === 0) {
+        const seen = sightBlocked(pose, occluders);
+        sight.samples += 1; sight.blocked += seen.fraction;
+        for (const id of seen.by) sight.by.set(id, (sight.by.get(id) ?? 0) + 1);
+      }
+      if (t >= tl.duration) reportSight();
       // player: 'camera' -- the player on the ground under the camera, twice a second.
       if (tl.shots[i].follow && t - followed >= 0.5) {
         followed = t;
         e2e.dropAt({ position: [pose.position[0], 1.2, pose.position[2]], yaw: 0, pitch: 0 });
       }
-      e2e.setCapturePose(shakes.apply(pose, t - offset));
+      // The camera the frame was drawn from should be the one last set:
+      // anything else (a pending player drop once took it over for a frame
+      // or two every half second) is a glitch in the film.
+      const drawn = e2e.snapshot()?.cameraPosition;
+      if (posed && drawn) {
+        const off = Math.hypot(...drawn.map((v, k) => v - posed.position[k]));
+        if (off > 2) {
+          strayFrames += 1;
+          if (strayFrames <= 5) log(`WARNING: a frame at ${t.toFixed(2)}s drawn ${off.toFixed(1)} m from the film's camera (at ${drawn.map((v) => v.toFixed(1)).join(', ')})`);
+        }
+      }
+      posed = shakes.apply(pose, t - offset);
+      e2e.setCapturePose(posed);
+      if (t >= tl.duration && strayFrames) log(`WARNING: ${strayFrames} frames drawn from somewhere other than the film's camera`);
       return t >= tl.duration;
     };
     if (filmMode) {
@@ -396,6 +429,8 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
  * Any failure logs `[film ...] FAILED` and exits 1.
  */
 export async function shoot(options, script) {
+  // Offline (client/native/film/lint.mjs): the camera checks alone, no game.
+  if (globalThis.__FILM_LINT__) return globalThis.__FILM_LINT__(options, script);
   try {
     const scene = options.scene ?? DEFAULT_SCENE;
     const place = placeResolver(await loadPlaces(scene));

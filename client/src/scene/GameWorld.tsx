@@ -2418,9 +2418,12 @@ export function GameWorld({
       );
     } else {
       aerialPoseRef.current = null;
-      // Preserve the independent camera used by capture harnesses.
-      applyCapturePose(camera);
     }
+    // The independent camera used by capture harnesses wins over everything,
+    // a pending drop included: a film moving the player under its camera
+    // (player: 'camera') otherwise cut to the drop's view, 1.2 m up facing
+    // north, for the frames until the server confirmed it.
+    applyCapturePose(camera);
 
     if (isDriving && drivenVehicleId != null) {
       const cameraMotionState = localVehicleCameraMotionStateRef.current;
