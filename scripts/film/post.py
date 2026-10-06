@@ -23,11 +23,13 @@ timeline. The cut is rendered in one ffmpeg pass, in this order:
   flash      {"at","seconds"}  white at `at`, decaying to the picture.
   letterbox  {"ratio"}  black bars top and bottom over the whole 16:9 frame
              (no crop); the last one wins.
-  title      {"text","from","to","style":"overlay"|"card","size":"normal"|"big"}
+  title      {"text","from","to","style":"overlay"|"card"|"lower","size":"normal"|"big"|"small"}
              white, centred, upper case, in a bold condensed face; the text
              fades in and out over 0.25 s of OUTPUT time. `overlay` draws
              over the picture with a shadow and a soft dark band behind it;
-             `card` cuts to black for the whole span (no fade on the black)
+             `card` cuts to black for the whole span (no fade on the black);
+             `lower` is an overlay in the lower third (a caption, the
+             picture's middle left clear)
              and draws the text on it. `big` is the hero size.
   cut        ignored. Unknown types are warned about and skipped.
 
@@ -59,7 +61,7 @@ FONTS = [
 ]
 EDIT_RE = re.compile(r"(?:^|[\s\]])edit (\{.*\})\s*$")
 TITLE_FADE = 0.25   # output seconds
-SIZES = {"normal": 0.075, "big": 0.14}  # font size as a fraction of frame height
+SIZES = {"small": 0.045, "normal": 0.075, "big": 0.14}  # font size as a fraction of frame height
 RATE_MIN, RATE_MAX = 0.25, 1.0
 
 
@@ -180,7 +182,7 @@ def build(edits, info, out_fps, font, tmp):
             elif kind == "title":
                 text = str(e.get("text", "")).upper()
                 style, size = e.get("style", "overlay"), e.get("size", "normal")
-                if style not in ("overlay", "card"):
+                if style not in ("overlay", "card", "lower"):
                     warn(f"title style {style!r}: using overlay")
                     style = "overlay"
                 if size not in SIZES:
@@ -237,7 +239,8 @@ def build(edits, info, out_fps, font, tmp):
         with open(path, "w") as f:
             f.write(text)
         common = (f"{fontopt}:textfile={q(path)}:expansion=none:fontsize={fs}:text_align=C"
-                  f":x=(w-text_w)/2:y=(h-text_h)/2:enable={enable}:alpha={alpha}")
+                  f":x=(w-text_w)/2:y={'h*0.83-text_h/2' if style == 'lower' else '(h-text_h)/2'}"
+                  f":enable={enable}:alpha={alpha}")
         if style == "card":
             chain.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable={enable}")
         else:

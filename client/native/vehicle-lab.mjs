@@ -17,6 +17,33 @@ import { placeResolver } from './film/places.mjs';
 const TRIALS = typeof VEHICLE_LAB_TRIALS === 'string' ? VEHICLE_LAB_TRIALS.split(',') : [];
 const BUILD = typeof VEHICLE_LAB_BUILD === 'string' ? VEHICLE_LAB_BUILD : 'monster';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Seconds a trial's result stays on screen before the next trial. */
+const RESULT_HOLD = 3;
+
+/** What each trial puts the car through, as a caption over its shot (a video: FILM_CHECK=0). */
+const CAPTIONS = {
+  rest: 'Parked: does it stand?', accel: 'Flat out from a standstill', 'step-15': 'A 15 cm kerb', 'step-30': 'A 30 cm step',
+  'step-50': 'A 50 cm step', 'ramp-10': 'A 10° ramp', 'ramp-20': 'A 20° ramp', 'ramp-30': 'A 30° ramp',
+  debris: 'A debris field at 36 km/h', 'debris-fast': 'A debris field, flat out', rubble: 'A 1 m rubble pile',
+  wall: 'Flat out into a masonry wall', house: 'Flat out into a house', street: 'Down a street of houses',
+  'near-miss': 'Meteors beside, ahead and overhead', 'debris-cab': '700 kg of debris into the cab',
+  'debris-wheel': '700 kg of debris into a wheel', 'graze-cab': 'A meteor grazes the cab', coast: 'Let go of at speed',
+  cannonball: 'Hit by a cannonball', meteor: 'Hit by a meteor', drift: 'A handbrake turn at 54 km/h',
+};
+
+/** The outcome of a trial in a line, from its measurements. */
+function outcome(trial, m) {
+  const wheels = 4 - (m.wheelsLost ?? 0);
+  const damage = m.bondsBroken ? `${m.bondsBroken} joints broken, ${m.partsOff} of ${m.parts} parts off` : 'not a scratch';
+  const kmh = (v) => `${Math.round(v * 3.6)} km/h`;
+  const lines = [];
+  if (trial.goal != null) lines.push(m.goalSeconds != null ? `over it in ${m.goalSeconds.toFixed(1)} s` : `stopped at ${(m.maxZ - (m.startZ ?? 0)).toFixed(0)} m`);
+  if (trial.id === 'accel') lines.push(`${kmh(m.topSpeed)} top speed`);
+  if (trial.impactZ != null && m.impactSpeed != null) lines.push(`in at ${kmh(m.impactSpeed)}, ${Math.max(0, m.maxZ - trial.impactZ).toFixed(0)} m through`);
+  if (trial.drive.kind === 'drift' && m.drift) lines.push(`${Math.abs(m.drift.headingChangeDeg ?? 0).toFixed(0)}° round, ${Math.round(100 * (m.drift.speedKept ?? 0))}% of its speed kept`);
+  lines.push(`${wheels} wheel${wheels === 1 ? '' : 's'} on`, damage);
+  return lines.join(' · ');
+}
 
 /** The car's server state, parsed: position, velocity, rotation, wheels, damage. */
 function readCar(ctx, index) {
@@ -96,9 +123,11 @@ function trialShot(trial, index, meta, ground) {
       endPosition: s.p, brokenIndices: [...broken].slice(0, 50),
     });
     ctx.log(`measure ${JSON.stringify(m)}`);
+    // Read until the next caption: the drive-away's, or the next trial's.
+    ctx.edit({ type: 'title', style: 'lower', size: 'small', text: outcome(trial, m), from: ctx.t, to: ctx.t + (trial.driveAway ? 3.5 : RESULT_HOLD) });
   };
   // Cues: get in (driving trials), drive, attack, sample.
-  const cues = [];
+  const cues = [[0, (ctx) => ctx.edit({ type: 'title', style: 'lower', size: 'small', text: `${BUILD} truck · ${CAPTIONS[trial.id] ?? trial.name ?? trial.id}`.replace(/^monster truck/, 'Monster truck'), from: ctx.t + 0.2, to: ctx.t + lead + 1.6 })]];
   const driving = trial.drive.kind !== 'park';
   if (driving) cues.push([0, enter(car)]);
   for (let k = 0; k * 0.1 <= lead + seconds; k += 1) {
@@ -162,7 +191,8 @@ function trialShot(trial, index, meta, ground) {
   }
   const away = trial.driveAway;
   let awayFrom = null, quietSince = null, awayStart = null;
-  const tail = away ? 9.5 : 0;
+  // After the trial: the drive-away, or a few seconds on the result.
+  const tail = away ? 9.5 : RESULT_HOLD;
   if (away) {
     // Still drivable? As the headless harness: let it come to rest (up to 5 s),
     // then reverse (when it hit something ahead) and full throttle on full lock.
@@ -194,15 +224,22 @@ function trialShot(trial, index, meta, ground) {
     if (!away) ctx.drive.move({ forward: 0, strafe: 0 });
   }]);
   cues.push([lead + seconds + tail, (ctx) => {
-    if (away) ctx.log(`measure-away ${JSON.stringify({ trial: trial.id, driveAway: m.driveAway ?? { metres: 0, seconds: 0 } })}`);
+    if (away) {
+      ctx.log(`measure-away ${JSON.stringify({ trial: trial.id, driveAway: m.driveAway ?? { metres: 0, seconds: 0 } })}`);
+      const metres = m.driveAway?.metres ?? 0;
+      ctx.edit({ type: 'title', style: 'lower', size: 'small', text: metres >= 3 ? `and drives away: ${metres.toFixed(0)} m` : `and cannot drive away (${metres.toFixed(1)} m)`, from: ctx.t - 2.5, to: ctx.t + 0.3 });
+    }
     ctx.drive.move({ forward: 0, strafe: 0 });
     if (ctx.e2e.snapshot()?.drivenVehicleId != null) ctx.drive.interact();
   }]);
   // Behind and above the car, a little to its left; held where it is once a
-  // meteor or the cannonball is coming (a thrown car is not chased into a wall).
+  // meteor or the cannonball is coming (a thrown car is not chased into a
+  // wall), and then further out: close in, a car the cannonball threw 30 m
+  // was a speck on the horizon behind the camera's shoulder.
   const follow = () => lastPosition(index, meta, trial);
-  return track(follow, [-5, 3.2, -9], lead + seconds + tail + 0.4, { name: trial.id, lookOffset: [0, 1, 4], lag: 0.3, cues,
-    ...(a && ['meteor', 'cannonball'].includes(a.kind) ? { release: lead + a.at } : {}) });
+  const hit = a && ['meteor', 'cannonball'].includes(a.kind);
+  return track(follow, hit ? [-13, 7, -17] : [-5, 3.2, -9], lead + seconds + tail + 0.4, { name: trial.id, lookOffset: [0, 1, hit ? 2 : 4], lag: 0.3, cues,
+    ...(hit ? { release: lead + a.at } : {}) });
 }
 
 /** Where each car was last read (the camera's target), from its slot until read. */
