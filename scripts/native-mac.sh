@@ -16,6 +16,7 @@
 #   scripts/native-mac.sh shots         # the scene from above and from the player, target/native-scene/
 #   scripts/native-mac.sh structures    # does each structure of the scene converge at rest
 #   scripts/native-mac.sh film-check    # film mode: exact ticks and clock per frame, then real time
+#   scripts/native-mac.sh film-determinism # the same film twice from tick 0: what must match does
 #   scripts/native-mac.sh runtime|sim|bundle
 #
 # --scene NAME (any subcommand) picks the city:
@@ -294,6 +295,28 @@ film_check() {
   echo "native film check passed (log: $log)"
 }
 
+# Re-renderable films (client/native/film-determinism.mjs): one fixed film
+# taken twice with the match in lockstep from tick 0 (VIBE_FILM_LOCKSTEP=1)
+# and the same seeds, compared by scripts/native-film-determinism.py: tick
+# schedule, inputs applied per tick and Math.random draws must match; the
+# broken bonds after the volley are reported (GPU PhysX is not bit-exact).
+#   FILM_DET_SEED     the film's Math.random seed (default 7)
+#   VIBE_MATCH_SEED   the match seed (default 424242)
+film_determinism() {
+  iife
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/film-determinism.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning --define:FILM_DET_SEED="${FILM_DET_SEED:-7}" \
+    --outfile="$BUNDLE_DIR/film-determinism.js"
+  export VIBE_FILM_LOCKSTEP=1 VIBE_MATCH_SEED="${VIBE_MATCH_SEED:-424242}"
+  local take
+  for take in 1 2; do
+    echo "take $take"
+    (launch film-determinism.js --headless "$@") > "$ROOT/target/native-film-det-$take.log" 2>&1 || true
+    grep -E '\[film-det\] (PASS|FAIL|load|bonds|VERDICT)' "$ROOT/target/native-film-det-$take.log" || true
+  done
+  python3 "$ROOT/scripts/native-film-determinism.py" "$ROOT/target/native-film-det-1.log" "$ROOT/target/native-film-det-2.log"
+}
+
 # Does each structure of the scene converge at rest (scripts/perf/qualify_structures.py)?
 # A structure that does not keeps the GPU re-solving it every idle tick.
 structures() {
@@ -531,6 +554,7 @@ case "${1:-run}" in
   qa) shift || true; runtime; sim; bundle; qa "$@" ;;
   input) shift || true; runtime; sim; bundle; input "$@" ;;
   film-check) shift || true; runtime; sim; bundle; film_check "$@" ;;
+  film-determinism) shift || true; runtime; sim; bundle; film_determinism "$@" ;;
   trace-writes) shift || true; runtime; sim; bundle; trace_writes "$@" ;;
   shots) shift || true; runtime; sim; bundle; shots "$@" ;;
   structures) shift || true; structures "$@" ;;

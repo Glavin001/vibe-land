@@ -920,6 +920,20 @@ struct TickRingEntry {
     flips: u64,
 }
 
+impl TickRingEntry {
+    /// The tick's costs as the in-process session reports them.
+    fn local_stats(&self) -> local_session::LocalTickStats {
+        local_session::LocalTickStats {
+            tick: self.t,
+            total_ms: self.total,
+            dynamics_ms: self.dyn_ms,
+            city_ms: self.city,
+            awake_bodies: self.awake,
+            frozen_bodies: self.frozen,
+        }
+    }
+}
+
 #[derive(serde::Serialize, Clone, Default)]
 struct MatchStatsSnapshot {
     id: String,
@@ -1149,8 +1163,12 @@ enum MatchEvent {
     Lockstep { enabled: bool, reply: tokio::sync::oneshot::Sender<u32> },
     /// Advance a lockstepped match exactly `ticks` ticks, now, in order after
     /// every event queued before it. Replies with the server tick reached
-    /// (unchanged when the match is not in lockstep).
-    Step { ticks: u32, reply: tokio::sync::oneshot::Sender<u32> },
+    /// (unchanged when the match is not in lockstep), and each stepped
+    /// tick's headline costs.
+    Step { ticks: u32, reply: tokio::sync::oneshot::Sender<(u32, Vec<TickRingEntry>)> },
+    /// The player input frames applied on lockstepped ticks after `since`
+    /// (film mode's determinism record), oldest first.
+    AppliedInputs { since: u32, reply: tokio::sync::oneshot::Sender<Vec<flight_recorder::InputRecord>> },
 }
 
 impl MatchEvent {
@@ -1170,6 +1188,7 @@ impl MatchEvent {
             MatchEvent::Session(_) => "session",
             MatchEvent::Lockstep { .. } => "lockstep",
             MatchEvent::Step { .. } => "step",
+            MatchEvent::AppliedInputs { .. } => "applied_inputs",
         }
     }
 }
@@ -1328,6 +1347,13 @@ struct MatchState {
     /// is one tick of simulated time for the input budget, whatever the wall
     /// clock did between them.
     lockstep: bool,
+    /// Every input frame applied on a lockstepped tick (film mode: two runs
+    /// of one film should apply the same inputs on the same ticks).
+    lockstep_inputs: Vec<flight_recorder::InputRecord>,
+    /// Ticks left in the current `MatchEvent::Step`, this one included. A
+    /// film frame's input arrives before its step, all of it at once, so
+    /// queued frames up to this many are not a backlog.
+    lockstep_ticks_left: usize,
     /// Observer pipeline (VIBE_CITY_OBSERVER_PIPELINE=1): tick N's deferred
     /// city observer bundle, flushed inside tick N+1's GPU wait. None when
     /// the flag is off, on non-city matches, and on staging-error ticks.
@@ -3456,6 +3482,9 @@ async fn run_match_loop(
     demolish_requests: Arc<StdRwLock<HashMap<String, DemolishRequest>>>,
     meteor_requests: Arc<StdRwLock<HashMap<String, Vec<[f32; 3]>>>>,
     capture_stop_requests: Arc<StdRwLock<HashSet<String>>>,
+    // In lockstep from tick 0 (the native app's VIBE_FILM_LOCKSTEP=1): the
+    // match never ticks in real time, only by MatchEvent::Step.
+    start_in_lockstep: bool,
 ) {
     // Destructible cars for the city (opt-in), prepared before anything is
     // built: they join the city's native stage, whose topology is fixed once
@@ -3604,10 +3633,12 @@ async fn run_match_loop(
     };
 
     // Per-match, so two matches do not rain meteors from the same bearings.
-    let match_seed = {
+    // VIBE_MATCH_SEED=<u64> overrides it (films: a seed is a take).
+    let match_seed = match_seed_override().unwrap_or_else(|| {
         let digest = Sha256::digest(match_id.as_bytes());
         u64::from_le_bytes(digest[..8].try_into().expect("eight bytes of a digest"))
-    };
+    });
+    info!(%match_id, match_seed, start_in_lockstep, "match seed");
     let mut state = MatchState {
         id: match_id,
         arena,
@@ -3643,8 +3674,11 @@ async fn run_match_loop(
         last_fan_out_ms: 0.0,
         last_publish_ms: 0.0,
         last_tick_instant: None,
-        input_credit: 1.0,
-        lockstep: false,
+        // A match born in lockstep has banked no real time.
+        input_credit: if start_in_lockstep { 0.0 } else { 1.0 },
+        lockstep: start_in_lockstep,
+        lockstep_inputs: Vec::new(),
+        lockstep_ticks_left: 0,
         staged_city: None,
         last_observer_flush_ms: 0.0,
         tick_meteors_launched: 0,
@@ -3766,6 +3800,7 @@ fn spawn_match_loop(
                     app.demolish_requests.clone(),
                     app.meteor_requests.clone(),
                     app.capture_stop_requests.clone(),
+                    false,
                 ))
                 .catch_unwind()
                 .await;
@@ -4007,15 +4042,36 @@ impl MatchState {
                     self.last_tick_instant = None;
                     info!(match_id = %self.id, tick = self.server_tick, enabled, "match lockstep");
                 }
-                let _ = reply.send(self.server_tick);
-            }
-            MatchEvent::Step { ticks, reply } => {
-                if self.lockstep {
-                    for _ in 0..ticks {
-                        self.tick();
+                if enabled {
+                    // A film starts here, whether or not the match was already
+                    // in lockstep: input the client queued before it (frames
+                    // produced while the match stood still, as many as the
+                    // load took wall time) is discarded rather than replayed
+                    // into the film, and no real time is banked.
+                    self.input_credit = 0.0;
+                    for runtime in self.players.values_mut() {
+                        runtime.pending_inputs.clear();
                     }
                 }
                 let _ = reply.send(self.server_tick);
+            }
+            MatchEvent::AppliedInputs { since, reply } => {
+                let from = self.lockstep_inputs.partition_point(|record| record.tick <= since);
+                let _ = reply.send(self.lockstep_inputs[from..].to_vec());
+            }
+            MatchEvent::Step { ticks, reply } => {
+                let mut stepped = Vec::new();
+                if self.lockstep {
+                    for left in (1..=ticks as usize).rev() {
+                        self.lockstep_ticks_left = left;
+                        self.tick();
+                        if let Some(entry) = self.tick_ring.back().filter(|entry| entry.t == self.server_tick) {
+                            stepped.push(entry.clone());
+                        }
+                    }
+                    self.lockstep_ticks_left = 0;
+                }
+                let _ = reply.send((self.server_tick, stepped));
             }
             MatchEvent::ReplayEvent { event, reply } => {
                 let _ = reply.send(self.replay_event(&event));
@@ -4567,9 +4623,16 @@ impl MatchState {
                 // reached and the player stays permanently that far behind.
                 // Exactly one, so the fastest anyone can move is real time
                 // plus a frame per tick while they are actually behind.
+                // In lockstep a step's frames are all queued before its first
+                // tick: only more than the step will consume is a backlog.
+                let backlog_above = if self.lockstep {
+                    input_budget * self.lockstep_ticks_left.max(1)
+                } else {
+                    input_budget
+                };
                 let frames = if in_vehicle {
                     1
-                } else if runtime.pending_inputs.len() > input_budget {
+                } else if runtime.pending_inputs.len() > backlog_above {
                     (input_budget + 1).min(MAX_INPUT_FRAMES_PER_TICK)
                 } else {
                     input_budget
@@ -4592,6 +4655,14 @@ impl MatchState {
                 applied.push(InputCmd::default());
             }
             input_frames_applied += applied.len() as f32;
+            if self.lockstep && self.lockstep_inputs.len() < LOCKSTEP_INPUT_RECORD_CAP {
+                for frame in &applied {
+                    self.lockstep_inputs.push(flight_recorder::InputRecord {
+                        tick: self.server_tick, player: player_id, seq: frame.seq, buttons: frame.buttons,
+                        move_x: frame.move_x, move_y: frame.move_y, yaw: frame.yaw, pitch: frame.pitch, in_vehicle,
+                    });
+                }
+            }
             if self.tick_recorder.is_some() {
                 for frame in &applied {
                     self.flight.push_input(flight_recorder::InputRecord {
@@ -7382,6 +7453,23 @@ impl MatchState {
         self.timings
             .snapshot_ms
             .record(snapshot_started.elapsed().as_secs_f32() * 1000.0);
+    }
+}
+
+/// Lockstepped input frames kept for `MatchEvent::AppliedInputs`: an hour of
+/// film at one player's 60 a second.
+const LOCKSTEP_INPUT_RECORD_CAP: usize = 60 * 60 * 60;
+
+/// `VIBE_MATCH_SEED=<u64>`: the match's seed (meteor bearings) instead of
+/// the one derived from its id.
+fn match_seed_override() -> Option<u64> {
+    let raw = std::env::var("VIBE_MATCH_SEED").ok()?;
+    match raw.trim().parse::<u64>() {
+        Ok(seed) => Some(seed),
+        Err(error) => {
+            warn!(value = %raw, %error, "VIBE_MATCH_SEED is not a u64; using the match id's seed");
+            None
+        }
     }
 }
 

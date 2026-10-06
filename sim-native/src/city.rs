@@ -24,7 +24,10 @@ use crate::mystral::{Js, Value};
 /// Film mode: `setLockstep(on)` stops (or resumes) the match's real-time
 /// ticking and returns the server tick; `step(n)` then advances exactly n
 /// ticks, blocking until they are done, and returns the tick reached;
-/// `currentTick()` reads it.
+/// `currentTick()` reads it; `stepStats()` is the last step's ticks' costs
+/// ({ ticks, tickMs, maxTickMs, dynamicsMs, cityMs, awakeBodies, frozenBodies }); `appliedInputs(sinceTick)` is the JSON record
+/// of the input frames applied on lockstepped ticks (film determinism checks).
+/// With `VIBE_FILM_LOCKSTEP=1` the match is in lockstep from tick 0.
 pub fn start_city(js: Js, args: &[Value]) -> Value {
     let match_id = js.string_arg(args, 0).unwrap_or_else(|| "city-default".to_owned());
     apply_app_defaults();
@@ -144,13 +147,43 @@ pub fn start_city(js: Js, args: &[Value]) -> Value {
             }
         }));
     }
+    // The last step's ticks' costs, for stepStats().
+    let last_step: Rc<RefCell<Vec<web_fps_server::local_session::LocalTickStats>>> = Rc::default();
     {
         let session = session.clone();
+        let last_step = last_step.clone();
         js.set(handle, "step", js.function("step", move |js, args| {
             let ticks = js.arg_number(args, 0, 1.0).clamp(0.0, 600.0) as u32;
-            match session.borrow().step(ticks) {
-                Ok(tick) => js.number(tick as f64),
+            match session.borrow().step_with_stats(ticks) {
+                Ok((tick, stats)) => {
+                    *last_step.borrow_mut() = stats;
+                    js.number(tick as f64)
+                }
                 Err(error) => js.throw(&format!("step: {error:#}")),
+            }
+        }));
+    }
+    js.set(handle, "stepStats", js.function("stepStats", move |js, _| {
+        let stats = last_step.borrow();
+        let sum = |f: fn(&web_fps_server::local_session::LocalTickStats) -> f32| stats.iter().map(f).sum::<f32>();
+        let out = js.object();
+        js.set(out, "ticks", js.number(stats.len() as f64));
+        js.set(out, "tickMs", js.number(sum(|s| s.total_ms) as f64));
+        js.set(out, "maxTickMs", js.number(stats.iter().map(|s| s.total_ms).fold(0.0, f32::max) as f64));
+        js.set(out, "dynamicsMs", js.number(sum(|s| s.dynamics_ms) as f64));
+        js.set(out, "cityMs", js.number(sum(|s| s.city_ms) as f64));
+        let last = stats.last().cloned().unwrap_or_default();
+        js.set(out, "awakeBodies", js.number(last.awake_bodies as f64));
+        js.set(out, "frozenBodies", js.number(last.frozen_bodies as f64));
+        out
+    }));
+    {
+        let session = session.clone();
+        js.set(handle, "appliedInputs", js.function("appliedInputs", move |js, args| {
+            let since = js.arg_number(args, 0, 0.0).max(0.0) as u32;
+            match session.borrow().applied_inputs_json(since) {
+                Ok(json) => js.string(&json),
+                Err(error) => js.throw(&format!("appliedInputs: {error:#}")),
             }
         }));
     }

@@ -12,6 +12,8 @@
 //   onFrame   runs once per frame, before the frame's sim step
 //   input     a scripted walk (__VIBE_DRIVE__.move, 1 film second) moves the
 //             player, and a cannon shot fired in film breaks bonds
+//   stats     state() reports each frame's real-clock timings (step, pump,
+//             render, frame, interval) and the stepped ticks' sim costs
 //   disable   back to real time: ticks resume at ~60/s and performance.now()
 //             follows the wall clock, continuously
 //
@@ -102,11 +104,13 @@ async function run() {
   const enabledTick = session.currentTick();
   const resolved = [];
   const clockAt = [];
+  const frameStats = [];
   // The film's first frame, then FRAMES more measured ones.
   for (let i = 0; i <= FRAMES; i += 1) {
     const result = await film.frame();
     resolved.push(result);
     clockAt.push(store.getState().clock.elapsedTime);
+    frameStats.push(film.state());
   }
   const bondsBeforeIdle = bonds();
   // Frames run on while the script waits; the sim moves only with them.
@@ -164,6 +168,22 @@ async function run() {
 
   record('input', walked > 2 && brokenInFilm > 0,
     `walked ${walked.toFixed(2)} m in 1 film second; ${brokenInFilm} broken bonds after a cannon shot fired at frame 5 (${bondsBeforeIdle} by frame ${FRAMES + 1}${target ? '' : ', no structure to aim at'})`);
+
+  // Per-frame stats: real-clock timings that add up, and the step's ticks.
+  // (The interval runs from the previous frame's start, so it covers that frame.)
+  const badStats = frameStats.slice(1).map((st, i) => {
+    const previous = frameStats[i];
+    if (![st.onFrameMs, st.stepMs, st.pumpMs, st.renderMs, st.frameMs, st.intervalMs].every((v) => Number.isFinite(v) && v >= 0)) return 'not finite';
+    if (Math.abs(st.onFrameMs + st.stepMs + st.pumpMs + st.renderMs - st.frameMs) > 0.5) return 'parts do not add up';
+    if (st.intervalMs < previous.frameMs - 0.5) return 'interval shorter than the previous frame';
+    if (st.sim?.ticks !== 60 / FPS || !(st.sim.tickMs > 0)) return `sim ${JSON.stringify(st.sim)}`;
+    return null;
+  }).filter(Boolean);
+  const statsOk = badStats.length === 0;
+  if (!statsOk) log(`stats problems: ${[...new Set(badStats)].join('; ')} (${badStats.length} frames)`);
+  const med = (key) => quantile(frameStats.slice(1).map((st) => st[key]), 0.5).toFixed(2);
+  record('stats', statsOk, `median step ${med('stepMs')} ms, pump ${med('pumpMs')} ms, render ${med('renderMs')} ms, frame ${med('frameMs')} ms, `
+    + `interval ${med('intervalMs')} ms; sim ${JSON.stringify(frameStats.at(-1).sim)}`);
 
   const wallPerFrame = seen.slice(1).map((s, i) => s.wall - seen[i].wall);
   log(`wall time per film frame: median ${quantile(wallPerFrame, 0.5)} ms, p90 ${quantile(wallPerFrame, 0.9)} ms, max ${quantile(wallPerFrame, 1)} ms; film state ${JSON.stringify(filmState)}`);

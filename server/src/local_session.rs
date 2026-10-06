@@ -64,6 +64,20 @@ pub struct LocalSession {
     http: tokio::runtime::Runtime,
 }
 
+/// One stepped tick's costs (the match's debug-report tick ring): wall ms of
+/// the whole tick, of the arena's dynamics step and of the city (the native
+/// destruction stage's step, readback and stream), and the city's awake and
+/// frozen chunk bodies after it.
+#[derive(Clone, Debug, Default)]
+pub struct LocalTickStats {
+    pub tick: u32,
+    pub total_ms: f32,
+    pub dynamics_ms: f32,
+    pub city_ms: f32,
+    pub awake_bodies: u32,
+    pub frozen_bodies: u32,
+}
+
 /// What `request` answers.
 pub struct LocalResponse {
     pub status: u16,
@@ -99,8 +113,15 @@ fn init_process() {
 }
 
 impl LocalSession {
-    /// Start `match_id` in this process and connect the local player.
+    /// Start `match_id` in this process and connect the local player; in
+    /// lockstep from tick 0 when `VIBE_FILM_LOCKSTEP=1`.
     pub fn start(match_id: &str) -> Result<Self> {
+        Self::start_with(match_id, film_lockstep_from_start())
+    }
+
+    /// `start`, with lockstep from tick 0 given rather than read from the
+    /// environment.
+    pub fn start_with(match_id: &str, lockstep_from_start: bool) -> Result<Self> {
         init_process();
         let physics = PhysicsRuntimeConfig::from_env()?;
         if physics.backend == vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu {
@@ -128,7 +149,7 @@ impl LocalSession {
         // when it opens.
         let pose_feed = (city::is_city_match(match_id) && local_pose_feed_enabled())
             .then(|| crate::pose_feed::register(match_id));
-        spawn_local_match(match_id.to_owned(), rx, physics, telemetry, queues.clone());
+        spawn_local_match(match_id.to_owned(), rx, physics, telemetry, queues.clone(), lockstep_from_start);
 
         // Registered as WebTransport: the client speaks WebTransport bytes, and
         // every server path keyed on the transport (lane choice, datagram
@@ -204,7 +225,9 @@ impl LocalSession {
     /// ticking in real time and advances only by `step`. Off: it ticks at
     /// 60 Hz in real time again from now. Waits until the match has taken
     /// it, so no real-time tick follows `set_lockstep(true)`; returns the
-    /// server tick at that moment.
+    /// server tick at that moment. `set_lockstep(true)` also starts a film
+    /// when the match is already in lockstep (VIBE_FILM_LOCKSTEP=1): input
+    /// the player queued before it is discarded, not replayed.
     pub fn set_lockstep(&self, enabled: bool) -> Result<u32> {
         let (reply, response) = tokio::sync::oneshot::channel();
         self.events
@@ -219,6 +242,11 @@ impl LocalSession {
     /// re-simulation and all), only paced by the caller instead of a timer.
     /// Outside lockstep it advances nothing and returns the current tick.
     pub fn step(&self, ticks: u32) -> Result<u32> {
+        Ok(self.step_with_stats(ticks)?.0)
+    }
+
+    /// `step`, with each stepped tick's costs (film mode's per-frame stats).
+    pub fn step_with_stats(&self, ticks: u32) -> Result<(u32, Vec<LocalTickStats>)> {
         if self.closed {
             anyhow::bail!("session closed");
         }
@@ -226,7 +254,19 @@ impl LocalSession {
         self.events
             .send(MatchEvent::Step { ticks, reply })
             .map_err(|_| anyhow::anyhow!("match loop has exited"))?;
-        response.blocking_recv().context("match loop has exited")
+        let (tick, entries) = response.blocking_recv().context("match loop has exited")?;
+        Ok((tick, entries.iter().map(|entry| entry.local_stats()).collect()))
+    }
+
+    /// The player input frames applied on lockstepped ticks after `since`, as
+    /// JSON `[{tick, player, seq, buttons, move_x, move_y, yaw, pitch,
+    /// in_vehicle}, ...]` (film mode's determinism record).
+    pub fn applied_inputs_json(&self, since: u32) -> Result<String> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.events
+            .send(MatchEvent::AppliedInputs { since, reply })
+            .map_err(|_| anyhow::anyhow!("match loop has exited"))?;
+        Ok(serde_json::to_string(&response.blocking_recv().context("match loop has exited")?)?)
     }
 
     /// A GET for one of the server's stateless routes (`local_router`),
@@ -312,6 +352,14 @@ impl Drop for LocalSession {
     }
 }
 
+/// `VIBE_FILM_LOCKSTEP=1`: the match starts in lockstep at tick 0 and never
+/// ticks in real time -- only `step` advances it -- so a film starts from the
+/// same world however long the client took to load (the native app's film
+/// mode, client/src/native/film.ts).
+fn film_lockstep_from_start() -> bool {
+    matches!(std::env::var("VIBE_FILM_LOCKSTEP").as_deref(), Ok("1" | "true" | "on"))
+}
+
 /// `VIBE_LOCAL_POSE_FEED=0` turns the in-memory pose feed off, leaving the
 /// client on the network pose stream (to compare the two).
 fn local_pose_feed_enabled() -> bool {
@@ -349,6 +397,7 @@ fn spawn_local_match(
     physics: PhysicsRuntimeConfig,
     telemetry: Arc<MatchIoTelemetry>,
     queues: RequestQueues,
+    start_in_lockstep: bool,
 ) {
     let strict_snapshot_datagrams = std::env::var("WT_STRICT_SNAPSHOT_DATAGRAMS")
         .ok()
@@ -379,6 +428,7 @@ fn spawn_local_match(
                     Arc::new(StdRwLock::new(HashMap::new())),
                     queues.meteors,
                     Arc::new(StdRwLock::new(HashSet::new())),
+                    start_in_lockstep,
                 ))
                 .catch_unwind()
                 .await;
@@ -407,7 +457,7 @@ mod tests {
     fn lockstep_advances_exactly_the_ticks_stepped() {
         // The demo world on Rapier: no GPU, no city assets.
         std::env::set_var("VIBE_PHYSICS_BACKEND", "rapier");
-        let mut session = LocalSession::start("lockstep-test").expect("in-process match starts");
+        let mut session = LocalSession::start_with("lockstep-test", false).expect("in-process match starts");
         let mut drain = |session: &mut LocalSession| session.drain(|_, _| {}).expect("player stays connected");
 
         // Real time first: the match ticks by itself, at the rate this build
@@ -467,5 +517,89 @@ mod tests {
         let now = session.current_tick().unwrap();
         assert!(session.step(5).unwrap() < now + 5);
         session.close();
+    }
+
+    /// One input frame as the client's datagram carries it (net/protocol.ts
+    /// encodeInputBundle), facing yaw 0.
+    fn input_bundle(seq: u16, move_x: i8, move_y: i8, buttons: u16) -> Vec<u8> {
+        let mut out = vec![vibe_land_shared::constants::PKT_INPUT_BUNDLE, 1];
+        out.extend_from_slice(&seq.to_le_bytes());
+        out.extend_from_slice(&buttons.to_le_bytes());
+        out.extend_from_slice(&[move_x as u8, move_y as u8, 0, 0, 0, 0]);
+        out
+    }
+
+    /// VIBE_FILM_LOCKSTEP=1: the match is born in lockstep. The player joins
+    /// (welcome and the join packets arrive) at tick 0 with nothing ticking;
+    /// enabling the film discards the input queued while the match stood
+    /// still; from then on every stepped tick applies exactly the frames the
+    /// client sent for it, and the record of them reads back by tick.
+    #[test]
+    fn film_lockstep_from_tick_zero() {
+        std::env::set_var("VIBE_PHYSICS_BACKEND", "rapier");
+        let mut session = LocalSession::start_with("film-lockstep-test", true).expect("in-process match starts");
+        let mut kinds = Vec::new();
+        let since = Instant::now();
+        while since.elapsed() < Duration::from_millis(500) {
+            session.drain(|reliable, bytes| kinds.push((reliable, bytes[0]))).unwrap();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(session.current_tick().unwrap(), 0, "a film-lockstep match must not tick before it is stepped");
+        assert!(
+            kinds.contains(&(true, vibe_land_shared::constants::PKT_WELCOME)),
+            "the player is welcomed at tick 0 (got {kinds:?})"
+        );
+
+        // Input sent while the match stood still (the client's loading frames).
+        for seq in 1..=50u16 {
+            session.send(&input_bundle(seq, 0, 127, 0)).unwrap();
+        }
+        assert_eq!(session.set_lockstep(true).unwrap(), 0, "enabling the film does not tick");
+        assert_eq!(session.step(1).unwrap(), 1);
+        let first: serde_json::Value = serde_json::from_str(&session.applied_inputs_json(0).unwrap()).unwrap();
+        let first = first.as_array().unwrap();
+        assert_eq!(first.len(), 1, "an idle tick applies one frame: {first:?}");
+        assert_eq!(first[0]["move_y"], 0, "the queued loading input is discarded, not replayed");
+
+        // Two frames per film frame, sent before the frame's step.
+        let mut seq = 100u16;
+        for frame in 0..30u32 {
+            for _ in 0..2 {
+                seq += 1;
+                session.send(&input_bundle(seq, (frame % 3) as i8 - 1, 100, 0)).unwrap();
+            }
+            assert_eq!(session.step(2).unwrap(), 1 + 2 * (frame + 1));
+            session.drain(|_, _| {}).unwrap();
+        }
+        let applied: serde_json::Value = serde_json::from_str(&session.applied_inputs_json(1).unwrap()).unwrap();
+        let applied = applied.as_array().unwrap();
+        assert_eq!(applied.len(), 60, "one frame per tick");
+        for (index, record) in applied.iter().enumerate() {
+            assert_eq!(record["tick"], 2 + index as u64, "{record}");
+            assert_eq!(record["seq"], 101 + index as u64, "{record}");
+            assert_eq!(record["move_x"], ((index / 2) % 3) as i64 - 1, "{record}");
+            assert_eq!(record["move_y"], 100, "{record}");
+        }
+        // Nothing ticks between frames, however long.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(session.current_tick().unwrap(), 61);
+        // Each step reports its ticks' costs.
+        let (reached, stats) = session.step_with_stats(2).unwrap();
+        assert_eq!(reached, 63);
+        assert_eq!(stats.iter().map(|s| s.tick).collect::<Vec<_>>(), vec![62, 63]);
+        assert!(stats.iter().all(|s| s.total_ms > 0.0 && s.total_ms >= s.dynamics_ms), "{stats:?}");
+        session.close();
+    }
+
+    #[test]
+    fn match_seed_override_parses_a_u64() {
+        // Only the parse: the env is process-wide and the other tests start
+        // matches, so this sets and clears it around nothing else.
+        std::env::set_var("VIBE_MATCH_SEED", "12345678901234567890");
+        assert_eq!(crate::match_seed_override(), Some(12_345_678_901_234_567_890));
+        std::env::set_var("VIBE_MATCH_SEED", "not-a-seed");
+        assert_eq!(crate::match_seed_override(), None);
+        std::env::remove_var("VIBE_MATCH_SEED");
+        assert_eq!(crate::match_seed_override(), None);
     }
 }

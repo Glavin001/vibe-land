@@ -52,6 +52,12 @@ export interface InProcessLink {
   setLockstep?(enabled: boolean): number;
   step?(ticks: number): number;
   currentTick?(): number;
+  /** The last step's ticks' costs (native/film.ts FilmSimStats). */
+  stepStats?(): {
+    ticks: number; tickMs: number; maxTickMs: number; dynamicsMs: number; cityMs: number; awakeBodies: number; frozenBodies: number;
+  };
+  /** JSON record of the input frames applied on lockstepped ticks after a tick (film determinism). */
+  appliedInputs?(sinceTick: number): string;
   close(): void;
 }
 
