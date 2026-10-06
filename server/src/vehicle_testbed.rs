@@ -325,7 +325,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         top = top.max(speed);
         max_z = max_z.max(s.p.z);
         let t = k as f32 * DT;
-        for (name, at) in [("2s", 2.0f32), ("4s", 4.0), ("8s", 8.0)] { if (t - at).abs() < DT * 0.5 { speed_at.insert(name.into(), speed); } }
+        for (name, at) in [("2s", 2.0f32), ("4s", 4.0), ("5s", 5.0), ("8s", 8.0), ("10s", 10.0)] { if (t - at).abs() < DT * 0.5 { speed_at.insert(name.into(), speed); } }
         for (name, v) in [("10", 10.0f32), ("20", 20.0)] { if speed >= v { time_to.entry(name.into()).or_insert(None).get_or_insert(t); } }
         if goal_tick.is_none() && goal.is_some_and(|g| s.p.z >= g) { goal_tick = Some(k); }
         let progress = (s.p - start.p).dot(&heading0);

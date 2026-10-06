@@ -88,16 +88,20 @@ or its front end still drives on what it has.
 - **The car went with its seats.** The chassis anchor (what Vehicle2 keeps
   driving) was the seat crossmember; a cannonball sheared the floor and seats
   off and the car became a 103 kg seat module. Now the rear frame crossmember.
-- **Losing any part doubles the car's weight on its springs** (open, in
-  PhysX): the correction pass re-installs the Vehicle2 carrier with PhysX
-  gravity on, on top of Vehicle2's own. A 5 kg mirror knocked off at 54 km/h
-  leaves the monster truck 13 cm lower for good. Trial `knock-mirror-driving`
-  fails until it is fixed (physx/source/gpudestruction/src/PxgDestructionMotionState.cuh,
-  `nativeCandidateState`: enable gravity only when `id != candidate.sourceBody`).
-- **A car coasts on undiminished.** With the throttle up, Vehicle2 here has
-  no rolling resistance or drag: a monster truck thrown to 31 m/s by the
-  cannonball rolled on at 31 m/s for 10 s. The drive-away waits for the car to
-  stop on the handbrake.
+- **Losing any part doubled the car's weight on its springs** (fixed
+  2026-10-06, PhysX e58f080a9): the correction pass re-installed the Vehicle2
+  carrier with PhysX gravity on, on top of Vehicle2's own, and a 5 kg mirror
+  knocked off at 54 km/h left the monster truck 13 cm lower for good. Free
+  fragments only now get fragment gravity (`nativeCandidateState`, GPU test
+  `destruction_motion_slots_test --carrier-gravity`); `knock-mirror-driving`
+  and `debris-wheel` keep the ride height.
+- **A car coasted on undiminished** (fixed 2026-10-06): Vehicle2's direct
+  drive has no engine braking, rolling resistance or drag, so a truck let go
+  of at 31 m/s held 31 m/s for 10 s. With no pedal pressed the server now
+  brakes the wheels by rolling resistance (0.015) and drag (Cd 0.45 over 80%
+  of the chassis bounds' frontal area) -- `CoastResistance` in
+  server/src/physx_runtime.rs, off with VIBE_VEHICLE_COAST_RESISTANCE=0.
+  Trial `coast`: the monster truck 24.3 -> 22.3 m/s over 5 s (was 24.3 -> 24.3).
 - **Half a car will not drive.** After the wall, the cars that keep their rear
   axle (wheel and drive masks 12, engine connected) creep 0.3-1 m in 4.5 s: two
   wheels carry half the AWD drive torque (customization.mjs splits it over four)

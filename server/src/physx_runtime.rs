@@ -120,8 +120,56 @@ fn physx_wheel_data(snapshot: &bridge::VehicleSnapshot) -> [u16; 4] {
     wheel_data
 }
 
+/// What a coasting car loses to its tyres and the air (COAST_*), and the foot
+/// brake torque that stands in for it.
+#[derive(Clone, Copy, Debug)]
+struct CoastResistance {
+    mass: f32,
+    frontal_area: f32,
+    wheel_radius: f32,
+    /// Foot brake torque per wheel at a full pedal (all four wheels brake).
+    brake_torque: f32,
+}
+
+impl CoastResistance {
+    fn from_desc(desc: &bridge::VehicleDesc) -> Self {
+        let half = desc.chassis_half_extents;
+        Self {
+            mass: desc.mass,
+            frontal_area: 4.0 * half.x * half.y * COAST_FRONTAL_FILL,
+            wheel_radius: desc.wheel_radius,
+            brake_torque: desc.brake_torque,
+        }
+    }
+
+    /// The force holding the car back at `speed` m/s (rolling + drag), N.
+    fn force(&self, speed: f32) -> f32 {
+        COAST_ROLLING_RESISTANCE * self.mass * 9.81
+            + 0.5 * AIR_DENSITY_KG_M3 * COAST_DRAG_COEFFICIENT * self.frontal_area * speed * speed
+    }
+
+    /// The foot brake command that puts that force on the road through four wheels.
+    fn brake(&self, speed: f32) -> f32 {
+        if !(self.brake_torque > 0.0) { return 0.0; }
+        (self.force(speed.abs()) * self.wheel_radius / (4.0 * self.brake_torque)).clamp(0.0, 1.0)
+    }
+}
+
+/// No pedal pressed: the car is held back by its tyres and the air
+/// (CoastResistance). VIBE_VEHICLE_COAST_RESISTANCE=0 restores free coasting.
+fn coast(cmd: &mut bridge::VehicleCommands, resistance: Option<CoastResistance>, forward_speed: f32) {
+    if cmd.throttle != 0.0 || cmd.brake != 0.0 || cmd.handbrake != 0.0 { return; }
+    if let Some(resistance) = resistance { cmd.brake = resistance.brake(forward_speed); }
+}
+
+fn coast_resistance_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("VIBE_VEHICLE_COAST_RESISTANCE").map_or(true, |v| v != "0"))
+}
+
 struct VehicleMeta {
     steering_response: f32,
+    coast: Option<CoastResistance>,
     steering_geometry: Option<(f32, f32, f32)>,
     vehicle_type: u8,
     driver_id: u32,
@@ -177,6 +225,19 @@ const PHYSX_COM_OFFSET_Y_M: f32 = -0.2;
 const PHYSX_ANGULAR_DAMPING: f32 = 0.5;
 const PHYSX_TOP_SPEED_M_S: f32 = 30.0;
 const PHYSX_REVERSE_TOP_SPEED_M_S: f32 = 8.0;
+/// What slows a car with no pedal pressed. The vehicle SDK's direct drive has
+/// no engine braking and no rolling or air resistance, so a car let go of at
+/// 31 m/s still did 31 m/s ten seconds later (structures/vehicle-lab).
+/// Rolling resistance: road tyres on asphalt, 0.010-0.015. Air drag: a
+/// boxy car's Cd, 0.4-0.5, over its frontal area (the chassis bounds' width x
+/// height, 80% filled). Applied as wheel brake torque, as rolling resistance
+/// is and as the destruction stage's load accounting needs (forces on the
+/// carrier must arrive through the wheels); nothing is added under throttle,
+/// where the tuned top speed already includes what holds a car back.
+const COAST_ROLLING_RESISTANCE: f32 = 0.015;
+const COAST_DRAG_COEFFICIENT: f32 = 0.45;
+const COAST_FRONTAL_FILL: f32 = 0.8;
+const AIR_DENSITY_KG_M3: f32 = 1.225;
 /// Steer slew in full locks per second: 0.2 s to full lock, 0.125 s back.
 const STEER_SLEW_IN_PER_S: f32 = 5.0;
 const STEER_SLEW_OUT_PER_S: f32 = 8.0;
@@ -421,6 +482,7 @@ impl PhysxPhysicsArena {
             id,
             VehicleMeta {
                 steering_response: tune.map(|t| t.steering_response).unwrap_or(1.0),
+                coast: coast_resistance_enabled().then(|| CoastResistance::from_desc(&desc)),
                 steering_geometry: tune.map(|t| ((desc.front_axle_z-desc.rear_axle_z).abs(), t.max_steer_radians, t.tyre_friction)),
                 vehicle_type,
                 driver_id: 0,
@@ -1115,6 +1177,7 @@ impl PhysxPhysicsArena {
             handbrake_torque:2.0*tune.brake_torque,top_speed:tune.top_speed,front_wheel_drive:tune.front_wheel_drive,rear_wheel_drive:tune.rear_wheel_drive,
         }).map_err(|e|e.to_string())?;
         vehicle.steering_response=tune.steering_response;
+        if let Some(coast)=vehicle.coast.as_mut() {coast.brake_torque=tune.brake_torque;}
         if let Some((wheelbase,_,_))=vehicle.steering_geometry {
             vehicle.steering_geometry=Some((wheelbase,tune.max_steer_radians,tune.tyre_friction));
         }
@@ -1180,7 +1243,9 @@ impl PhysxPhysicsArena {
                     let lateral_accel = (0.65 * grip * 9.81).min(7.5);
                     (lateral_accel * wheelbase / forward_speed.powi(2).max(0.01)).atan() / lock
                 }).unwrap_or(1.0).min(1.0);
-                shape_tuned_vehicle_commands(&input, forward_speed, &mut vehicle.steer_command, dt, vehicle.steering_response, lock_limit)
+                let mut cmd = shape_tuned_vehicle_commands(&input, forward_speed, &mut vehicle.steer_command, dt, vehicle.steering_response, lock_limit);
+                coast(&mut cmd, vehicle.coast, forward_speed);
+                cmd
             };
             self.world
                 .drive_vehicle(entity, cmd)
@@ -2907,6 +2972,41 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_car_let_go_of_slows_like_a_real_one() {
+        // The monster truck as the fleet builds it: 2.8 t, 3.2 m wide and tall,
+        // 0.85 m wheels, the default brake scaled to its mass.
+        let truck = CoastResistance { mass: 2794.0, frontal_area: 4.0 * 1.6 * 1.6 * COAST_FRONTAL_FILL, wheel_radius: 0.85,
+            brake_torque: PHYSX_BRAKE_TORQUE_PER_WHEEL_N_M * 2794.0 / PHYSX_VEHICLE_MASS_KG };
+        // Deceleration at motorway speed: a coasting car in neutral loses
+        // roughly 0.4-1.2 m/s^2 there (a big, boxy one at the top), and only
+        // its rolling resistance, ~0.15 m/s^2, near a stop.
+        let decel = |v: f32| truck.force(v) / truck.mass;
+        assert!((0.4..1.2).contains(&decel(31.0)), "at 31 m/s: {}", decel(31.0));
+        assert!((0.12..0.18).contains(&decel(0.0)), "at rest: {}", decel(0.0));
+        // As a brake command: a light touch of the pedal, the same in reverse.
+        let brake = truck.brake(31.0);
+        assert!(brake > 0.02 && brake < 0.3, "{brake}");
+        assert_eq!(truck.brake(-31.0), brake);
+        // Only with no pedal: throttle, the brake and the handbrake are the driver's.
+        let mut idle = bridge::VehicleCommands::default();
+        coast(&mut idle, Some(truck), 31.0);
+        assert_eq!(idle.brake, brake);
+        let mut driving = bridge::VehicleCommands { throttle: 1.0, ..Default::default() };
+        coast(&mut driving, Some(truck), 31.0);
+        assert_eq!(driving.brake, 0.0);
+        let mut parked = bridge::VehicleCommands { handbrake: 1.0, ..Default::default() };
+        coast(&mut parked, Some(truck), 0.0);
+        assert_eq!(parked.brake, 0.0);
+        let mut braking = bridge::VehicleCommands { brake: 0.7, ..Default::default() };
+        coast(&mut braking, Some(truck), 12.0);
+        assert_eq!(braking.brake, 0.7);
+        // Switched off: free coasting, as before.
+        let mut free = bridge::VehicleCommands::default();
+        coast(&mut free, None, 31.0);
+        assert_eq!(free.brake, 0.0);
+    }
+
+    #[test]
     fn pedals_brake_against_motion_and_reverse_from_rest() {
         let dt = 1.0 / 60.0;
         let mut steer = 0.0;
@@ -2924,7 +3024,7 @@ pub(crate) mod tests {
         // Reverse is capped.
         let cmd = shape_vehicle_commands(&s_key, -9.0, &mut steer, dt);
         assert_eq!((cmd.throttle, cmd.reverse), (0.0, true));
-        // No pedal: coast, no brake.
+        // No pedal: no brake from the pedals (coast() adds the car's own resistance).
         let idle = VehicleInputCmd { throttle: 0.0, reverse: 0.0, steer: 0.0, handbrake: false };
         let cmd = shape_vehicle_commands(&idle, 12.0, &mut steer, dt);
         assert_eq!((cmd.throttle, cmd.brake, cmd.handbrake), (0.0, 0.0, 0.0));

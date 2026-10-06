@@ -168,6 +168,10 @@ export const TRIALS = [
   { id: 'knock-mirror', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
     attack: { kind: 'debris', at: 1.0, mass: 150, radius: 0.25, speed: 25, from: 90, aimPart: 'Door mirror' },
     why: 'losing a mirror does not lower the car' },
+  // Floored for 5 s, then let go: what it loses to its tyres and the air
+  // over the next 5 s (with no pedal Vehicle2's direct drive coasts free).
+  { id: 'coast', at: 'lane/flat', start: -140, drive: { kind: 'script', events: [[0, 1, 0], [5, 0, 0]] }, seconds: 10.5,
+    why: 'let go of at speed, a car slows: rolling resistance and drag, 0.3-1.2 m/s^2' },
   { id: 'knock-mirror-driving', at: 'lane/flat', start: -100, drive: { kind: 'cruise', speed: 15 }, seconds: 6, goal: -20,
     attack: { kind: 'debris', at: 2.0, mass: 150, radius: 0.25, speed: 25, from: 90, aimPart: 'Door mirror' },
     why: 'losing a mirror at 54 km/h does not lower the car' },
