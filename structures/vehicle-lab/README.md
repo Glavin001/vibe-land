@@ -44,6 +44,7 @@ height, wheel loads).
 | debris, debris-fast | 36 loose pieces sized from Vibe Town's chunks (18-684 kg) at 36 km/h, and floored | rubble on a street |
 | rubble | a 1 m heap of wall blocks and slabs | climbing a pile |
 | wall, house | floored from 50 m into a masonry wall / a one-storey house | hitting things at speed |
+| framed-house, cannonball-framed-house, meteor-framed-house | floored into, and the weapons through, the town kit's brick-veneer timber-frame bungalow (lane x 124, front face z 20.1) | a house built the way houses are |
 | near-miss, blast-*, graze-*, debris-wheel/cab, knock-mirror* | meteors that miss, a meteor clipping the roof, a 700 kg piece of house thrown into it, a mirror knocked off | nearby blasts and debris (the chase report) |
 | cannonball, meteor | the city's cannonball into its side, the city's meteor on it | the weapons |
 | drift | 1.2 s of full lock and handbrake from 15 m/s | the handbrake feel |

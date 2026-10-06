@@ -205,6 +205,52 @@ by `node scripts/finish-review.mjs`; its images and provenance are under
 `out/reviews/finish-study/`. Screenshots and videos record the preset. Applying
 this renderer preset in the main city remains part of later integration.
 
+## Brick-veneer timber-frame houses
+
+`src/veneer-houses.mjs` (`buildVeneerBungalow`, `buildVeneerTwoStorey`): a
+10 x 7.8 m house built the way a brick-veneer house is, so that how it breaks
+follows from how it stands. Not in Vibe Town yet.
+
+- **Frame (carries everything):** slab on grade (the anchor); 90 x 45 EN 338
+  C24 bottom plates on M12 anchor bolts; studs at 600 mm, king and jack studs,
+  lintels built up to the doubled top plate, sill trimmers and cripples; 140 x
+  45 ceiling joists that tie the rafter feet with a bolted heel; 190 x 45
+  rafters on birdsmouth seats with tie-downs; a 240 x 45 ridge board; gable-end
+  frames. Two-storey: a doubled rim and 240 x 45 joists under 22 mm flooring.
+  A stud, rafter or plate length is two chunks; members break into two or three
+  pieces.
+- **Skin (carries nothing):** a 90 mm brick veneer of tie-cell panels (600 x
+  405 mm, running bond, steel-angle lintel courses) in mortar on the slab, 50 mm
+  clear of the studs, one wall tie per panel; 13 mm gypsum board screwed to the
+  studs and joists.
+- **Connections** are their fasteners (`materials.mjs` CONNECTIONS, WALL_TIE,
+  C24, GYPSUM): IRC R602.3(1) / AS 1684 schedules, EN 1995-1-1 capacities and
+  K_ser slip stiffness, elastic at k_mod 0.6 of characteristic. Every value has
+  its source beside it.
+
+```sh
+node structures/town-kit/scripts/build-veneer-houses.mjs      # packs + variants, validated, graph numbers
+node structures/town-kit/scripts/qualify-veneer-houses.mjs    # GPU: as built PASS, skin off PASS, front studs out falls
+uv run structures/town-kit/scripts/stress-share.py PACK [--force X Y Z --at NODE]   # CPU: where a load goes
+```
+
+Qualified alone at rest (city cap 16, FP32; 2026-10-06): bungalow PASS (1.7%
+unconverged, 0 broken), its frame alone PASS (1.7%, 0), front studs out 5.3%
+broken; two-storey PASS (6.4%, 0.02%), frame PASS (8.0%, 0.10%), front studs
+out 3.5%. `VIBE_QUALIFY_BOND_ROWS=path` on `city_structures_qualify` dumps every
+bond's stress and the tick it broke.
+
+**Known limit: a vehicle or a cannonball takes the whole house.** The stage's
+trial solve reads a contact as a static load on an anchored structure. A
+monster truck stopping against the wall is MN-scale. `stress-share.py`, which
+matches the GPU's at-rest stresses to ~0.9x, shows that 650 kN on one stud
+already exceeds nailed joints across the whole frame (744 bonds past fatal).
+The masonry houses localise damage only because their joints are ~100x
+stronger. Tried and set aside: OSB bracing (no change), and the roof as a body
+resting on separately anchored walls (the walls broke at rest under its
+contact impulses). The truck still gets through the front wall (lab trial
+framed-house).
+
 ## Composed town scenes
 
 See [DISTRICT.md](DISTRICT.md) for the new 24-building Bayline District (four times the initial scene area), its reusable variants, preview, native reviews and isolated launch workflow. The earlier six-building `bayline-town` remains separate.
