@@ -267,7 +267,15 @@ fn run(r: &Run, meta: &Value) -> Value {
         // The native solve report (bit 0: the trial solve that decides what breaks), when auditing.
         if auditing() && !report_on { report_on = arena.physx_world_mut().is_some_and(|w| w.native_set_stress_solve_report(1).unwrap_or(false)); }
         step_ms.push(t0.elapsed().as_secs_f32() * 1000.);
-        if let Some((status, _, _)) = city.native_tick_view() { solves += 1; if status.converged { converged += 1; } }
+        if let Some((status, counts, _)) = city.native_tick_view() {
+            solves += 1; if status.converged { converged += 1; }
+            // VIBE_TESTBED_STAGE=1: each tick that breaks anything -- in the trial
+            // evaluation, the corrected one, and after the motion is final.
+            if std::env::var_os("VIBE_TESTBED_STAGE").is_some() && (status.broken_bonds > 0 || status.post_correction_broken_bonds > 0) {
+                eprintln!("[stage] tick {} broken {} committed {} after-correction {} corrections {} stress-passes {}",
+                    *tick, status.broken_bonds, counts.bonds_broken, status.post_correction_broken_bonds, status.correction_passes, status.stress_passes);
+            }
+        }
         *tick += 1;
     };
     for _ in 0..SETTLE_TICKS { step(&mut arena, &mut city, &mut tick, None); }
