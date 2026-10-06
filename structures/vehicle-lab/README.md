@@ -123,6 +123,51 @@ or its front end still drives on what it has.
   20 m past (was 12 m) and keeps two wheels; the house still stops it at the
   front wall (z 18.4, was 18.1). `VIBE_VEHICLE_MASS_BUDGET=0` masses it as
   modelled, for A/B.
+- **The monster truck stops dead at the house's front wall** (open,
+  2026-10-06). The cause is not swept wheels: it is the corrected pass
+  meeting a wall chunk that is still anchored. On the impact tick (trial tick
+  230, about 140 g, 21.7 -> -1 m/s), the trial solve stops the car against the
+  anchored house, which is kinematic. That solve breaks about 230 bonds and
+  frees the bricks in front of the bumper (797 and others). Brick 788, at the
+  window jamb (x 55.05, y 0.95), takes 2.1 MN in the trial and is not freed.
+  With correction limit 1, the corrected pass re-solves the tick. The car
+  drives through the freed bricks, and its front bumper stay reaches brick 788
+  (6.2 MN). Brick 788 is still anchored, so it is kinematic and has infinite
+  mass, and it stops the car within that same pass. Its last bonds break only
+  in the evaluation after the correction ("after-correction" 20-32 bonds),
+  one tick late. The stress solves are unconverged at 64 iterations on these
+  ticks.
+
+  The evidence. The car's stress input, by source, in the corrected pass:
+  contact -6.4 MN in z on the stopping run, against -0.6 MN when the car goes
+  through. Its wheel constraints take 0.44 MN, and Vehicle2's wheel loads
+  under 0.3 MN.
+
+  The stop does not depend on the wheels. It persists with the wheel
+  constraints disabled, with the bump stop made soft, with start overlaps
+  rejected, and with every wall hit rejected so that the front wheels see
+  only the ground. It depends on the centimetre at which the truck meets the
+  wall. With `VIBE_TESTBED_START_OFFSET`:
+  - Raycast wheels started 1, 2 or 3 cm back also stop at the front wall
+    (maxZ 19.9, 19.7, 21.7).
+  - Swept wheels started 2 cm forward, or 9 to 27 cm back, go 4 to 6 m in
+    (22.6 to 26.1).
+  - Swept wheels reach the wall about 1-2 cm behind raycast wheels after
+    50 m. That difference was the whole original A/B, raycasts z 27.7 against
+    sweeps z 18.4.
+
+  Repeat runs with identical settings also differ, from 18.0 to 21.4.
+
+  Diagnostics: `VIBE_VEHICLE_ROAD_LOG=1` tags the road log with the tick and,
+  each tick, prints the wheel loads, the car's stress input by source, the
+  scene chunks loading it, and whether those chunks are anchored.
+  `VIBE_TESTBED_REPORT_PASSES=2` reads the corrected pass instead of the
+  trial. `VIBE_TESTBED_WATCH_NODES` prints a node's bonds.
+
+  The fix belongs to the destruction stage, not to the wheels. A car that
+  reaches an anchored chunk in the corrected pass meets infinite mass, however
+  little holds that chunk. The criterion `through the front wall` is the
+  regression check.
 - **Tried and rejected** for the wall: corner bonds x2-x3.4 (the wheels go with
   the front end, not at their mounts), the monster's real mass (x1.6) with and
   without sections to match, and wheel hulls inset so tyres meet walls and

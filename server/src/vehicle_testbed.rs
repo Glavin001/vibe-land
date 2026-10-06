@@ -19,6 +19,11 @@
 //! VIBE_TESTBED_LABEL    report name: target/vehicle-testbed/<label>.json (default "report")
 //! VIBE_TESTBED_META     the lab meta (default structures/vehicle-lab/out/vehicle-lab.meta.json)
 //! VIBE_TESTBED_TRACE=1  a per-tick trace of the car in each run (speed, z, height, jounce)
+//! VIBE_TESTBED_START_OFFSET=dx,dz  start the car off its slot (m): how much an outcome depends on the exact pose
+//! VIBE_VEHICLE_ROAD_LOG=1  per tick: the bridge's road hits, then the wheels' loads, the car's stress input by
+//!                       source, and the scene chunks loading it (anchored or not)
+//! VIBE_TESTBED_REPORT_PASSES  which solve that reads (1 the trial, default; 2 the corrected pass)
+//! VIBE_TESTBED_WATCH_NODES=a,b  those scene nodes' bonds, per logged tick
 #![cfg(all(test, feature = "native-destruction"))]
 
 use nalgebra::Vector3;
@@ -63,13 +68,15 @@ fn app_settings() {
 }
 
 /// Which lab-scene node groups each named structure owns (wall, house).
-struct SceneIndex { group_of_node: Vec<String> }
+struct SceneIndex { group_of_node: Vec<String>, nodes: Vec<Value>, materials: Vec<String> }
 impl SceneIndex {
     fn load() -> Self {
         let path = std::env::var("VIBE_CITY_SCENE").unwrap();
         let pack: Value = serde_json::from_slice(&std::fs::read(&path).expect("lab scene pack")).unwrap();
         let group_of_node = pack["scenario"]["nodeGroups"].as_array().unwrap().iter().map(|g| g.as_str().unwrap_or("").to_string()).collect();
-        Self { group_of_node }
+        let nodes = pack["scenario"]["nodes"].as_array().cloned().unwrap_or_default();
+        let materials = pack["scenario"]["nodeMaterials"].as_array().map_or(Vec::new(), |m| m.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect());
+        Self { group_of_node, nodes, materials }
     }
 }
 
@@ -244,6 +251,10 @@ fn run(r: &Run, meta: &Value) -> Value {
     let geometry = r.geometry;
     let slot = trial["slot"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect::<Vec<_>>();
     let (x, z, heading) = (slot[0], slot[1], slot[2].to_radians());
+    // VIBE_TESTBED_START_OFFSET=dx,dz: start the car off its slot (metres), to
+    // tell an outcome from the exact pose it meets an obstacle in.
+    let offset: Vec<f32> = std::env::var("VIBE_TESTBED_START_OFFSET").ok().map(|v| v.split(',').filter_map(|s| s.trim().parse().ok()).collect()).unwrap_or_default();
+    let (x, z) = (x + offset.first().copied().unwrap_or(0.), z + offset.get(1).copied().unwrap_or(0.));
     let mut arena = crate::movement::PhysicsArena::new(vibe_netcode::movement::MoveConfig::default(),
         vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu).expect("production arena");
     crate::demo_world::seed_world_for_match(&mut arena, "city-default").expect("city world");
@@ -265,15 +276,19 @@ fn run(r: &Run, meta: &Value) -> Value {
         arena.step_vehicles_and_dynamics(DT);
         let _ = city.step(*tick, DT, gravity, arena.physx_world_mut());
         // The native solve report (bit 0: the trial solve that decides what breaks), when auditing.
-        if auditing() && !report_on { report_on = arena.physx_world_mut().is_some_and(|w| w.native_set_stress_solve_report(1).unwrap_or(false)); }
+        // VIBE_TESTBED_REPORT_PASSES: which solves record (bit 0 the trial, bit 1 the corrected one; the last one recorded is read).
+        if (auditing() || std::env::var_os("VIBE_VEHICLE_ROAD_LOG").is_some()) && !report_on {
+            let passes = std::env::var("VIBE_TESTBED_REPORT_PASSES").ok().and_then(|v| v.parse().ok()).unwrap_or(1u32);
+            report_on = arena.physx_world_mut().is_some_and(|w| w.native_set_stress_solve_report(passes).unwrap_or(false));
+        }
         step_ms.push(t0.elapsed().as_secs_f32() * 1000.);
         if let Some((status, counts, _)) = city.native_tick_view() {
             solves += 1; if status.converged { converged += 1; }
             // VIBE_TESTBED_STAGE=1: each tick that breaks anything -- in the trial
             // evaluation, the corrected one, and after the motion is final.
             if std::env::var_os("VIBE_TESTBED_STAGE").is_some() && (status.broken_bonds > 0 || status.post_correction_broken_bonds > 0) {
-                eprintln!("[stage] tick {} broken {} committed {} after-correction {} corrections {} stress-passes {}",
-                    *tick, status.broken_bonds, counts.bonds_broken, status.post_correction_broken_bonds, status.correction_passes, status.stress_passes);
+                eprintln!("[stage] tick {} broken {} committed {} after-correction {} corrections {} stress-passes {} iterations {} converged {}",
+                    *tick, status.broken_bonds, counts.bonds_broken, status.post_correction_broken_bonds, status.correction_passes, status.stress_passes, status.iterations, status.converged);
             }
         }
         *tick += 1;
@@ -511,7 +526,59 @@ fn run(r: &Run, meta: &Value) -> Value {
                 }
             }
         }
+        // VIBE_VEHICLE_ROAD_LOG=1 (the bridge's [road] lines, one per wheel
+        // query hit): tag them with the trial tick, and after the step give
+        // each wheel's jounce and its Vehicle2 loads (kN: suspension, tyre,
+        // suspension-limit/sticky constraint).
+        let road_log = std::env::var_os("VIBE_VEHICLE_ROAD_LOG").is_some();
+        if road_log { eprintln!("[tick] {k} begin z {:.2} speed {:.2}", s.p.z, speed); }
         step(&mut arena, &mut city, &mut tick, if driving { Some(&input) } else { None });
+        if road_log {
+            let a = car_state(&mut arena, id);
+            let m = |w: &Value, k: &str| (w[k].as_array().map_or(0., |v| v.iter().map(|x| x.as_f64().unwrap_or(0.).powi(2)).sum::<f64>().sqrt()) / 100.).round() / 10.;
+            let v = |w: &Value, k: &str| w[k].as_array().map_or(String::new(), |v| v.iter().map(|x| format!("{:.0}", x.as_f64().unwrap_or(0.) / 1e3)).collect::<Vec<_>>().join(","));
+            let loads = arena.vehicle_destruction_debug(id).ok().map_or(String::new(), |d| d["wheelLoads"].as_array().into_iter().flatten()
+                .map(|w| format!("w{} s{} t{} c{} [{}]", w["wheel"], m(w, "suspension"), m(w, "tire"), m(w, "constraintForce"), v(w, "constraintForce"))).collect::<Vec<_>>().join("  "));
+            // The car's stress input summed over its parts, by source (kN): prepared (gravity, Vehicle2's wheel commands), constraint, contact.
+            let sources = arena.physx_world_mut().and_then(|w| w.native_stress_solve_report().ok()).map_or(String::new(), |rep| {
+                let mut sum = [[0f32; 3]; 3];
+                for c in rep.chunks.iter().filter(|c| c.structure_id == 200 && (c.node as usize) < geometry.parts.len()) {
+                    let m = geometry.parts[c.node as usize].mass as f32 / 1e3;
+                    for (i, v) in [&c.prepared_linear, &c.constraint_linear, &c.contact_linear].into_iter().enumerate() { sum[i][0] += v.x * m; sum[i][1] += v.y * m; sum[i][2] += v.z * m; }
+                }
+                let mut top: Vec<(f32, String)> = rep.chunks.iter().filter(|c| c.structure_id == 200 && (c.node as usize) < geometry.parts.len()).map(|c| {
+                    let (v, m) = (&c.contact_linear, geometry.parts[c.node as usize].mass as f32 / 1e3);
+                    ((v.x * v.x + v.y * v.y + v.z * v.z).sqrt() * m, format!("{} ({:.0},{:.0},{:.0})", geometry.parts[c.node as usize].name, v.x * m, v.y * m, v.z * m))
+                }).filter(|t| t.0 > 50.).collect();
+                top.sort_by(|a, b| b.0.total_cmp(&a.0));
+                // The scene chunks taking the most contact load (kN): where, what, and whether anchored (component u32::MAX).
+                let mut scene_top: Vec<(f32, String)> = rep.chunks.iter().filter(|c| c.structure_id != 200).filter_map(|c| {
+                    let node = r.scene.nodes.get(c.node as usize)?;
+                    let m = node["mass"].as_f64().unwrap_or(0.) as f32 / 1e3;
+                    let v = &c.contact_linear;
+                    let f = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt() * m;
+                    let p = &node["centroid"];
+                    Some((f, format!("s{}n{} {} {:.0}kg at {:.2},{:.2},{:.2} {} comp {} ({:.0},{:.0},{:.0})", c.structure_id, c.node, r.scene.materials.get(c.node as usize).map_or("?", |s| s.as_str()),
+                        m * 1e3, p["x"].as_f64().unwrap_or(0.), p["y"].as_f64().unwrap_or(0.), p["z"].as_f64().unwrap_or(0.),
+                        r.scene.group_of_node.get(c.node as usize).map_or("?", |s| s.as_str()), if c.component == u32::MAX { "anchored".into() } else { c.component.to_string() }, v.x * m, v.y * m, v.z * m)))
+                }).filter(|t| t.0 > 50.).collect();
+                scene_top.sort_by(|a, b| b.0.total_cmp(&a.0));
+                let scene_top = scene_top.iter().take(10).map(|t| t.1.clone()).collect::<Vec<_>>().join("; ");
+                format!("scene {scene_top} || prepared {:.0},{:.0},{:.0} constraint {:.0},{:.0},{:.0} contact {:.0},{:.0},{:.0} top {}", sum[0][0], sum[0][1], sum[0][2], sum[1][0], sum[1][1], sum[1][2], sum[2][0], sum[2][1], sum[2][2],
+                    top.iter().take(8).map(|t| t.1.clone()).collect::<Vec<_>>().join("; "))
+            });
+            // VIBE_TESTBED_WATCH_NODES=a,b: those scene nodes' bonds (the last trial solve's stresses, MPa).
+            if let Ok(watch) = std::env::var("VIBE_TESTBED_WATCH_NODES") {
+                let watch: Vec<u32> = watch.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                if let Some(w) = arena.physx_world_mut() {
+                    for row in w.native_bond_stress_rows(0).unwrap_or_default().iter().filter(|b| watch.contains(&b.node0) || watch.contains(&b.node1)) {
+                        eprintln!("[bond] {k} {}-{} area {:.3} util {:.2} c {:.2} t {:.2} s {:.2} damage {:.2} remaining {:.3} broken {}", row.node0, row.node1, row.area, row.utilisation,
+                            row.compression / 1e6, row.tension / 1e6, row.shear / 1e6, row.damage, row.remaining_area, row.broken);
+                    }
+                }
+            }
+            eprintln!("[tick] {k} end w {:.2},{:.2},{:.2} z {:.2} y {:.2} v {:.2},{:.2},{:.2} jounce {:?} | {loads} | kN {sources}", a.w.x, a.w.y, a.w.z, a.p.z, a.p.y, a.v.x, a.v.y, a.v.z, a.jounce);
+        }
         let after = car_state(&mut arena, id);
         let accel_g = prev_v.map_or(0., |pv| (after.v - pv).norm() / DT / 9.81);
         peak_decel = peak_decel.max(accel_g);
