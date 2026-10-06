@@ -335,25 +335,41 @@ perf() {
 # window (macOS asks once for Screen Recording permission). RECORD_GPU=1
 # records headless through GPU readback instead, paced to real time
 # (--video-realtime); its WebP encoder is slow at high resolutions.
+# RECORD_SCRIPT picks another script in client/native (e.g. elm-park-tour,
+# with --scene town); one that logs `[<tag> ...] rolling` and `... cut` is
+# trimmed to that span, as target/native-video/<script>-...-cut.mp4.
 record() {
   local seconds="${1:-120}"; shift || true
+  local script="${RECORD_SCRIPT:-city-demo}"
   iife
-  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/city-demo.mjs" --bundle --format=esm \
-    --platform=browser --target=es2022 --log-level=warning --outfile="$BUNDLE_DIR/city-demo.js"
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/$script.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning --outfile="$BUNDLE_DIR/$script.js"
   mkdir -p "$ROOT/target/native-video"
-  local out="$ROOT/target/native-video/city-$(date +%Y%m%d-%H%M%S).mp4"
+  local out="$ROOT/target/native-video/${script/city-demo/city}-$(date +%Y%m%d-%H%M%S).mp4"
   local capture
   if [ "${RECORD_GPU:-0}" = 1 ]; then
-    capture=(--headless --gpu-capture --video-realtime --video-fps 30 --end-frame $((30 * seconds)))
+    # 1280x720: the WebP encoder keeps up with 30 fps there (it does not at 1600x900).
+    capture=(--headless --gpu-capture --video-realtime --video-fps 30 --end-frame $((30 * seconds)) --width 1280 --height 720)
   else
     # Frames bound the length only; the window's loop runs at ~60 fps here.
     capture=(--native-capture --end-frame $((60 * seconds)))
   fi
-  (launch city-demo.js --width 1600 --height 900 --video "$out" "${capture[@]}" "$@") 2>&1 \
+  (launch "$script.js" --width 1600 --height 900 --video "$out" "${capture[@]}" "$@") 2>&1 \
     | tee "$ROOT/target/native-video/record.log" \
-    | grep --line-buffered -E '\[demo|\[Video\] (Using|Recording|Captured [0-9]|Dropped|Recording complete)|FAILED|Error' || true
+    | grep --line-buffered -E '\[demo|\[tour|\[Video\] (Using|Recording|Captured [0-9]|Dropped|Recording complete)|FAILED|Error' || true
   [ -f "$out" ] || { echo "no video written (log: target/native-video/record.log)" >&2; exit 1; }
   echo "video: $out"
+  # Trim to the script's own span. Its log times count from its own start,
+  # which is the window's first frame, give or take a second; a script holds
+  # its opening shot a moment before `rolling`, so the cut starts 1.5 s early.
+  local from to
+  from=$(grep -oE '\[[a-z]+ [0-9.]+s\] rolling' "$ROOT/target/native-video/record.log" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  to=$(grep -oE '\[[a-z]+ [0-9.]+s\] cut' "$ROOT/target/native-video/record.log" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+  if [ -n "$from" ] && [ -n "$to" ] && command -v ffmpeg >/dev/null; then
+    ffmpeg -v error -y -ss "$(python3 -c "print(max(0.0, $from - 1.5))")" -i "$out" -t "$(python3 -c "print($to - $from + 2.0)")" \
+      -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -movflags +faststart "${out%.mp4}-cut.mp4" \
+      && echo "cut: ${out%.mp4}-cut.mp4"
+  fi
 }
 
 case "${1:-run}" in
