@@ -30,6 +30,7 @@ import { composeScene, Builder } from '../town-kit/src/geometry.mjs';
 import { M, mortarJoints } from '../town-kit/src/materials.mjs';
 import { buildVeneerBungalow } from '../town-kit/src/veneer-houses.mjs';
 import { LANES, PADS, START_Z, LANE_LENGTH, DEBRIS, TRIALS, slotOf } from './trials.mjs';
+import { CONE, turningCones } from './turning.mjs';
 import { assertStrikesClear } from '../../client/native/film/shots.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -129,6 +130,10 @@ function buildLoose() {
       }
     }
   }
+  // The turning ground's cones (turning.mjs): light loose posts, knocked over
+  // by a truck that touches one.
+  const cone = b.table.push({ ...b.table[M.frame], name: 'traffic-cone', color: CONE.color, textureKey: CONE.textureKey, density: CONE.density }) - 1;
+  for (const c of turningCones()) put(c.x, c.z, 0, CONE.half, 0.001, cone);
   return { pack: b.build() };
 }
 
