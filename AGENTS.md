@@ -34,7 +34,11 @@ Unconverged solves continue next tick (`PX_DESTRUCTION_ALLOW_UNCONVERGED=1`).
 server's match loop in-process (`sim-native`, `server/src/local_session.rs`).
 `run` plays it, `smoke` is the automated check (load, shoot, expect broken
 bonds), `debug` prints module-evaluation errors (mystral shows none), and `app`
-packages `target/native-app/out/vibe-land.app`. The WebGL web client is
+packages `target/native-app/out/vibe-land.app`. Films: `scripts/native-mac.sh film
+NAME --scene S` plays client/native/NAME.mjs (client/native/film/: spline shots,
+named places) in lockstep film mode and records it headless, so every frame is
+kept however slow it renders (FILM_SIZE, FILM_FPS, FILM_PREVIEW=1 for stills).
+The WebGL web client is
 unchanged: WebGPU code sits behind `__WEBGPU__`, and the webgpu builds use their
 own three (`three-webgpu`). The mystralnative fork takes only generic,
 upstreamable changes, one feature branch each.
