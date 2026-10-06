@@ -219,6 +219,13 @@ mod tests {
         // "does it stand".
         let broken_total = std::cell::Cell::new(0u64);
         let clusters_first = std::cell::Cell::new(None::<u32>);
+        // VIBE_QUALIFY_BOND_ROWS=path: every bond of structure 0, from the
+        // native stage (utilisation, stresses, damage), at the first tick at
+        // rest and at the end, with the tick each one broke -- what broke and
+        // why, for the authoring.
+        let rows_path = std::env::var("VIBE_QUALIFY_BOND_ROWS").ok();
+        let first_broken: std::cell::RefCell<BTreeMap<u32, u32>> = Default::default();
+        let snapshots: std::cell::RefCell<Vec<serde_json::Value>> = Default::default();
         let mut run = |arena: &mut crate::movement::PhysicsArena, city: &mut crate::city::CityRuntime, tick: &mut u32, n: u32| {
             let mut tallies: BTreeMap<u32, SolveTally> = ids.iter().map(|i| (*i, SolveTally::default())).collect();
             for _ in 0..n {
@@ -230,6 +237,17 @@ mod tests {
                 }
                 *tick += 1;
                 let world = arena.physx_world_mut().unwrap();
+                if rows_path.is_some() {
+                    let rows = world.native_bond_stress_rows(0).unwrap_or_default();
+                    let mut first = first_broken.borrow_mut();
+                    for r in &rows { if r.broken || r.remaining_area <= 0. { first.entry(r.bond_index).or_insert(*tick); } }
+                    if *tick == 2 || *tick == rest {
+                        let rows: Vec<_> = rows.iter().map(|r| serde_json::json!({"bond": r.bond_index, "node0": r.node0, "node1": r.node1, "material": r.material,
+                            "area": r.area, "utilisation": r.utilisation, "compression": r.compression, "tension": r.tension, "shear": r.shear,
+                            "normal": r.stress_normal, "bend": r.stress_bend, "damage": r.damage, "remaining": r.remaining_area, "broken": r.broken})).collect();
+                        snapshots.borrow_mut().push(serde_json::json!({"tick": *tick, "rows": rows}));
+                    }
+                }
                 if !on { on = world.native_set_stress_solve_report(1).unwrap_or(false); continue; }
                 if let Ok(r) = world.native_stress_solve_report() {
                     for (id, t) in tallies.iter_mut() { t.ingest(&r, |s| s == *id); }
@@ -238,6 +256,9 @@ mod tests {
             tallies
         };
         let idle = run(&mut arena, &mut city, &mut tick, rest);
+        if let Some(path) = &rows_path {
+            std::fs::write(path, serde_json::to_vec(&serde_json::json!({"snapshots": *snapshots.borrow(), "firstBroken": *first_broken.borrow()})).unwrap()).unwrap();
+        }
         // Whether it stands as well as converges: a structure can converge and
         // fall down (Bayline's billboard). The authored-structure gate allows
         // under 0.5% of bonds broken at rest (authored_structures_sim.rs).

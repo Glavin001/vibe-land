@@ -160,7 +160,8 @@ def main():
     results = []
     with tempfile.TemporaryDirectory(prefix='qualify-structures-') as tmp:
         for spec in args.packs:
-            path = spec if os.path.exists(spec) else os.path.join(SCENES, spec if spec.endswith('.json') else spec + '.json')
+            # Absolute: the qualification runs from server/, so a relative pack path would not resolve.
+            path = os.path.abspath(spec) if os.path.exists(spec) else os.path.join(SCENES, spec if spec.endswith('.json') else spec + '.json')
             only = set(args.only.split(',')) if args.only else None
             for name, part, anchors, nodes, label in split(path, tmp):
                 if only and name not in only:
