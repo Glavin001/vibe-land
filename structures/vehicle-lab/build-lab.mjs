@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { composeScene, Builder } from '../town-kit/src/geometry.mjs';
 import { M } from '../town-kit/src/materials.mjs';
 import { LANES, PADS, START_Z, LANE_LENGTH, DEBRIS, TRIALS, slotOf } from './trials.mjs';
+import { assertStrikesClear } from '../../client/native/film/shots.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../..');
@@ -174,10 +175,18 @@ export function buildLab() {
         // Its street-facing wall `setback` from the lane's centre.
         const x = lane.x + side * (o.setback + half);
         placements.push({ ...asset, position: [x, 0, o.z], yaw: 0, group: `house@${lane.id}-${k}` });
-        // As chase-shots.mjs aims: half way up, 1.5 m into the wall, from across the street.
-        o.strikes.push({ target: [lane.x + side * (o.setback + 1.5), +(top * 0.5).toFixed(2), o.z], from: side > 0 ? 270 : 90 });
+        // As chase-shots.mjs aims: half way up, 1.5 m into the wall, from
+        // across the street -- and 3 m along it, either way by side: aimed
+        // square across from each other, the two met over the road.
+        o.strikes.push({ target: [lane.x + side * (o.setback + 1.5), +(top * 0.5).toFixed(2), o.z + side * 3], from: side > 0 ? 270 : 90 });
       }
     }
+  }
+  // Strikes launched together must not meet in flight (both harnesses launch
+  // a lane's strikes at once, with the trial's flight and slope).
+  for (const trial of TRIALS.filter((t) => t.attack?.kind === 'strikes')) {
+    const lane = LANES.find((l) => `lane/${l.id}` === trial.at);
+    assertStrikesClear(lane.obstacle.strikes.map((s) => ({ ...s, flight: trial.attack.flight, slope: trial.attack.slope })), `trial ${trial.id}`);
   }
   const pack = composeScene(placements, { key: KEY, title: 'Vehicle test bed' });
   const nodes = pack.scenario.nodes;

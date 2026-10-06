@@ -26,7 +26,7 @@ const CAPTIONS = {
   'step-50': 'A 50 cm step', 'ramp-10': 'A 10° ramp', 'ramp-20': 'A 20° ramp', 'ramp-30': 'A 30° ramp',
   debris: 'A debris field at 36 km/h', 'debris-fast': 'A debris field, flat out', rubble: 'A 1 m rubble pile',
   wall: 'Flat out into a masonry wall', house: 'Flat out into a house', street: 'Down a street of houses',
-  'near-miss': 'Meteors beside, ahead and overhead', 'debris-cab': '700 kg of debris into the cab',
+  'near-miss': 'Meteors into the houses either side as it passes', 'debris-cab': '700 kg of debris into the cab',
   'debris-wheel': '700 kg of debris into a wheel', 'graze-cab': 'A meteor grazes the cab', coast: 'Let go of at speed',
   cannonball: 'Hit by a cannonball', meteor: 'Hit by a meteor', drift: 'A handbrake turn at 54 km/h',
 };
@@ -190,13 +190,7 @@ function trialShot(trial, index, meta, ground) {
       if (!s || s.p[2] + s.v[2] * a.flight < a.carZ) return;
       launched = true;
       const lane = meta.lanes.find((l) => `lane/${l.id}` === trial.at);
-      for (const strike of lane.obstacle.strikes) {
-        const b = (strike.from * Math.PI) / 180, out = (140 * a.flight) / Math.hypot(1, a.slope), target = strike.target;
-        const start = [target[0] + Math.sin(b) * out, target[1] + out * a.slope, target[2] + Math.cos(b) * out];
-        const T = Math.hypot(...start.map((v, i) => v - target[i])) / 140;
-        const velocity = start.map((v, i) => (target[i] - v) / T + (i === 1 ? 9.81 * T * 0.5 : 0));
-        ctx.session.replayEvent(JSON.stringify({ kind: 'meteor', start, velocity, target, flight_s: T }));
-      }
+      for (const strike of lane.obstacle.strikes) launchMeteor(ctx, strike.target, strike.from, a.flight, a.slope);
     }]);
   }
   const away = trial.driveAway;

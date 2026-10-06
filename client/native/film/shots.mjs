@@ -222,16 +222,56 @@ export const METEOR_SLOPE = 0.8;
 
 export function launchMeteor(ctx, target, from, flight = METEOR_FLIGHT_S, slope = METEOR_SLOPE) {
   if (from == null) { ctx.session.meteor(target[0], target[1], target[2]); return; }
-  // From `flight` seconds away at 140 m/s, `slope` m up for every metre out
-  // (the game's 0.8 by default): shorter, a late shot that leaves a moving
-  // target less time to be somewhere else; flatter, a rock that comes in
-  // low, across a street and into a wall, and hits sideways.
+  const { start, velocity, T } = meteorArc(target, from, flight, slope);
+  ctx.session.replayEvent(JSON.stringify({ kind: 'meteor', start, velocity, target, flight_s: T }));
+}
+
+/** The server's meteor: radius in metres (server/src/meteor.rs DEFAULT_RADIUS_M). */
+export const METEOR_RADIUS_M = 2;
+
+/**
+ * A meteor's arc onto `target`: from `flight` seconds away at 140 m/s,
+ * `slope` m up for every metre out (the game's 0.8 by default), from compass
+ * bearing `from` (degrees, 0 = +z). Shorter, a late shot that leaves a
+ * moving target less time to be somewhere else; flatter, a rock that comes
+ * in low, across a street and into a wall, and hits sideways.
+ */
+export function meteorArc(target, from, flight = METEOR_FLIGHT_S, slope = METEOR_SLOPE) {
   const b = (from * Math.PI) / 180, g = -9.81, dist = 140 * flight;
   const out = dist / Math.hypot(1, slope), up = out * slope;
   const start = [target[0] + Math.sin(b) * out, target[1] + up, target[2] + Math.cos(b) * out];
   const T = Math.hypot(...start.map((v, k) => v - target[k])) / 140;
   const velocity = start.map((v, k) => (target[k] - v) / T - (k === 1 ? g * T * 0.5 : 0));
-  ctx.session.replayEvent(JSON.stringify({ kind: 'meteor', start, velocity, target, flight_s: T }));
+  return { start, velocity, T };
+}
+
+/**
+ * Where two strikes come closest in flight: each { at (seconds it is
+ * launched), target, from, flight, slope }. Returns { distance, t }. Two
+ * meteors closer than 2 x METEOR_RADIUS_M hit each other, not their
+ * targets: the vehicle lab's near miss, launched from both sides of a
+ * street at once, met over the road (2026-10-06), and the chase's pairs of
+ * houses passed 1.6 m apart.
+ */
+export function closestApproach(a, b) {
+  const arc = (s) => ({ ...meteorArc(s.target, s.from, s.flight ?? METEOR_FLIGHT_S, s.slope ?? METEOR_SLOPE), at: s.at ?? 0 });
+  const A = arc(a), B = arc(b);
+  const pos = (m, t) => { const u = t - m.at; return m.start.map((v, k) => v + m.velocity[k] * u + (k === 1 ? -4.905 * u * u : 0)); };
+  const from = Math.max(A.at, B.at), to = Math.min(A.at + A.T, B.at + B.T);
+  let best = { distance: Infinity, t: null };
+  for (let t = from; t <= to; t += 0.002) {
+    const d = Math.hypot(...pos(A, t).map((v, k) => v - pos(B, t)[k]));
+    if (d < best.distance) best = { distance: d, t };
+  }
+  return best;
+}
+
+/** Throws when any two strikes would meet in flight (closestApproach). */
+export function assertStrikesClear(strikes, what = 'strikes') {
+  for (let i = 0; i < strikes.length; i += 1) for (let j = i + 1; j < strikes.length; j += 1) {
+    const c = closestApproach(strikes[i], strikes[j]);
+    if (c.distance < 2 * METEOR_RADIUS_M + 0.5) throw new Error(`${what}: strikes ${i} and ${j} pass ${c.distance.toFixed(1)} m apart in flight and would hit each other`);
+  }
 }
 
 /**

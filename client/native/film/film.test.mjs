@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { catmullRom, easeProgress, posePath } from './spline.mjs';
 import { placeResolver, point, offset } from './places.mjs';
-import { hold, path, orbit, fire, timeline, cameraProblems, sightBlocked } from './shots.mjs';
+import { hold, path, orbit, fire, timeline, cameraProblems, sightBlocked, closestApproach, assertStrikesClear, meteorArc } from './shots.mjs';
 
 const close = (a, b, eps = 1e-6) => a.every((v, k) => Math.abs(v - b[k]) < eps);
 
@@ -128,4 +128,25 @@ test('Vibe Town names its houses, cars and streets', { skip: !existsSync(META) }
   assert.equal(place('car', { nearest: [-26, 35] }).id, 'car-5');
   assert.equal(place('house', { nearest: [-51, 16] }).id, 'elm-park/house-26');
   assert.equal(place('street/north-street').position[2], 48);
+});
+
+test('strikes from both sides of a street at once meet in flight unless offset', () => {
+  // The vehicle lab's near miss as it was: houses either side of a street at
+  // x 88 +- 12, struck square across at the same moment (1 s flights, slope 0.25).
+  const across = (dz) => [
+    { target: [100, 2.4, 0 + dz], from: 270, flight: 1, slope: 0.25 },
+    { target: [76, 2.4, 0 - dz], from: 90, flight: 1, slope: 0.25 },
+  ];
+  assert.ok(closestApproach(...across(0)).distance < 0.5);
+  assert.throws(() => assertStrikesClear(across(0)), /would hit each other/);
+  assert.doesNotThrow(() => assertStrikesClear(across(3)));
+  // The chase's pairs (house walls 4 and 2.3 m up): 1.6 m apart over the road.
+  const pair = [{ target: [-17, 3.9, 59.8], from: 180, slope: 0.25 }, { target: [-17, 2.3, 36.2], from: 0, slope: 0.25 }];
+  assert.ok(closestApproach(...pair).distance < 4);
+  // Launched apart in time, the same lines never meet.
+  assert.doesNotThrow(() => assertStrikesClear([pair[0], { ...pair[1], at: 0.4 }]));
+  // The arc lands on its target.
+  const { start, velocity, T } = meteorArc([5, 1, 7], 90, 1, 0.5);
+  const end = start.map((v, k) => v + velocity[k] * T + (k === 1 ? -4.905 * T * T : 0));
+  end.forEach((v, k) => assert.ok(Math.abs(v - [5, 1, 7][k]) < 1e-6));
 });

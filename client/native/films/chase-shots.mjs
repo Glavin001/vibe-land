@@ -7,6 +7,7 @@
 // meteor's target and the bearing it comes in from. Where the truck goes,
 // what the blasts do to it and where it is thrown is the simulation's.
 import { hold, track, watch, strike, strikeNear, enter, drive, card } from '../film/film.mjs';
+import { assertStrikesClear, METEOR_FLIGHT_S } from '../film/shots.mjs';
 
 /**
  * The driving: full throttle, then weaving from 3 s in (steer +1 turns it
@@ -92,12 +93,18 @@ export function chaseShots(place, { title, trace = false, final = true } = {}) {
   //   front of it, and in a full take it stalled there twice;
   // - 4 m behind it, the rock and the blast caught its back end, and it lost
   //   its wheels (scripts/vehicle-testbed.sh measures what it should take).
-  const wall = (house) => [house.position[0], house.top * 0.5, house.side === 'north' ? house.min[2] + 1.5 : house.max[2] - 1.5];
+  // North-side houses 3 m east of their middle, south-side 3 m west: the
+  // houses face each other in pairs, struck at the same moment from opposite
+  // sides, and aimed at the middles the two rocks passed 1.6 m apart over
+  // the road -- closer than two radii, so they met there instead.
+  const wall = (house) => [house.position[0] + (house.side === 'north' ? 3 : -3), house.top * 0.5, house.side === 'north' ? house.min[2] + 1.5 : house.max[2] - 1.5];
   const houses = place.all
     .filter((p) => p.kind === 'house' && p.street === 'North Street')
     .map((p) => [truckReaches(p.position[0] + 10), p])
     .filter(([t]) => t > 2.6 && t < 6.3);
   const strikes = houses.map(([t, house]) => [t, strike({ at: wall(house), from: house.side === 'north' ? 180 : 0, slope: 0.25 })]);
+  // Each lands at its time (strike(): launched METEOR_FLIGHT_S before).
+  assertStrikesClear(houses.map(([t, house]) => ({ at: t - METEOR_FLIGHT_S, target: wall(house), from: house.side === 'north' ? 180 : 0, flight: METEOR_FLIGHT_S, slope: 0.25 })), 'the chase');
   // And a car at the street end of a south-side driveway (car-20), the same
   // way: in across the road behind the truck, into the car, the car
   // into its house.
