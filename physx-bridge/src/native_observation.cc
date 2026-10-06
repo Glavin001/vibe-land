@@ -398,6 +398,66 @@ static std::uint32_t native_settle_ticks() {
 // kRestWindowTicks, kRestDriftM/Rad, kRestEnvelopeM/Rad and
 // kRestContactMarginM live in native_state.h: hibernation uses the same test.
 
+/// VIBE_CITY_NATIVE_MOTION_TRACE=1 (diagnostic): once a second, how the
+/// stage's free bodies are moving and how often they settle and wake.
+static bool native_motion_trace() {
+  static const bool on = [] {
+    const char *raw = std::getenv("VIBE_CITY_NATIVE_MOTION_TRACE");
+    return raw != nullptr && raw[0] == '1';
+  }();
+  return on;
+}
+
+void NativeDestruction::State::report_motion(
+    const std::vector<std::pair<NativeBody *, std::size_t>> &awake) const {
+  std::vector<float> speed, spin, net;
+  std::size_t still = 0;
+  speed.reserve(awake.size());
+  spin.reserve(awake.size());
+  double vy = 0.0;
+  std::size_t falling = 0, rising = 0;
+  for (const auto &entry : awake) {
+    const FfiChunkBodySnapshot &row = snapshots[entry.second];
+    const PxVec3 v(row.linear_velocity.x, row.linear_velocity.y, row.linear_velocity.z);
+    const PxVec3 w(row.angular_velocity.x, row.angular_velocity.y, row.angular_velocity.z);
+    speed.push_back(v.magnitude() * 1000.0f);
+    spin.push_back(w.magnitude() * 57.2957795f);
+    vy += v.y;
+    falling += v.y < -0.01f;
+    rising += v.y > 0.01f;
+    // Net displacement since the previous report, for bodies awake at both.
+    NativeBody &body = *entry.first;
+    const PxVec3 p(row.position.x, row.position.y, row.position.z);
+    if (body.motion_tick != 0 && tick_index > body.motion_tick && tick_index - body.motion_tick <= 60) {
+      const float seconds = static_cast<float>(tick_index - body.motion_tick) / 60.0f;
+      const float moved = (p - body.motion_pos).magnitude();
+      net.push_back(moved / seconds * 1000.0f);
+      still += moved == 0.0f;
+    }
+    body.motion_pos = p;
+    body.motion_tick = tick_index;
+  }
+  const auto pct = [](std::vector<float> &v, float q) {
+    if (v.empty()) return 0.0f;
+    const std::size_t k = std::min(v.size() - 1, static_cast<std::size_t>(q * v.size()));
+    std::nth_element(v.begin(), v.begin() + k, v.end());
+    return v[k];
+  };
+  std::size_t free_bodies = 0;
+  for (const auto &entry : bodies) free_bodies += entry.second.serial != 0;
+  std::fprintf(stderr,
+               "[motion] tick %llu bodies %zu awake %zu speed mm/s p50 %.1f p90 %.1f p99 %.1f max %.0f "
+               "spin deg/s p50 %.2f p90 %.1f mean vy mm/s %.2f falling %zu rising %zu "
+               "settles %llu wakes %llu rewakes<=2s %llu <=10s %llu "
+               "net mm/s p50 %.2f p90 %.2f p99 %.1f unmoved %zu of %zu\n",
+               static_cast<unsigned long long>(tick_index), free_bodies, awake.size(), pct(speed, 0.5f),
+               pct(speed, 0.9f), pct(speed, 0.99f), pct(speed, 1.0f), pct(spin, 0.5f), pct(spin, 0.9f),
+               awake.empty() ? 0.0 : 1000.0 * vy / static_cast<double>(awake.size()), falling, rising,
+               static_cast<unsigned long long>(trace_settles), static_cast<unsigned long long>(trace_wakes),
+               static_cast<unsigned long long>(trace_rewakes_2s), static_cast<unsigned long long>(trace_rewakes_10s),
+               pct(net, 0.5f), pct(net, 0.9f), pct(net, 0.99f), still, net.size());
+}
+
 static bool native_rest_sleep() {
   static const bool enabled = [] {
     const char *raw = std::getenv("VIBE_CITY_NATIVE_REST_SLEEP");
@@ -540,8 +600,13 @@ void NativeDestruction::State::refresh_snapshots() {
     if (sleeping && !body.sleeping) {
       // Sleep edges are what the wire calls a settle; levels cannot express
       // "came to rest just now".
+      body.settled_at = tick_index;
+      trace_settles += 1;
     } else if (!sleeping && body.sleeping) {
       resettled_wakes += 1;
+      trace_wakes += 1;
+      if (body.settled_at != 0 && tick_index - body.settled_at <= 120) trace_rewakes_2s += 1;
+      if (body.settled_at != 0 && tick_index - body.settled_at <= 600) trace_rewakes_10s += 1;
       if (body.rest.slept_tick != 0 && tick_index - body.rest.slept_tick <= 60) {
         // The engine undid a rest sleep at once: something this pass cannot
         // see (a ball, a car, a player) still touches the island. Back off
@@ -580,6 +645,10 @@ void NativeDestruction::State::refresh_snapshots() {
     body.last_snapshot = snap;
     body.has_snapshot = true;
     snapshots.push_back(snap);
+  }
+  if (tick_index % 60 == 0 && native_motion_trace()) {
+    report_motion(awake);
+    trace_settles = trace_wakes = trace_rewakes_2s = trace_rewakes_10s = 0;
   }
   if (tick_index % kRestWindowTicks == 0) {
     if (hibernation.enabled) {

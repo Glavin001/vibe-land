@@ -107,6 +107,14 @@ struct NativeBody {
   physx::PxBounds3 frozen_bounds = physx::PxBounds3::empty();
   /// Rest windows left before a thawed body may freeze again.
   std::uint32_t freeze_cooldown = 0;
+  /// Tick of this body's last settle edge (motion trace: a wake soon after
+  /// one is a re-wake).
+  std::uint64_t settled_at = 0;
+  /// Motion trace: the position at the previous report and its tick, to
+  /// measure how far the body actually moved (the reported velocity is not
+  /// motion under stabilization, which skips integrating a slow body).
+  physx::PxVec3 motion_pos = physx::PxVec3(0.0f);
+  std::uint64_t motion_tick = 0;
 };
 
 /// The rest test shared by rest sleep and hibernation (see
@@ -294,6 +302,10 @@ struct NativeDestruction::State {
   /// Diagnostic (VIBE_CITY_NATIVE_HIBERNATE_TRACE): per closed rest window,
   /// the drift between window means and the envelope inside the window.
   std::vector<float> rest_drift_mm, rest_envelope_mm, rest_turn_deg;
+  /// Motion trace (VIBE_CITY_NATIVE_MOTION_TRACE=1): settle and wake edges
+  /// since the last report, and wakes within 2 s / 10 s of the body's settle.
+  std::uint64_t trace_settles = 0, trace_wakes = 0, trace_rewakes_2s = 0, trace_rewakes_10s = 0;
+  void report_motion(const std::vector<std::pair<NativeBody *, std::size_t>> &awake) const;
   /// Whether the stage was configured with GPU island repair, which rules
   /// hibernation out (see configure).
   bool gpu_island_repair = false;
