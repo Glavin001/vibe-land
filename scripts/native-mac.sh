@@ -110,14 +110,15 @@ case "$SCENE" in
     stale=0
     for source in "$ROOT"/structures/vibe-town/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
     [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vibe-town/build-town.mjs"
-    # Ten cars: eight in Elm Park's driveways, two in the Market Quarter's car
-    # park (the builder's .slots, with headings). The spawn is Main Street's
+    # Eleven cars: eight in Elm Park's driveways, two in the Market Quarter's
+    # car park, a monster truck at North Street's west end for chases (the
+    # builder's .slots, with headings). The spawn is Main Street's
     # west end. Stress iterations: 16, as every structure here was qualified
     # at (scripts/perf/qualify_structures.py) -- the showcase's owner-approved
     # exception; VIBE_CITY_NATIVE_STRESS_ITERATIONS overrides it.
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_VISUALS="$pack.visuals.json" \
       VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \
-      VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-derby,trophy,desert,circuit,derby,trophy,buggy,desert,monster,circuit}" \
+      VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-derby,trophy,desert,circuit,derby,trophy,buggy,desert,monster,circuit,monster}" \
       VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:-$(cat "$pack.slots")}" \
       VIBE_CITY_SPAWN_X=-146 VIBE_CITY_SPAWN_Z=0 \
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
@@ -436,9 +437,9 @@ film() {
   local script="$ROOT/client/native/films/$name.mjs"
   [ -f "$script" ] || script="$ROOT/client/native/$name.mjs"
   [ -f "$script" ] || { echo "no film $name (client/native/films/$name.mjs or client/native/$name.mjs)" >&2; exit 2; }
-  local fps="${FILM_FPS:-30}" preview="${FILM_PREVIEW:-0}"
+  local fps="${FILM_FPS:-30}" preview="${FILM_PREVIEW:-0}" check="${FILM_CHECK:-0}"
   case "$fps" in 30|60) ;; *) echo "FILM_FPS is 30 or 60" >&2; exit 2 ;; esac
-  local size="${FILM_SIZE:-$([ "$preview" = 1 ] && echo 640x360 || echo 1280x720)}"
+  local size="${FILM_SIZE:-$([ "$preview" = 1 ] || [ "$check" = 1 ] && echo 640x360 || echo 1280x720)}"
   local base; base="$ROOT/target/native-video/$name-$(date +%Y%m%d-%H%M%S)"
   local out="$base.mp4" log="$base.log"
   mkdir -p "$ROOT/target/native-video"
@@ -466,6 +467,8 @@ film() {
   local capture=(--headless --width "${size%x*}" --height "${size#*x}") raw="" sequence=false
   if [ "$preview" = 1 ]; then
     mkdir -p "$base-preview"
+  elif [ "$check" = 1 ]; then
+    mkdir -p "$base-check"
   elif ! grep -qa __mystralRecordStart "$MYSTRAL"; then
     if grep -q __VIBE_FILM__ "$BUNDLE_DIR/game.js"; then
       sequence=true; mkdir -p "$base-frames"
@@ -481,16 +484,25 @@ film() {
     --define:FILM_OUT="\"$out\"" --define:FILM_FPS="$fps" --define:FILM_SCENE="\"$SCENE\"" \
     --define:FILM_PREVIEW="$([ "$preview" = 1 ] && echo true || echo false)" --define:FILM_SEQUENCE="$sequence" \
     --define:FILM_LOCKSTEP="$lockstep" --define:FILM_SEED="$seed" \
+    --define:FILM_CHECK="$([ "$check" = 1 ] && echo true || echo false)" --define:FILM_SHOTS="\"${FILM_SHOTS:-}\"" \
     --outfile="$BUNDLE_DIR/film.js"
   (launch film.js "${capture[@]}" "$@") 2>&1 | tee "$log" \
     | grep --line-buffered -E '\[film|\[Video\] (Using|Recording|Dropped|Recording complete)|FAILED|Error' \
-    | grep --line-buffered -vE '\] (stats|impact) \{' || true
+    | grep --line-buffered -vE '\] (stats|impact|truck) \{' || true
   grep -qE '\[film [0-9.]+s\] cut' "$log" && ! grep -qE '\[film [0-9.]+s\] FAILED' "$log" \
     || { echo "film FAILED (log: $log)" >&2; exit 1; }
   # Per-frame performance (frame/step/render/physx ms, active bodies, damage)
   # from the log's stats lines: $base-stats.csv, .json and .html.
   [ "$preview" = 1 ] || python3 "$ROOT/scripts/film/stats.py" "$log" || echo "film: stats FAILED (log: $log)" >&2
   command -v ffmpeg >/dev/null || { echo "film: no ffmpeg, so no sheet, poster or share copy" >&2; return 0; }
+  if [ "$check" = 1 ]; then
+    local stills=("$base-check"/*.png)
+    [ -e "${stills[0]}" ] || { echo "film: check saved no stills (log: $log)" >&2; exit 1; }
+    ffmpeg -v error -y -pattern_type glob -i "$base-check/*.png" \
+      -vf "scale=320:-2,tile=6x$(( (${#stills[@]} + 5) / 6 )):padding=3:margin=3" -frames:v 1 -q:v 3 "$base-check.jpg"
+    echo "check: ${#stills[@]} stills (2 a second) in $base-check/, sheet $base-check.jpg; stats $base-stats.html"
+    return 0
+  fi
   if [ "$preview" = 1 ]; then
     local stills=("$base-preview"/*.png)
     ffmpeg -v error -y -pattern_type glob -i "$base-preview/*.png" \

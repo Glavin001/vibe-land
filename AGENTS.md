@@ -37,7 +37,10 @@ bonds), `debug` prints module-evaluation errors (mystral shows none), and `app`
 packages `target/native-app/out/vibe-land.app`. Films: `scripts/native-mac.sh film
 NAME --scene S` plays client/native/NAME.mjs (client/native/film/: spline shots,
 named places) in lockstep film mode and records it headless, so every frame is
-kept however slow it renders (FILM_SIZE, FILM_FPS, FILM_PREVIEW=1 for stills).
+kept however slow it renders (FILM_SIZE, FILM_FPS, FILM_SEED). Iterate before a
+full take: FILM_PREVIEW=1 (a still per shot, no sim), FILM_CHECK=1 (every frame
+simulated, 2 stills a second, no video: about a minute), FILM_SHOTS=a,b (only
+those shots, after a pre-roll). Lockstep takes repeat but for GPU physics.
 The WebGL web client is
 unchanged: WebGPU code sits behind `__WEBGPU__`, and the webgpu builds use their
 own three (`three-webgpu`). The mystralnative fork takes only generic,

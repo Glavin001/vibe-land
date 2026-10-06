@@ -11,6 +11,7 @@
 // launch), most of them just ahead of a moving camera: `landAhead` puts a
 // building's impact `lead` metres before the camera reaches it.
 import { shoot, hold, path, orbit, strike, barrage, title, card, slowmo, flash, fade, goto } from '../film/film.mjs';
+import { chaseShots } from './chase-shots.mjs';
 
 // No haze: from altitude the far ground fades white under it. The high
 // shots look steeply down instead (~55 degrees at the top of the rise), so
@@ -144,7 +145,12 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     ],
   });
 
-  // ---------------------------------------------------------------- 7. the rise
+  // ---------------------------------------------------------------- 7. the chase
+  // The monster truck through Elm Park, houses going up either side, then
+  // the truck itself (films/chase-shots.mjs).
+  const [getIn, chase, theHit] = chaseShots(place, { title: 'RUN', trace: true });
+
+  // ---------------------------------------------------------------- 8. the rise
   // Straight up out of Elm Park and back over the whole town while a storm
   // falls on both districts: every tower, the cinema, the library, rows of houses.
   const storm = [
@@ -166,7 +172,7 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     ],
   });
 
-  // ---------------------------------------------------------------- 8. the end
+  // ---------------------------------------------------------------- 9. the end
   const last = { position: [-72, 100, -92], lookAt: [-42, 0, -30] };
   const end = hold(last, 4.2, {
     name: 'end',
@@ -175,6 +181,9 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
 
   // Cards between the acts: the picture keeps running underneath, hidden.
   const between = (text, seconds, pose) => hold(pose, seconds, { name: `card-${text.toLowerCase().replace(/\W+/g, '-')}`, cues: [[0, card(text, seconds)]] });
+  // The chase comes before Elm Park's other destruction: it was measured on a
+  // clean North Street (chase-shots.mjs RUN), and the Main Street run's
+  // rubble, thrown that far, stopped the truck short of its meteor.
   return [
     coldOpen,
     between('TO LAST', 1.2, open[1]),
@@ -182,7 +191,10 @@ shoot({ scene: 'town', shake: { strength: 1.1, radius: 120 }, letterbox: 2.39 },
     between('THEY WERE WRONG', 1.2, { position: [101, 5, 3], lookAt: [t1[0], 14, t1[2]] }),
     mainRun,
     market,
-    between('NOWHERE IS SAFE', 1.4, { position: [14, 5.5, 23.5], lookAt: [-10, 3, 20] }),
+    getIn,
+    chase,
+    theHit,
+    between('NOWHERE IS SAFE', 1.4, { position: [-6, 3, 0.6], lookAt: [-36, 2.4, 0] }),
     parkRun,
     theCar,
     rise,

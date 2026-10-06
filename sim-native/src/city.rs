@@ -147,6 +147,20 @@ pub fn start_city(js: Js, args: &[Value]) -> Value {
             }
         }));
     }
+    {
+        // replayEvent(json): one city event on the match (a meteor on a given
+        // arc, a shot, a demolition), as the replay-event route takes it.
+        let session = session.clone();
+        js.set(handle, "replayEvent", js.function("replayEvent", move |js, args| {
+            let Some(text) = js.string_arg(args, 0) else {
+                return js.throw("replayEvent(json) needs the event as JSON");
+            };
+            match session.borrow().replay_event(&text) {
+                Ok(result) => js.string(&result),
+                Err(error) => js.throw(&format!("replayEvent: {error:#}")),
+            }
+        }));
+    }
     // The last step's ticks' costs, for stepStats().
     let last_step: Rc<RefCell<Vec<web_fps_server::local_session::LocalTickStats>>> = Rc::default();
     {

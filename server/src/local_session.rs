@@ -236,6 +236,19 @@ impl LocalSession {
         response.blocking_recv().context("match loop has exited")
     }
 
+    /// Re-apply one city event as `POST /match-stats/:id/replay-event` does
+    /// (`vl repro`'s events): above all a meteor on a given arc -- start,
+    /// velocity, flight time, target -- where `meteor()` picks its own
+    /// bearing. Films aim a blast with it (client/native/film strike `from`).
+    pub fn replay_event(&self, json: &str) -> Result<String> {
+        let event: serde_json::Value = serde_json::from_str(json).context("replay event is not JSON")?;
+        let (reply, response) = tokio::sync::oneshot::channel();
+        self.events
+            .send(MatchEvent::ReplayEvent { event, reply })
+            .map_err(|_| anyhow::anyhow!("match loop has exited"))?;
+        response.blocking_recv().context("match loop has exited")?.map_err(|error| anyhow::anyhow!(error))
+    }
+
     /// In lockstep, advance the match exactly `ticks` ticks after every
     /// packet sent before this call, and wait for them: returns the server
     /// tick reached. The ticks are the match's own (`tick()`, fracture

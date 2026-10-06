@@ -20,17 +20,18 @@
 // the script logs `rolling` and `cut` for native-mac.sh to trim a real-time
 // --video recording to. Preview (FILM_PREVIEW=1)
 // records nothing: it saves one still from the middle of each shot.
-/* global FILM_OUT, FILM_FPS, FILM_PREVIEW, FILM_SCENE, FILM_SEQUENCE, FILM_LOCKSTEP, FILM_SEED, __mystralRecordStart, __mystralRecordStop, __mystralRecordStats, __mystralSaveScreenshot */
+/* global FILM_OUT, FILM_FPS, FILM_PREVIEW, FILM_SCENE, FILM_SEQUENCE, FILM_LOCKSTEP, FILM_SEED, FILM_CHECK, FILM_SHOTS, __mystralRecordStart, __mystralRecordStop, __mystralRecordStats, __mystralSaveScreenshot */
 
 import { loadPlaces, placeResolver, point, offset } from './places.mjs';
+import { hold as filmHold } from './shots.mjs';
 import {
-  hold, path, orbit, track, fire, meteor, drive, goto, note, strike, barrage, title, card, slowmo, flash, fade,
-  METEOR_FLIGHT_S, timeline, cameraProblems,
+  hold, path, orbit, track, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, slowmo,
+  flash, fade, METEOR_FLIGHT_S, timeline, cameraProblems,
 } from './shots.mjs';
 
 export {
-  hold, path, orbit, track, fire, meteor, drive, goto, note, strike, barrage, title, card, slowmo, flash, fade,
-  METEOR_FLIGHT_S, point, offset,
+  hold, path, orbit, track, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, slowmo,
+  flash, fade, METEOR_FLIGHT_S, point, offset,
 };
 
 // Set by native-mac.sh at bundle time (esbuild --define).
@@ -46,6 +47,16 @@ const SEQUENCE = typeof FILM_SEQUENCE === 'boolean' ? FILM_SEQUENCE : false;
 const LOCKSTEP = typeof FILM_LOCKSTEP === 'boolean' ? FILM_LOCKSTEP : false;
 /** The film's seed: the server's meteor bearings (VIBE_MATCH_SEED) and the client's Math.random. */
 const DEFAULT_SEED = typeof FILM_SEED === 'number' ? FILM_SEED : 1;
+// A simulation check (FILM_CHECK=1): every frame simulated, the GPU drawing
+// two a second, each kept as a still; no video. Seconds, not minutes, to see
+// whether a shot does what it should.
+const CHECK = typeof FILM_CHECK === 'boolean' ? FILM_CHECK : false;
+// Only these shots (FILM_SHOTS=name,name), from the settled world, after a
+// pre-roll for the meteors they launch early: a scene reshot alone. Not the
+// world the whole film would have left it in -- that is a full take.
+const ONLY_SHOTS = typeof FILM_SHOTS === 'string' && FILM_SHOTS ? FILM_SHOTS.split(',').map((s) => s.trim()) : null;
+/** Seconds of film before the selected shots, for meteors they launch early (METEOR_FLIGHT_S). */
+const PREROLL_S = 3;
 /** Scenes with a town-kit details layer (tree leaves), which loads after the city. */
 const TOWN_KIT_SCENES = new Set(['town', 'showcase', 'bayline']);
 
@@ -127,7 +138,7 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
   // filmed); then `settle` seconds of frames -- a fixed number of ticks --
   // before anything is filmed, so every take starts from the same world.
   let filmMode = !preview && globalThis.__VIBE_FILM__ ? globalThis.__VIBE_FILM__ : null;
-  try { filmMode?.enable({ fps, seed }); } catch (error) { log(`film mode FAILED (${error?.message ?? error}): film time is the wall clock`); filmMode = null; }
+  try { filmMode?.enable({ fps, seed, drawEvery: CHECK ? Math.max(1, Math.round(fps / 2)) : 1 }); } catch (error) { log(`film mode FAILED (${error?.message ?? error}): film time is the wall clock`); filmMode = null; }
   if (!filmMode && !preview && !globalThis.__VIBE_FILM__) log('no film mode (__VIBE_FILM__): film time is the wall clock');
   if (filmMode) {
     for (let k = Math.round(settle * fps) + 1; k > 0; k -= 1) await filmMode.frame();
@@ -146,7 +157,7 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
   const shakes = shaker(shake ?? { strength: 0 });
   // t: the film time (video seconds) of the cue being run; edit(): a line of the cut's edit list.
   const ctx = {
-    place, e2e, drive: driveBridge, log, t: 0,
+    place, e2e, drive: driveBridge, log, t: 0, vehicles: new Map(),
     session: globalThis.__VIBE_NATIVE_SESSION__,
     edit: (e) => log(`edit ${JSON.stringify(e, (k, v) => (typeof v === 'number' ? +v.toFixed(3) : v))}`),
     impact: (position, at) => {
@@ -260,15 +271,37 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
   }
 
   /** The shots on film time: cues fire as their time comes, the camera takes each frame's pose. */
-  async function runFilm(tl) {
-    const progress = progressMeter(Math.round(tl.duration * fps));
+  async function runFilm(tl, offset = 0) {
+    const progress = progressMeter(Math.round((tl.duration - offset) * fps));
+    const checkDir = OUT.replace(/\.mp4$/, '-check');
+    let stills = 0;
     let shown = -1, next = 0, followed = -Infinity;
     if (letterbox) ctx.edit({ type: 'letterbox', ratio: letterbox });
+    let lastT = null;
+    /** Every vehicle's position and velocity (film time), for track() and strikeNear(). */
+    const trackVehicles = (t) => {
+      const seen = new Map();
+      for (const v of e2e.snapshot?.()?.vehicles ?? []) {
+        const before = ctx.vehicles.get(v.id), dt = lastT == null ? 0 : t - lastT;
+        const velocity = before && dt > 0 ? v.position.map((c, k) => (c - before.position[k]) / dt) : before?.velocity ?? [0, 0, 0];
+        const smoothed = before ? before.velocity.map((c, k) => c + (velocity[k] - c) * 0.3) : velocity;
+        // Acceleration from the smoothed velocity, smoothed again (strikeNear's lead).
+        const acceleration = before && dt > 0 ? smoothed.map((c, k) => (c - before.velocity[k]) / dt) : [0, 0, 0];
+        seen.set(v.id, {
+          ...v, velocity: smoothed,
+          acceleration: before?.acceleration ? before.acceleration.map((c, k) => c + (acceleration[k] - c) * 0.1) : acceleration,
+        });
+      }
+      ctx.vehicles = seen;
+      lastT = t;
+    };
     const step = (t) => {
+      trackVehicles(t);
       while (next < tl.cues.length && tl.cues[next].time <= t) {
         const cue = tl.cues[next++];
         if (cue.first) log(`${Math.max(0, cue.time).toFixed(1)}s ${cue.label}`);
-        ctx.t = Math.max(0, cue.time);
+        // Video seconds: a pre-roll's cues (meteors launched early) come before 0.
+        ctx.t = cue.time - offset;
         try { cue.run(ctx); } catch (error) { log(`cue ${cue.label} FAILED: ${error?.message ?? error}`); }
       }
       const i = tl.shotAt(t);
@@ -279,23 +312,31 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
         followed = t;
         e2e.dropAt({ position: [pose.position[0], 1.2, pose.position[2]], yaw: 0, pitch: 0 });
       }
-      e2e.setCapturePose(shakes.apply(pose, t));
+      e2e.setCapturePose(shakes.apply(pose, t - offset));
       return t >= tl.duration;
     };
     if (filmMode) {
       // All of it inside onFrame: the pose set there lands in that very frame,
       // and frames do not wait for anything else.
       await new Promise((resolve) => {
-        let t0 = null, done = false, saved = 0, frames = 0;
+        let t0 = null, done = false, saved = 0, frames = 0, rolling = false;
         const off = filmMode.onFrame((t) => {
           // The last frame drawn (sequences only): this callback runs before the next.
-          if (t0 != null && sequence && !__mystralSaveScreenshot(`${sequence}/${String(saved++).padStart(5, '0')}.png`)) log(`FAILED to save frame ${saved}`);
+          if (rolling && sequence && !__mystralSaveScreenshot(`${sequence}/${String(saved++).padStart(5, '0')}.png`)) log(`FAILED to save frame ${saved}`);
+          // A check's still: the last frame, if it was drawn.
+          if (rolling && CHECK && filmMode.state().drawn) {
+            const vt = t - t0 - offset - 1 / fps, shot = tl.shots[tl.shotAt(vt + offset)].name;
+            __mystralSaveScreenshot(`${checkDir}/${String(stills++).padStart(3, '0')}-${shot}-${vt.toFixed(1)}s.png`);
+          }
           // The frame after the last one: stop before it is drawn.
           if (done) { stopRecording(); off(); resolve(); return; }
-          if (t0 == null) { t0 = t; startRecording(); log('rolling'); } else logStats(frames - 1, t - t0 - 1 / fps);
-          progress(frames, t - t0);
-          frames += 1;
-          done = step(t - t0);
+          if (t0 == null) t0 = t;
+          const ft = t - t0;
+          // Rolling once past the pre-roll: the recording, stats and progress are the film's own.
+          if (!rolling && ft >= offset - 1e-6) { rolling = true; if (!CHECK) startRecording(); log(CHECK ? 'rolling (check: stills, no video)' : 'rolling'); }
+          else if (rolling) logStats(frames - 1, ft - offset - 1 / fps);
+          if (rolling) { progress(frames, ft - offset); frames += 1; }
+          done = step(ft);
         });
       });
     } else {
@@ -321,14 +362,24 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
    */
   async function play(shots, { settle: hold = 0.5 } = {}) {
     try {
-      const tl = timeline(shots).build(ctx);
+      let tl = timeline(shots).build(ctx);
+      if (ONLY_SHOTS) {
+        const picked = tl.shots.filter((s) => ONLY_SHOTS.includes(s.name));
+        const missing = ONLY_SHOTS.filter((n) => !tl.shots.some((s) => s.name === n));
+        if (missing.length || !picked.length) throw new Error(`FILM_SHOTS: no shot ${missing.join(', ') || ONLY_SHOTS.join(', ')} (shots: ${tl.shots.map((s) => s.name).join(', ')})`);
+        const first = picked[0].pose(0);
+        const chosen = shots.filter((s) => ONLY_SHOTS.includes(s.name));
+        tl = timeline([filmHold(first, PREROLL_S, { name: 'pre-roll' }), ...chosen]).build(ctx);
+        tl.preRoll = PREROLL_S;
+        log(`only ${ONLY_SHOTS.join(', ')}: ${(tl.duration - PREROLL_S).toFixed(1)} s after a ${PREROLL_S} s pre-roll, from the settled world`);
+      }
       log(`${tl.shots.length} shots, ${tl.duration.toFixed(1)} s`);
       for (const problem of cameraProblems(tl, place.all)) log(`  WARNING: ${problem}`);
       if (preview) { await runPreview(tl); await cut(0); return; }
       e2e.setCapturePose(tl.poseAt(0));
       if (filmMode) for (let k = Math.round(hold * fps); k > 0; k -= 1) await filmMode.frame();
       else await sleep(hold * 1000);
-      await runFilm(tl);
+      await runFilm(tl, tl.preRoll ?? 0);
       await cut(0);
     } catch (error) {
       log(`FAILED: ${error?.stack ?? error}`);

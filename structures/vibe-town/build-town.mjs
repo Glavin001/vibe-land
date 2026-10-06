@@ -242,6 +242,9 @@ function layout() {
   for (const [k, x] of [90, 134].entries()) frontage(ASSETS.tower(['glass', 'limestone'][k]), x, 48, 1, 8, 'tower');
   paths.push([100, 124, 55, 70, 'asphalt']);
   slots.push([106.5, 63, 180], [115.5, 63, 180]);
+  // car-10, the chase car: North Street's west end, in the eastbound lane,
+  // facing down the street (films drive it the length of Elm Park).
+  slots.push([-144, 46, 90]);
   place(ASSETS.prop('billboard'), 112, 73, 0, 'billboard');
   // South Street: shops facing north, then a grocer; a library-sized green with trees.
   shopRow(-48, 1, 10, ['CAFE', 'TOYS', 'BOOKS', 'DELI', 'BAKERY', 'BARBER', 'FLORIST'], ['sage', 'ochre', 'blue', 'rose', 'cream']);

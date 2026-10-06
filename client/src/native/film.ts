@@ -77,6 +77,9 @@ export type FilmState = {
   frame: number;
   t: number;
   tick: number;
+  /** enable()'s drawEvery, and whether the last film frame was drawn. */
+  drawEvery: number;
+  drawn: boolean;
   /** The server tick when the film was enabled (0 with VIBE_FILM_LOCKSTEP=1). */
   startTick: number;
   seed: number;
@@ -90,8 +93,11 @@ export interface FilmApi {
   /**
    * fps 30 or 60 (any divisor of 60). From the next frame on, frames are film
    * frames. seed (u32, default 1) seeds Math.random from frame 1.
+   * drawEvery (default 1): the GPU draws only every Nth film frame (and frame
+   * 1); the others are simulated and the game updates (input, streams,
+   * effects) exactly as in a drawn frame -- a simulation check, much faster.
    */
-  enable(options: { fps: number; seed?: number }): void;
+  enable(options: { fps: number; seed?: number; drawEvery?: number }): void;
   /** Called at the start of each film frame, before the sim steps and the game renders. */
   onFrame(cb: FrameCallback): () => void;
   /** Resolves after the next frame has been simulated and rendered. */
@@ -136,6 +142,12 @@ let lastFrameWallStart: number | null = null;
 /** The pre-roll: frame 1's frame delta, longer than any catch-up clamp. */
 const PREROLL_S = 5;
 let seed = 1;
+let drawEvery = 1;
+let lastDrawn = true;
+/** The game's renderer, for skipping a frame's draw (native/main.tsx publishes the R3F store). */
+const gameRenderer = (): { render: (...args: unknown[]) => unknown } | null =>
+  (g as unknown as { __VIBE_NATIVE_STORE__?: { getState(): { gl?: { render: (...args: unknown[]) => unknown } } } })
+    .__VIBE_NATIVE_STORE__?.getState().gl ?? null;
 /** performance.now() at enable, the film's time origin. */
 let originMs = 0;
 let link: InProcessLink | null = null;
@@ -264,13 +276,22 @@ function runFilmFrame(): void {
   const wallRender = realNow();
   const callbacks = [...queued.values()];
   queued.clear();
-  for (const cb of callbacks) {
-    try {
-      cb(virtualNowMs);
-    } catch (error) {
-      console.error('[film] frame callback failed', error);
+  // An undrawn frame: everything but the GPU draw (renderer.render a no-op).
+  const draw = drawEvery <= 1 || frame === 1 || frame % drawEvery === 0;
+  const gl = draw ? null : gameRenderer(), render = gl?.render;
+  if (gl) gl.render = () => undefined;
+  try {
+    for (const cb of callbacks) {
+      try {
+        cb(virtualNowMs);
+      } catch (error) {
+        console.error('[film] frame callback failed', error);
+      }
     }
+  } finally {
+    if (gl && render) gl.render = render;
   }
+  lastDrawn = draw;
   const wallEnd = realNow();
   lastStats = {
     onFrameMs: wallStep - wallStart,
@@ -289,7 +310,7 @@ function runFilmFrame(): void {
   for (const resolve of done) resolve(result);
 }
 
-function enable({ fps: requested, seed: requestedSeed = 1 }: { fps: number; seed?: number }): void {
+function enable({ fps: requested, seed: requestedSeed = 1, drawEvery: every = 1 }: { fps: number; seed?: number; drawEvery?: number }): void {
   if (active) throw new Error('[film] already enabled');
   const perFrame = SIM_HZ / requested;
   if (!Number.isInteger(perFrame) || perFrame < 1) {
@@ -302,6 +323,7 @@ function enable({ fps: requested, seed: requestedSeed = 1 }: { fps: number; seed
   installClock();
   if (!Number.isFinite(requestedSeed)) throw new Error(`[film] seed must be a number, got ${requestedSeed}`);
   seed = requestedSeed >>> 0;
+  drawEvery = Math.max(1, Math.floor(every));
   fps = requested;
   ticksPerFrame = perFrame;
   frameMs = 1000 / fps;
@@ -378,6 +400,7 @@ export const film: FilmApi = {
   active: () => active,
   state: () => ({
     active, fps, frame: frameCount, t: frameCount / fps, tick: lastTick, startTick, seed, randomCalls, randomDigest,
+    drawEvery, drawn: lastDrawn,
     ...(lastStats ?? {}),
   }),
 };

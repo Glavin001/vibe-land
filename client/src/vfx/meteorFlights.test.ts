@@ -132,6 +132,15 @@ describe('meteorFlights', () => {
     expect(meteorFlights(5000 + 12_000 + 1000).length).toBe(0);
   });
 
+  it('keeps every rock of a barrage in the air (more than the play pool of 8)', () => {
+    for (let id = 0; id < 24; id += 1) {
+      registerMeteorFlight({ ...plan([0, 240, -300], [id * 10, 0, 0], 2.74), bodyId: 100 + id, serverLaunchTimeUs: 5_000_000 + id * 220_000 }, (us) => us / 1000);
+    }
+    // Before any has landed: all 24 are live, and none is left to the ball renderer.
+    expect(meteorFlights(5000).length).toBe(24);
+    for (let id = 0; id < 24; id += 1) expect(isMeteorBody(100 + id)).toBe(true);
+  });
+
   it('replaces a flight whose body id is reused', () => {
     registerMeteorFlight(plan([0, 200, 0], [0, 0, 0], 2), (us) => us / 1000);
     const again = registerMeteorFlight(plan([50, 200, 0], [1, 0, 0], 2), (us) => us / 1000);

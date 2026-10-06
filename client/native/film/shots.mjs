@@ -60,22 +60,49 @@ export const orbit = ({ centre, radius, height, from = 0, to = 90, lookHeight },
  * that spot when the shot starts) or a function returning a position.
  */
 export const track = (target, offset, seconds, opts = {}) => shot('track', seconds, opts, (ctx) => {
-  let follow = typeof target === 'function' ? target : null;
-  let id = typeof target === 'number' ? target : null;
-  const where = () => {
-    if (follow) return follow();
-    const vehicles = ctx.e2e?.snapshot()?.vehicles ?? [];
-    if (id == null) {
-      const spot = point(target, ctx.place);
-      const near = vehicles.reduce((a, b) => (!a || Math.hypot(b.position[0] - spot[0], b.position[2] - spot[2]) < Math.hypot(a.position[0] - spot[0], a.position[2] - spot[2]) ? b : a), null);
-      if (!near) return spot;
-      id = near.id;
-    }
-    return vehicles.find((v) => v.id === id)?.position ?? point(target, ctx.place);
-  };
+  const follow = typeof target === 'function' ? target : null;
+  const where = () => (follow ? follow() : vehicleOf(target, ctx)?.position ?? point(target, ctx.place));
   const lookUp = opts.lookOffset ?? [0, 0.5, 0];
-  return () => { const p = where(); return { position: add(p, offset), lookAt: add(p, lookUp) }; };
+  // `lag` seconds of smoothing (a camera operator, not a rigid mount): a
+  // bouncing car does not shake the frame. Film time, so a take is the same.
+  // `release` (seconds into the shot): from then the camera stops where it
+  // is and only turns to keep the vehicle in frame -- for a car about to be
+  // thrown, which a following camera would chase into a wall.
+  const lag = opts.lag ?? 0.25, release = opts.release ?? Infinity;
+  let smooth = null, last = null, held = null;
+  return (t) => {
+    const p = where();
+    if (!smooth || last == null || t < last) { smooth = [...p]; held = null; }
+    else { const k = lag > 0 ? 1 - Math.exp(-(t - last) / lag) : 1; smooth = smooth.map((v, i) => v + (p[i] - v) * k); }
+    last = t;
+    if (t >= release) held ??= add(smooth, offset);
+    return { position: held ?? add(smooth, offset), lookAt: add(smooth, lookUp) };
+  };
 });
+
+/**
+ * The live vehicle a film means: a vehicle id, or a parking place (car-N:
+ * the car nearest that spot when first asked, then that car wherever it
+ * goes). Each frame's position and velocity come from the runner (ctx.vehicles).
+ */
+export function vehicleOf(target, ctx) {
+  ctx.vehicleIds ??= new Map();
+  let id = typeof target === 'number' ? target : ctx.vehicleIds.get(target);
+  if (id == null) {
+    const spot = point(target, ctx.place);
+    let best = null;
+    for (const [vid, v] of ctx.vehicles ?? []) {
+      const d = Math.hypot(v.position[0] - spot[0], v.position[2] - spot[2]);
+      if (!best || d < best.d) best = { vid, d };
+    }
+    // Only a car at the spot: a far one is some other car (the one meant
+    // may not be streamed yet: only cars near the player are).
+    if (!best || best.d > 12) return null;
+    id = best.vid;
+    ctx.vehicleIds.set(target, id);
+  }
+  return ctx.vehicles?.get(id) ?? null;
+}
 
 // ---------------------------------------------------------------- actions
 // An action is { label, steps: [[dt, (ctx) => void], ...] }; a cue may also
@@ -160,21 +187,92 @@ function strikePoint(at, ctx, height) {
 }
 
 /**
- * The server's meteor on a place or point, no player needed. The cue's time
- * is when it LANDS (it is launched METEOR_FLIGHT_S before); `flash` adds a
- * white flash to the cut at the impact. Impacts shake a camera near them
- * (shoot's `shake`).
+ * Launch the server's meteor at `target`: from a random bearing (the game's
+ * own meteor), or, with `from` (the compass bearing it comes FROM, degrees:
+ * 0 north, +z; 90 east, +x), on the same 300 m out, 240 m up, 140 m/s arc
+ * from that side -- through the match's replay of a planned meteor, the arc
+ * solved as the server solves it (meteor.rs solve_velocity). Either way it is
+ * the real meteor, simulated from launch: `from` only picks where it comes
+ * in from, and so which way the blast throws what it hits.
  */
-export function strike({ at, height, flash: white = false }) {
+function launchMeteor(ctx, target, from, flight = METEOR_FLIGHT_S) {
+  if (from == null) { ctx.session.meteor(target[0], target[1], target[2]); return; }
+  // `flight` seconds out on the same slope (300 out : 240 up) at 140 m/s:
+  // the default is the game's own range; shorter, a late shot that leaves a
+  // moving target less time to be somewhere else.
+  const b = (from * Math.PI) / 180, g = -9.81, k = flight / METEOR_FLIGHT_S;
+  const start = [target[0] + Math.sin(b) * 300 * k, target[1] + 240 * k, target[2] + Math.cos(b) * 300 * k];
+  const T = Math.hypot(...start.map((v, k) => v - target[k])) / 140;
+  const velocity = start.map((v, k) => (target[k] - v) / T - (k === 1 ? g * T * 0.5 : 0));
+  ctx.session.replayEvent(JSON.stringify({ kind: 'meteor', start, velocity, target, flight_s: T }));
+}
+
+/**
+ * The server's meteor on a place or point, no player needed. The cue's time
+ * is when it LANDS (it is launched METEOR_FLIGHT_S before); `from` picks the
+ * bearing it comes from (launchMeteor); `flash` adds a white flash to the cut
+ * at the impact. Impacts shake a camera near them (shoot's `shake`).
+ */
+export function strike({ at, height, from, flash: white = false }) {
   const name = typeof at === 'string' ? at : at?.id ?? 'a point';
   return {
-    label: `strike ${name}`,
+    label: `strike ${name}${from != null ? ` from ${from}` : ''}`,
     steps: [[-METEOR_FLIGHT_S, (ctx) => {
       const p = strikePoint(at, ctx, height), lands = ctx.t + METEOR_FLIGHT_S;
-      ctx.session.meteor(p[0], p[1], p[2]);
+      launchMeteor(ctx, p, from);
       ctx.impact(p, lands);
       if (white) ctx.edit({ type: 'flash', at: lands, seconds: 0.15 });
     }]],
+  };
+}
+
+/**
+ * A strike where a vehicle WILL be when it lands: its position plus its
+ * velocity times the flight, then `ahead` metres further along its heading
+ * and `side` metres to its right (negative: left). `side` 0, `ahead` 0 is a
+ * direct hit if it keeps its speed. Like strike(), the cue's time is the impact.
+ */
+export function strikeNear(target, { ahead = 0, side = 0, height = 0.8, from, flight = METEOR_FLIGHT_S, flash: white = false } = {}) {
+  if (flight !== METEOR_FLIGHT_S && from == null) throw new Error('strikeNear: a short `flight` needs `from` (the bearing it comes from)');
+  return {
+    label: `strike near ${typeof target === 'string' ? target : target}${from != null ? ` from ${from}` : ''}`,
+    steps: [[-flight, (ctx) => {
+      const v = vehicleOf(target, ctx);
+      if (!v) { ctx.log(`strike near ${target}: no such vehicle`); return; }
+      // Where it will be: its velocity and its acceleration along it, measured
+      // over the last frames (a car still gathering speed outruns v * t).
+      const [vx, , vz] = v.velocity, speed = Math.hypot(vx, vz);
+      const fx = speed > 0.5 ? vx / speed : Math.sin(v.heading ?? 0), fz = speed > 0.5 ? vz / speed : Math.cos(v.heading ?? 0);
+      const along = Math.max(-8, Math.min(8, (v.acceleration?.[0] ?? 0) * fx + (v.acceleration?.[2] ?? 0) * fz));
+      const run = speed * flight + 0.5 * along * flight * flight;
+      const p = [
+        v.position[0] + fx * (run + ahead) - fz * side,
+        height,
+        v.position[2] + fz * (run + ahead) + fx * side,
+      ];
+      const lands = ctx.t + flight;
+      launchMeteor(ctx, p, from, flight);
+      ctx.impact(p, lands);
+      if (white) ctx.edit({ type: 'flash', at: lands, seconds: 0.15 });
+    }]],
+  };
+}
+
+/**
+ * Into a vehicle (a parking place or id): the player dropped beside it,
+ * facing it, then the game's enter-the-nearest-vehicle; drive() then drives it.
+ */
+export function enter(target) {
+  return {
+    label: `enter ${target}`,
+    steps: [
+      [0, (ctx) => {
+        const v = vehicleOf(target, ctx), p = v?.position ?? point(target, ctx.place);
+        ctx.e2e.dropAt({ position: [p[0] - 2.5, p[1] + 1.2, p[2] - 2.5], yaw: Math.atan2(2.5, 2.5), pitch: 0 });
+      }],
+      [0.4, (ctx) => ctx.drive.interact()],
+      [1.0, (ctx) => ctx.log(`entered: driving vehicle ${ctx.e2e.snapshot()?.drivenVehicleId ?? 'none'}`)],
+    ],
   };
 }
 

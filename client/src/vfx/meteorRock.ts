@@ -124,9 +124,11 @@ export function buildMeteorMaterial(): { material: THREE.MeshStandardMaterial; u
   };
   if (__WEBGPU__) {
     // The simple WebGPU path (no GLSL patch): dark basalt with an even glow,
-    // which follows uGlow through emissiveIntensity (MeteorLayer sets it).
+    // which follows uGlow through emissiveIntensity (MeteorLayer sets it). An
+    // ember, not a lamp: at full orange the glow swamped the lighting and a
+    // rock read as a flat orange blob (films, 2026-10-06).
     const plain = new THREE.MeshStandardMaterial({
-      color: 0x2b2420, roughness: 0.9, metalness: 0.1, emissive: 0xff4a10, emissiveIntensity: uniforms.uGlow.value,
+      color: 0x2b2420, roughness: 0.9, metalness: 0.1, emissive: 0x7a2006, emissiveIntensity: uniforms.uGlow.value,
     });
     return { material: plain, uniforms };
   }

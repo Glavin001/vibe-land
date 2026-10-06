@@ -108,7 +108,14 @@ export const LANDED_LINGER_S = 3;
 export const UNSTREAMED_LINGER_S = 0.75;
 /** And this long after launch regardless, in case something went badly wrong. */
 export const MAX_AGE_S = 60;
-const MAX_FLIGHTS = 8;
+/**
+ * A guard against leaks only, as large as the server's meteor pool can be
+ * (VIBE_METEOR_POOL: 8-256): the server's id ring already bounds the rocks,
+ * and the sweep forgets landed ones. It was 8, the play pool, and a barrage
+ * (a film's ~12 meteors in the air at once) evicted rocks still flying: the
+ * meteor layer stopped drawing them and the body renderer drew their balls.
+ */
+const MAX_FLIGHTS = 256;
 
 const flights: MeteorFlight[] = [];
 let nextSeed = 1;
