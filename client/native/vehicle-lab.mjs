@@ -62,7 +62,10 @@ function trialShot(trial, index, meta, ground) {
     m.maxZ = Math.max(m.maxZ, s.p[2]);
     m.minUpY = Math.min(m.minUpY, s.upY);
     if (trial.goal != null && m.goalSeconds == null && s.p[2] >= trial.goal) m.goalSeconds = t;
-    if (trial.impactZ != null && m.impactSpeed == null && s.p[2] + 2.5 >= trial.impactZ - 0.2) { m.impactSpeed = speed; m.impactSeconds = t; }
+    // Impact: the speed of the last sample before the car's nose reached it (0.1 s apart).
+    if (trial.impactZ != null && m.impactSpeed == null && s.p[2] + 2.5 >= trial.impactZ - 0.2) { m.impactSpeed = Math.max(speed, last ? speedOf(last) : 0); m.impactSeconds = t; }
+    m.timeTo ??= { 10: null, 20: null };
+    for (const v of [10, 20]) if (m.timeTo[v] == null && speed >= v) m.timeTo[v] = t;
     if (last && prevT != null && t > prevT) {
       const dv = Math.hypot(...s.v.map((c, k) => c - last.v[k]));
       m.peakDecelG = Math.max(m.peakDecelG, dv / (t - prevT) / 9.81);
@@ -157,15 +160,46 @@ function trialShot(trial, index, meta, ground) {
       }
     }]);
   }
+  const away = trial.driveAway;
+  let awayFrom = null, quietSince = null, awayStart = null;
+  const tail = away ? 9.5 : 0;
+  if (away) {
+    // Still drivable? As the headless harness: let it come to rest (up to 5 s),
+    // then reverse (when it hit something ahead) and full throttle on full lock.
+    if (!driving) cues.push([lead + seconds - 0.6, enter(car)]);
+    for (let k = 0; k * 0.1 <= tail; k += 1) cues.push([lead + seconds + k * 0.1, (ctx) => {
+      const s = readCar(ctx, index);
+      if (!s) return;
+      positions.set(index, s.p);
+      const t = k * 0.1;
+      if (awayStart == null) {
+        ctx.drive.move({ forward: 0, strafe: 0 });
+        quietSince = speedOf(s) < 0.5 ? quietSince ?? t : null;
+        if ((quietSince != null && t - quietSince >= 0.5) || t >= 5) { awayStart = t; awayFrom = s.p; }
+        return;
+      }
+      const into = t - awayStart, reverse = away.reverse ?? 0;
+      if (into < reverse) ctx.drive.move({ forward: -1, strafe: 0 });
+      else if (into < reverse + away.seconds) ctx.drive.move({ forward: 1, strafe: reverse ? 1 : 0 });
+      else if (m.driveAway == null) {
+        ctx.drive.move({ forward: 0, strafe: 0 });
+        m.driveAway = { metres: Math.hypot(s.p[0] - awayFrom[0], s.p[2] - awayFrom[2]), seconds: reverse + away.seconds };
+      }
+    }]);
+  }
   cues.push([lead + seconds, (ctx) => {
     finish(ctx);
+    if (!away) ctx.drive.move({ forward: 0, strafe: 0 });
+  }]);
+  cues.push([lead + seconds + tail, (ctx) => {
+    if (away) ctx.log(`measure-away ${JSON.stringify({ trial: trial.id, driveAway: m.driveAway ?? { metres: 0, seconds: 0 } })}`);
     ctx.drive.move({ forward: 0, strafe: 0 });
     if (ctx.e2e.snapshot()?.drivenVehicleId != null) ctx.drive.interact();
   }]);
   // Behind and above the car, a little to its left; held where it is once a
   // meteor or the cannonball is coming (a thrown car is not chased into a wall).
   const follow = () => lastPosition(index, meta, trial);
-  return track(follow, [-5, 3.2, -9], lead + seconds + 0.4, { name: trial.id, lookOffset: [0, 1, 4], lag: 0.3, cues,
+  return track(follow, [-5, 3.2, -9], lead + seconds + tail + 0.4, { name: trial.id, lookOffset: [0, 1, 4], lag: 0.3, cues,
     ...(a && ['meteor', 'cannonball'].includes(a.kind) ? { release: lead + a.at } : {}) });
 }
 

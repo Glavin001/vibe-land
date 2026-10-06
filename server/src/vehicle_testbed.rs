@@ -507,8 +507,18 @@ fn run(r: &Run, meta: &Value) -> Value {
     if let Some(away) = trial.get("driveAway") {
         let reverse = (away["reverse"].as_f64().unwrap_or(0.) as f32 / DT) as u32;
         let forward = (away["seconds"].as_f64().unwrap() as f32 / DT) as u32;
+        // First let it come to rest (a cannonball throws a car at 50 m/s): up
+        // to 10 s until it has moved under 0.5 m/s for half a second.
+        let mut quiet = 0;
+        for _ in 0..600 {
+            if quiet >= 30 { break; }
+            step(&mut arena, &mut city, &mut tick, Some(&InputCmd::default()));
+            let s = car_state(&mut arena, id);
+            quiet = if (s.v.x * s.v.x + s.v.z * s.v.z).sqrt() < 0.5 { quiet + 1 } else { 0 };
+        }
         let mut path = 0f32;
-        let mut last = car_state(&mut arena, id).p;
+        let from = car_state(&mut arena, id).p;
+        let mut last = from;
         for k in 0..reverse + forward {
             let mut input = InputCmd::default();
             if k < reverse { input.move_y = -127; } else { input.move_y = 127; if reverse > 0 { input.move_x = 127; } }
@@ -518,7 +528,9 @@ fn run(r: &Run, meta: &Value) -> Value {
             last = p;
         }
         read_damage(&mut arena, id, tick, &mut damage, geometry, 0.);
-        drive_away = json!({"metres": path, "seconds": (reverse + forward) as f32 * DT});
+        // Net displacement driven (a car rocking on the spot covers path, not ground).
+        let net = ((last.x - from.x).powi(2) + (last.z - from.z).powi(2)).sqrt();
+        drive_away = json!({"metres": net, "path": path, "seconds": (reverse + forward) as f32 * DT, "settled": quiet >= 30});
     }
     let scene_after = scene_broken(&mut arena, r.scene);
     let scene_damage: BTreeMap<String, i64> = scene_after.iter().map(|(k, v)| (k.clone(), *v as i64 - *scene_before.get(k).unwrap_or(&0) as i64)).collect();
