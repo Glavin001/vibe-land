@@ -22,7 +22,8 @@
 //
 // Writes out/vibe-town.json (ScenePack v2), .visuals.json (tree leaves, stall
 // canopies) and .slots (fleet parking spots with headings, for
-// VIBE_CITY_FLEET_SLOTS: cars in driveways and the car park).
+// VIBE_CITY_FLEET_SLOTS: cars in driveways and the car park) and .meta.json
+// (districts, parking and the named places films use: client/native/film).
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -313,6 +314,57 @@ function check(placements, pack, surfaces) {
   return problems;
 }
 
+// --------------------------------------------------------------- places
+const STREET_NAMES = { [-48]: 'South Street', 0: 'Main Street', 48: 'North Street' };
+const AVENUE_NAMES = { [-80]: 'West Avenue', 0: 'Main Avenue', 70: 'East Avenue' };
+const BUILDINGS = /^(house|cottage|shop-.*|cinema|library|grocery|tower)$/;
+const slug = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+const round = (v) => Math.round(v * 100) / 100;
+
+/**
+ * Named places for scripts (client/native/film): every building (its id,
+ * kind, footprint centre, bounds, top and street), every parking spot
+ * (`car-N`, the N-th fleet slot: the N-th destructible car), the streets and
+ * the districts. Building ids number each kind within its district in build
+ * order: `elm-park/house-12`, `market-quarter/shop-3`, `market-quarter/tower-2`.
+ */
+function namePlaces(placements, pack, slots, labels) {
+  const places = [], counts = {};
+  const nearestStreet = (z) => STREETS.reduce((a, b) => (Math.abs(b - z) < Math.abs(a - z) ? b : a));
+  for (const box of boxes(placements, pack)) {
+    const [name] = box.group.split('@');
+    if (!BUILDINGS.test(name) || !Number.isFinite(box.lo[0])) continue;
+    const district = (box.lo[0] + box.hi[0]) / 2 < 0 ? 'elm-park' : 'market-quarter';
+    const kind = name === 'cottage' ? 'house' : name.startsWith('shop-') ? 'shop' : name;
+    const key = `${district}/${kind}`;
+    counts[key] = (counts[key] ?? 0) + 1;
+    const x = (box.lo[0] + box.hi[0]) / 2, z = (box.lo[2] + box.hi[2]) / 2;
+    const z0 = nearestStreet(z), side = Math.sign(z - z0);
+    places.push({
+      id: `${key}-${counts[key]}`, kind, district,
+      ...(name.startsWith('shop-') ? { sign: name.slice(5) } : {}),
+      ...(kind === 'house' ? { storeys: name === 'cottage' ? 1 : 2 } : {}),
+      street: STREET_NAMES[z0], side: side > 0 ? 'north' : 'south',
+      position: [round(x), 0, round(z)],
+      footprint: [round(box.hi[0] - box.lo[0]), round(box.hi[2] - box.lo[2])],
+      min: box.lo.map(round), max: box.hi.map(round), top: round(box.hi[1]),
+      // The pavement in front of it, at eye height.
+      pavement: [round(x), 1.6, z0 + side * (ROAD + 1)],
+    });
+  }
+  const buildings = [...places];
+  slots.forEach(([x, z, heading], n) => {
+    const house = buildings.reduce((a, b) => (Math.hypot(b.position[0] - x, b.position[2] - z) < Math.hypot(a.position[0] - x, a.position[2] - z) ? b : a));
+    places.push({ id: `car-${n}`, kind: 'car', position: [x, 0, z], heading, house: house.id });
+  });
+  for (const [z, name] of Object.entries(STREET_NAMES))
+    places.push({ id: `street/${slug(name)}`, kind: 'street', name, from: [WEST, 0, Number(z)], to: [EAST, 0, Number(z)], position: [0, 0, Number(z)] });
+  for (const [x, name] of Object.entries(AVENUE_NAMES))
+    places.push({ id: `street/${slug(name)}`, kind: 'street', name, from: [Number(x), 0, SOUTH], to: [Number(x), 0, NORTH], position: [Number(x), 0, 0] });
+  for (const { title, position } of labels) places.push({ id: slug(title), kind: 'district', name: title, position });
+  return places;
+}
+
 // --------------------------------------------------------------- build
 export function buildTown() {
   const { placements, paths, slots, labels } = layout();
@@ -327,11 +379,11 @@ export function buildTown() {
   // per object in every pass, shadow cascades included; the GPU has room for
   // more instances per draw. The kit's 32 m cells made 514 leaf meshes.
   for (const attachment of visuals.attachments) attachment.cell = attachment.cell.map((c) => Math.floor(c / 4));
-  return { pack, visuals, slots, labels, problems, placements: all };
+  return { pack, visuals, slots, labels, problems, placements: all, places: namePlaces(all, pack, slots, labels) };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { pack, visuals, slots, labels, problems, placements } = buildTown();
+  const { pack, visuals, slots, labels, problems, placements, places } = buildTown();
   if (problems.length) {
     console.error(problems.slice(0, 40).join('\n'));
     throw new Error(`${problems.length} placement problems`);
@@ -349,7 +401,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     description: 'Elm Park houses with cars in the driveways, and the Market Quarter: shops, towers, a cinema, a library, a bus station and a market square',
   }));
   writeFileSync(path.join(out, `${KEY}.slots`), slots.map((s) => s.join(',')).join(';'));
-  writeFileSync(path.join(out, `${KEY}.meta.json`), JSON.stringify({ districts: labels, parking: slots }, null, 1));
+  writeFileSync(path.join(out, `${KEY}.meta.json`), JSON.stringify({ districts: labels, parking: slots, places }, null, 1));
   const kinds = {};
   for (const p of placements) { const k = p.group.split('@')[0]; kinds[k] = (kinds[k] ?? 0) + 1; }
   console.log(`${KEY}: ${nodes} nodes, ${pack.scenario.bonds.length} bonds, ${placements.length - 1} placements, ${slots.length} parking spots`);

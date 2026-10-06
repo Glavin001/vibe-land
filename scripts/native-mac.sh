@@ -8,6 +8,7 @@
 #   scripts/native-mac.sh debug [args]  # run with module-evaluation errors printed
 #   scripts/native-mac.sh smoke         # automated: load the city, shoot, expect fractures
 #   scripts/native-mac.sh record [secs] # scripted playthrough recorded to target/native-video/*.mp4
+#   scripts/native-mac.sh film NAME     # a film (client/native/film) to target/native-video/NAME-*
 #   scripts/native-mac.sh qa [scenarios] # destruction QA: city-play-qa's checks + vehicle-qa's scenarios
 #   scripts/native-mac.sh look          # camera poses saved to target/look/native/*.png
 #   scripts/native-mac.sh perf          # frame and sim timings through heavy destruction
@@ -348,9 +349,10 @@ perf() {
 # window (macOS asks once for Screen Recording permission). RECORD_GPU=1
 # records headless through GPU readback instead, paced to real time
 # (--video-realtime); its WebP encoder is slow at high resolutions.
-# RECORD_SCRIPT picks another script in client/native (e.g. elm-park-tour,
-# with --scene town); one that logs `[<tag> ...] rolling` and `... cut` is
-# trimmed to that span, as target/native-video/<script>-...-cut.mp4.
+# RECORD_SCRIPT picks another script in client/native; one that logs
+# `[<tag> ...] rolling` and `... cut` is trimmed to that span, as
+# target/native-video/<script>-...-cut.mp4. Films (elm-park-tour) have their
+# own command, `film`, below.
 record() {
   local seconds="${1:-120}"; shift || true
   local script="${RECORD_SCRIPT:-city-demo}"
@@ -369,7 +371,7 @@ record() {
   fi
   (launch "$script.js" --width 1600 --height 900 --video "$out" "${capture[@]}" "$@") 2>&1 \
     | tee "$ROOT/target/native-video/record.log" \
-    | grep --line-buffered -E '\[demo|\[tour|\[Video\] (Using|Recording|Captured [0-9]|Dropped|Recording complete)|FAILED|Error' || true
+    | grep --line-buffered -E '\[demo|\[tour|\[film|\[Video\] (Using|Recording|Captured [0-9]|Dropped|Recording complete)|FAILED|Error' || true
   [ -f "$out" ] || { echo "no video written (log: target/native-video/record.log)" >&2; exit 1; }
   echo "video: $out"
   # Trim to the script's own span. Its log times count from its own start,
@@ -385,6 +387,123 @@ record() {
   fi
 }
 
+# Films (client/native/film): `film NAME` plays client/native/films/NAME.mjs
+# (or client/native/NAME.mjs) headless; the film records itself through
+# mystral's recorder (__mystralRecordStart), from its first shot to its cut,
+# on film time (the sim in lockstep with frames, __VIBE_FILM__) when the app
+# has film mode. Without the recorder it saves each film frame as a PNG
+# (slower), or without film mode too, the whole run is recorded in real time
+# through --video and trimmed to the film's `rolling` .. `cut`.
+#   FILM_FPS      30 (default) or 60
+#   FILM_SIZE     WxH, default 1280x720 (640x360 for a preview)
+#   FILM_PREVIEW=1  no video: a still from the middle of each shot, and a sheet of them
+#   FILM_POSTER   the poster frame's time in seconds (default 40% in)
+#   FILM_REBUILD=1  rebuild the bundle even when its inputs are unchanged
+# Writes target/native-video/NAME-<stamp>.mp4, -share.mp4 (under 25 MB),
+# -sheet.jpg (ten frames), -poster.jpg and .log; a preview, NAME-<stamp>-preview/
+# and -preview.jpg.
+film() {
+  local name="${1:-}"; shift || true
+  [ -n "$name" ] || { echo "usage: $0 film NAME [--scene S] [mystral args]" >&2; exit 2; }
+  local script="$ROOT/client/native/films/$name.mjs"
+  [ -f "$script" ] || script="$ROOT/client/native/$name.mjs"
+  [ -f "$script" ] || { echo "no film $name (client/native/films/$name.mjs or client/native/$name.mjs)" >&2; exit 2; }
+  local fps="${FILM_FPS:-30}" preview="${FILM_PREVIEW:-0}"
+  case "$fps" in 30|60) ;; *) echo "FILM_FPS is 30 or 60" >&2; exit 2 ;; esac
+  local size="${FILM_SIZE:-$([ "$preview" = 1 ] && echo 640x360 || echo 1280x720)}"
+  local base; base="$ROOT/target/native-video/$name-$(date +%Y%m%d-%H%M%S)"
+  local out="$base.mp4" log="$base.log"
+  mkdir -p "$ROOT/target/native-video"
+  [ "$BUNDLE_DIR/game-iife.js" -nt "$BUNDLE_DIR/game.js" ] || iife
+  # Without mystral's recorder: in film mode, every film frame as a PNG
+  # (slow, exact); without film mode, the whole run in real time through
+  # --video, trimmed to the film.
+  local capture=(--headless --width "${size%x*}" --height "${size#*x}") raw="" sequence=false
+  if [ "$preview" = 1 ]; then
+    mkdir -p "$base-preview"
+  elif ! grep -qa __mystralRecordStart "$MYSTRAL"; then
+    if grep -q __VIBE_FILM__ "$BUNDLE_DIR/game.js"; then
+      sequence=true; mkdir -p "$base-frames"
+      echo "film: mystral has no __mystralRecordStart; saving every frame to $base-frames/"
+    else
+      raw="$base-raw.mp4"
+      capture+=(--gpu-capture --video-realtime --video-fps "$fps" --end-frame $((fps * 3600)) --video "$raw")
+      echo "film: no __mystralRecordStart and no film mode; recording the run in real time, trimmed to the film"
+    fi
+  fi
+  "$ROOT/client/node_modules/.bin/esbuild" "$script" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning \
+    --define:FILM_OUT="\"$out\"" --define:FILM_FPS="$fps" --define:FILM_SCENE="\"$SCENE\"" \
+    --define:FILM_PREVIEW="$([ "$preview" = 1 ] && echo true || echo false)" --define:FILM_SEQUENCE="$sequence" \
+    --outfile="$BUNDLE_DIR/film.js"
+  (launch film.js "${capture[@]}" "$@") 2>&1 | tee "$log" \
+    | grep --line-buffered -E '\[film|\[Video\] (Using|Recording|Dropped|Recording complete)|FAILED|Error' || true
+  grep -qE '\[film [0-9.]+s\] cut' "$log" && ! grep -qE '\[film [0-9.]+s\] FAILED' "$log" \
+    || { echo "film FAILED (log: $log)" >&2; exit 1; }
+  command -v ffmpeg >/dev/null || { echo "film: no ffmpeg, so no sheet, poster or share copy" >&2; return 0; }
+  if [ "$preview" = 1 ]; then
+    local stills=("$base-preview"/*.png)
+    ffmpeg -v error -y -pattern_type glob -i "$base-preview/*.png" \
+      -vf "scale=480:-2,tile=4x$(( (${#stills[@]} + 3) / 4 )):padding=4:margin=4" -frames:v 1 -q:v 3 "$base-preview.jpg"
+    echo "preview: ${#stills[@]} stills in $base-preview/, sheet $base-preview.jpg"
+    return 0
+  fi
+  if [ "$sequence" = true ]; then
+    ffmpeg -v error -y -framerate "$fps" -i "$base-frames/%05d.png" \
+      -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -movflags +faststart "$out" && rm -rf "$base-frames"
+  elif [ -n "$raw" ]; then
+    # The log's times count from the script's start, the video's first frame
+    # give or take a moment: a little either side of the film, which holds
+    # its first pose before rolling and its last after the cut.
+    local from to
+    from=$(grep -oE '\[film [0-9.]+s\] rolling' "$log" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    to=$(grep -oE '\[film [0-9.]+s\] cut' "$log" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    [ -f "$raw" ] && [ -n "$from" ] && [ -n "$to" ] || { echo "film: no video to trim (log: $log)" >&2; exit 1; }
+    ffmpeg -v error -y -ss "$(python3 -c "print(max(0.0, $from - 0.5))")" -i "$raw" -t "$(python3 -c "print($to - $from + 0.8)")" \
+      -c:v libx264 -crf 18 -preset medium -pix_fmt yuv420p -movflags +faststart "$out" && rm -f "$raw"
+  fi
+  [ -f "$out" ] || { echo "film: no video written (log: $log)" >&2; exit 1; }
+  local seconds; seconds=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out")
+  # Under 25 MB to share: as it is when it fits, else re-encoded to fit.
+  local limit=25000000 kbps
+  if [ "$(stat -f %z "$out")" -le "$limit" ]; then
+    cp "$out" "$base-share.mp4"
+  else
+    kbps=$(python3 -c "print(int(23.0 * 8000 / $seconds))")
+    for _ in 1 2 3; do
+      ffmpeg -v error -y -i "$out" -c:v libx264 -preset slow -b:v "${kbps}k" -maxrate "$((kbps * 3 / 2))k" \
+        -bufsize "$((kbps * 2))k" -pix_fmt yuv420p -movflags +faststart -an "$base-share.mp4"
+      [ "$(stat -f %z "$base-share.mp4")" -le "$limit" ] && break
+      kbps=$((kbps * 4 / 5))
+    done
+  fi
+  ffmpeg -v error -y -i "$out" -vf "fps=10/$seconds,scale=384:-2,tile=5x2:padding=4:margin=4" -frames:v 1 -q:v 3 "$base-sheet.jpg"
+  ffmpeg -v error -y -ss "${FILM_POSTER:-$(python3 -c "print($seconds * 0.4)")}" -i "$out" -frames:v 1 -q:v 2 "$base-poster.jpg"
+  echo "film: $out ($(python3 -c "print(round($seconds, 1))") s); share $base-share.mp4 ($(( $(stat -f %z "$base-share.mp4") / 1000000 )) MB), sheet $base-sheet.jpg, poster $base-poster.jpg"
+}
+
+# The bundle, unless nothing it is built from changed since the last film
+# built it: client sources and config, the files outside client/ they import,
+# the env files and VITE_/VIBE_ variables. Any other build of the bundle
+# empties client/dist-native, stamp included, so it never vouches for one.
+film_inputs() {
+  (cd "$ROOT" && find client/src client/public client/index.html client/vite.config.ts client/tsconfig.json \
+      client/package.json client/package-lock.json client/node_modules/.package-lock.json \
+      shared/match-stats-frame.json shared/fixtures worlds structures/town-kit/vendor .env .env.* \
+      -type f -print0 2>/dev/null | xargs -0 stat -f '%m %z %N' | LC_ALL=C sort)
+  env | grep -E '^(VITE|VIBE)_' | LC_ALL=C sort || true
+  echo "$SIM_LIB"
+}
+film_bundle() {
+  local stamp="$BUNDLE_DIR/.film-bundle-inputs"
+  if [ "${FILM_REBUILD:-0}" != 1 ] && [ -f "$BUNDLE_DIR/game.js" ] && [ -f "$stamp" ] && film_inputs | cmp -s - "$stamp"; then
+    echo "bundle: unchanged ($BUNDLE_DIR/game.js)"
+  else
+    bundle
+    film_inputs > "$stamp"
+  fi
+}
+
 case "${1:-run}" in
   runtime) runtime ;;
   sim) sim ;;
@@ -395,6 +514,7 @@ case "${1:-run}" in
   smoke) shift || true; runtime; sim; bundle; smoke "$@" ;;
   app) runtime; sim; app ;;
   record) shift || true; runtime; sim; bundle; record "$@" ;;
+  film) shift || true; runtime; sim; film_bundle; film "$@" ;;
   qa) shift || true; runtime; sim; bundle; qa "$@" ;;
   input) shift || true; runtime; sim; bundle; input "$@" ;;
   film-check) shift || true; runtime; sim; bundle; film_check "$@" ;;
