@@ -20,8 +20,11 @@ const resolvePose = (pose, ctx) => ({ position: point(pose.position, ctx.place),
  */
 function shot(kind, seconds, opts, build) {
   if (!(seconds > 0)) throw new Error(`${kind}: a length in seconds, got ${seconds}`);
-  const cues = [...(opts.player ? [[0, goto(opts.player)]] : []), ...(opts.cues ?? [])];
-  return { kind, name: opts.name ?? kind, duration: seconds, cues, build };
+  // `player: 'camera'` keeps the player under the camera all shot (what is
+  // streamed, cars above all, is what is near the player).
+  const follow = opts.player === 'camera';
+  const cues = [...(opts.player && !follow ? [[0, goto(opts.player)]] : []), ...(opts.cues ?? [])];
+  return { kind, name: opts.name ?? kind, duration: seconds, cues, build, follow };
 }
 
 /** The camera still at one pose. */
@@ -141,6 +144,65 @@ export const drive = ({ forward = 0, strafe = 0, seconds = 1 }) => ({
   steps: [[0, (ctx) => ctx.drive.move({ forward, strafe })], [seconds, (ctx) => ctx.drive.stop()]],
 });
 
+/**
+ * Seconds a meteor flies. native-mac.sh's `film` fixes its launch range
+ * (VIBE_CITY_METEOR_RANGE/HEIGHT: 384 m away at 140 m/s), so a film can time
+ * an impact; in play it is 2.1-3.4 s.
+ */
+export const METEOR_FLIGHT_S = 2.74;
+
+/** Where a strike lands: a building's upper storeys (60% of its height, at most 12 m), else the point. */
+function strikePoint(at, ctx, height) {
+  const p = typeof at === 'string' ? ctx.place(at) : at;
+  if (p && p.top != null) return [p.position[0], height ?? Math.min(p.top * 0.6, 12), p.position[2]];
+  const v = point(at, ctx.place);
+  return height != null ? [v[0], height, v[2]] : v;
+}
+
+/**
+ * The server's meteor on a place or point, no player needed. The cue's time
+ * is when it LANDS (it is launched METEOR_FLIGHT_S before); `flash` adds a
+ * white flash to the cut at the impact. Impacts shake a camera near them
+ * (shoot's `shake`).
+ */
+export function strike({ at, height, flash: white = false }) {
+  const name = typeof at === 'string' ? at : at?.id ?? 'a point';
+  return {
+    label: `strike ${name}`,
+    steps: [[-METEOR_FLIGHT_S, (ctx) => {
+      const p = strikePoint(at, ctx, height), lands = ctx.t + METEOR_FLIGHT_S;
+      ctx.session.meteor(p[0], p[1], p[2]);
+      ctx.impact(p, lands);
+      if (white) ctx.edit({ type: 'flash', at: lands, seconds: 0.15 });
+    }]],
+  };
+}
+
+/** Strikes on each target in turn, `every` seconds apart, the first landing at the cue's time. */
+export function barrage(targets, { every = 0.35, height } = {}) {
+  const steps = targets.flatMap((at, k) => strike({ at, height }).steps.map(([dt, run]) => [dt + k * every, run]));
+  return { label: `barrage x${targets.length}`, steps };
+}
+
+// ----------------------------------------------------------------- the cut
+// Edits for the post-production pass (scripts/film/post.py): logged as
+// `edit {json}` at the cue's time, in video seconds (0 = the first recorded frame).
+
+const editAt = (fields, seconds) => ({
+  label: `${fields.type}${fields.text ? ` "${fields.text}"` : ''}`,
+  steps: [[0, (ctx) => ctx.edit(seconds != null ? { ...fields, from: ctx.t, to: ctx.t + seconds } : { ...fields, at: ctx.t })]],
+});
+/** Words over the picture (`style: 'card'`: on black, the picture hidden; `size: 'big'` for the hero title). */
+export const title = (text, seconds, { style = 'overlay', size = 'normal' } = {}) => editAt({ type: 'title', text, style, size }, seconds);
+/** Words on black. */
+export const card = (text, seconds, { size = 'normal' } = {}) => title(text, seconds, { style: 'card', size });
+/** The next `seconds` at `rate` speed in the cut (record at FILM_FPS=60: half speed keeps every frame). */
+export const slowmo = (seconds, rate = 0.5) => editAt({ type: 'slowmo', rate }, seconds);
+/** A white flash. */
+export const flash = (seconds = 0.15) => editAt({ type: 'flash', seconds });
+/** From or to black over `seconds`. */
+export const fade = (dir, seconds = 0.8) => editAt({ type: 'fade', dir, seconds });
+
 /** A line in the log, with the bonds broken so far. */
 export const note = (text) => ({ label: `note ${text}`, steps: [[0, (ctx) => ctx.log(`${text} (broken bonds ${brokenBonds(ctx)})`)]] });
 
@@ -159,7 +221,8 @@ export function timeline(shots) {
     entries.push({ ...s, start });
     for (const [t, cue] of s.cues) {
       const { label, steps } = asAction(cue);
-      for (const [dt, run] of steps) cues.push({ time: start + t + dt, label, run, first: dt === 0 });
+      // `first`: the action's first step (a strike's is its launch, before the cue's time).
+      steps.forEach(([dt, run], k) => cues.push({ time: start + t + dt, label, run, first: k === 0 }));
     }
     start += s.duration;
   }

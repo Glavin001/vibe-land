@@ -442,6 +442,23 @@ film() {
   local base; base="$ROOT/target/native-video/$name-$(date +%Y%m%d-%H%M%S)"
   local out="$base.mp4" log="$base.log"
   mkdir -p "$ROOT/target/native-video"
+  # Film-only simulation settings. Meteors launched a fixed 384 m away (300 m
+  # out, 240 m up) at 140 m/s land METEOR_FLIGHT_S = 2.74 s later
+  # (client/native/film/shots.mjs strike), and a pool of 64 keeps a barrage's
+  # rocks in the air. Quality before speed: a film frame takes as long as the
+  # sim needs, so the stress solve gets its full 64 iterations
+  # (FILM_STRESS_ITERATIONS overrides; the town plays at 16).
+  export VIBE_CITY_METEOR_RANGE_MIN_M=300 VIBE_CITY_METEOR_RANGE_MAX_M=300 \
+    VIBE_CITY_METEOR_HEIGHT_MIN_M=240 VIBE_CITY_METEOR_HEIGHT_MAX_M=240 \
+    VIBE_METEOR_POOL="${VIBE_METEOR_POOL:-64}" \
+    VIBE_CITY_NATIVE_STRESS_ITERATIONS="${FILM_STRESS_ITERATIONS:-64}"
+  # Re-renderable: the sim born in lockstep at tick 0 (only film frames move
+  # it), and one seed (FILM_SEED, default 1) for the server's meteor bearings
+  # and the client's Math.random. Takes then differ only by GPU physics.
+  # Previews pose the camera without film mode, so they run in real time.
+  local seed="${FILM_SEED:-1}" lockstep=false
+  if [ "$preview" != 1 ]; then export VIBE_FILM_LOCKSTEP=1; lockstep=true; fi
+  export VIBE_MATCH_SEED="$seed"
   [ "$BUNDLE_DIR/game-iife.js" -nt "$BUNDLE_DIR/game.js" ] || iife
   # Without mystral's recorder: in film mode, every film frame as a PNG
   # (slow, exact); without film mode, the whole run in real time through
@@ -463,11 +480,16 @@ film() {
     --platform=browser --target=es2022 --log-level=warning \
     --define:FILM_OUT="\"$out\"" --define:FILM_FPS="$fps" --define:FILM_SCENE="\"$SCENE\"" \
     --define:FILM_PREVIEW="$([ "$preview" = 1 ] && echo true || echo false)" --define:FILM_SEQUENCE="$sequence" \
+    --define:FILM_LOCKSTEP="$lockstep" --define:FILM_SEED="$seed" \
     --outfile="$BUNDLE_DIR/film.js"
   (launch film.js "${capture[@]}" "$@") 2>&1 | tee "$log" \
-    | grep --line-buffered -E '\[film|\[Video\] (Using|Recording|Dropped|Recording complete)|FAILED|Error' || true
+    | grep --line-buffered -E '\[film|\[Video\] (Using|Recording|Dropped|Recording complete)|FAILED|Error' \
+    | grep --line-buffered -vE '\] (stats|impact) \{' || true
   grep -qE '\[film [0-9.]+s\] cut' "$log" && ! grep -qE '\[film [0-9.]+s\] FAILED' "$log" \
     || { echo "film FAILED (log: $log)" >&2; exit 1; }
+  # Per-frame performance (frame/step/render/physx ms, active bodies, damage)
+  # from the log's stats lines: $base-stats.csv, .json and .html.
+  [ "$preview" = 1 ] || python3 "$ROOT/scripts/film/stats.py" "$log" || echo "film: stats FAILED (log: $log)" >&2
   command -v ffmpeg >/dev/null || { echo "film: no ffmpeg, so no sheet, poster or share copy" >&2; return 0; }
   if [ "$preview" = 1 ]; then
     local stills=("$base-preview"/*.png)

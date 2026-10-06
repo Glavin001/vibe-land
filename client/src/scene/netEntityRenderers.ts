@@ -15,6 +15,7 @@ import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 // the game's own interpolated pose.
 
 import * as THREE from 'three';
+import { buildMeteorGeometry, buildMeteorMaterial } from '../vfx/meteorRock';
 
 import type { RemotePlayer } from '../net/netcodeClient';
 import type { PlayerSample, VehicleSample } from '../net/interpolation';
@@ -300,11 +301,28 @@ export class RemotePlayersRenderer {
 }
 
 const BALL_COLORS = [0xff4444, 0x44ff44, 0x4444ff, 0xffff44, 0xff44ff, 0x44ffff, 0xff8800, 0x8800ff];
+/**
+ * A ball this big is a meteor (2 m; a cannonball is a fraction of a metre).
+ * The meteor layer draws a flight it knows as a burning rock and this
+ * renderer skips it, but a rock it does not know -- landed and forgotten, or
+ * one of a barrage past the flights it tracks -- would otherwise show here as
+ * a toy-coloured sphere. It is drawn as the rock it is.
+ */
+const METEOR_BALL_RADIUS_M = 1.5;
+let meteorRock: { geometry: THREE.BufferGeometry; material: THREE.Material } | null = null;
 
 /** The mesh a streamed dynamic body is drawn with (shape 1 a ball, else a box). */
 function dynamicBodyMesh(id: number, shapeType: number, halfExtents: ArrayLike<number>): THREE.Mesh {
   let geom: THREE.BufferGeometry;
   let mat: THREE.MeshStandardMaterial;
+  if (shapeType === 1 && halfExtents[0] >= METEOR_BALL_RADIUS_M) {
+    meteorRock ??= { geometry: buildMeteorGeometry(42, 6), material: buildMeteorMaterial().material };
+    const rock = new THREE.Mesh(meteorRock.geometry, meteorRock.material);
+    rock.scale.setScalar(halfExtents[0]);
+    rock.castShadow = true;
+    rock.receiveShadow = true;
+    return rock;
+  }
   if (shapeType === 1) {
     geom = new THREE.SphereGeometry(halfExtents[0], 16, 12);
     mat = new THREE.MeshStandardMaterial({

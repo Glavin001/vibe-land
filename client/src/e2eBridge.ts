@@ -442,9 +442,11 @@ export interface VibeE2EBridge {
    * `fogIntensity` scales the fog density the AOI radius derives (1 = ship
    * default, lower = see further); the rest go to `graphics/lookTuning`. All of
    * them apply without a reload, which is the point -- see that module for why
-   * comparing them across rebuilds does not work.
+   * comparing them across rebuilds does not work. `fogEnabled` turns the fog
+   * on or off (films use a light haze: client/native/film).
    */
   setLook(next: {
+    fogEnabled?: boolean;
     fogIntensity?: number;
     aoStrength?: number;
     aoRadius?: number;
@@ -894,6 +896,10 @@ const bridge: VibeE2EBridge = {
     heroTiling: heroTilingEnabled(),
   }),
   setLook: (next) => {
+    if (next.fogEnabled !== undefined) {
+      const enabled = next.fogEnabled;
+      updateFogSettings((draft) => ({ ...draft, enabled }));
+    }
     if (next.fogIntensity !== undefined) {
       const intensity = next.fogIntensity;
       updateFogSettings((draft) => ({ ...draft, intensity }));
