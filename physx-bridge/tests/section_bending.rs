@@ -213,7 +213,10 @@ fn run(chunks: &[Chunk], joints: &[Joint]) -> Vec<(f64, f64, f64)> {
     world.step().unwrap();
     world
         .native_configure(NativeConfig {
-            max_iterations: 4096, tolerance: 1e-5, force_tolerance: 1e-4, warm_start: true,
+            max_iterations: 4096, tolerance: 1e-5,
+            // SECTION_TEST_FORCE_TOLERANCE: what-if for the stopping rule.
+            force_tolerance: std::env::var("SECTION_TEST_FORCE_TOLERANCE").ok().and_then(|v| v.parse().ok()).unwrap_or(1e-4),
+            warm_start: true,
             damage_rate: 2.0, bend_gain_max: 3.0, fibre_bending: true,
             reserved_contact_pairs: 64, preserve_unchanged_contact_pairs: true,
             gpu_island_repair: true, verdict_sample_ticks: 1,

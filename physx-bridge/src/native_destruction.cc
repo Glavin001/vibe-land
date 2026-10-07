@@ -87,8 +87,16 @@ static float native_env_f32(const char *name, float fallback) {
 /// VIBE_SECTION_BENDING=1 (A/B, SDKs with PX_DESTRUCTION_SECTION_BENDING): bond bending and torsion from each
 /// bond's real cross-section (bond_section.h; PxDestructionStressDesc::
 /// sectionBending) instead of the area-only gain capped by bend_gain_max.
+/// VIBE_SECTION_ROTATION=1 (A/B, SDKs with PX_DESTRUCTION_SECTION_ROTATIONAL_STIFFNESS):
+/// each bond's rotational stiffness in the stress solve from its own section
+/// (k I/A per principal axis, k I_p/A in twist, sprung at the bond face)
+/// instead of one length scale for every bond. Implies VIBE_SECTION_BENDING.
+static bool native_section_rotation() {
+  static const bool value = native_env_f32("VIBE_SECTION_ROTATION", 0.0f) != 0.0f;
+  return value;
+}
 static bool native_section_bending() {
-  static const bool value = native_env_f32("VIBE_SECTION_BENDING", 0.0f) != 0.0f;
+  static const bool value = native_env_f32("VIBE_SECTION_BENDING", 0.0f) != 0.0f || native_section_rotation();
   return value;
 }
 static float native_depenetration_velocity() {
@@ -1056,6 +1064,15 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.damageRate = config.damage_rate;
   desc.bendGainMax = config.bend_gain_max;
   desc.fibreBending = config.fibre_bending;
+#if defined(VIBE_PHYSX_HAS_SECTION_ROTATION)
+  desc.sectionRotationalStiffness = native_section_rotation();
+  if (desc.sectionRotationalStiffness)
+    std::fprintf(stderr, "[destruction] section rotational stiffness: on (each bond's rotation from its section)\n");
+#else
+  native_require(!native_section_rotation(),
+                 "VIBE_SECTION_ROTATION needs a PhysX SDK with PX_DESTRUCTION_SECTION_ROTATIONAL_STIFFNESS "
+                 "(PhysX feat/section-rotational-stiffness)");
+#endif
 #if defined(VIBE_PHYSX_HAS_SECTION_BENDING)
   desc.sectionBending = native_section_bending();
   desc.bondSections = desc.sectionBending && s.sections.size() == s.bonds.size() ? s.sections.data() : nullptr;

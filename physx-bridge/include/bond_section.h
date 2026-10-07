@@ -215,6 +215,14 @@ inline Result section(const std::vector<P3> &a, const std::vector<P3> &b, const 
   r.section.bendModulus0 = float(s0);
   r.section.bendModulus1 = float(s1);
   r.section.twistModulus = float(zt);
+#if defined(PX_DESTRUCTION_SECTION_ROTATIONAL_STIFFNESS)
+  // Radii of gyration (lengths: by sqrt(k)): rotation about e0 strains fibres
+  // along e1 (I = lam1), about e1 along e0 (I = lam0), and twist I_p.
+  const double k05 = std::sqrt(area / A);
+  r.section.gyration0 = float(std::sqrt(lam1 / A) * k05);
+  r.section.gyration1 = float(std::sqrt(lam0 / A) * k05);
+  r.section.polarGyration = float(std::sqrt((lam0 + lam1) / A) * k05);
+#endif
   r.geometric_area = A;
   r.depth = 6 * std::min(s0, s1) / area;
   r.found = r.section.bendModulus0 > 0 && r.section.bendModulus1 > 0 && r.section.twistModulus > 0;

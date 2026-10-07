@@ -378,6 +378,17 @@ fn run(chunks: &[Chunk], joints: &[Joint]) -> Vec<(f64, f64, f64)> {
     let mut rows = world.native_bond_stress_rows(0).unwrap();
     rows.sort_by_key(|r| r.bond_index);
     assert_eq!(rows.len(), joints.len());
+    // SECTION_ROTATION_DUMP=path: the exact bits of every bond's exported
+    // wrench and graded stresses, appended -- two SDKs' runs diff byte for byte.
+    if let Some(path) = std::env::var_os("SECTION_ROTATION_DUMP") {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+        let forces = world.native_export_warm_start().unwrap();
+        writeln!(f, "forces {}", forces.iter().map(|v| format!("{:08x}", v.to_bits())).collect::<Vec<_>>().join(" ")).unwrap();
+        for r in &rows {
+            writeln!(f, "bond {} {:08x} {:08x} {:08x}", r.bond_index, r.stress_normal.to_bits(), r.shear.to_bits(), r.stress_bend.to_bits()).unwrap();
+        }
+    }
     rows.iter()
         .map(|r| {
             assert!(r.native_verdict_available && !r.broken);
@@ -429,13 +440,21 @@ fn case(label: &str, chunks: &[Chunk], joints: &[Joint], rotation: bool) -> (f64
 #[ignore = "requires real native GPU destruction SDK"]
 fn bond_rotation_shares_load_by_section() {
     // Real-section grading in both runs: the comparison is the solve.
-    std::env::set_var("VIBE_SECTION_BENDING", "1");
+    // SECTION_TEST_DEFAULT=1: the engine's default path (no section bending),
+    // for SECTION_ROTATION_DUMP byte comparisons only; nothing is asserted.
+    let default_path = std::env::var_os("SECTION_TEST_DEFAULT").is_some();
+    if !default_path {
+        std::env::set_var("VIBE_SECTION_BENDING", "1");
+    }
     let rotation = std::env::var("VIBE_SECTION_ROTATION").map(|v| v != "0").unwrap_or(false);
     let (c, j) = propped_beam(0.0);
     let planar = case("propped beam", &c, &j, rotation);
     let (c, j) = propped_beam(0.6);
     let arm = case("propped beam with a side arm", &c, &j, rotation);
     for (label, (to_section, to_uniform)) in [("planar", planar), ("arm", arm)] {
+        if default_path {
+            continue;
+        }
         if rotation {
             assert!(to_section < 2e-3, "{label}: stage is {to_section:.3} away from the section stiffness model");
         } else {
