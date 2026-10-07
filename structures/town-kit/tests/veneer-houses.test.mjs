@@ -31,7 +31,7 @@ for(const storeys of [1,2])test(`${storeys}-storey brick-veneer house: a frame t
  assert(!frame.scenario.nodeTypes.some(x=>SKIN_TYPES.includes(x)));
  assert(frame.scenario.nodeTypes.includes('stud')&&frame.scenario.nodeTypes.includes('rafter'));
  // Without the front wall's studs, nothing carries that side of the roof.
- const cut=withoutStuds(pack,metadata,storeys>1?'front-0':'front');
- const front=storeys>1?'front-0':'front',frontStuds=s.nodeTypes.filter((x,i)=>['stud','king-stud','jack-stud','cripple-stud'].includes(x)&&metadata.nodeWalls[i]===front).length;
+ const front=storeys>1?['front-0','front-1']:['front'],cut=withoutStuds(pack,metadata,front);
+ const frontStuds=s.nodeTypes.filter((x,i)=>['stud','king-stud','jack-stud','cripple-stud'].includes(x)&&front.includes(metadata.nodeWalls[i])).length;
  assert(frontStuds>20);assert.equal(cut.scenario.nodes.length,s.nodes.length-frontStuds);
 });

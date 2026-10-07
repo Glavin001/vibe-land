@@ -237,8 +237,15 @@ uv run structures/town-kit/scripts/stress-share.py PACK [--force X Y Z --at NODE
 Qualified alone at rest (city cap 16, FP32; 2026-10-06): bungalow PASS (1.7%
 unconverged, 0 broken), its frame alone PASS (1.7%, 0), front studs out 5.3%
 broken; two-storey PASS (6.4%, 0.02%), frame PASS (8.0%, 0.10%), front studs
-out 3.5%. `VIBE_QUALIFY_BOND_ROWS=path` on `city_structures_qualify` dumps every
+out on both storeys 54.7% (ground floor's alone: 3.5%, the upper storey hangs on
+as a deep beam over the gap). `VIBE_QUALIFY_BOND_ROWS=path` on `city_structures_qualify` dumps every
 bond's stress and the tick it broke.
+
+The reel (`scripts/veneer-reel.sh`, 1080p60, in the app on `--scene veneer`,
+`client/native/films/veneer-houses.mjs`): each house as built and frame only,
+orbited; its collapse with the front studs out, from the first tick; the city
+cannonball and meteor. Captions carry the measured bonds broken and the front
+roof tiles' mean height before and after.
 
 **Known limit: a vehicle or a cannonball takes the whole house.** The stage's
 trial solve reads a contact as a static load on an anchored structure. A

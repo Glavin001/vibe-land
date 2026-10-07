@@ -3,7 +3,7 @@
 // their structural qualification needs:
 //   <key>.json                 as built
 //   <key>--frame.json          brick veneer and gypsum board removed
-//   <key>--no-front-studs.json the front wall's studs (studs, king, jack, cripple) removed
+//   <key>--no-front-studs.json the front wall's studs (studs, king, jack, cripple) removed, every storey's
 // written to out/veneer-houses/, each validated, with the authored graph's
 // numbers (stress-convergence checklist: bond areas, stiffness spread, mass
 // contrast across a bond).
@@ -34,7 +34,7 @@ export function graphStats(pack){
 
 export function variants(storeysCount){
  const {pack,metadata}=buildVeneerHouse({storeys:storeysCount}),key=pack.key;
- return [[key,pack],[`${key}--frame`,withoutSkin(pack)],[`${key}--no-front-studs`,withoutStuds(pack,metadata,storeysCount>1?'front-0':'front')]].map(([name,p])=>({name,pack:p,metadata}));
+ return [[key,pack],[`${key}--frame`,withoutSkin(pack)],[`${key}--no-front-studs`,withoutStuds(pack,metadata,storeysCount>1?['front-0','front-1']:'front')]].map(([name,p])=>({name,pack:p,metadata}));
 }
 
 if(import.meta.url===`file://${process.argv[1]}`){

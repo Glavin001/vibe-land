@@ -142,7 +142,18 @@ case "$SCENE" in
       VIBE_CITY_SPAWN_X=-146 VIBE_CITY_SPAWN_Z=0 \
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
       VITE_TOWN_KIT_SCENE=vibe-town ;;
-  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, lab, town)" >&2; exit 2 ;;
+  veneer)
+    # The town kit's brick-veneer houses on open ground, for their film
+    # (client/native/films/veneer-houses.mjs, scripts/veneer-reel.sh):
+    # VENEER_REEL picks the scene, standing (default), collapse-bungalow or
+    # collapse-house (structures/town-kit/scripts/build-veneer-reel.mjs). No
+    # cars; the player well clear of the houses.
+    reel="${VENEER_REEL:-standing}"
+    pack="$ROOT/structures/town-kit/out/veneer-houses/veneer-reel-$reel"
+    [ -f "$pack.json" ] || node "$ROOT/structures/town-kit/scripts/build-veneer-reel.mjs"
+    export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_VEHICLES=0 \
+      VIBE_CITY_DESTRUCTIBLE_VEHICLES=0 VIBE_CITY_SPAWN_X=0 VIBE_CITY_SPAWN_Z=-60 ;;
+  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, lab, town, veneer)" >&2; exit 2 ;;
 esac
 [ "$SCENE" = city ] || echo "scene: $SCENE (${VIBE_CITY_SCENE})"
 
