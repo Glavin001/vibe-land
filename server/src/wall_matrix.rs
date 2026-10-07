@@ -180,7 +180,7 @@ impl Probe {
         let (held_capacity, _, _) = strength.capacity(&held_set);
         let mut types: Vec<String> = set.iter().map(|&n| strength.types.get(n as usize).cloned().unwrap_or_default()).collect();
         types.sort(); types.dedup();
-        let row = |k: usize| json!({"tick": t[k][0], "past": t[k][1], "v": t[k][2], "broken": t[k][5], "brokenAfterCorrection": t[k][6], "corrections": t[k][7], "converged": t[k][8]});
+        let row = |k: usize| json!({"tick": t[k][0], "past": t[k][1], "v": t[k][2], "vUp": t[k][3], "broken": t[k][5], "brokenAfterCorrection": t[k][6], "corrections": t[k][7], "converged": t[k][8]});
         // The momentum the hit took (kg m/s) and the energy (J) along the approach.
         let dp = self.mass * (v_in - v_out);
         // The force the hit really peaks at. The stage loads the bonds with the
@@ -221,6 +221,8 @@ impl Probe {
             "debrisUpMax": self.energy.iter().map(|e| e[4]).fold(0f32, f32::max),
             "impactorUpMax": t[first..].iter().map(|r| r[3]).fold(f32::MIN, f32::max),
             "impactorUpIn": t[first - 1][3],
+            // Every tick from first contact for 1.5 s: [tick, past, v along, v up].
+            "after": t[first - 1..t.len().min(first + 90)].iter().map(|r| [r[0], (r[1] * 100.).round() / 100., (r[2] * 100.).round() / 100., (r[3] * 100.).round() / 100.]).collect::<Vec<_>>(),
         })
     }
 }

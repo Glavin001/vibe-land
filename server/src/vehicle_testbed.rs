@@ -469,7 +469,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     let strength = (trial["probe"].as_bool() == Some(true)).then(|| wall_matrix::Strength::load(&std::env::var("VIBE_CITY_SCENE").unwrap()));
     let mut probe: Option<wall_matrix::Probe> = None;
     let (mut probe_last, mut probe_pid) = (None::<Vector3<f32>>, None::<u32>);
-    let (mut energy_nodes, mut energy_since): (Vec<u32>, Option<u32>) = (Vec::new(), None);
+    let (mut energy_nodes, mut energy_since, mut energy_v0): (Vec<u32>, Option<u32>, f32) = (Vec::new(), None, 0.);
     let probe_target = trial["target"].as_array().map(|t| Vector3::new(t[0].as_f64().unwrap() as f32, t[1].as_f64().unwrap() as f32, t[2].as_f64().unwrap() as f32));
     let heading_of = |f: Vector3<f32>| f.x.atan2(f.z);
     for k in 0..ticks {
@@ -791,7 +791,8 @@ fn run(r: &Run, meta: &Value) -> Value {
                 }
                 // The energy balance, every third tick for 1.5 s after first contact.
                 if energy_nodes.is_empty() { energy_nodes = strength.nodes_of(group); }
-                if pr.touched.contains_key(&(tick - 1)) { energy_since.get_or_insert(tick); }
+                // From first contact: the impactor's speed then is what it can lose.
+                if pr.touched.contains_key(&(tick - 1)) && energy_since.is_none() { energy_since = Some(tick); energy_v0 = pr.trace.iter().rev().nth(1).map_or(speed, |r| r[4]); }
                 if energy_since.is_some_and(|s| tick - s <= 90 && (tick - s) % 3 == 0) {
                     let world = arena.physx_world_mut().expect("physx");
                     let anchored = vibe_land_physx_bridge::native_entity_id(0, 0);
@@ -811,8 +812,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                         }
                     }
                     for (m, v) in bodies.values() { kinetic += 0.5 * m * v.norm_squared(); up = up.max(v.y); if v.norm() > 0.5 { moving += 1.; } }
-                    let v0 = pr.trace.first().map_or(0., |r| r[4]);
-                    let lost = 0.5 * pr.mass * (v0 * v0 - speed * speed);
+                    let lost = 0.5 * pr.mass * (energy_v0 * energy_v0 - speed * speed);
                     pr.energy.push([tick as f32 - 1., kinetic, released.max(0.), lost, up, moving]);
                 }
             }
