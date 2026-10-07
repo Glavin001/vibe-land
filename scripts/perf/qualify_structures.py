@@ -40,7 +40,9 @@ import tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 SCENES = os.path.join(ROOT, 'destruction', 'assets', 'scenes')
-TARGET = os.path.join(ROOT, 'target', 'qualify-structures')
+# QUALIFY_TARGET_DIR: a separate cargo tree, e.g. for another PHYSX_ROOT (a
+# changed PHYSX_ROOT rebuilds the bridge, and sharing one tree thrashes it).
+TARGET = os.environ.get('QUALIFY_TARGET_DIR', os.path.join(ROOT, 'target', 'qualify-structures'))
 PHYSX_ROOT = os.environ.get('PHYSX_ROOT', os.path.join(os.path.dirname(ROOT), 'PhysX', 'out', 'install', 'garage-multihull'))
 # The native app's stress settings (sim-native/src/city.rs apply_app_defaults).
 APP_ENV = {
@@ -133,7 +135,12 @@ def qualify(binary, pack_path, ticks, solver_env='app'):
     stands = re.search(r'stands at rest: broken bonds (\d+) of (\d+) \(([\d.]+)%\), awake bodies (\d+)', text)
     broken = float(stands.group(3)) if stands else None
     awake = int(stands.group(4)) if stands else None
+    crushed = re.search(r'crushed chunks (\d+)', text)
+    crushed = int(crushed.group(1)) if crushed else 0
     rest = re.search(r'at rest: ((?!broken).*)', text)
+    if crushed:
+        # Chunk crushing (opt-in) at rest: the structure grinds itself down.
+        return None, broken, awake, f'crushed {crushed} chunks at rest'
     if rest is None:
         return None, broken, awake, 'no verdict (see a run by hand)'
     line = rest.group(1)
@@ -172,7 +179,9 @@ def main():
                                     'detail': 'no anchor: a free body, nothing to solve at rest'})
                 else:
                     pct, broken, awake, detail = qualify(binary, part, args.ticks, args.solver_env)
-                    if pct is None or broken is None:
+                    if detail.startswith('crushed'):
+                        verdict = 'CRUSH'
+                    elif pct is None or broken is None:
                         verdict = 'ERROR'
                     elif pct > args.max_unconverged:
                         verdict = 'FAIL'
@@ -189,7 +198,7 @@ def main():
                 print(f"{r['verdict']:5} unconv {pct:>6} broken {brk:>6}  {r['structure'][:26]:26} {r['label'][:14]:14} {r['nodes']:6} chunks  {r['detail'][:70]}", flush=True)
     if args.json:
         json.dump(results, open(args.json, 'w'), indent=1)
-    failed = [r for r in results if r['verdict'] in ('FAIL', 'FALLS', 'ERROR')]
+    failed = [r for r in results if r['verdict'] in ('FAIL', 'FALLS', 'ERROR', 'CRUSH')]
     print(f"{len(results) - len(failed)} of {len(results)} structures pass "
           f"(<= {args.max_unconverged}% unconverged, <= {args.max_broken}% bonds broken, over {args.ticks} ticks at rest)")
     sys.exit(1 if failed else 0)

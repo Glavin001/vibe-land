@@ -371,6 +371,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     let mut tick = 0u32;
     let mut step_ms: Vec<f32> = Vec::new();
     let (mut converged, mut solves) = (0u32, 0u32);
+    // Steps the native stage could not complete (error bits set): a lab invariant, 0.
+    let (mut failed_steps, mut crushed_chunks) = (0u32, 0u32);
     // Per tick: [tick, bonds broken (all evaluations), chunks crushed, step ms].
     let mut stage: Vec<[f32; 4]> = Vec::new();
     let mut step = |arena: &mut crate::movement::PhysicsArena, city: &mut crate::city::CityRuntime, tick: &mut u32, input: Option<&InputCmd>| {
@@ -387,6 +389,8 @@ fn run(r: &Run, meta: &Value) -> Value {
         step_ms.push(t0.elapsed().as_secs_f32() * 1000.);
         if let Some((status, counts, _)) = city.native_tick_view() {
             solves += 1; if status.converged { converged += 1; }
+            if status.error != 0 { failed_steps += 1; }
+            crushed_chunks += status.crushed_chunks;
             stage.push([*tick as f32, status.broken_bonds as f32, status.crushed_chunks as f32, *step_ms.last().unwrap_or(&0.)]);
             // VIBE_TESTBED_STAGE=1: each tick that breaks anything -- in the trial
             // evaluation, the corrected one, and after the motion is final.
@@ -840,6 +844,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     out["actorsEnd"] = actors_end;
     out["driveState"] = drive_state;
     out["carrierParts"] = if carrier_parts.len() <= 40 { json!(carrier_parts) } else { json!(carrier_parts.len()) };
+    out["failedSteps"] = json!(failed_steps);
+    out["crushedChunks"] = json!(crushed_chunks);
     out["converged"] = json!(if solves > 0 { converged as f32 / solves as f32 } else { 0. });
     // VIBE_TESTBED_SCENE_BONDS=1: the scene's broken bonds at the end, as node pairs.
     if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() { out["sceneBrokenPairs"] = json!(scene_broken_pairs); }

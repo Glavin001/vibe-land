@@ -49,7 +49,9 @@ MYSTRAL_ROOT="${MYSTRAL_ROOT:-$(cd "$ROOT/.." && pwd)/mystralnative}"
 # masks, which the destructible city fleet needs), as
 # scripts/perf/garage-vehicle-server.sh builds against.
 export PHYSX_ROOT="${PHYSX_ROOT:-$(cd "$ROOT/.." && pwd)/PhysX/out/install/garage-multihull}"
-SIM_TARGET="$ROOT/target/native-sim"
+# VIBE_SIM_TARGET: a separate cargo tree for the sim, e.g. for another PHYSX_ROOT
+# (a changed PHYSX_ROOT rebuilds the bridge; sharing one tree thrashes it).
+SIM_TARGET="${VIBE_SIM_TARGET:-$ROOT/target/native-sim}"
 SIM_LIB="$SIM_TARGET/release/libvibe_sim.dylib"
 BUNDLE_DIR="$ROOT/client/dist-native"
 MYSTRAL="$MYSTRAL_ROOT/build/mystral"

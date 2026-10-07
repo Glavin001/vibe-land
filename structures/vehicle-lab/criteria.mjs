@@ -118,6 +118,16 @@ export function judge(report, baseline = null, meta = null) {
     for (const run of runs) {
       const t = run.trial, b = baseOf(car, t);
       const bonds = run.bonds, parts = run.parts;
+      // Every step completes: the stage publishes nothing for one it could not
+      // (with crushing authored, a crush the stage cannot correct froze the
+      // scene from that tick on). Reports before the field existed are skipped.
+      if (run.failedSteps != null && run.failedSteps !== 0) {
+        row(t, 'steps completed', `${run.failedSteps} failed`, '0 failed', false, 'an incomplete step is a world nobody may be shown; one crush once froze the scene', b?.failedSteps);
+      }
+      // With chunk crushing authored (a *-crush pack), what a hit crushes, counted.
+      if (/crush/.test(report.scene ?? '') && run.crushedChunks != null) {
+        row(t, 'chunks crushed', run.crushedChunks, 'measured', true, 'opt-in chunk crushing: what the hit ground to dust or debris', b?.crushedChunks);
+      }
       if (t === 'rest') {
         row(t, 'bonds broken at rest', run.bondsBroken + run.brokenAtSettle, '0', run.bondsBroken + run.brokenAtSettle === 0, 'a parked car carries only its own weight', b && b.bondsBroken + b.brokenAtSettle);
       } else if (t === 'accel') {

@@ -14,7 +14,8 @@ import {KIT} from '../src/dependencies.mjs';
 import {buildVeneerHouse,withoutSkin,withoutStuds} from '../src/veneer-houses.mjs';
 import {validate} from '../src/validate.mjs';
 
-export const OUT=path.join(KIT,'out/veneer-houses');
+// VIBE_CRUSH=1: the same houses with chunk crushing authored, in out/veneer-houses-crush.
+export const OUT=path.join(KIT,(globalThis.process?.env?.VIBE_CRUSH??'0')==='1'?'out/veneer-houses-crush':'out/veneer-houses');
 const arg=process.argv.indexOf('--storeys');
 const storeys=arg>0?process.argv[arg+1].split(',').map(Number):[1,2];
 

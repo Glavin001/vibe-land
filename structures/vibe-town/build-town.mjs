@@ -32,14 +32,14 @@ import {
   composeScene,
 } from '../town-kit/src/index.mjs';
 import { Builder } from '../town-kit/src/geometry.mjs';
-import { M, mortarJoints } from '../town-kit/src/materials.mjs';
+import { M, mortarJoints, crushEnabled } from '../town-kit/src/materials.mjs';
 import { composeVisuals } from '../town-kit/src/outdoor-visuals.mjs';
 import { dressTownProp } from '../town-kit/src/town-dressing-visuals.mjs';
 import { strengthen } from './strengthen.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../..');
-const KEY = 'vibe-town';
+const TOWN_KEY = 'vibe-town';
 
 // ---------------------------------------------------------------- the grid
 // x east, z north. Roads are 8 m of asphalt with 2 m pavements each side.
@@ -396,7 +396,7 @@ export function buildTown() {
   const { placements, paths, slots, labels } = layout();
   const { asset: ground, surfaces } = buildGround({ paths });
   const all = [{ ...ground, position: [0, 0, 0], yaw: 0, group: 'terrain@terrain-0' }, ...placements];
-  const pack = composeScene(all, { key: KEY, title: 'Vibe Town' });
+  const pack = composeScene(all, { key: TOWN_KEY, title: 'Vibe Town' });
   // The ground is ungrouped (`ground` to the qualifier); everything else is `kind@name-n`.
   pack.scenario.nodeGroups = pack.scenario.nodeGroups.map((g) => (g === 'terrain@terrain-0' ? 'terrain' : g));
   const problems = check(all, pack, surfaces);
@@ -418,6 +418,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (nodes > 65536) throw new Error(`${nodes} nodes: over one structure's 65,536`);
   const out = path.join(here, 'out');
   mkdirSync(out, { recursive: true });
+  // VIBE_CRUSH=1: the same town with chunk crushing authored (materials.mjs
+  // crushFor: masonry, concrete, gypsum, glass), as vibe-town-crush.*.
+  const KEY = crushEnabled() ? `${TOWN_KEY}-crush` : TOWN_KEY;
   const bytes = JSON.stringify(pack);
   writeFileSync(path.join(out, `${KEY}.json`), bytes);
   writeFileSync(path.join(out, `${KEY}.visuals.json`), JSON.stringify({

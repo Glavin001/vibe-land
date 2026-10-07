@@ -218,6 +218,8 @@ mod tests {
         // largest value seen), and the body count after the first tick, for
         // "does it stand".
         let broken_total = std::cell::Cell::new(0u64);
+        // Chunks the stage crushed (opt-in chunk crushing): at rest there must be none.
+        let crushed_total = std::cell::Cell::new(0u64);
         let clusters_first = std::cell::Cell::new(None::<u32>);
         // VIBE_QUALIFY_BOND_ROWS=path: every bond of structure 0, from the
         // native stage (utilisation, stresses, damage), at the first tick at
@@ -232,6 +234,7 @@ mod tests {
                 arena.step_vehicles_and_dynamics(dt);
                 let _ = city.step(*tick, dt, gravity, arena.physx_world_mut());
                 broken_total.set(broken_total.get().max(u64::from(city.stats().broken_bonds)));
+                if let Some((status, _, _)) = city.native_tick_view() { crushed_total.set(crushed_total.get() + u64::from(status.crushed_chunks)); }
                 if clusters_first.get().is_none() {
                     clusters_first.set(arena.physx_world_mut().and_then(|w| w.native_last_status().ok()).map(|n| n.cluster_count));
                 }
@@ -271,8 +274,8 @@ mod tests {
             let awake = world.stats().map(|w| w.active_dynamic_bodies).unwrap_or(0);
             let clusters = world.native_last_status().map(|n| n.cluster_count).unwrap_or(0);
             let broken = broken_total.get();
-            eprintln!("stands at rest: broken bonds {broken} of {bonds} ({:.2}%), awake bodies {awake}, clusters {} -> {clusters}",
-                100.0 * broken as f64 / bonds.max(1) as f64, clusters_first.get().unwrap_or(0));
+            eprintln!("stands at rest: broken bonds {broken} of {bonds} ({:.2}%), awake bodies {awake}, clusters {} -> {clusters}, crushed chunks {}",
+                100.0 * broken as f64 / bonds.max(1) as f64, clusters_first.get().unwrap_or(0), crushed_total.get());
         }
         let s = &manifest.structures[target as usize];
         let aim = Vector3::new(s.world_position[0], 3.0, s.world_position[2]);
