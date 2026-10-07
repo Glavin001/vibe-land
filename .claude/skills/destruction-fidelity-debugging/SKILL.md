@@ -128,5 +128,9 @@ A bug found once should be caught automatically forever after:
 - Suites: `scripts/verify/correctness.sh`, `docs/verification/`, `docs/calibration/`.
 - Mechanism tests: `physx-bridge/tests/infinite_wall.rs`, `fidelity_audit.rs`, `textbook/`.
 - Audit of caps and fudges: `docs/verification/FIDELITY_AUDIT.md`.
-- Impact-solve capture and replay: `PX_DESTRUCTION_IMPACT_LOG`, `PX_DESTRUCTION_IMPACT_CAPTURE`, `destruction_impact_capture_replay`, `scripts/impact/trigger-bonds.py`.
+- Impact-solve capture and replay:
+  - `PX_DESTRUCTION_IMPACT_LOG=1`: per evaluation, its time and dispatches, every solve's record (island size, ramp level, steps, residual), the coupled-contact rows, and the detectors (capped, diverged, infeasible projections). It synchronises the stream: diagnostics only.
+  - `PX_DESTRUCTION_IMPACT_CAPTURE=DIR` writes the inputs of evaluations slower than `PX_DESTRUCTION_IMPACT_CAPTURE_MS` (default 1000; 0 captures every one), at most `PX_DESTRUCTION_IMPACT_CAPTURE_COUNT` (default 4). A capture is raw structs: replay it with a binary built from the same PhysX commit.
+  - `destruction_impact_capture_replay CAPTURE [runs]` (PhysX `physx/source/gpudestruction/tests`): the evaluation again, timed. `IMPACT_TRACE=N` prints the residual history every N steps and the worst links with their capacities, gains and stiffnesses; `IMPACT_TRIGGER_REPORT=1` lists the bonds past capacity in the elastic solve, which `scripts/impact/trigger-bonds.py` names from the pack. Settings overrides: `IMPACT_ITERATIONS`, `IMPACT_EVAL_ITERATIONS`, `IMPACT_INNER`, `IMPACT_TOLERANCE`, `IMPACT_RAMP_FACTOR`, `IMPACT_COUPLED`.
+  - The oracle comparison: `structures/town-kit/scripts/impact-e-replay.py export|compare` with `destruction_impact_replay` (`scripts/impact/replays.sh`); the oracle is not ground truth (`--oracle-tie-stiffness`, `--oracle-ramp`).
 - Related skills: `stress-convergence`, `diagnose-structure-failure`, `native-destruction-faults`, `capture-visual-artifact`, `debugging-discipline`, `perf-measure`.

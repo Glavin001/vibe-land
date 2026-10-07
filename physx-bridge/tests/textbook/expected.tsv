@@ -234,7 +234,6 @@ high-fidelity	portal-frame-lateral	leeward column axial	0.0142	DISCRETISATION: 0
 high-fidelity	pratt-truss	bottom chord B1-B2	0.0237	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
 high-fidelity	torsion-square-shaft	root torsional shear	0.1175	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
 high-fidelity	torsion-square-shaft	mid torsional shear	0.1175	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
-high-fidelity	redundancy	the stage completed every step	1.0000	STAGE (impact capacity): PhysX fetchResults failed ("Native GPU destruction stage failed") when bonds break under gravity; passes with VIBE_IMPACT_CAPACITY=0
 high-fidelity	free-fall	the stage completed every step	1.0000	STAGE (impact capacity): PhysX fetchResults failed ("Native GPU destruction stage failed") when bonds break under gravity; passes with VIBE_IMPACT_CAPACITY=0
 high-fidelity	impact-plate-punch	ball exit speed	1.4076	STAGE: a fragment split from a sleeping anchored cluster is born asleep and takes no momentum: all 4 joints break, the plug never moves (not even under gravity) and the ball rebounds (-1.10 m/s)
 high-fidelity	impact-plate-punch	exit speed within the joints' capacity bound (no bounce, not free)	1.0000	STAGE: a fragment split from a sleeping anchored cluster is born asleep and takes no momentum: all 4 joints break, the plug never moves (not even under gravity) and the ball rebounds (-1.10 m/s)
@@ -247,7 +246,6 @@ high-fidelity	impact-drop	dynamic amplification, h = 0.1 m	0.1603	MODEL LIMIT: r
 high-fidelity	impact-drop	dynamic amplification, h = 0.4 m	0.4176	MODEL LIMIT: rigid chunks stop the block in one tick, F = m sqrt(2gh)/dt: the peak follows the tick, not the structure's stiffness
 high-fidelity	tip-or-slide	tall block b/h = 0.4: angle at which it tips	0.0156	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
 high-fidelity	tip-or-slide	squat block b/h = 2: angle at which it slides	0.0430	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
-high-fidelity	redundancy-simple	beam falls after losing a support	1.0000	STAGE (impact capacity): on some runs the simply supported beam stays up after its hanger fails (and on others the step fails); passes with VIBE_IMPACT_CAPACITY=0
 high-fidelity	crush-locality	the hit crushes something	1.0000	STAGE (impact capacity): a 3e5 N s round breaks 33 bonds of a crushable masonry wall and crushes nothing (impact-pressure crush replaces the virial crush); with VIBE_IMPACT_CAPACITY=0 it crushes 15 chunks
 high-fidelity	crush-locality	every crushed chunk within 1.4 m of the point struck (proposed)	1.0000	STAGE: nothing crushed with impact capacity; with VIBE_IMPACT_CAPACITY=0 the 15 crushed chunks reach 3.24 m from the point struck (not local)
 # high-fidelity (garage-hifi), full tier, 2026-10-07
@@ -291,3 +289,8 @@ section-bending	rafter-tie-truss	left support reaction (pin)	0.0148	MODEL: unifo
 section-bending	rafter-tie-truss	left heel lap: twist (a pin)	5.7371	MODEL: a rigid one-bolt lap's twist graded on the lap patch's polar modulus: 1.29 MPa, 3.7x the bolt's capacity (why section bending alone breaks the veneer house's heels at rest)
 section-bending	rafter-tie-truss	right heel lap: twist (a pin)	5.8905	MODEL: a rigid one-bolt lap's twist graded on the lap patch's polar modulus: 1.32 MPa, 3.8x the bolt's capacity (why section bending alone breaks the veneer house's heels at rest)
 section-bending	rafter-tie-truss	ridge lap: twist (a pin)	0.0715	MODEL: uniform rotational stiffness k Ls^2 makes every one-bolt lap rigid (twist graded on the lap patch)
+
+# redundancy with the supports as light link and block chunks (k dt^2/m ~4e5), 2026-10-07 18:40
+runtime	redundancy-propped-sliver	root bending stress, redistributed	0.8000	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+section-bending	redundancy-propped-sliver	root bending stress, redistributed	0.8000	MODEL: uniform rotational stiffness (as the joint version)
+high-fidelity	redundancy-simple-sliver	beam falls after losing a support	1.0000	STAGE (impact solve): light 2 cm support chunks between stiff joints (k dt^2/m ~4e5, structure_lint stiff-light-chunk) leave the solve without a verdict; the beam stays up. The joint version passes

@@ -20,11 +20,19 @@ LOCK="$DIR/exclusive"
 mkdir -p "$DIR"
 label=$1; shift
 
+# A lock's owner file records "pid label time started", where started is the
+# owner's process start time (ps lstart). A pid alone is not enough: after the
+# owner dies (a session restart), macOS can hand its pid to an unrelated
+# process, and the slot would look held forever.
+started() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' '_'; }
 stale() { # stale <lockdir>: its owner process has exited
-  local owner pid
+  local owner pid start
   owner=$(cat "$1/owner" 2>/dev/null) || return 1
   pid=${owner%% *}
-  [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 0
+  start=$(echo "$owner" | awk '{print $4}')
+  [ -n "$start" ] && [ "$start" != "$(started "$pid")" ]
 }
 
 held=""
@@ -39,7 +47,7 @@ if [ "${VIBE_GPU_SHARED:-0}" = 1 ]; then
     for i in $(seq 1 "$SLOTS"); do
       slot="$DIR/slot-$i"
       if mkdir "$slot" 2>/dev/null; then
-        echo "$$ $label $(date +%H:%M:%S)" > "$slot/owner"; held=$slot; break
+        echo "$$ $label $(date +%H:%M:%S) $(started $$)" > "$slot/owner"; held=$slot; break
       fi
       stale "$slot" && rm -rf "$slot"
     done
@@ -50,7 +58,7 @@ else
     stale "$LOCK" && { rm -rf "$LOCK"; continue; }
     sleep 2
   done
-  echo "$$ $label $(date +%H:%M:%S)" > "$LOCK/owner"; held=$LOCK
+  echo "$$ $label $(date +%H:%M:%S) $(started $$)" > "$LOCK/owner"; held=$LOCK
   # Timing work also waits for the shared jobs already running to finish.
   while :; do
     busy=0

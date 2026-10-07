@@ -185,3 +185,14 @@ pub fn pin_above(s: &mut Structure, chunk: usize, x: f64, y_top: f64, width: f64
     let top = s.rect_bond(block, anchor, [x, yt, 0.0], Y, X, STRIP, Z, width, mat);
     (block, bottom, top)
 }
+
+/// A support as a joint: `chunk`'s top face at (x, y_top) bonded through a
+/// 2 cm strip straight to an anchor plate above (centred on the face). No chunk
+/// stands between the member and its support -- a pin or prop as a joint. Its
+/// patch is the strip (2 cm by the member's width): a pin's moment capacity and
+/// rotational stiffness, without a light sliver chunk between stiff joints
+/// (structure_lint "stiff-light-chunk"). Returns the bond.
+pub fn strip_above(s: &mut Structure, chunk: usize, x: f64, y_top: f64, width: f64, mat: usize) -> usize {
+    let anchor = s.chunk("anchor", [x, y_top, 0.0], [STRIP / 2.0, PLATE, width / 2.0], 0.0);
+    s.rect_bond(chunk, anchor, [x, y_top, 0.0], Y, X, STRIP, Z, width, mat)
+}

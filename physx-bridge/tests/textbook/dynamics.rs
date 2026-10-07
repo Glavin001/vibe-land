@@ -100,7 +100,7 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
         }
         tier == Tier::Quick || want == Tier::Full
     };
-    let wanted = |name: &str| wanted_tier(name, if ["impact-momentum", "impact-plate-punch", "impact-restitution", "crush-locality"].contains(&name) { Tier::Quick } else { Tier::Full });
+    let wanted = |name: &str| wanted_tier(name, if ["impact-momentum", "impact-plate-punch", "impact-restitution", "crush-locality", "impact-energy"].contains(&name) { Tier::Quick } else { Tier::Full });
     if std::env::var("VERIFY_MODEL_ONLY").is_ok_and(|v| v == "1") {
         return;
     }
@@ -122,6 +122,9 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
     // Crushing is a high-fidelity capability (an SDK with crush correction).
     if wanted("crush-locality") && std::env::var("VIBE_NATIVE_CRUSH").is_ok_and(|v| v == "1") {
         super::guard(config, "crush-locality", expected, out, |out| crush_locality(config, expected, out));
+    }
+    if wanted("impact-energy") {
+        super::guard(config, "impact-energy", expected, out, |out| energy_audit(config, expected, out));
     }
     if wanted("tip-or-slide") {
         super::guard(config, "tip-or-slide", expected, out, |out| tip_or_slide(config, expected, out));
@@ -532,4 +535,111 @@ fn crush_locality(config: Config, expected: &[Expectation], out: &mut Output) {
     row(config, "crush-locality", "chunks crushed at rest", "0", source, "chunks", 0.0, f64::NAN, at_rest as f64, 1.0, expected, out);
     row(config, "crush-locality", "the hit crushes something", ">= 1", source, "1=yes", 1.0, f64::NAN, yes(!crushed.is_empty()), 1.0, expected, out);
     row(config, "crush-locality", "every crushed chunk within 1.4 m of the point struck (proposed)", "<= 0.4 m + 1 block", source, "1=yes", 1.0, f64::NAN, yes(!crushed.is_empty() && far <= 1.4), 1.0, expected, out);
+}
+
+/// Momentum and energy audit of a ball through a breakable wall, and off an
+/// unbreakable one. Nothing may come from nowhere:
+/// - the ball never gains speed (against what held or what broke);
+/// - the fragments' kinetic energy stays at or below the ball's loss plus the
+///   potential energy the fragments released by falling;
+/// - a rebound is at most e v_n (no crush here).
+/// Fragment energy is translational (island mass from the stage's promotion
+/// events, velocity from its body snapshots): a lower bound on the true total.
+fn energy_audit(config: Config, expected: &[Expectation], out: &mut Output) {
+    let source = "conservation: |v_ball| <= v0; KE_fragments <= dKE_ball + m g dh; rebound <= e v_n";
+    println!("\nimpact-energy -- a ball through a breakable wall, and off an unbreakable one\n  {source}");
+    let e = restitution();
+    for (label, limit) in [("breakable", 50e3), ("unbreakable", 1e13)] {
+        let mut s = Structure::new();
+        let m = s.material(Material { modulus: E_CONCRETE, compression: limit, tension: limit, shear: limit });
+        let (w, h, b) = (4usize, 4usize, 0.5);
+        let mut id = vec![vec![0usize; w]; h];
+        for y in 0..h {
+            for x in 0..w {
+                let c = [(x as f64 - 1.5) * b, (y as f64 + 0.5) * b, 0.0];
+                id[y][x] = s.chunk(&format!("b{x}{y}"), c, [b / 2.0; 3], if y == 0 { 0.0 } else { CONCRETE * b * b * b });
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                if x + 1 < w {
+                    s.rect_bond(id[y][x], id[y][x + 1], [(x as f64 - 1.0) * b, (y as f64 + 0.5) * b, 0.0], X, Y, b, Z, b, m);
+                }
+                if y + 1 < h {
+                    s.rect_bond(id[y][x], id[y + 1][x], [(x as f64 - 1.5) * b, (y as f64 + 1.0) * b, 0.0], Y, X, b, Z, b, m);
+                }
+            }
+        }
+        s.origin = [0.0, 10.0, 0.0];
+        let mut world = stage::build(&s);
+        let (mb, v0, r) = (100.0, 10.0, 0.25);
+        // Aimed at the wall's middle (between the two inner columns), along -z.
+        ball(&mut world, 9007, [0.0, 10.0 + 1.25, 1.0], r, mb, [0.0, 0.0, -v0]);
+        let mut masses = std::collections::HashMap::new();
+        let mut start_y = std::collections::HashMap::new();
+        let mut broken_total = 0usize;
+        let mut m_freed = 0.0f64;
+        let (mut vmax, mut vz_after, mut contact) = (0.0f64, f64::NAN, None::<u32>);
+        let (mut ke_frag, mut pe_release, mut ke_ball_loss) = (0.0f64, 0.0f64, 0.0f64);
+        for t in 1..=40u32 {
+            world.step().unwrap();
+            let status = world.native_tick().unwrap();
+            assert_eq!(status.error, 0, "stage rejected the step: {status:?}");
+            broken_total += world.native_take_broken_bonds().unwrap().len();
+            for ev in world.native_take_island_events().unwrap() {
+                if ev.kind == 0 {
+                    m_freed += ev.mass as f64;
+                    masses.insert(ev.island_id, ev.mass as f64);
+                    start_y.insert(ev.island_id, ev.position.y as f64);
+                }
+            }
+            let vb = plain_velocity(&world, 9007).unwrap_or([f64::NAN; 3]);
+            let speed = super::model::norm(vb);
+            if contact.is_none() && vb[2] > -v0 * 0.99 {
+                contact = Some(t);
+            }
+            if contact.is_some() {
+                vmax = vmax.max(speed);
+            }
+            if contact.is_some_and(|c| t == c + 4) {
+                vz_after = vb[2];
+                ke_ball_loss = 0.5 * mb * (v0 * v0 - speed * speed);
+                if let Ok(snaps) = world.native_chunk_body_snapshots() {
+                    for body in snaps.iter().filter(|b| !b.kinematic) {
+                        let mass = masses.get(&body.island_id).copied().unwrap_or(0.0);
+                        let v = [body.linear_velocity.x as f64, body.linear_velocity.y as f64, body.linear_velocity.z as f64];
+                        ke_frag += 0.5 * mass * super::model::dot(v, v);
+                        if let Some(y0) = start_y.get(&body.island_id) {
+                            pe_release += (mass * G * (y0 - body.position.y as f64)).max(0.0);
+                        }
+                    }
+                }
+            }
+        }
+        println!("  {label}: ball {v0} m/s, max speed after contact {vmax:.3}, v_z 4 ticks on {vz_after:.3}; fragments KE {ke_frag:.1} J vs ball loss {ke_ball_loss:.1} J + PE released {pe_release:.1} J");
+        let case = format!("impact-energy-{label}");
+        println!("  {label}: the ball's fastest after contact {vmax:.3} m/s (launched at {v0})");
+        row(config, &case, "the ball never gains speed after contact", "|v| <= v0", source, "1=yes", 1.0, f64::NAN, yes(vmax <= v0 * 1.001), 1.0, expected, out);
+        // The other side of the balance: energy lost must be energy the engine
+        // models dissipating. Here: each broken brittle joint's elastic energy
+        // at failure, F^2 / 2k with F = f A and k = E A / L (no ductile slip,
+        // no crush), and the contact loss (1 - e^2) mu v0^2 / 2, mu the ball's
+        // reduced mass against what it set moving (the ball itself against a
+        // wall that held: then the wall's joints must have held, so mu = m).
+        let lost = ke_ball_loss + pe_release - ke_frag;
+        let joint = {
+            let (f, area, len) = (limit * b * b, b * b, b);
+            f * f / (2.0 * E_CONCRETE * area / len)
+        };
+        let mu = if label == "unbreakable" || m_freed <= 0.0 { mb } else { mb * m_freed / (mb + m_freed) };
+        let dissipation = broken_total as f64 * joint + 0.5 * (1.0 - e * e) * mu * v0 * v0;
+        println!("  {label}: energy lost {lost:.1} J; modelled dissipation {dissipation:.1} J (contact, mu {mu:.1} kg against {m_freed:.1} kg set free; {broken_total} joints at {joint:.3} J)");
+        row(config, &case, "no energy vanishes: lost <= modelled dissipation (+10%)", "dKE_ball + dPE - KE_frag <= sum(F^2/2k) + (1-e^2) mu v^2/2", source, "1=yes", 1.0, f64::NAN, yes(lost <= 1.1 * dissipation + 1.0), 1.0, expected, out);
+        if label == "breakable" {
+            let budget = ke_ball_loss + pe_release;
+            row(config, &case, "fragments' kinetic energy within the ball's loss plus PE released", "KE_frag <= dKE_ball + m g dh", source, "1=yes", 1.0, f64::NAN, yes(ke_frag <= 1.01 * budget + 1.0), 1.0, expected, out);
+        } else {
+            row(config, &case, "rebound at most e v_n", "-v_z <= e v0", source, "1=yes", 1.0, f64::NAN, yes(-vz_after <= e * v0 * 1.05 + 1e-3), 1.0, expected, out);
+        }
+    }
 }

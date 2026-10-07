@@ -118,18 +118,48 @@ export const buriedAnchorsEnabled=()=>(globalThis.process?.env?.TOWN_KIT_BURIED_
  */
 export const ANCHOR_TOLERANCE=0.03;
 /**
- * Fixed (mass-0) chunks whose top stands above grade (world y = 0) by more
- * than ANCHOR_TOLERANCE: kinematic and unbreakable where something can hit
- * them. [{node, group, type, material, top}].
+ * Fixed (mass-0) chunks whose top stands above the ground under them
+ * (terrainSurface: y = 0, or the terrain's surface) by more than
+ * ANCHOR_TOLERANCE: kinematic and unbreakable where something can hit them.
+ * [{node, group, type, material, top, grade}].
  */
 export function lintAnchors(pack,{grade=0,tolerance=ANCHOR_TOLERANCE}={}) {
  const s=pack.scenario,out=[];
+ const ground=terrainSurface(pack,grade);
  for(let i=0;i<s.nodes.length;i++){
-  if(s.nodes[i].mass>0)continue;
-  const top=s.nodes[i].centroid.y+s.nodeSizes[i].y/2;
-  if(top>grade+tolerance)out.push({node:i,group:s.nodeGroups[i],type:s.nodeTypes[i],material:s.nodeMaterials[i],top:round(top)});
+  if(s.nodes[i].mass>0||ground.isGround(i))continue;
+  const top=s.nodes[i].centroid.y+s.nodeSizes[i].y/2,c=s.nodes[i].centroid,under=ground.height(c.x,c.z);
+  if(top>under+tolerance)out.push({node:i,group:s.nodeGroups[i],type:s.nodeTypes[i],material:s.nodeMaterials[i],top:round(top),grade:round(under)});
  }
  return out;
+}
+/**
+ * The ground a pack stands on: y = `grade`, raised wherever its terrain is
+ * (fixed chunks of a `terrain` group typed terrain or foundation -- a hill, a
+ * subgrade; a kerb or a ramp in that group is not ground). height(x, z) is
+ * the highest such chunk's top over that point: a box's top face, a hull's
+ * upper surface as the plane through its highest point of each column.
+ */
+export function terrainSurface(pack,grade=0) {
+ const s=pack.scenario,lib=s.shapeLibrary??[],parts=[];
+ const isGround=i=>s.nodes[i].mass===0&&/^terrain/.test(s.nodeGroups[i])&&/^(terrain|foundation)$/.test(s.nodeTypes[i]);
+ for(let i=0;i<s.nodes.length;i++){
+  if(!isGround(i))continue;
+  const n=s.nodes[i],c=a(n.centroid),h=a(s.nodeSizes[i]).map(x=>x/2);
+  let col=s.nodeColliders[i];if(col.kind==='shape')col=lib[col.shape];
+  const box=[c[0]-h[0],c[0]+h[0],c[2]-h[2],c[2]+h[2]];
+  if(col.kind==='cuboid'){const top=c[1]+h[1];parts.push({box,at:()=>top});continue;}
+  // Hull: the plane through each (x, z) column's highest point (least squares).
+  const cols=new Map();for(let k=0;k<col.points.length;k+=3){const x=col.points[k]+c[0],y=col.points[k+1]+c[1],z=col.points[k+2]+c[2];const key=`${x.toFixed(3)},${z.toFixed(3)}`;if(!(cols.get(key)?.[1]>=y))cols.set(key,[x,y,z]);}
+  const pts=[...cols.values()];let A=[[0,0,0],[0,0,0],[0,0,0]],b=[0,0,0];
+  for(const [x,y,z] of pts){const r=[x,z,1];for(let p=0;p<3;p++){b[p]+=r[p]*y;for(let q=0;q<3;q++)A[p][q]+=r[p]*r[q];}}
+  const det=m=>m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])-m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])+m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+  const D=det(A),ymax=Math.max(...pts.map(p=>p[1])),ymin=Math.min(...pts.map(p=>p[1]));
+  if(Math.abs(D)<1e-9){parts.push({box,at:()=>ymax});continue;}
+  const coef=[0,1,2].map(k=>det(A.map((row,r)=>row.map((v,q)=>q===k?b[r]:v)))/D);
+  parts.push({box,at:(x,z)=>Math.min(ymax,Math.max(ymin,coef[0]*x+coef[1]*z+coef[2]))});
+ }
+ return {isGround,height:(x,z)=>parts.reduce((m,p)=>x>=p.box[0]-1e-6&&x<=p.box[1]+1e-6&&z>=p.box[2]-1e-6&&z<=p.box[3]+1e-6?Math.max(m,p.at(x,z)):m,grade)};
 }
 /**
  * Buried anchors for packs built elsewhere (the skyline assets' column bases,

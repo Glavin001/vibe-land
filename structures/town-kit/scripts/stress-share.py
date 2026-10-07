@@ -311,7 +311,7 @@ def stresses(s, mats, J, bending='capped', sections=None, pos=None):
             # A fastened bearing joint: the contact bears at its edge, the
             # fasteners at its centre carry T = |M0|/d0 + |M1|/d1 - C
             # (PX_DESTRUCTION_BEARING_JOINTS).
-            T = abs(ang @ sec[0]) / sec[8] + abs(ang @ sec[1]) / sec[9] - max(-normal * a, 0.0)
+            T = abs(ang @ sec[0]) / sec[8] + abs(ang @ sec[1]) / sec[9] + normal * a   # N signed: + pull
             tension = max(T, 0.0) / a
         util = max(compression / m['compressionElastic'], tension / m['tensionElastic'], shear / m['shearElastic'])
         fatal = max(compression / m['compressionFatal'], tension / m['tensionFatal'], shear / m['shearFatal'])
