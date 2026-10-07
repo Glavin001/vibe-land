@@ -17,6 +17,14 @@ pub const SOLVER_MIN_BOND_AREA_M2: f32 = 1e-4;
 const REFERENCE_MODULUS_PA: f32 = 30e9;
 const MIN_WEIGHT_LENGTH_M: f32 = 0.05;
 const G: f32 = vibe_netcode::movement::GRAVITY as f32;
+/// Why the stiff-light threshold is 1e5. Measured 2026-10-07: the textbook
+/// redundancy-propped case's 2 cm pin strip (1.6 kg between joints of 5.7e8 and
+/// 1.9e9 N/m, k dt^2/m ~4e5) leaves the impact solve's dual residual dithering
+/// at 1.3e-4 against its 1e-4 tolerance (capped, no verdict). The dither grows
+/// with the chunk's k dt^2/m, so the tolerance is reached near 3e5; warning at
+/// 1e5 keeps a 3x margin. Ordinary chunks sit at 1e3-1e4 (median 2e3-5e3 in the
+/// lab, the veneer houses and Vibe Town).
+const STIFF_LIGHT_BASIS: &str = "k dt^2/m = (omega dt)^2: the textbook pin strip at ~4e5 left the impact solve dithering at 1.3e-4 against 1e-4 (2026-10-07); warning at 1e5 is a 3x margin; ordinary chunks sit at 1e3-1e4. Merge the chunk into a neighbour, give it its real mass, or make the detail a joint";
 
 #[derive(Clone, Debug)]
 pub struct LintNode {
@@ -95,6 +103,9 @@ impl LintReport {
 }
 
 pub struct LintOptions {
+    /// Warn when a chunk's k dt^2 / m (its stiffest joint against its own
+    /// mass, over the 60 Hz tick) exceeds this. See STIFF_LIGHT_BASIS.
+    pub stiff_light_warning: f32,
     /// Warn when one bond joins chunks whose masses differ by more than this.
     pub mass_ratio_warning: f32,
     /// Warn when a sole attachment cannot carry this many g of what hangs from it.
@@ -119,7 +130,7 @@ pub fn true_stiffness_from_env() -> bool {
 
 impl Default for LintOptions {
     fn default() -> Self {
-        Self { mass_ratio_warning: 100., sole_attachment_g_warning: 10., contact_length: false, true_stiffness: true_stiffness_from_env() }
+        Self { stiff_light_warning: 1e5, mass_ratio_warning: 100., sole_attachment_g_warning: 10., contact_length: false, true_stiffness: true_stiffness_from_env() }
     }
 }
 
@@ -242,6 +253,28 @@ pub fn lint(nodes: &[LintNode], bonds: &[LintBond], options: &LintOptions) -> Li
             basis: "a light chunk on a heavy one conditions the stress system badly; merge the light chunk into its neighbour or give it realistic mass", examples: heavy });
     }
 
+    // 3b. Light chunks between stiff joints: k dt^2 / m = (omega dt)^2, the
+    // chunk's own spring-mass frequency against the tick. The impact solve
+    // (and the stress solve's conditioning) must resolve that chunk's row
+    // against its neighbours'; past ~1e5 it cannot reach its tolerance in FP32.
+    let dt = 1.0f32 / 60.0;
+    let mut kmax = vec![0f32; n];
+    for b in bonds {
+        let d = dist(nodes[b.a].position, nodes[b.b].position).max(b.area.max(0.).sqrt());
+        if d <= 0. { continue; }
+        let k = (if b.modulus > 0. { b.modulus } else { REFERENCE_MODULUS_PA }) * b.area / d;
+        for i in [b.a, b.b] { kmax[i] = kmax[i].max(k); }
+    }
+    let mut stiff: Vec<(f32, usize)> = (0..n).filter(|&i| nodes[i].mass > 0. && kmax[i] > 0.)
+        .map(|i| (kmax[i] * dt * dt / nodes[i].mass, i)).filter(|r| r.0 > options.stiff_light_warning).collect();
+    stiff.sort_by(|x, y| y.0.total_cmp(&x.0));
+    if !stiff.is_empty() {
+        findings.push(Finding { check: "stiff-light-chunk", severity: Severity::Warning,
+            summary: format!("{} chunk(s) with k dt^2/m over {:.0e} (worst {:.1e}): light chunks between stiff joints", stiff.len(), options.stiff_light_warning, stiff[0].0),
+            basis: STIFF_LIGHT_BASIS,
+            examples: stiff.iter().take(8).map(|(r, i)| format!("{} ({:.3} kg, k {:.2e} N/m): {:.1e}", name(*i), nodes[*i].mass, kmax[*i], r)).collect() });
+    }
+
     // 4. Connectivity: every chunk must reach the structure (and an anchor, when anchored).
     let comp = components(n, bonds, None);
     let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -360,6 +393,18 @@ mod tests {
         // Floored: area 1e-4 and length 0.05, sqrt(100 * 0.4) = 6.32x stiffer.
         let ratio = stiffness_weight(&nodes, &bonds[1], false, false) / w;
         assert!((ratio - 40f32.sqrt()).abs() < 1e-3, "{ratio}");
+    }
+
+    #[test]
+    fn a_light_strip_between_stiff_joints_is_flagged() {
+        // The textbook's 2 cm pin strip: 1.6 kg between steel-stiff joints.
+        let nodes = vec![node("ground", 0., 0.), node("strip", 0.02, 1.6), node("beam", 0.27, 1000.)];
+        let mut b0 = bond(0, 1, 0.004); b0.modulus = 30e9;
+        let mut b1 = bond(1, 2, 0.004); b1.modulus = 30e9;
+        let report = lint(&nodes, &[b0, b1], &LintOptions::default());
+        let f = report.findings.iter().find(|f| f.check == "stiff-light-chunk").expect("flagged");
+        assert!(f.examples[0].contains("strip"), "{:?}", f.examples);
+        assert!(!f.examples.iter().any(|e| e.contains("beam")), "{:?}", f.examples);
     }
 
     #[test]
