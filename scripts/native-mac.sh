@@ -127,10 +127,16 @@ case "$SCENE" in
       VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:-$(cat "$pack.slots")}" \
       VIBE_CITY_SPAWN_X=-120 VIBE_CITY_SPAWN_Z=-90 ;;
   town)
-    pack="$ROOT/structures/vibe-town/out/vibe-town"
-    stale=0
-    for source in "$ROOT"/structures/vibe-town/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
-    [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vibe-town/build-town.mjs"
+    # TOWN_PACK: another build of the town (out/vibe-town-crush-real: chunk
+    # crushing and real capacities authored, `VIBE_CRUSH=1 VIBE_REAL_CAPACITIES=1
+    # node structures/vibe-town/build-town.mjs`), used as built.
+    pack="${TOWN_PACK:-$ROOT/structures/vibe-town/out/vibe-town}"
+    if [ -z "${TOWN_PACK:-}" ]; then
+      stale=0
+      for source in "$ROOT"/structures/vibe-town/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
+      [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vibe-town/build-town.mjs"
+    fi
+    [ -f "$pack.json" ] || { echo "no town pack $pack.json" >&2; exit 1; }
     # Twenty-two cars (the builder's .slots, with headings): eight at the
     # street end of Elm Park's driveways, two in the Market Quarter's car park,
     # a monster truck at North Street's west end for chases, and eleven parked
