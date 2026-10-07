@@ -175,13 +175,23 @@ fn fractureSurface(p: vec3f, n: vec3f, cls: f32, relief: f32, fp: f32, base: vec
       color *= 1.0 - 0.18 * seamDark * fine;
     }
   } else if (ic == 2 || ic == 10) {
-    // Brick body: fired clay with lighter grog speckle.
-    let cs = max(a.y * 0.12, 0.001);
+    // Brick body: fired clay with lighter grog speckle, crossed by the grey
+    // mortar beds between courses (rest-space y, every a.y metres).
+    let cs = 0.006;
     let cell = frCell(p / cs);
-    let speck = (1.0 - smoothstep(0.18, 0.3, cell[0].x)) * step(frHash(vec3f(cell[0].z * 13.0, 1.0, 1.0)), 0.35);
-    color = mix(color, accent, speck * 0.7 * fine);
-    let blotch = frFbmD(p / (a.y * 0.6), 2);
+    let speck = (1.0 - smoothstep(0.18, 0.3, cell[0].x)) * step(frHash(vec3f(cell[0].z * 13.0, 1.0, 1.0)), 0.3);
+    color = mix(color, color * vec3f(1.45, 1.3, 1.15), speck * 0.6 * fine);
+    let blotch = frFbmD(p / 0.04, 2);
     color *= 0.85 + 0.3 * (blotch.x * 0.5 + 0.5);
+    let course = max(a.y, 0.02);
+    let inCourse = fract(p.y / course);
+    let joint = 0.011 / course;
+    let wobble = frFbmD(p / 0.01, 2).x * 0.12;
+    let bed = 1.0 - smoothstep(joint * 0.6, joint * (1.0 + wobble), min(inCourse, 1.0 - inCourse) * 2.0);
+    let mortar = accent * (0.85 + 0.3 * frFbmD(p / 0.003, 2).x);
+    color = mix(color, mortar, bed);
+    rough = mix(rough, 1.0, bed);
+    h -= bed * 0.002;
   } else if (ic == 4) {
     // Wood: fibres along the grain, torn into ridges; latewood bands.
     let g = select(vec3f(0.0, 1.0, 0.0), normalize(grain), length(grain) > 0.5);

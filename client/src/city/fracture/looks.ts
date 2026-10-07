@@ -116,8 +116,8 @@ function defaults(cls: FractureClass): FractureLook {
           courseHeight: 0.075, toothDepth: 0.045, chipWidth: 0.012, chipDepth: 0.006,
         }),
         shade: shade({
-          base: [0.36, 0.13, 0.08], accent: [0.55, 0.52, 0.47], accentFill: 0.2,
-          accentSize: 0.065, bumpSize: 0.004, pores: 0.1, cavity: 0.45,
+          base: [0.30, 0.10, 0.06], accent: [0.42, 0.40, 0.36], accentFill: 0.2,
+          accentSize: 0.075, bumpSize: 0.004, pores: 0.05, cavity: 0.45,
         }),
         rebar: { ...DEFAULT_REBAR_LOOK },
       };
