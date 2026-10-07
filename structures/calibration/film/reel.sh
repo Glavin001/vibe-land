@@ -95,7 +95,15 @@ take() {
 parts=()
 for id in "${takes[@]}"; do
   echo "take $id ..."
-  parts+=("$(take "$id")")
+  # Up to three tries: on a busy shared GPU the city can take minutes to come
+  # up and the film times out waiting for it.
+  part=""
+  for attempt in 1 2 3; do
+    if part="$(take "$id")"; then break; fi
+    part=""; echo "take $id: try $attempt failed" >&2; sleep 30
+  done
+  [ -n "$part" ] || { echo "take $id: no take after three tries" >&2; exit 1; }
+  parts+=("$part")
   echo "  ${parts[${#parts[@]}-1]}"
 done
 
