@@ -4,6 +4,8 @@
 //   <key>.json                 as built
 //   <key>--frame.json          brick veneer and gypsum board removed
 //   <key>--no-front-studs.json the front wall's studs (studs, king, jack, cripple) removed, every storey's
+//   <key>--no-ground-front-studs.json  (two storeys) the ground floor's front studs only: the upper
+//                              storey is left to bridge the gap
 // written to out/veneer-houses/, each validated, with the authored graph's
 // numbers (stress-convergence checklist: bond areas, stiffness spread, mass
 // contrast across a bond).
@@ -35,7 +37,8 @@ export function graphStats(pack){
 
 export function variants(storeysCount){
  const {pack,metadata}=buildVeneerHouse({storeys:storeysCount}),key=pack.key;
- return [[key,pack],[`${key}--frame`,withoutSkin(pack)],[`${key}--no-front-studs`,withoutStuds(pack,metadata,storeysCount>1?['front-0','front-1']:'front')]].map(([name,p])=>({name,pack:p,metadata}));
+ return [[key,pack],[`${key}--frame`,withoutSkin(pack)],[`${key}--no-front-studs`,withoutStuds(pack,metadata,storeysCount>1?['front-0','front-1']:'front')],
+  ...(storeysCount>1?[[`${key}--no-ground-front-studs`,withoutStuds(pack,metadata,['front-0'])]]:[])].map(([name,p])=>({name,pack:p,metadata}));
 }
 
 if(import.meta.url===`file://${process.argv[1]}`){
@@ -45,7 +48,7 @@ if(import.meta.url===`file://${process.argv[1]}`){
   writeFileSync(path.join(OUT,`${name}.json`),JSON.stringify(pack));
   if(!name.includes('--'))writeFileSync(path.join(OUT,`${name}.meta.json`),JSON.stringify(metadata,null,1));
   // A variant with a wall's studs gone may leave pieces hanging free: that is the point of it.
-  const ok=check.passed||name.endsWith('--no-front-studs')&&check.errors.every(e=>e.startsWith('unanchored'));
+  const ok=check.passed||name.endsWith('front-studs')&&check.errors.every(e=>e.startsWith('unanchored'));
   if(!ok)failed=true;
   console.log(`${ok?'ok  ':'FAIL'} ${name}: ${JSON.stringify(stats)}${check.passed?'':`\n     ${check.errors.slice(0,6).join('\n     ')}`}`);
  }

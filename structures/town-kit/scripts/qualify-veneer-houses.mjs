@@ -29,7 +29,9 @@ const COLLAPSE_SHARE=2.0;
 
 execFileSync('node',[path.join(KIT,'scripts/build-veneer-houses.mjs'),'--storeys',storeys],{stdio:'inherit'});
 const out=path.join(KIT,'out/veneer-houses'),keys=storeys.split(',').map(n=>n==='1'?'veneer-bungalow':'veneer-house');
-const packs=keys.flatMap(k=>['',  '--frame','--no-front-studs'].map(v=>path.join(out,`${k}${v}.json`)));
+// The two-storey also without its ground floor's front studs only: reported,
+// no expectation (does the upper storey bridge the gap?).
+const packs=keys.flatMap(k=>['',  '--frame','--no-front-studs',...(k==='veneer-house'?['--no-ground-front-studs']:[])].map(v=>path.join(out,`${k}${v}.json`)));
 
 const lock=path.join(REPO,'target/native-bundle.lock'),json=path.join(REPO,'target/qualify-structures/veneer-houses.json');
 mkdirSync(path.dirname(json),{recursive:true});
@@ -46,6 +48,7 @@ try{
 const results=JSON.parse(readFileSync(json,'utf8'));let failed=0;
 console.log('\nexpectations:');
 for(const r of results){
+ if(r.structure.endsWith('--no-ground-front-studs')){console.log(`info ${r.structure.padEnd(32)} ${r.broken_pct?.toFixed(2)}% broken (unconverged ${r.unconverged_pct?.toFixed(1)}%)`);continue;}
  const collapse=r.structure.endsWith('--no-front-studs');
  const ok=collapse?r.broken_pct!=null&&r.broken_pct>=COLLAPSE_SHARE:r.verdict==='PASS';
  if(!ok)failed++;

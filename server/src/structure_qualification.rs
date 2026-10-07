@@ -264,7 +264,35 @@ mod tests {
             }
             tallies
         };
+        // VIBE_QUALIFY_FRONT_DROP=1 (a house pack in VIBE_CITY_SCENE): how far
+        // the front of the roof and of the upper floor came down -- the mean
+        // live height of the roof covering and of the floor members above the
+        // ground storey whose authored centroid is in front (z < -0.5), before
+        // the run and at its end.
+        let front: Option<Vec<(&str, Vec<u32>)>> = std::env::var_os("VIBE_QUALIFY_FRONT_DROP").and(std::env::var("VIBE_CITY_SCENE").ok()).map(|path| {
+            let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).expect("VIBE_CITY_SCENE pack")).expect("pack json");
+            let types = doc["scenario"]["nodeTypes"].as_array().unwrap();
+            let nodes = doc["scenario"]["nodes"].as_array().unwrap();
+            let pick = |want: &[&str], min_y: f64| (0..types.len() as u32).filter(|&i| {
+                let t = types[i as usize].as_str().unwrap_or("").split('@').next().unwrap_or("");
+                let c = &nodes[i as usize]["centroid"];
+                want.contains(&t) && c["z"].as_f64().unwrap_or(0.) < -0.5 && c["y"].as_f64().unwrap_or(0.) > min_y
+            }).collect::<Vec<u32>>();
+            vec![("front roof covering", pick(&["roof-covering"], 0.)), ("front upper floor", pick(&["subfloor", "floor-joist"], 1.5))]
+        });
+        let heights = |world: &vibe_land_physx_bridge::World, ids: &[u32]| {
+            let y: Vec<f32> = ids.iter().filter_map(|&i| world.native_chunk_aim(0, i).ok().filter(|a| a.found).map(|a| a.center.y)).collect();
+            (y.iter().sum::<f32>() / y.len().max(1) as f32, y.len())
+        };
+        let front_start: Vec<(f32, usize)> = front.as_ref().map(|f| { let w = arena.physx_world_mut().unwrap(); f.iter().map(|(_, ids)| heights(w, ids)).collect() }).unwrap_or_default();
         let idle = run(&mut arena, &mut city, &mut tick, rest);
+        if let Some(f) = &front {
+            let w = arena.physx_world_mut().unwrap();
+            for ((label, ids), (y0, n0)) in f.iter().zip(&front_start) {
+                let (y1, n1) = heights(w, ids);
+                eprintln!("front drop: {label}: {y0:.2} -> {y1:.2} m ({:.2} m down; {n0} -> {n1} of {} chunks found)", y0 - y1, ids.len());
+            }
+        }
         // Whether it stands as well as converges: a structure can converge and
         // fall down (Bayline's billboard). The authored-structure gate allows
         // under 0.5% of bonds broken at rest (authored_structures_sim.rs).

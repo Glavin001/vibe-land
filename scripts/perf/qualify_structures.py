@@ -138,6 +138,9 @@ def qualify(binary, pack_path, ticks, solver_env='app'):
     crushed = re.search(r'crushed chunks (\d+)', text)
     crushed = int(crushed.group(1)) if crushed else 0
     rest = re.search(r'at rest: ((?!broken).*)', text)
+    # VIBE_QUALIFY_FRONT_DROP=1: how far the front roof and upper floor came down.
+    for drop in re.findall(r'front drop: .*', text):
+        print(f'    {drop}', flush=True)
     if crushed:
         # Chunk crushing (opt-in) at rest: the structure grinds itself down.
         return None, broken, awake, f'crushed {crushed} chunks at rest'
