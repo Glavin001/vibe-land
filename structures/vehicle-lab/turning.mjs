@@ -92,11 +92,12 @@ export const SYSID2 = [
 // ------------------------------------------------------------------ courses
 //
 // Inside the drawn ground (the client draws +-256 m; beyond it the slab is
-// black): the slaloms and the lane change west of the flat lane (x -230 to
-// -124), the handbrake turns and the tight course south of the lanes (z
-// -250 to -120), the skidpad and the figure eight north of the short lanes
+// black): the slaloms west of the flat lane (x -203 to -122, kept 50 m off
+// the ground's edge, which a following camera sees), the lane change, the
+// cone check, the handbrake turns and the tight course south of the lanes
+// (z -250 to -120), the skidpad and the figure eight north of the short lanes
 // (z 130-195, between the flat lane and the street), the filmed avoidance
-// run east of the framed-house lane (x 175-235). Every course is a set
+// runs east of the framed-house lane (x 140-205). Every course is a set
 // of legs for client/native/film/driver.mjs createCourseDriver: paths to
 // track at planned speeds, and handbrake turns closed-loop on the heading.
 // Cones mark what it must keep clear of; a cone is hit when it is inside
@@ -136,7 +137,7 @@ function skidpad() {
     id: 'skidpad', caption: 'Steady turns: a 15 m circle at rising speed', slot: [cx - R, cz - 35, 0], seconds: 45,
     // No slowing when off the path: the last half lap is meant to show what the truck cannot hold.
     legs: [{ kind: 'track', path, profile, stop: true, gains: { offPath: Infinity } }], cones, circle: { cx, cz, R, segments },
-    camera: { watch: [cx + 22, 18, cz + 40] },
+    camera: { watch: [cx + 14, 13, cz + 28] },
   };
 }
 
@@ -153,7 +154,7 @@ function figureEight() {
     id: 'figure-eight', caption: 'A figure eight: two 12 m circles at 31 km/h', slot: [x0, z0 - 35, 0], seconds: 40,
     legs: [{ kind: 'track', path, profile, stop: true }], cones: [...ring(x0 - R), ...ring(x0 + R)],
     circle: { segments: [{ s0, s1: s0 + lobe, label: 'left' }, { s0: s0 + lobe, s1: s0 + 2 * lobe, label: 'right' }] },
-    camera: { watch: [x0 + 15, 22, z0 + 42] },
+    camera: { watch: [x0 + 10, 15, z0 + 30] },
   };
 }
 
@@ -162,7 +163,7 @@ function figureEight() {
  * (cones 2.15 m either side of its middle) for 15 m, over by 4 m in 25 m,
  * 20 m there, back in 25 m, and a 15 m exit lane, at `speed`.
  */
-function laneChange(speed, x0 = -130, id = 'lane-change') {
+function laneChange(speed, x0 = -95, id = 'lane-change') {
   const z0 = -240, zA = -190, shift = 4, half = 2.15;
   const d = (z) => {
     if (z < zA) return 0;
@@ -226,7 +227,7 @@ function handbrakeTurn({ id, x0, turn, speed, on, over, caption, maneuver, gateA
  */
 export const SLALOM = { spacing: 24, count: 7, amplitude: HALF_WIDTH + CONE_HALF + 0.7, speeds: [10, 12, 13, 14, 15, 16] };
 function slalom(speed, k) {
-  const x0 = -228 + 15 * k, z0 = -240, zc = -170, { spacing, count, amplitude } = SLALOM;
+  const x0 = -200 + 15 * k, z0 = -240, zc = -170, { spacing, count, amplitude } = SLALOM;
   const zEnd = zc + spacing * (count - 1);
   const ramp = (z) => smoothstep5((z - (zc - spacing * 1.5)) / spacing) * (1 - smoothstep5((z - (zEnd + spacing * 0.5)) / spacing));
   const d = (z) => amplitude * Math.cos((Math.PI * (z - zc)) / spacing) * ramp(z);
@@ -308,7 +309,7 @@ function tightCourse() {
  * and the cone's 0.16), the game says which it actually moved.
  */
 function coneCheck() {
-  const x0 = -100, z0 = -250;
+  const x0 = -40, z0 = -250;
   const cones = [[x0, -215], [x0 + 1.4, -200], [x0 - 1.55, -188], [x0 + 1.7, -176], [x0 - 1.9, -164]];
   return {
     id: 'cone-check', caption: 'Which cones a pass hits', slot: [x0, z0, 0], seconds: 22, cones,
@@ -347,10 +348,10 @@ export function turningCones() {
 
 /**
  * One avoidance episode per seed. The filmed run is east of the lanes (x
- * 225, from z -240); the runs for the success rate side by side on the
+ * 190, from z -240; the blind one at 145); the runs for the success rate side by side on the
  * identification field beyond the drawn ground (the ground is the same slab).
  */
-export const AVOID = { speed: 14, length: 340, z0: 300, x0: 300, spacing: 45, film: [225, -240], first: 4, last: 16, gapMin: 1.6, gapRand: 1.6, flight: 2.74 };
+export const AVOID = { speed: 14, length: 340, z0: 300, x0: 300, spacing: 45, film: [190, -240], first: 4, last: 16, gapMin: 1.6, gapRand: 1.6, flight: 2.74 };
 
 /**
  * `hard`: rocks every 0.9-1.9 s instead of 1.6-3.2, up to 3 m either side of
@@ -383,7 +384,7 @@ export function episodesFor(mode) {
   // avoid: the filmed run (seed 7); avoid-stats: seeds 1..20 for the success rate;
   // avoid-late: the same seeds, each rock known only from its launch (2.74 s before it lands).
   // avoid: the filmed run (seed 7) after the same rocks on a truck that does not look (blind, beside it).
-  if (mode === 'avoid') return [avoidEpisode(7, 0, { at: [AVOID.film[0] - 50, AVOID.film[1]], blind: true }), avoidEpisode(7, 0, { at: AVOID.film })];
+  if (mode === 'avoid') return [avoidEpisode(7, 0, { at: [AVOID.film[0] - 45, AVOID.film[1]], blind: true }), avoidEpisode(7, 0, { at: AVOID.film })];
   if (mode === 'avoid-hard') return Array.from({ length: 20 }, (_, k) => avoidEpisode(k + 1, k, { hard: true }));
   if (mode === 'avoid-blind') return Array.from({ length: 20 }, (_, k) => avoidEpisode(k + 1, k, { blind: true }));
   if (mode === 'avoid-stats') return Array.from({ length: 20 }, (_, k) => avoidEpisode(k + 1, k));

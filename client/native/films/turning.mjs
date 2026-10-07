@@ -355,8 +355,8 @@ async function main() {
     return { ...e, seconds: Math.min(e.seconds, Math.ceil(((sim.stoppedAt ?? e.seconds) + 2.5) * 2) / 2) };
   });
   const place = placeResolver(episodes.map((e, i) => ({ id: `car-${i}`, kind: 'car', position: [e.slot[0], 0, e.slot[1]], heading: e.slot[2] })));
-  // A light haze: the drawn ground ends at +-256 m, and a camera looking out sees its black edge.
-  const film = await boot({ scene: 'lab', place, settle: 2, haze: 0.6 });
+  // No haze: at 0.6 it washed the courses out (2026-10-06); the cameras look inward instead.
+  const film = await boot({ scene: 'lab', place, settle: 2 });
   film.log(`turning ${MODE}: ${episodes.length} episodes: ${episodes.map((e) => `${e.id} ${e.seconds}s`).join(', ')}`);
   await film.play([...episodes.map((e, i) => episodeShot(e, i, film.fps)), ...closing(episodes)]);
 }
