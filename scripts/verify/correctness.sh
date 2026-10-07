@@ -39,6 +39,9 @@ export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
 export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-$I/garage-multihull}
 export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/install/garage-hifi}
 export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/build/garage-hifi/package}
+# The PhysX destruction ctest gate's package tree (fix/mac-ctest-baseline; the hifi
+# tree once integration/high-fidelity merges it).
+export DESTRUCTION_CTEST_TREE=${VERIFY_DESTRUCTION_CTEST_TREE:-/Users/glavin/Development/PhysX/.claude/worktrees/ctest-triage/out/build/triage-package}
 export IMPACT_BUILD=${VERIFY_IMPACT_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/build/impact-e-tests}
 t_start=$(date +%s)
 failed=0
