@@ -18,10 +18,17 @@
 #   CALIB_CASES    the cases, comma list (default: every case): a take each, and the
 #                  overview shows only them; CALIB_OVERVIEW=0 skips the overview
 #   CALIB_FREEZE   seconds the opening frame is held (default 4)
+#   CALIB_ALONE    1 (default): each case's take loads that case alone (its broken
+#                  bonds counted live); 0: the whole scenario's scene, as the GPU test
+#                  runs it (bonds per case then from verdict.json, the drop still live)
 #   CALIB_REUSE    takes already filmed, not filmed again: id=RAW.mp4,... (a take's raw
 #                  recording, its .log beside it -- target/native-video/calibration-<stamp>.mp4)
 #   FILM_SIZE, FILM_FPS, FILM_SEED   as for any film (default 1280x720, 30)
-#   VIBE_SIM_TARGET, NATIVE_SKIP_SIM  the simulation library (scripts/native-mac.sh sim())
+#   CALIB_SIM_COMMIT  film the engine at this commit (so film and GPU test run the same
+#                  engine): a detached worktree target/calib-sim-src-<sha>, the sim built
+#                  there (PHYSX_ROOT, default the garage-multihull SDK) into
+#                  target/calib-native-sim-<sha>; sets VIBE_SIM_TARGET and NATIVE_SKIP_SIM=1
+#   VIBE_SIM_TARGET, NATIVE_SKIP_SIM  else the simulation library (scripts/native-mac.sh sim())
 #
 # Correctness runs share the GPU: VIBE_GPU_SHARED=1, so native-mac.sh's launch
 # takes one of the machine's shared GPU slots (scripts/perf/gpu-run.sh). The shared
@@ -38,6 +45,19 @@ export VIBE_GPU_SHARED=1
 VIDEO="$ROOT/target/native-video"
 mkdir -p "$VIDEO" "$ROOT/target/calib-film/$SCENARIO"
 
+if [ -n "${CALIB_SIM_COMMIT:-}" ]; then
+  sha=$(git -C "$ROOT" rev-parse --short=8 "$CALIB_SIM_COMMIT^{commit}")
+  src="$ROOT/target/calib-sim-src-$sha"
+  [ -d "$src" ] || git -C "$ROOT" worktree add --detach "$src" "$sha"
+  [ "$(git -C "$src" rev-parse --short=8 HEAD)" = "$sha" ] || { echo "$src is not at $sha" >&2; exit 1; }
+  export VIBE_SIM_TARGET="$ROOT/target/calib-native-sim-$sha" NATIVE_SKIP_SIM=1
+  if [ ! -f "$VIBE_SIM_TARGET/release/libvibe_sim.dylib" ]; then
+    echo "sim: building $sha in $src (CPU only)"
+    (cd "$src" && PHYSX_ROOT="${PHYSX_ROOT:-$(cd "$ROOT/.." && pwd)/PhysX/out/install/garage-multihull}" CARGO_TARGET_DIR="$VIBE_SIM_TARGET" \
+      cargo build --release -p vibe-sim-native --features city)
+  fi
+  echo "sim: engine at $sha ($VIBE_SIM_TARGET)"
+fi
 [ -f "$DIR/spec.json" ] && [ -f "$DIR/scene.json" ] || node "$ROOT/structures/calibration/run.mjs" "$SCENARIO" --spec-only
 # The configuration's environment (only the VIBE_SECTION_* switches the configs use), and the
 # player's spawn well clear of everything: 120 m beyond the scene's -z side, at its middle.
@@ -82,7 +102,7 @@ take() {
   fi
   # The scene the take loads: the case alone, or for the overview every case filmed.
   held="$id"; [ "$id" = overview ] && held="$cases"
-  if [ "$id" = overview ] && [ -z "${CALIB_CASES:-}" ]; then scene="$DIR/scene.json"; held=""
+  if { [ "$id" = overview ] && [ -z "${CALIB_CASES:-}" ]; } || { [ "$id" != overview ] && [ "${CALIB_ALONE:-1}" = 0 ]; }; then scene="$DIR/scene.json"; held=all""
   else scene="$ROOT/target/calib-film/$SCENARIO/$id.json"; node "$ROOT/structures/calibration/film/case-scene.mjs" "$DIR" "$held" "$scene" >&2; fi
   # client/dist-native is one bundle for every film from this checkout (film.js,
   # game.js, rebuilt when its inputs differ): no take while another app run
