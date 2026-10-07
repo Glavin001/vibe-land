@@ -33,6 +33,7 @@
 import {Builder,composeScene,round,v} from './geometry.mjs';
 import {M,MORTAR_JOINT,C24,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled,ULTIMATE_SLIP} from './materials.mjs';
 import {cornerReferencedHulls} from './parts/hull-origins.mjs';
+import {realCapacitiesEnabled} from './real-capacities.mjs';
 import {planStair,checkStair,requiredVoid,checkHeadroom,buildTimberStair,frameFloorOpening,stairConnection,housingShear,STAIR_CONNECTIONS,STAIR_TYPES,OPENING_TYPES,STAIR_SIZES} from './stairs-timber.mjs';
 
 /** Sizes, metres. Sawn sizes are the AS 1684 / EN 336 metric ones. */
@@ -102,7 +103,13 @@ function jointMaterial(b,kind,area,length,table=CONNECTIONS){
   compressionElastic:LONG_TERM*f.compression,compressionFatal:f.compression,tensionElastic:LONG_TERM*f.tension,tensionFatal:f.tension,
   shearElastic:LONG_TERM*f.shear,shearFatal:f.shear,
   // A few discrete fasteners twist on their own group (materials.mjs fastenerRow); read under VIBE_SECTION_ROTATION.
-  ...(c.twist?{twistGyration:c.twist.gyration,twistReach:c.twist.reach}:{})})-1;
+  ...(c.twist?{twistGyration:c.twist.gyration,twistReach:c.twist.reach}:{}),
+  // A compressed bearing joint (materials.mjs CONNECTIONS restBearing): its stiffness at rest is the
+  // wood's in bearing; in rotation it is a pin on its nails, K_ser sum r^2 at that stiffness
+  // (radius scaled by sqrt(slip / bearing)), graded at the most loaded nail (S = A g^2 / reach).
+  ...(c.restBearing&&c.twist&&realCapacitiesEnabled()?(()=>{const bearing=BEARING.elasticModulus/c.restBearing,slipPerArea=c.slip/area;
+   return {bearingElasticModulus:bearing*length,bendGyration:c.twist.gyration*Math.sqrt(slipPerArea/bearing),bendSection:c.twist.gyration**2/c.twist.reach,
+    twistGyration:c.twist.gyration*Math.sqrt(slipPerArea/bearing)};})():{})})-1;
 }
 
 /** The connection kind joining two node types (different pieces). */
@@ -484,6 +491,9 @@ export function buildVeneerHouse(options={}){
   let kind=connection(ta,tb,wallOf[bond.node0]??'',wallOf[bond.node1]??'',bond.normal);
   // The birdsmouth's plumb heel cut stands against the plate's outer face; the seat is what is nailed.
   if(kind==='rafter-seat'&&Math.abs(bond.normal.y)<.5)kind=null;
+  // Real capacities: a stud against a plate's end or side (a junction stud beside the crossing wall's
+  // plate) does not stand on it; its nails, not bearing, hold it (its own kind, so only end bearing bears).
+  if(kind==='stud-plate'&&Math.abs(bond.normal.y)<.5&&realCapacitiesEnabled())kind='stud-plate-side';
   // A verge rafter lies on its gable frame for its whole length; the ridge board stops against it.
   if(kind==='ridge'&&(verge.has(bond.node0)||verge.has(bond.node1)))kind=null;if(kind===null){bond.drop=true;continue;}bond.kind=kind;if(!kinds.has(kind))kinds.set(kind,[]);kinds.get(kind).push(bond);
  }

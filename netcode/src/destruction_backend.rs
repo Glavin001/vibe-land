@@ -87,6 +87,12 @@ pub struct StressSolverSettings {
     /// contact patch's under section rotation; 0 keeps the patch.
     pub twist_gyration: Vec<f32>,
     pub twist_reach: Vec<f32>,
+    /// Empty, or parallel to `materials`: a compressed bearing joint's
+    /// modulus at rest (Pa), and its fasteners' pin in bending (stiffness
+    /// radius and g^2 / reach, m) under section rotation; 0 none.
+    pub bearing_modulus: Vec<f32>,
+    pub bend_gyration: Vec<f32>,
+    pub bend_section: Vec<f32>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -114,6 +120,9 @@ impl Default for StressSolverSettings {
             impact_modulus: Vec::new(),
             twist_gyration: Vec::new(),
             twist_reach: Vec::new(),
+            bearing_modulus: Vec::new(),
+            bend_gyration: Vec::new(),
+            bend_section: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,

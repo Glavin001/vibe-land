@@ -423,6 +423,12 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
                    "twist tables must be empty or parallel to the materials");
     s.twist_gyration.push_back(settings.twist_gyration.empty() ? 0.0f : std::max(0.0f, settings.twist_gyration[index]));
     s.twist_reach.push_back(settings.twist_reach.empty() ? 0.0f : std::max(0.0f, settings.twist_reach[index]));
+    native_require(settings.bearing_modulus.empty() || (settings.bearing_modulus.size() == settings.materials.size() &&
+                                                         settings.bend_gyration.size() == settings.materials.size() &&
+                                                         settings.bend_section.size() == settings.materials.size()),
+                   "bearing tables must be empty or parallel to the materials");
+    s.bend_gyration.push_back(settings.bend_gyration.empty() ? 0.0f : std::max(0.0f, settings.bend_gyration[index]));
+    s.bend_section.push_back(settings.bend_section.empty() ? 0.0f : std::max(0.0f, settings.bend_section[index]));
     ++index;
     s.materials.push_back(out);
   }
@@ -469,6 +475,14 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
       s.sections[i].twistModulus = b.area * g * g / reach;
       ++fastened;
     }
+    // A compressed bearing joint (town-kit materials.mjs restBearing) bends on
+    // its fasteners: a pin, K_ser sum r^2 (the stiffness radius at the joint's
+    // bearing stiffness), graded at the most loaded fastener, S = A g^2 / reach.
+    if (native_section_rotation() && r.found && b.material < s.bend_gyration.size() &&
+        s.bend_gyration[b.material] > 0.0f && s.bend_section[b.material] > 0.0f) {
+      s.sections[i].gyration0 = s.sections[i].gyration1 = s.bend_gyration[b.material];
+      s.sections[i].bendModulus0 = s.sections[i].bendModulus1 = b.area * s.bend_section[b.material];
+    }
 #endif
     if (r.found) {
       ++found;
@@ -506,7 +520,12 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     const float distance = (s.nodes[base + b.node0].position -
                             s.nodes[base + b.node1].position)
                                .magnitude();
-    const float modulus = settings.materials[b.material].elastic_modulus;
+    // Section rotation: a compressed bearing joint is as stiff as the wood it
+    // bears on (town-kit materials.mjs restBearing), not as its nails' slip.
+    const float modulus = native_section_rotation() && !settings.bearing_modulus.empty() &&
+                                  settings.bearing_modulus[b.material] > 0.0f
+                              ? settings.bearing_modulus[b.material]
+                              : settings.materials[b.material].elastic_modulus;
     // Diagnostic (vehicle lab): VIBE_TEST_BOND_WEIGHT=modulus|area|length|all
     // flattens that term of the stiffness weight, to tell a conditioning
     // problem from anything else. Flattening all four left a monster truck's

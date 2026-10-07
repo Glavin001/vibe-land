@@ -169,6 +169,9 @@ struct NativeDestruction::State {
   // Per material (global index): a fastener group's twist radius of gyration
   // and farthest fastener (m), 0 where the material twists on its patch.
   std::vector<float> twist_gyration, twist_reach;
+  // Per material (global index): a compressed bearing joint's pin in bending
+  // (stiffness radius, and g^2 / reach for its grading), 0 none.
+  std::vector<float> bend_gyration, bend_section;
 #endif
   /// (structure, authored bond index) per stage bond, in stage order.
   std::vector<std::pair<std::uint32_t, std::uint32_t>> bond_ids;

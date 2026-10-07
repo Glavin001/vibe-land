@@ -1404,6 +1404,8 @@ impl CityRuntime {
                 settings.ductile_slip = vibe_land_destruction::scene_pack::ductile_slip_table(payload);
                 settings.impact_modulus = vibe_land_destruction::scene_pack::impact_modulus_table(payload);
                 (settings.twist_gyration, settings.twist_reach) = vibe_land_destruction::scene_pack::twist_table(payload);
+                (settings.bearing_modulus, settings.bend_gyration, settings.bend_section) =
+                    vibe_land_destruction::scene_pack::bearing_tables(payload);
                 if !settings.crush.is_empty() {
                     let crushable = settings.crush.iter().filter(|c| c.cap_pressure > 0.0).count();
                     tracing::info!(crushable, "scene authors chunk crushing");

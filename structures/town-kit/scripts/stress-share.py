@@ -191,6 +191,11 @@ def fastener_twist(s, mats, sections):
         if out[b] is not None and g > 0 and reach > 0:
             r = out[b]
             out[b] = r[:4] + (bd['area'] * g * g / reach, r[5], r[6], g)
+        # A compressed bearing joint bends on its fasteners (a pin).
+        gb, bs = m.get('bendGyration') or 0, m.get('bendSection') or 0
+        if out[b] is not None and gb > 0 and bs > 0:
+            r = out[b]
+            out[b] = r[:2] + (bd['area'] * bs, bd['area'] * bs, r[4], gb, gb, r[7])
     return out
 
 
@@ -228,6 +233,8 @@ def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
         c = np.array([bd['centroid'][k] for k in 'xyz'])
         E = mats[bd['m']].get('elasticModulus') or 30e9
         if angular == 'section':
+            # A compressed bearing joint at rest: the wood's bearing stiffness.
+            E = mats[bd['m']].get('bearingElasticModulus') or E
             # The engine under VIBE_SECTION_ROTATION=1: E A / L at the bond's
             # own area, L the contact length max(distance, sqrt(A)), no floors.
             # the centres' separation along the bond normal (VIBE_SECTION_ROTATION)

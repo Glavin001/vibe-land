@@ -52,3 +52,24 @@ test('D1: no legacy doubled timber or masonry limits survive',()=>{
  const frame=table.find(m=>m.name==='structure-timber');
  assert.equal(frame.compressionFatal,21e6);assert.equal(frame.shearFatal,4e6);assert.equal(frame.residualAreaFraction,0);
 });
+
+test('Veneer house joints: fastener twist, stud ends bearing at rest and pinned on their nails',async()=>{
+ const {buildVeneerHouse}=await import('../src/veneer-houses.mjs');
+ const {CONNECTIONS,BEARING,fastenerRow}=await import('../src/materials.mjs');
+ const {pack}=buildVeneerHouse({storeys:1});
+ const named=n=>pack.defaults.solver.materials.find(m=>m.name===n);
+ // One M12 bolt twists on its own section (d / (2 sqrt 2)), not on the 190 x 190 lap.
+ const heel=named('heel-joint');
+ assert.ok(Math.abs(heel.twistGyration-0.012/(2*Math.SQRT2))<1e-12&&heel.twistReach===0.006);
+ // A stud end stands on its plate: the plate's cross-grain bearing (E90 / t), 23x the two nails' slip.
+ const stud=named('stud-plate-joint'),side=named('stud-plate-side-joint');
+ assert.ok(stud.bearingElasticModulus/stud.elasticModulus>20,`bearing ${stud.bearingElasticModulus} vs slip ${stud.elasticModulus}`);
+ // In rotation a pin on its two nails: K_ser sum r^2 at the bearing stiffness, graded at the outer nail.
+ const row=fastenerRow(2,0.09-2*5*3.15e-3),c=CONNECTIONS['stud-plate'];
+ assert.ok(Math.abs(stud.bendSection-row.gyration**2/row.reach)<1e-12);
+ assert.ok(stud.bendGyration<row.gyration/4&&stud.twistGyration===stud.bendGyration);
+ assert.equal(BEARING.elasticModulus/c.restBearing>0,true);
+ // A stud beside a plate's end does not bear on it: nails only.
+ assert.ok(side&&side.bearingElasticModulus===undefined&&side.tensionFatal>0);
+ assert.ok(pack.scenario.bonds.some(b=>b.m===pack.defaults.solver.materials.indexOf(side)));
+});
