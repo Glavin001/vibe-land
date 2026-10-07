@@ -91,8 +91,8 @@ export interface FractureLook {
 }
 
 const skin = (over: Partial<SkinLook>): SkinLook => ({
-  color: [0.42, 0.39, 0.33],
-  color2: [0.2, 0.18, 0.15],
+  color: [0.43, 0.41, 0.34],
+  color2: [0.2, 0.19, 0.15],
   scale: 0.012,
   bump: 0.8,
   roughness: 0.92,
