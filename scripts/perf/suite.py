@@ -192,63 +192,84 @@ def job_env(job: dict, profiles: dict, extra: dict) -> dict:
     env.update(profiles[job["profile"]])
     env.update(job["env"])
     env.update({"VIBE_SUITE_PLAN": job["plan"], "RUST_LOG": "warn", "VIBE_PHYSICS_BACKEND": "physx_gpu",
-                "CUMETAL_CACHE_DIR": str(ROOT / "target/cumetal-cache-perf-suite"),
+                "CUMETAL_CACHE_DIR": str(CUMETAL_CACHE),
                 "VIBE_DESTRUCTION_ASSET_DIR": str(ROOT / "destruction/assets/scenes"),
                 "VIBE_FLIGHT_RECORDER": "0"})
     env.update(extra)
     return env
 
 
-def run_job(binary: str, env: dict, logfile: Path, timeout: float) -> tuple[int, float]:
-    t0 = time.monotonic()
+CUMETAL_CACHE = Path(os.environ.get("PERF_SUITE_CUMETAL_CACHE", "/Users/glavin/Development/vibe-land/target/cumetal-cache"))
+# Printed by the wrapper once the GPU lock is held: what came before is waiting.
+LOCKED = "import os,sys,time; print('SUITE_LOCKED', time.time(), flush=True); os.execvp(sys.argv[1], sys.argv[1:])"
+
+
+def gpu_cmd(label: str, cmd: list[str], shared: bool) -> tuple[list[str], dict]:
+    """CMD under the machine's GPU admission, one job per hold: the exclusive
+    lock for timing (it waits for running shared jobs and blocks new ones only
+    while this one job runs), or a shared slot (VIBE_GPU_SHARED=1: timings only
+    indicative)."""
+    return [str(GPU_RUN), label, sys.executable, "-c", LOCKED, *cmd], ({"VIBE_GPU_SHARED": "1"} if shared else {})
+
+
+def run_logged(cmd: list[str], env: dict, cwd: Path, logfile: Path, timeout: float) -> tuple[int, float, float]:
+    """(rc, seconds holding the GPU, seconds waiting for it)."""
+    t0 = time.time()
     with open(logfile, "w") as f:
         try:
-            r = subprocess.run([binary, "perf_suite::perf_suite", "--exact", "--ignored", "--nocapture", "--test-threads=1"],
-                               cwd=ROOT / "server", env=env, stdout=f, stderr=subprocess.STDOUT, timeout=timeout)
-            rc = r.returncode
+            rc = subprocess.run(cmd, cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT, timeout=timeout).returncode
         except subprocess.TimeoutExpired:
             rc = 124
             f.write(f"\nSUITE_TIMEOUT after {timeout} s\n")
-    return rc, time.monotonic() - t0
+    t1 = time.time()
+    m = re.search(r"^SUITE_LOCKED ([\d.]+)", logfile.read_text(errors="replace"), re.M)
+    locked = float(m[1]) if m else t0
+    return rc, t1 - locked, locked - t0
 
 
-def run_replay(binary: str, capture: Path, runs: int, logfile: Path) -> tuple[int, float]:
-    t0 = time.monotonic()
+def run_job(binary: str, env: dict, logfile: Path, timeout: float, shared: bool, label: str) -> tuple[int, float, float]:
+    cmd, extra = gpu_cmd(f"perf-suite-{label}", [binary, "perf_suite::perf_suite", "--exact", "--ignored", "--nocapture",
+                                                  "--test-threads=1"], shared)
+    return run_logged(cmd, {**env, **extra}, ROOT / "server", logfile, timeout)
+
+
+def run_replay(binary: str, capture: Path, runs: int, logfile: Path, shared: bool, label: str) -> tuple[int, float, float]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("CUMETAL_")}
-    env.update({"IMPACT_QUIET": "1", "CUMETAL_CACHE_DIR": str(ROOT / "target/cumetal-cache-perf-suite")})
-    with open(logfile, "w") as f:
-        r = subprocess.run([binary, str(capture), str(runs)], env=env, stdout=f, stderr=subprocess.STDOUT, timeout=600)
-    return r.returncode, time.monotonic() - t0
+    env.update({"IMPACT_QUIET": "1", "CUMETAL_CACHE_DIR": str(CUMETAL_CACHE)})
+    cmd, extra = gpu_cmd(f"perf-suite-{label}", [binary, str(capture), str(runs)], shared)
+    return run_logged(cmd, {**env, **extra}, ROOT, logfile, 600)
 
 
 def execute(run_dir: Path) -> None:
-    """Everything timed, in one hold of the GPU lock (called through gpu-run.sh)."""
+    """Every GPU job, each taking the GPU lock for itself only (at most a few
+    minutes a hold), so queued correctness jobs run between them."""
     work = json.loads((run_dir / "work.json").read_text())
+    shared = work.get("shared", False)
     logs = run_dir / "logs"
     logs.mkdir(exist_ok=True)
-    timing = {"lock_acquired": time.time(), "jobs": []}
-    t_start = time.monotonic()
+    timing = {"jobs": [], "shared": shared}
+
+    def record(name, rc, held, waited):
+        timing["jobs"].append({"job": name, "rc": rc, "seconds": held, "waited": waited})
+        log(f"{name}: {held:.1f} s on the GPU (waited {waited:.0f} s for it; rc {rc})")
+
     # Warm-up: one short process per binary, untimed (first-use costs, GPU clocks).
     for profile, w in work["warmups"].items():
-        rc, secs = run_job(work["binaries"][profile], job_env(w, work["profile_env"], work["extra_env"][profile]),
-                           logs / f"warmup-{profile}.log", 300)
-        timing["jobs"].append({"job": f"warmup-{profile}", "rc": rc, "seconds": secs})
-        log(f"warm-up {profile}: {secs:.1f} s (rc {rc})")
+        record(f"warmup-{profile}", *run_job(work["binaries"][profile], job_env(w, work["profile_env"], work["extra_env"][profile]),
+                                              logs / f"warmup-{profile}.log", 600, shared, f"warmup-{profile}"))
     for rep in range(work["reps"]):
         order = work["profiles"] if rep % 2 == 0 else list(reversed(work["profiles"]))
         for profile in order:
             for job in work["jobs"][profile]:
                 name = f"rep{rep}-{profile}-{job['scene']}"
-                rc, secs = run_job(work["binaries"][profile], job_env(job, work["profile_env"], work["extra_env"][profile]),
-                                   logs / f"{name}.log", work["timeout"])
-                timing["jobs"].append({"job": name, "rc": rc, "seconds": secs})
-                log(f"{name}: {secs:.1f} s (rc {rc})")
+                record(name, *run_job(work["binaries"][profile], job_env(job, work["profile_env"], work["extra_env"][profile]),
+                                      logs / f"{name}.log", work["timeout"], shared, name))
             for scenario, capture in work["replays"].get(profile, {}).items():
                 name = f"rep{rep}-{profile}-replay-{scenario}"
-                rc, secs = run_replay(work["replay_binary"], Path(capture), work["replay_runs"], logs / f"{name}.log")
-                timing["jobs"].append({"job": name, "rc": rc, "seconds": secs})
-                log(f"{name}: {secs:.1f} s (rc {rc})")
-    timing["seconds"] = time.monotonic() - t_start
+                record(name, *run_replay(work["replay_binary"], Path(capture), work["replay_runs"], logs / f"{name}.log", shared, name))
+    timing["seconds"] = sum(j["seconds"] for j in timing["jobs"])
+    timing["timed_seconds"] = sum(j["seconds"] for j in timing["jobs"] if not j["job"].startswith("warmup"))
+    timing["waited_seconds"] = sum(j["waited"] for j in timing["jobs"])
     (run_dir / "timing.json").write_text(json.dumps(timing, indent=1))
 
 
@@ -536,6 +557,7 @@ def main() -> None:
     ap.add_argument("--capture", action="store_true", help="make the impact captures the high-fidelity replays use")
     ap.add_argument("--replay-runs", type=int, default=4)
     ap.add_argument("--timeout", type=float, default=900)
+    ap.add_argument("--shared", action="store_true", help="share the GPU (VIBE_GPU_SHARED=1): for developing the suite; timings only indicative")
     ap.add_argument("--exec", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     spec = json.loads(SPEC.read_text())
@@ -600,13 +622,10 @@ def main() -> None:
                 "extra_env": {p: ({"PX_DESTRUCTION_IMPACT_LOG": "1"} if p == "high" else {}) for p in profiles},
                 "warmups": warmups, "jobs": jobs, "replays": replays, "replay_binary": str(rbin) if rbin else None,
                 "replay_runs": args.replay_runs, "timeout": args.timeout, "fingerprint": fingerprint,
-                "build_seconds": time.monotonic() - t_build}
+                "build_seconds": time.monotonic() - t_build, "shared": args.shared}
         (run_dir / "work.json").write_text(json.dumps(work, indent=1))
-        log(f"built and planned in {work['build_seconds']:.0f} s; waiting for the exclusive GPU lock "
-            f"(waits for running shared GPU jobs) -> {run_dir}")
-        t_wait = time.monotonic()
-        r = subprocess.run(["bash", "-c", f'"{GPU_RUN}" perf-suite python3 "{Path(__file__).resolve()}" --exec "{run_dir}"'])
-        log(f"lock held and released after {time.monotonic() - t_wait:.0f} s (rc {r.returncode})")
+        log(f"built and planned in {work['build_seconds']:.0f} s -> {run_dir}")
+        execute(run_dir)
     report = summarise(run_dir)
     base_path = None if args.no_compare else Path(args.compare) if args.compare else (baseline_default if baseline_default.exists() else None)
     base = json.loads(base_path.read_text()) if base_path else None
