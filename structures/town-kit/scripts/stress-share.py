@@ -210,8 +210,14 @@ def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
         i, j = bd['node0'], bd['node1']
         c = np.array([bd['centroid'][k] for k in 'xyz'])
         E = mats[bd['m']].get('elasticModulus') or 30e9
-        L = max(np.linalg.norm(pos[i] - pos[j]), 0.05)
-        w[b] = np.sqrt(E / 30e9 * max(bd['area'], 1e-4) / L)
+        if angular == 'section':
+            # The engine under VIBE_SECTION_ROTATION=1: E A / L at the bond's
+            # own area, L the contact length max(distance, sqrt(A)), no floors.
+            L = max(np.linalg.norm(pos[i] - pos[j]), np.sqrt(bd['area']))
+            w[b] = np.sqrt(E / 30e9 * bd['area'] / L)
+        else:
+            L = max(np.linalg.norm(pos[i] - pos[j]), 0.05)
+            w[b] = np.sqrt(E / 30e9 * max(bd['area'], 1e-4) / L)
         # J (6) acts on node1 as +, node0 as -: force rows 0..2, torque rows 3..5 (about the node).
         for node, sign in ((j, 1.0), (i, -1.0)):
             r = row[node]
