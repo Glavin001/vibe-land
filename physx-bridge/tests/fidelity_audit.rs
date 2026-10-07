@@ -496,3 +496,112 @@ fn stabilization_on_an_incline() {
     assert!(((off - textbook) / textbook).abs() < 0.03, "without stabilization the slide is not the textbook's");
     println!("  stabilization changes the slide by {:.2}%", 100.0 * (on - off) / off);
 }
+
+/// A free two-chunk cluster built with DestructibleSettings::default(), let go
+/// from rest: y after n steps of semi-implicit Euler with no damping is
+/// g dt^2 n (n + 1) / 2 (free fall, Hibbeler 12.3). The default used to carry
+/// linear damping 0.25 / angular 0.35 (FIDELITY_AUDIT F5): air drag on a
+/// 1 m, 1 t chunk at 10 m/s is 60 N, 0.006 /s of damping, 40x less.
+#[test]
+#[ignore = "requires the native GPU destruction SDK"]
+fn default_settings_fall_freely() {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.native_attach().unwrap();
+    let nodes: Vec<ChunkNodeDesc> = [-0.25f32, 0.25]
+        .iter()
+        .enumerate()
+        .map(|(i, &x)| ChunkNodeDesc {
+            node_index: i as u32,
+            centroid: Vec3::new(x, 0.0, 0.0),
+            mass: 500.0,
+            volume: 0.125,
+            geom_kind: 0,
+            half_extents: Vec3::new(0.25, 0.25, 0.25),
+            convex_points: Vec::new(),
+            material: 0,
+        })
+        .collect();
+    let bonds = [ChunkBondDesc { bond_index: 0, node0: 0, node1: 1, centroid: Vec3::new(0.0, 0.0, 0.0), normal: Vec3::new(1.0, 0.0, 0.0), area: 0.25, material: 0 }];
+    let never = 1e13f32;
+    let settings = DestructibleSettings {
+        materials: vec![StressMaterialDesc {
+            compression_elastic: never, compression_fatal: never, tension_elastic: never, tension_fatal: never,
+            shear_elastic: never, shear_fatal: never, elastic_modulus: 30e9, residual_area_fraction: 0.0,
+        }],
+        ..DestructibleSettings::default()
+    };
+    let start = 100.0f32;
+    world
+        .native_create_destructible(0, Pose { position: Vec3::new(0.0, start, 0.0), rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }, &nodes, &bonds, settings, GROUP_CHUNK, GROUP_CHUNK)
+        .unwrap();
+    world.step().unwrap();
+    configure(&mut world);
+    let n = 60u32;
+    for _ in 0..n {
+        world.step().unwrap();
+        world.native_tick().unwrap();
+    }
+    let body: Vec<f32> = world.native_chunk_body_snapshots().unwrap().iter().filter(|b| !b.kinematic).map(|b| b.position.y).collect();
+    assert_eq!(body.len(), 1);
+    let dt = FIXED_TIMESTEP;
+    // One step ran before configure: n + 1 steps of fall in all.
+    let n = n + 1;
+    let want = start - DEFAULT_WORLD_GRAVITY * dt * dt * (n * (n + 1)) as f32 / 2.0;
+    println!("free fall {n} ticks from {start} m: y {:.4} m, undamped {want:.4} m, drop {:.2}% of the undamped", body[0], 100.0 * (start - body[0]) / (start - want));
+    assert!((body[0] - want).abs() < 1e-3 * (start - want), "a default destructible does not fall freely");
+}
+
+/// A crushable material (capPressure > 0) without its crush energy or
+/// viscosity, or with a strain-rate exponent and no reference rate, is an
+/// authoring error. The bridge used to substitute 1.0 silently (FIDELITY_AUDIT
+/// C6): a crush energy of 1 J/m^3 against concrete's ~1e6.
+#[test]
+#[ignore = "requires the native GPU destruction SDK"]
+fn crush_parameters_are_required() {
+    let try_crush = |energy: f32, viscosity: f32, exponent: f32, reference: f32| {
+        let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+        world.native_attach().unwrap();
+        let nodes: Vec<ChunkNodeDesc> = [-0.25f32, 0.25].iter().enumerate().map(|(i, &x)| ChunkNodeDesc {
+            node_index: i as u32, centroid: Vec3::new(x, 0.0, 0.0), mass: if i == 0 { 0.0 } else { 100.0 }, volume: 0.125,
+            geom_kind: 0, half_extents: Vec3::new(0.25, 0.25, 0.25), convex_points: Vec::new(), material: 0,
+        }).collect();
+        let bonds = [ChunkBondDesc { bond_index: 0, node0: 0, node1: 1, centroid: Vec3::new(0.0, 0.0, 0.0), normal: Vec3::new(1.0, 0.0, 0.0), area: 0.25, material: 0 }];
+        let settings = DestructibleSettings {
+            materials: vec![StressMaterialDesc {
+                compression_elastic: 30e6, compression_fatal: 30e6, tension_elastic: 3e6, tension_fatal: 3e6,
+                shear_elastic: 4e6, shear_fatal: 4e6, elastic_modulus: 30e9, residual_area_fraction: 0.0,
+            }],
+            crush: vec![vibe_land_physx_bridge::CrushMaterialDesc {
+                cap_pressure: 17e6, cohesion: 4e6, friction_slope: 1.2, crush_energy: energy, crush_viscosity: viscosity,
+                strain_rate_exponent: exponent, reference_strain_rate: reference, debris_mass_fraction: 0.0,
+                debris_fragment_count: 0, impedance: 0.0,
+            }],
+            ..DestructibleSettings::default()
+        };
+        world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 5.0, 0.0), rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }, &nodes, &bonds, settings, GROUP_CHUNK, GROUP_CHUNK).is_ok()
+    };
+    assert!(try_crush(3.5e6, 5.9e5, 0.0, 0.0), "a complete crush material was refused");
+    assert!(!try_crush(0.0, 5.9e5, 0.0, 0.0), "a crush material without crush energy was accepted");
+    assert!(!try_crush(3.5e6, 0.0, 0.0, 0.0), "a crush material without viscosity was accepted");
+    assert!(!try_crush(3.5e6, 5.9e5, 0.02, 0.0), "a strain-rate exponent without a reference rate was accepted");
+}
+
+/// The production stress configuration (see `solve`).
+fn configure(world: &mut World) {
+    world
+        .native_configure(NativeConfig {
+            max_iterations: STRESS_ITERATIONS,
+            tolerance: STRESS_TOLERANCE,
+            force_tolerance: 0.0,
+            warm_start: true,
+            damage_rate: 2.0,
+            bend_gain_max: 3.0,
+            fibre_bending: true,
+            reserved_contact_pairs: 64,
+            preserve_unchanged_contact_pairs: true,
+            gpu_island_repair: true,
+            verdict_sample_ticks: 1,
+        })
+        .unwrap();
+}

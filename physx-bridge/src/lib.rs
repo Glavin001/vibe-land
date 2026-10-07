@@ -648,8 +648,14 @@ impl Default for DestructibleSettings {
             apply_excess_forces: true,
             apply_centrifugal: true,
             excess_force_scale: 0.012,
-            linear_damping: 0.25,
-            angular_damping: 0.35,
+            // No damping: a falling chunk loses energy in its contacts, not in
+            // the air. Drag on a 1 m, 1 t chunk at 10 m/s is ~60 N, an
+            // equivalent damping of 0.006 /s; the 0.25 / 0.35 this carried cost
+            // 8% of a 1 s free fall (tests/fidelity_audit.rs
+            // default_settings_fall_freely; FIDELITY_AUDIT F5). The city sets 0
+            // itself (city_config debris_damping) and vehicles ignore it.
+            linear_damping: 0.0,
+            angular_damping: 0.0,
         }
     }
 }

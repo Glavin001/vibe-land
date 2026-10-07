@@ -317,6 +317,17 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
 #endif
   native_require(settings.crush.empty() || settings.crush.size() == settings.materials.size(),
                  "crush table must be empty or parallel to the materials");
+  // A crushable material carries its own crush law; nothing is substituted
+  // for a missing parameter (FIDELITY_AUDIT C6: 1.0 used to stand in, a crush
+  // energy of 1 J/m^3 against concrete's ~1e6). Checked whatever the SDK.
+  for (const FfiCrushMaterial &c : settings.crush) {
+    if (c.cap_pressure <= 0.0f) continue;
+    native_require(std::isfinite(c.crush_energy) && c.crush_energy > 0.0f &&
+                       std::isfinite(c.crush_viscosity) && c.crush_viscosity > 0.0f,
+                   "a crushable material needs its crush energy and viscosity");
+    native_require(!(c.strain_rate_exponent > 0.0f) || c.reference_strain_rate > 0.0f,
+                   "a crushable material with a strain-rate exponent needs its reference strain rate");
+  }
   std::size_t index = 0;
   for (const FfiStressMaterial &m : settings.materials) {
     PxDestructionMaterial out;
