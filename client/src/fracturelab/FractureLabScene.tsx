@@ -43,10 +43,14 @@ export interface LabState {
   bodies: Bodies;
   shading: boolean;
   rough: boolean;
+  /** Round and chip the original outer edges. */
+  wear: boolean;
   rebar: boolean;
   density: number;
   debugKinds: boolean;
   wireframe: boolean;
+  /** Outer faces: procedural skins, or the city's photo texture layers. */
+  skin: 'procedural' | 'city';
   copies: number;
   seed: number;
   /** Bumped when a geometry look parameter changes. */
@@ -151,7 +155,7 @@ function LabStage({ specimen, state, onStats, onCamera }: SceneProps) {
   const todayGeometry = today.geometry;
   const enhanced = useMemo(() => {
     const built = assembleBroken(pieces, table, {
-      broken, rough: state.rough, rebar: state.rebar, density: state.density,
+      broken, rough: state.rough, wear: state.wear, rebar: state.rebar, density: state.density,
       looks: FRACTURE_LOOKS, families: specimen.rebar, seed: state.seed,
     });
     return {
@@ -161,7 +165,7 @@ function LabStage({ specimen, state, onStats, onCamera }: SceneProps) {
     };
     // lookVersion: a geometry parameter changed in the look table.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pieces, table, broken, state.rough, state.rebar, state.density, state.seed, codes, specimen, state.lookVersion]);
+  }, [pieces, table, broken, state.rough, state.wear, state.rebar, state.density, state.seed, codes, specimen, state.lookVersion]);
   const colliderGeometry = useMemo(() => buildColliderGeometry(pieces), [pieces]);
 
   const posesToday = useMemo(() => new LabPoses(pieces.length), [pieces]);
@@ -170,9 +174,11 @@ function LabStage({ specimen, state, onStats, onCamera }: SceneProps) {
   const materials = useMemo(() => {
     const triplanar = TRIPLANAR();
     return {
-      today: labMaterial(posesToday, looks, { triplanar, fracture: false, debugKinds: false, wireframe: state.wireframe }),
+      today: labMaterial(posesToday, looks, {
+        triplanar, fracture: false, debugKinds: false, wireframe: state.wireframe, skin: 'city',
+      }),
       enhanced: labMaterial(posesEnhanced, looks, {
-        triplanar, fracture: state.shading, debugKinds: state.debugKinds, wireframe: state.wireframe,
+        triplanar, fracture: state.shading, debugKinds: state.debugKinds, wireframe: state.wireframe, skin: state.skin,
       }),
       todayLines: colliderMaterial(posesToday, '#40d0ff'),
       enhancedLines: colliderMaterial(posesEnhanced, '#40d0ff'),
@@ -181,7 +187,7 @@ function LabStage({ specimen, state, onStats, onCamera }: SceneProps) {
       todayGlass: glassMaterial(posesToday, { fracture: false, wireframe: state.wireframe }),
       enhancedGlass: glassMaterial(posesEnhanced, { fracture: state.shading, wireframe: state.wireframe }),
     };
-  }, [posesToday, posesEnhanced, looks, state.shading, state.debugKinds, state.wireframe]);
+  }, [posesToday, posesEnhanced, looks, state.shading, state.debugKinds, state.wireframe, state.skin]);
 
   // Build the draw objects: variants x copies, visual and/or collider.
   const variants = useRef<Array<{ group: THREE.Group; side: -1 | 0 | 1 }>>([]);

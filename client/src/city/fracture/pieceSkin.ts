@@ -1,18 +1,21 @@
 // A piece's VISUAL mesh: its collider polytope, with every broken contact
-// replaced by the shared crack surface and every outer face re-outlined along
-// the cracks' jagged edges, plus whatever sticks out of the break (rebar).
+// replaced by the shared crack surface, every outer face re-outlined along
+// the cracks' jagged edges, the original outer edges worn (rounded and
+// chipped, wear.ts), plus whatever sticks out of the break (rebar).
 //
 // The flat variant (`flatPieceMesh`) is the collider as the city draws it
 // today -- the baseline the lab compares against.
 
 import { ShapeUtils, Vector2 } from 'three';
 
-import { anyBasis, faceAcross, type Polytope } from './polytope';
-import { FaceKind, type FracturePiece } from './contacts';
-import { interfacePoint, type CrackInterface } from './interface';
-import { appendTube, type RebarStub, type TubeMesh } from './rebar';
-import { add, cross, dot, orient2, scale, sub, type Vec2, type Vec3 } from './math';
 import { canonicalSign } from './canonical';
+import { FaceKind, type FracturePiece } from './contacts';
+import { refine } from './delaunay2d';
+import { interfacePoint, type CrackInterface } from './interface';
+import { add, cross, distance, dot, lerp, normalize, orient2, scale, segmentDistance2, sub, type Vec2, type Vec3 } from './math';
+import { anyBasis, faceAcross, type Polytope } from './polytope';
+import { appendTube, type RebarStub, type TubeMesh } from './rebar';
+import type { WearField } from './wear';
 
 export interface PieceMesh {
   /** Piece-local positions (centroid-relative, rest orientation). */
@@ -20,7 +23,11 @@ export interface PieceMesh {
   normals: number[];
   /** FaceKind per vertex. */
   kinds: number[];
-  /** Crack relief / amplitude per vertex (0 off the crack). */
+  /**
+   * Crack relief / amplitude on crack faces; on outer faces, how worn the
+   * surface is there (0 pristine, ~1 at the rounded arris, more in a chip);
+   * distance along the bar on rebar.
+   */
   relief: number[];
   /**
    * Which piece of its crack this face is: the sign of its outward normal
@@ -56,6 +63,12 @@ export function flatPieceMesh(poly: Polytope, kinds: Uint8Array | null): PieceMe
   return mesh;
 }
 
+export interface SkinWear {
+  field: WearField;
+  /** Sample spacing along worn edges, metres. */
+  spacing: number;
+}
+
 export interface SkinInput {
   piece: FracturePiece;
   kinds: Uint8Array;
@@ -63,13 +76,22 @@ export interface SkinInput {
   interfaces: Map<number, { iface: CrackInterface; side: 'a' | 'b' }>;
   stubs: readonly RebarStub[];
   rebarSides: number;
+  /** Round and chip the original outer edges. */
+  wear: SkinWear | null;
 }
 
 const near = (p: Vec3, q: Vec3, tol = 1e-4): boolean =>
   Math.abs(p[0] - q[0]) < tol && Math.abs(p[1] - q[1]) < tol && Math.abs(p[2] - q[2]) < tol;
 
+/** One outline point: where it is, and whether wear may still move it. */
+interface OutlinePoint {
+  p: Vec3;
+  /** Came from a crack surface, which was worn once for both pieces. */
+  frozen: boolean;
+}
+
 export function pieceSkinMesh(input: SkinInput): PieceMesh {
-  const { piece, kinds, interfaces } = input;
+  const { piece, kinds, interfaces, wear } = input;
   const poly = piece.poly;
   const mesh = emptyMesh();
   const world = (i: number): Vec3 => add(poly.verts[i], piece.centroid);
@@ -87,7 +109,31 @@ export function pieceSkinMesh(input: SkinInput): PieceMesh {
       }
     });
   }
-  const at = (i: number): Vec3 => moved.get(i) ?? world(i);
+  const at = (i: number): OutlinePoint => {
+    const m = moved.get(i);
+    return m ? { p: m, frozen: true } : { p: world(i), frozen: false };
+  };
+
+  // Worn edges: original arrises, where two OUTER faces meet.
+  const isWorn = (f: number, i: number, j: number): boolean => {
+    if (!wear || kinds[f] !== FaceKind.Exterior) return false;
+    const g = faceAcross(poly, i, j);
+    return g >= 0 && kinds[g] === FaceKind.Exterior;
+  };
+  const wornVertex = new Set<number>();
+  if (wear) {
+    poly.faces.forEach((face, f) => {
+      for (let k = 0; k < face.loop.length; k += 1) {
+        const i = face.loop[k];
+        const j = face.loop[(k + 1) % face.loop.length];
+        if (isWorn(f, i, j)) {
+          wornVertex.add(i);
+          wornVertex.add(j);
+        }
+      }
+    });
+  }
+  const project = makeProjector(piece, kinds, wear);
 
   poly.faces.forEach((face, f) => {
     const replaced = interfaces.get(f);
@@ -97,14 +143,16 @@ export function pieceSkinMesh(input: SkinInput): PieceMesh {
     }
     // Outline, splicing in the jagged crack edges of neighbouring faces. Where
     // the crack spalled, the face stops short of the edge (the inset line)
-    // and bevels down to it.
-    const outline: Vec3[] = [];
+    // and bevels down to it. Straight edges are subdivided where wear will
+    // bend them.
+    const outline: OutlinePoint[] = [];
+    const wornSegments: Array<[Vec3, Vec3]> = [];
     for (let k = 0; k < face.loop.length; k += 1) {
       const i = face.loop[k];
       const j = face.loop[(k + 1) % face.loop.length];
       const g = faceAcross(poly, i, j);
       const across = interfaces.get(g);
-      let run: Vec3[] | null = null;
+      let run: OutlinePoint[] | null = null;
       if (across) {
         const wi = world(i);
         const wj = world(j);
@@ -120,16 +168,24 @@ export function pieceSkinMesh(input: SkinInput): PieceMesh {
           const inset = indices.map((v, n) => add(add(lip[n], scale(edge.outer!, iface.chipDepth[v])), scale(inward, iface.chipWidth[v])));
           if (indices.some((v) => iface.chipWidth[v] > 0)) {
             const crackSide = canonicalSign(iface.normal) * (side === 'a' ? 1 : -1);
-            appendBevel(mesh, lip, inset, edge.outer, inward, piece.centroid, kinds[g], crackSide);
+            appendBevel(mesh, lip, inset, edge.outer, inward, piece.centroid, kinds[g], crackSide, project);
           }
-          run = inset;
+          // The inset line is this face's own, so wear may still move it.
+          run = inset.map((p, n) => ({ p, frozen: iface.chipWidth[indices![n]] <= 0 }));
           break;
         }
       }
-      run = run ?? [at(i), at(j)];
+      if (!run) {
+        const a = at(i);
+        const b = at(j);
+        const wornEdge = isWorn(f, i, j);
+        if (wornEdge) wornSegments.push([a.p, b.p]);
+        run = [a, ...edgeSamples(a.p, b.p, wornEdge, wornVertex.has(i), wornVertex.has(j), wear), b];
+      }
       for (let s = 0; s + 1 < run.length; s += 1) outline.push(run[s]);
     }
-    appendPolygon(mesh, outline, face.normal, piece.centroid, kinds[f]);
+    const band = wear && wornSegments.length > 0 ? bandPoints(outline, wornSegments, face.normal, wear) : [];
+    appendPolygon(mesh, outline, band, face.normal, piece.centroid, kinds[f], project);
   });
 
   if (input.stubs.length > 0) {
@@ -147,6 +203,117 @@ export function pieceSkinMesh(input: SkinInput): PieceMesh {
     for (const i of tube.indices) mesh.indices.push(start + i);
   }
   return mesh;
+}
+
+/** A vertex as emitted: final position, normal and wear. */
+interface Projected {
+  p: Vec3;
+  normal: Vec3 | null;
+  wear: number;
+}
+
+type Projector = (point: OutlinePoint, kind: number) => Projected;
+
+/**
+ * Wear a surface point onto the piece's worn surface. Points on a cut or
+ * joint face slide only within it; outer points take the worn surface's
+ * normal so the rounding SHADES round. Memoised per point, so every face that
+ * shares a vertex moves it identically.
+ */
+function makeProjector(piece: FracturePiece, kinds: Uint8Array, wear: SkinWear | null): Projector {
+  if (!wear) return (point) => ({ p: point.p, normal: null, wear: 0 });
+  const poly = piece.poly;
+  const planes = poly.faces.map((face) => ({ n: face.normal, w: face.d + dot(face.normal, piece.centroid) }));
+  const memo = new Map<string, Projected>();
+  const radius = Math.max(1e-5, wear.field.look.radius);
+  return (point, kind) => {
+    if (point.frozen) return { p: point.p, normal: null, wear: 0 };
+    const key = `${Math.round(point.p[0] * 1e6)},${Math.round(point.p[1] * 1e6)},${Math.round(point.p[2] * 1e6)},${kind === FaceKind.Exterior ? 1 : 0}`;
+    const hit = memo.get(key);
+    if (hit) return hit;
+    const constraints: Vec3[] = [];
+    planes.forEach((plane, f) => {
+      if (kinds[f] !== FaceKind.Exterior && Math.abs(dot(plane.n, point.p) - plane.w) < 2e-4) constraints.push(plane.n);
+    });
+    const out = wear.field.project(point.p, constraints);
+    const result: Projected = {
+      p: out.x,
+      normal: kind === FaceKind.Exterior && out.depth > 1e-7 ? out.normal : null,
+      wear: kind === FaceKind.Exterior ? out.depth / radius : 0,
+    };
+    memo.set(key, result);
+    return result;
+  };
+}
+
+/**
+ * Extra samples on a straight outline edge: evenly along a worn edge (so the
+ * rounding has vertices to bend), graded toward an end that touches a worn
+ * edge (so a seam face follows the rounded profile). A pure function of the
+ * edge's endpoints, so both faces sharing it agree.
+ */
+function edgeSamples(a: Vec3, b: Vec3, worn: boolean, aWorn: boolean, bWorn: boolean, wear: SkinWear | null): OutlinePoint[] {
+  if (!wear) return [];
+  const len = distance(a, b);
+  if (len < 1e-6) return [];
+  const ts: number[] = [];
+  if (worn) {
+    const n = Math.max(1, Math.ceil(len / wear.spacing));
+    for (let k = 1; k < n; k += 1) ts.push(k / n);
+  } else if (aWorn || bWorn) {
+    const reach = Math.min(wear.field.reach * 1.2, len * 0.45);
+    for (let d = wear.spacing * 0.5; d < reach; d *= 1.6) {
+      if (aWorn) ts.push(d / len);
+      if (bWorn) ts.push(1 - d / len);
+    }
+    ts.sort((x, y) => x - y);
+  }
+  return ts.map((t) => ({ p: lerp(a, b, t), frozen: false }));
+}
+
+/**
+ * Interior points in a band along a face's worn edges: rows at growing
+ * distance, so the rounded arris has vertices to bend across. Only points
+ * clearly inside the outline are kept.
+ */
+function bandPoints(outline: readonly OutlinePoint[], worn: ReadonlyArray<[Vec3, Vec3]>, normal: Vec3, wear: SkinWear): Vec3[] {
+  const { t, b } = anyBasis(normal);
+  const to2 = (p: Vec3): Vec2 => [dot(p, t), dot(p, b)];
+  const poly2 = outline.map((o) => to2(o.p));
+  const reach = wear.field.reach * 1.2;
+  const points: Vec3[] = [];
+  for (const [a, c] of worn) {
+    const len = distance(a, c);
+    if (len < 1e-6) continue;
+    const dir = normalize(sub(c, a));
+    // CCW loop about the normal: the face lies to the left of each edge.
+    const inward = normalize(cross(normal, dir));
+    for (let d = wear.spacing * 0.6; d < reach; d *= 1.7) {
+      const along = wear.spacing * (1 + (d / reach) * 1.5);
+      const n = Math.max(1, Math.round(len / along));
+      for (let k = 0; k <= n; k += 1) {
+        const p = add(lerp(a, c, k / n), scale(inward, d));
+        const q = to2(p);
+        if (!insidePolygon(q, poly2)) continue;
+        let clear = Infinity;
+        for (let s = 0; s < poly2.length; s += 1) {
+          clear = Math.min(clear, segmentDistance2(q, poly2[s], poly2[(s + 1) % poly2.length]));
+        }
+        if (clear > along * 0.4) points.push(p);
+      }
+    }
+  }
+  return points;
+}
+
+function insidePolygon(q: Vec2, poly: readonly Vec2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i, i += 1) {
+    const a = poly[i];
+    const b = poly[j];
+    if ((a[1] > q[1]) !== (b[1] > q[1]) && q[0] < ((b[0] - a[0]) * (q[1] - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+  }
+  return inside;
 }
 
 function appendInterface(mesh: PieceMesh, iface: CrackInterface, side: 'a' | 'b', origin: Vec3, kind: number): void {
@@ -176,9 +343,12 @@ function appendInterface(mesh: PieceMesh, iface: CrackInterface, side: 'a' | 'b'
  */
 function appendBevel(
   mesh: PieceMesh, lip: readonly Vec3[], inset: readonly Vec3[], outer: Vec3, inward: Vec3,
-  origin: Vec3, kind: number, side: number,
+  origin: Vec3, kind: number, side: number, project: Projector,
 ): void {
   const facing = sub(outer, scale(inward, 0.6));
+  // The inset line is shared with the outer face, which wear may move: move
+  // it here identically. The lip came from the crack surface, already worn.
+  const moved = inset.map((p) => project({ p, frozen: false }, kind).p);
   const tri = (a: Vec3, b: Vec3, c: Vec3): void => {
     let n = cross(sub(b, a), sub(c, a));
     const len = Math.hypot(n[0], n[1], n[2]);
@@ -201,34 +371,46 @@ function appendBevel(
     mesh.indices.push(start, start + 1, start + 2);
   };
   for (let k = 0; k + 1 < lip.length; k += 1) {
-    tri(lip[k], lip[k + 1], inset[k + 1]);
-    tri(lip[k], inset[k + 1], inset[k]);
+    tri(lip[k], lip[k + 1], moved[k + 1]);
+    tri(lip[k], moved[k + 1], moved[k]);
   }
 }
 
-/** A planar (possibly non-convex, after splicing) polygon, earcut. */
-function appendPolygon(mesh: PieceMesh, outline: Vec3[], normal: Vec3, origin: Vec3, kind: number): void {
+/**
+ * A planar polygon (non-convex after splicing), earcut, then refined with
+ * the band points so worn edges have vertices to bend. Every vertex goes
+ * through the wear projector on its way out.
+ */
+function appendPolygon(
+  mesh: PieceMesh, outline: OutlinePoint[], band: readonly Vec3[], normal: Vec3, origin: Vec3, kind: number,
+  project: Projector,
+): void {
   if (outline.length < 3) return;
   const { t, b } = anyBasis(normal);
   const side = canonicalSign(normal);
-  const pts2: Vec2[] = outline.map((p) => [dot(p, t), dot(p, b)]);
+  const to2 = (p: Vec3): Vec2 => [dot(p, t), dot(p, b)];
+  const pts2: Vec2[] = outline.map((o) => to2(o.p));
+  let triangles: number[] = [];
+  if (outline.length === 3) {
+    triangles = orient2(pts2[0], pts2[1], pts2[2]) >= 0 ? [0, 1, 2] : [0, 2, 1];
+  } else {
+    for (const [a, b2, c] of ShapeUtils.triangulateShape(pts2.map(([x, y]) => new Vector2(x, y)), [])) {
+      // (t, b, n) is right-handed: CCW in 2D faces along +normal.
+      if (orient2(pts2[a], pts2[b2], pts2[c]) >= 0) triangles.push(a, b2, c);
+      else triangles.push(a, c, b2);
+    }
+  }
+  const points: OutlinePoint[] = [...outline, ...band.map((p) => ({ p, frozen: false }))];
+  if (band.length > 0) triangles = refine([...pts2, ...band.map(to2)], triangles, outline.length);
   const start = mesh.positions.length / 3;
-  for (const p of outline) {
-    const local = sub(p, origin);
-    mesh.positions.push(local[0], local[1], local[2]);
-    mesh.normals.push(normal[0], normal[1], normal[2]);
+  for (const point of points) {
+    const out = project(point, kind);
+    const n = out.normal ?? normal;
+    mesh.positions.push(out.p[0] - origin[0], out.p[1] - origin[1], out.p[2] - origin[2]);
+    mesh.normals.push(n[0], n[1], n[2]);
     mesh.kinds.push(kind);
-    mesh.relief.push(0);
+    mesh.relief.push(out.wear);
     mesh.sides.push(side);
   }
-  if (outline.length === 3) {
-    mesh.indices.push(start, start + 1, start + 2);
-    return;
-  }
-  const triangles = ShapeUtils.triangulateShape(pts2.map(([x, y]) => new Vector2(x, y)), []);
-  for (const [a, b2, c] of triangles) {
-    // (t, b, n) is right-handed: CCW in 2D faces along +normal.
-    if (orient2(pts2[a], pts2[b2], pts2[c]) >= 0) mesh.indices.push(start + a, start + b2, start + c);
-    else mesh.indices.push(start + a, start + c, start + b2);
-  }
+  for (const i of triangles) mesh.indices.push(start + i);
 }

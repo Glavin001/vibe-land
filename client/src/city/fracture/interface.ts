@@ -34,6 +34,8 @@ export interface InterfaceEdge {
   outer: Vec3 | null;
   /** In the outer plane, pointing from the crack into piece A (B: negate). */
   inwardA: Vec3;
+  /** Normal of A's face across this edge (the face a pinned edge must stay on). */
+  acrossA: Vec3 | null;
   /** World endpoints (undisplaced), for matching the edge from a face loop. */
   from: Vec3;
   to: Vec3;
@@ -108,6 +110,7 @@ export function buildInterface(input: InterfaceInput): CrackInterface | null {
   // --- Classify the polygon's edges -------------------------------------
   const pinned: boolean[] = [];
   const outer: Array<Vec3 | null> = [];
+  const acrossA: Array<Vec3 | null> = [];
   for (let k = 0; k < loopA.length; k += 1) {
     const i = loopA[k];
     const j = loopA[(k + 1) % loopA.length];
@@ -127,6 +130,7 @@ export function buildInterface(input: InterfaceInput): CrackInterface | null {
     }
     pinned.push(!jagged);
     outer.push(jagged ? A.poly.faces[adjA].normal : null);
+    acrossA.push(adjA >= 0 ? A.poly.faces[adjA].normal : null);
   }
 
   // --- 2D frame: absolute, so the lattice is anchored in rest space -------
@@ -141,7 +145,18 @@ export function buildInterface(input: InterfaceInput): CrackInterface | null {
 
   // Clamp relief by both pieces' depth behind the crack.
   const depth = Math.min(depthBehind(A.poly, contact.faceA), depthBehind(B.poly, contact.faceB));
-  const hMax = Math.min(look.amplitude * 2.5, depth * look.maxDepthFraction);
+  // Brick steps by up to half a brick to reach its joint.
+  const reach = Math.max(look.amplitude * 2.5, look.courseHeight > 0 ? look.courseHeight * 1.6 : 0);
+  const hMax = Math.min(reach, depth * look.maxDepthFraction);
+  let ax = 0;
+  let ay = 0;
+  let az = 0;
+  for (const c of corners) {
+    ax += c[0] / corners.length;
+    ay += c[1] / corners.length;
+    az += c[2] / corners.length;
+  }
+  const anchor: Vec3 = [ax, ay, az];
 
   // Lattice spacing, coarsened to respect the vertex cap.
   let a = Math.max(1e-3, look.lattice / Math.max(0.1, input.density));
@@ -233,7 +248,7 @@ export function buildInterface(input: InterfaceInput): CrackInterface | null {
     let dPinned = Infinity;
     for (const [s0, s1] of pinnedSegs) dPinned = Math.min(dPinned, segmentDistance2(q, s0, s1));
     const w = pinnedSegs.length > 0 ? smoothstep(0, look.taper, dPinned) : 1;
-    const raw = reliefHeight(p0, nc, A.cls, look, grain, input.seed)
+    const raw = reliefHeight(p0, nc, A.cls, look, grain, input.seed, anchor)
       + tiltA * (q[0] - cu) + tiltB * (q[1] - cv);
     const h = clamp(raw, -hMax, hMax) * w;
     // Allowed motion: free inside, within the outer plane on a jagged edge,
@@ -303,7 +318,10 @@ export function buildInterface(input: InterfaceInput): CrackInterface | null {
     indices.push(k + 1 < poly2.length ? edgeStart[k + 1] : 0);
     const m = outer[k];
     const inwardA: Vec3 = m ? normalize(scale(sub(nA, scale(m, dot(nA, m))), -1)) : [0, 0, 0];
-    return { indices, jagged: !pinned[k], outer: m, inwardA, from: corners[k], to: corners[(k + 1) % corners.length] };
+    return {
+      indices, jagged: !pinned[k], outer: m, inwardA, acrossA: acrossA[k],
+      from: corners[k], to: corners[(k + 1) % corners.length],
+    };
   });
 
   return {

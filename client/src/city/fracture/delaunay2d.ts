@@ -1,11 +1,15 @@
-// Delaunay triangulation of a convex polygon plus interior points.
+// Delaunay refinement of planar triangulations, for crack faces and for the
+// worn bands of outer faces.
 //
-// Small and specialised: the boundary is a CCW convex polygon whose edges may
-// carry collinear samples, and it must come out of the triangulation exactly
-// as given (those samples are shared with the neighbouring face). Fan from the
-// centroid, insert the interior points one at a time, and restore the Delaunay
-// property with Lawson flips. Boundary edges have no twin, so they can never
-// be flipped. Insertion order is the input order: deterministic.
+// Small and specialised: the boundary must come out exactly as given (its
+// samples are shared with the neighbouring face), so boundary edges -- edges
+// with no twin -- are never flipped. Points are inserted one at a time and the
+// Delaunay property restored with Lawson flips. Insertion order is the input
+// order: deterministic.
+//
+// `triangulateConvex` starts from a fan over a convex polygon; `refine`
+// starts from any valid triangulation (an earcut of a jagged, non-convex
+// outline) and inserts points into it.
 
 import { orient2, type Vec2 } from './math';
 
@@ -25,6 +29,17 @@ export function triangulateConvex(boundary: readonly Vec2[], interior: readonly 
   }
   const centroid: Vec2 = [cx / boundary.length, cy / boundary.length];
   const points: Vec2[] = [...boundary, centroid, ...interior];
+  const centre = boundary.length;
+  const fan: number[] = [];
+  for (let i = 0; i < boundary.length; i += 1) fan.push(centre, i, (i + 1) % boundary.length);
+  return { points, triangles: refine(points, fan, centre + 1) };
+}
+
+/**
+ * Insert points[firstInsert..] into a CCW triangulation of points[0..firstInsert)
+ * whose outer edges are the constraint. Points outside it are dropped.
+ */
+export function refine(points: readonly Vec2[], initial: readonly number[], firstInsert: number): number[] {
   const n = points.length;
   const key = (i: number, j: number): number => i * n + j;
   const tris: Array<[number, number, number]> = [];
@@ -83,11 +98,19 @@ export function triangulateConvex(boundary: readonly Vec2[], interior: readonly 
     }
   };
 
-  const centre = boundary.length;
-  for (let i = 0; i < boundary.length; i += 1) add(centre, i, (i + 1) % boundary.length);
+  for (let i = 0; i + 2 < initial.length; i += 3) add(initial[i], initial[i + 1], initial[i + 2]);
 
-  let scale = 0;
-  for (const p of boundary) scale = Math.max(scale, Math.abs(p[0] - centroid[0]), Math.abs(p[1] - centroid[1]));
+  let lo0 = Infinity;
+  let lo1 = Infinity;
+  let hi0 = -Infinity;
+  let hi1 = -Infinity;
+  for (let i = 0; i < firstInsert; i += 1) {
+    lo0 = Math.min(lo0, points[i][0]);
+    hi0 = Math.max(hi0, points[i][0]);
+    lo1 = Math.min(lo1, points[i][1]);
+    hi1 = Math.max(hi1, points[i][1]);
+  }
+  const scale = Math.max(hi0 - lo0, hi1 - lo1, 1e-9);
   const eps = scale * scale * 1e-12;
 
   // Point location: walk from the last triangle touched (the lattice arrives
@@ -107,7 +130,7 @@ export function triangulateConvex(boundary: readonly Vec2[], interior: readonly 
     return { inside: true, edge, exit: -1 };
   };
 
-  for (let p = centre + 1; p < n; p += 1) {
+  for (let p = firstInsert; p < n; p += 1) {
     const q = points[p];
     let located = -1;
     let onEdge: [number, number] | null = null;
@@ -161,5 +184,5 @@ export function triangulateConvex(boundary: readonly Vec2[], interior: readonly 
   tris.forEach((t, i) => {
     if (alive[i]) triangles.push(t[0], t[1], t[2]);
   });
-  return { points, triangles };
+  return triangles;
 }

@@ -10,6 +10,7 @@
 
 import { FRACTURE_CLASS_COUNT, FractureClass } from './materialClass';
 import { DEFAULT_REBAR_LOOK, type RebarLook } from './rebar';
+import type { WearLook } from './wear';
 
 export interface ReliefLook {
   /** Peak relief of the crack surface. */
@@ -63,11 +64,46 @@ export interface ShadeLook {
   cavity: number;
 }
 
+/** The OUTER skin: what an unbroken face of this material looks like. */
+export interface SkinLook {
+  color: [number, number, number];
+  /** Stain / mortar / latewood / scuff colour. */
+  color2: [number, number, number];
+  /** Pattern size: bughole cell, brick course, grain spacing. */
+  scale: number;
+  bump: number;
+  roughness: number;
+  /** Broad colour variation. */
+  variation: number;
+  /** Streaks, splash, scuffs. */
+  grime: number;
+  /** Fine grit strength. */
+  detail: number;
+}
+
 export interface FractureLook {
   relief: ReliefLook;
   shade: ShadeLook;
   rebar: RebarLook;
+  /** The original outer edges: rounding and chips (wear.ts). */
+  wear: WearLook;
+  skin: SkinLook;
 }
+
+const skin = (over: Partial<SkinLook>): SkinLook => ({
+  color: [0.42, 0.39, 0.33],
+  color2: [0.2, 0.18, 0.15],
+  scale: 0.012,
+  bump: 0.8,
+  roughness: 0.92,
+  variation: 0.22,
+  grime: 0.85,
+  detail: 1,
+  ...over,
+});
+
+const wear = (radius: number, variation: number, chips: number, chipSize: number, chipDepth: number): WearLook =>
+  ({ radius, variation, chips, chipSize, chipDepth });
 
 const relief = (over: Partial<ReliefLook>): ReliefLook => ({
   amplitude: 0.022,
@@ -107,25 +143,29 @@ function defaults(cls: FractureClass): FractureLook {
   switch (cls) {
     case FractureClass.Concrete:
     case FractureClass.Reinforced:
-      return { relief: relief({}), shade: shade({}), rebar: { ...DEFAULT_REBAR_LOOK } };
+      return { relief: relief({}), shade: shade({}), rebar: { ...DEFAULT_REBAR_LOOK }, wear: wear(0.012, 0.55, 0.3, 0.06, 2.2), skin: skin({}) };
     case FractureClass.Brick:
     case FractureClass.Mortar:
       return {
         relief: relief({
-          amplitude: 0.012, featureSize: 0.1, ridge: 0.2, tilt: 0.05, lattice: 0.016,
-          courseHeight: 0.075, toothDepth: 0.045, chipWidth: 0.012, chipDepth: 0.006,
+          amplitude: 0.003, featureSize: 0.04, ridge: 0.2, tilt: 0, lattice: 0.012,
+          courseHeight: 0.075, toothDepth: 0.045, chipWidth: 0.01, chipDepth: 0.005, maxDepthFraction: 0.45,
         }),
         shade: shade({
           base: [0.30, 0.10, 0.06], accent: [0.42, 0.40, 0.36], accentFill: 0.2,
           accentSize: 0.075, bumpSize: 0.004, pores: 0.05, cavity: 0.45,
         }),
         rebar: { ...DEFAULT_REBAR_LOOK },
+        wear: wear(0.006, 0.6, 0.45, 0.035, 3),
+        skin: skin({ color: [0.30, 0.105, 0.06], color2: [0.40, 0.37, 0.32], scale: 0.075, bump: 1, roughness: 0.9, variation: 0.1, grime: 0.3 }),
       };
     case FractureClass.Stone:
       return {
         relief: relief({ amplitude: 0.03, featureSize: 0.22, ridge: 0.7, detail: 0.35 }),
         shade: shade({ base: [0.46, 0.43, 0.39], accent: [0.36, 0.34, 0.31], accentSize: 0.04, pores: 0.02 }),
         rebar: { ...DEFAULT_REBAR_LOOK },
+        wear: wear(0.01, 0.6, 0.3, 0.05, 2),
+        skin: skin({ color: [0.45, 0.42, 0.38], color2: [0.3, 0.28, 0.26], scale: 0.03, bump: 0.6, variation: 0.15, grime: 0.3 }),
       };
     case FractureClass.Wood:
       return {
@@ -139,6 +179,8 @@ function defaults(cls: FractureClass): FractureLook {
           bumpSize: 0.0015, bumpDepth: 0.8, pores: 0.0, roughness: 0.85, cavity: 0.7,
         }),
         rebar: { ...DEFAULT_REBAR_LOOK },
+        wear: wear(0.0025, 0.4, 0.15, 0.02, 1.5),
+        skin: skin({ color: [0.55, 0.38, 0.2], color2: [0.38, 0.22, 0.1], scale: 0.004, bump: 1, roughness: 0.7, variation: 0.08, grime: 0 }),
       };
     case FractureClass.Gypsum:
     case FractureClass.Plaster:
@@ -152,6 +194,8 @@ function defaults(cls: FractureClass): FractureLook {
           bumpSize: 0.002, bumpDepth: 0.4, pores: 0.12, roughness: 0.98, cavity: 0.3,
         }),
         rebar: { ...DEFAULT_REBAR_LOOK },
+        wear: wear(0.0015, 0.5, 0.2, 0.02, 2),
+        skin: skin({ color: [0.74, 0.72, 0.68], color2: [0.55, 0.53, 0.5], scale: 0.01, bump: 1, roughness: 0.85, variation: 0.03, grime: 0.25 }),
       };
     case FractureClass.Glass:
       return {
@@ -164,12 +208,16 @@ function defaults(cls: FractureClass): FractureLook {
           pores: 0, roughness: 0.08, cavity: 0,
         }),
         rebar: { ...DEFAULT_REBAR_LOOK },
+        wear: wear(0.0004, 0.3, 0.05, 0.01, 1),
+        skin: skin({ color: [0.3, 0.42, 0.36], roughness: 0.05, variation: 0, grime: 0 }),
       };
     case FractureClass.Steel:
       return {
         relief: relief({ amplitude: 0.002, featureSize: 0.02, tilt: 0.05, chipWidth: 0, chipDepth: 0 }),
         shade: shade({ base: [0.56, 0.56, 0.57], accent: [0.4, 0.3, 0.22], accentFill: 0.1, pores: 0, roughness: 0.4, metalness: 1, cavity: 0.2 }),
         rebar: { ...DEFAULT_REBAR_LOOK },
+        wear: wear(0.0008, 0.2, 0, 0.01, 0),
+        skin: skin({ color: [0.45, 0.45, 0.46], color2: [0.3, 0.2, 0.12], roughness: 0.45, variation: 0.05, grime: 0.2 }),
       };
     case FractureClass.Ceramic:
     case FractureClass.Slate:
@@ -177,6 +225,8 @@ function defaults(cls: FractureClass): FractureLook {
         relief: relief({ amplitude: 0.006, featureSize: 0.05, ridge: 0.6, lattice: 0.01 }),
         shade: shade({ base: [0.55, 0.30, 0.20], accent: [0.42, 0.22, 0.14], pores: 0.04, roughness: 0.9 }),
         rebar: { ...DEFAULT_REBAR_LOOK },
+        wear: wear(0.003, 0.5, 0.3, 0.02, 2),
+        skin: skin({ color: [0.4, 0.2, 0.14], color2: [0.3, 0.15, 0.1], scale: 0.02, roughness: 0.85, variation: 0.1, grime: 0.2 }),
       };
   }
 }

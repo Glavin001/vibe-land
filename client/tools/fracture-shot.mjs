@@ -39,6 +39,11 @@ const VIEWS = {
   book: { state: { compare: 'enhanced', mode: 'book', amount: 1, spin: 0 }, camera: 'split' },
   crack: { state: { compare: 'split', mode: 'crack', amount: 0.08, spin: 0 }, camera: 'frame' },
   blast: { state: { compare: 'split', mode: 'blast', blastStrength: 6, timeScale: 1 }, camera: 'frame', settle: 700 },
+  // Unbroken surfaces up close: the outer skin and the worn arrises.
+  corner: { state: { compare: 'enhanced', mode: 'intact' }, camera: 'corner' },
+  'corner-today': { state: { compare: 'today', mode: 'intact' }, camera: 'corner' },
+  face: { state: { compare: 'enhanced', mode: 'intact' }, camera: 'face' },
+  'face-today': { state: { compare: 'today', mode: 'intact' }, camera: 'face' },
 };
 
 const browser = await chromium.launch({
@@ -71,6 +76,21 @@ for (const specimen of specimens) {
     await page.evaluate(() => new Promise((r) => setTimeout(r, 600)));
     if (view.camera === 'frame') {
       await page.evaluate(() => window.__VIBE_FRACTURE_LAB__.frame());
+    } else if (view.camera === 'corner' || view.camera === 'face') {
+      // The top front corner of the intact specimen, or the middle of its face.
+      await page.evaluate((rule) => {
+        const lab = window.__VIBE_FRACTURE_LAB__;
+        const { min, max } = lab.info();
+        const size = [0, 1, 2].map((k) => max[k] - min[k]);
+        const reach = Math.max(0.25, Math.min(1.1, Math.max(size[0], size[2]) * 0.3));
+        if (rule === 'corner') {
+          const target = [max[0] - Math.min(0.3, size[0] * 0.2), max[1] - 0.04, max[2]];
+          lab.camera([target[0] + reach * 0.45, target[1] + reach * 0.35, target[2] + reach * 0.8], target);
+        } else {
+          const target = [(min[0] + max[0]) / 2, Math.min(max[1] - 0.3, 1.4), max[2]];
+          lab.camera([target[0] + reach * 0.25, target[1] + reach * 0.1, target[2] + reach * 0.75], target);
+        }
+      }, view.camera);
     } else if (view.camera === 'split') {
       // Look along the opened split from in front, a little to the + side.
       await page.evaluate(() => {

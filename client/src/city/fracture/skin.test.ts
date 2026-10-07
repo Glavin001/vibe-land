@@ -24,11 +24,11 @@ function signedVolume(mesh: PieceMesh, includeRebar = false): number {
   return v;
 }
 
-function build(key: SpecimenKey, density = 1) {
+function build(key: SpecimenKey, { density = 1, wear = false, broken = true } = {}) {
   const specimen = buildSpecimen(key);
   const table = assembleContacts(specimen.pieces);
   const built = assembleBroken(specimen.pieces, table, {
-    broken: () => true, rough: true, rebar: true, density, looks: FRACTURE_LOOKS,
+    broken: () => broken, rough: true, wear, rebar: true, density, looks: FRACTURE_LOOKS,
     families: specimen.rebar, seed: 1,
   });
   return { specimen, table, built };
@@ -105,14 +105,16 @@ describe('crack interfaces', () => {
 describe('piece skins', () => {
   for (const key of SPECIMEN_KEYS) {
     it(`${key}: every piece stays a closed, outward solid near its collider's volume`, () => {
-      const { specimen, built } = build(key);
+      const { specimen, built } = build(key, { wear: true });
       specimen.pieces.forEach((piece, p) => {
         const mesh = built.meshes[p];
         for (const x of mesh.positions) expect(Number.isFinite(x)).toBe(true);
         const hull = polytopeVolume(piece.poly);
         const area = piece.poly.faces.reduce((s, f) => s + f.area, 0);
         const look = FRACTURE_LOOKS[piece.cls].relief;
-        const slack = area * (look.amplitude * 2.5 + look.crackOpening) + hull * 0.02;
+        // The interface's own relief cap (brick steps up to half a brick).
+        const reach = Math.max(look.amplitude * 2.5, look.courseHeight > 0 ? look.courseHeight * 1.6 : 0);
+        const slack = area * (reach + look.crackOpening) + hull * 0.02;
         expect(signedVolume(mesh)).toBeGreaterThan(0);
         expect(Math.abs(signedVolume(mesh) - hull), `${key} piece ${p}`).toBeLessThan(slack);
       });
@@ -122,5 +124,57 @@ describe('piece skins', () => {
   it('the RC wall grows rebar and the plain wall does not', () => {
     expect(build('rc-wall').built.stats.rebarStubs).toBeGreaterThan(20);
     expect(build('concrete-wall').built.stats.rebarStubs).toBe(0);
+  });
+});
+
+describe('worn edges', () => {
+  const worldOf = (mesh: PieceMesh, centroid: Vec3, i: number): Vec3 =>
+    [mesh.positions[i * 3] + centroid[0], mesh.positions[i * 3 + 1] + centroid[1], mesh.positions[i * 3 + 2] + centroid[2]];
+
+  it('round the original arrises of an intact wall, and only there', () => {
+    const { specimen, built } = build('concrete-wall', { wear: true, broken: false });
+    const radius = FRACTURE_LOOKS[0].wear.radius;
+    let worn = 0;
+    let deepest = 0;
+    built.meshes.forEach((mesh) => {
+      for (let i = 0; i < mesh.kinds.length; i += 1) {
+        if (mesh.kinds[i] !== FaceKind.Exterior) continue;
+        deepest = Math.max(deepest, mesh.relief[i]);
+        if (mesh.relief[i] > 0.3) worn += 1;
+      }
+    });
+    expect(worn).toBeGreaterThan(200);
+    // Never deeper than the field's reach allows.
+    const field = FRACTURE_LOOKS[0].wear;
+    expect(deepest * radius).toBeLessThan(field.radius * (1 + field.variation) * (1 + field.chipDepth) * 1.5);
+    expect(specimen.pieces.length).toBeGreaterThan(10);
+  });
+
+  it('keep every seam between two intact pieces watertight', () => {
+    const { specimen, table, built } = build('concrete-wall', { wear: true, broken: false });
+    let checked = 0;
+    for (const contact of table.contacts) {
+      const n = contact.normal;
+      const w = dot(n, contact.polygon[0]);
+      const onSeam = (p: number): Vec3[] => {
+        const mesh = built.meshes[p];
+        const out: Vec3[] = [];
+        for (let i = 0; i < mesh.kinds.length; i += 1) {
+          if (mesh.kinds[i] !== FaceKind.Exterior) continue;
+          const x = worldOf(mesh, specimen.pieces[p].centroid, i);
+          if (Math.abs(dot(n, x) - w) < 1e-6) out.push(x);
+        }
+        return out;
+      };
+      const a = onSeam(contact.a);
+      const b = onSeam(contact.b);
+      // Every outer-face vertex A has on the seam, B has too. (10 um: the
+      // Voronoi cutter itself places a shared junction ~1e-6 apart per cell.)
+      for (const x of a) {
+        expect(b.some((y) => Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]) < 1e-5)).toBe(true);
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(100);
   });
 });

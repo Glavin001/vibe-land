@@ -36,7 +36,6 @@ import {
   struct,
   texture,
   textureSize,
-  uniform,
   uniformArray,
   varyingProperty,
   vec3,
@@ -51,7 +50,7 @@ import type { RebarFamily } from '../city/fracture/rebar';
 import { cityTriplanarNodes, restToViewThrough } from '../scene/cityMaterialNodes';
 import type { CityTriplanarConfig } from '../scene/cityMaterialShader';
 import { quatRotate } from '../scene/quatNodes';
-import { fractureSurface, rebarSurface } from './fractureNodes';
+import { fractureSurface, rebarSurface, skinSurface } from './fractureNodes';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
@@ -190,40 +189,66 @@ function posedPosition(poses: LabPoses, pose: Node | null): Node {
   })();
 }
 
-/** The per-class fracture look, as uniform rows the shader indexes by class. */
+/**
+ * The per-class look as ONE uniform array of vec4 rows the shader indexes by
+ * class. One binding, not twelve: WebGPU allows only 12 uniform buffers per
+ * shader stage, and the city triplanar and the camera already use some.
+ *
+ *   class c, rows c*8 + 0..7: shade base, accent, a, b; skin color, color2, a, b
+ *   rebar family f, rows 96 + f*4 + 0..3: dir, across, depthAxis, (spacing, phase, depth, radius)
+ *   row 112: (rebar family count, -, -, -)
+ */
+const ROWS_PER_CLASS = 8;
+const REBAR_ROW = FRACTURE_CLASS_COUNT * ROWS_PER_CLASS;
+const COUNT_ROW = REBAR_ROW + 16;
+
 export class FractureLookUniforms {
-  readonly base = uniformArray(Array.from({ length: FRACTURE_CLASS_COUNT }, () => new THREE.Vector4()), 'vec4');
-  readonly accent = uniformArray(Array.from({ length: FRACTURE_CLASS_COUNT }, () => new THREE.Vector4()), 'vec4');
-  readonly a = uniformArray(Array.from({ length: FRACTURE_CLASS_COUNT }, () => new THREE.Vector4()), 'vec4');
-  readonly b = uniformArray(Array.from({ length: FRACTURE_CLASS_COUNT }, () => new THREE.Vector4()), 'vec4');
-  readonly rebarDir = uniformArray(Array.from({ length: 4 }, () => new THREE.Vector4()), 'vec4');
-  readonly rebarAcross = uniformArray(Array.from({ length: 4 }, () => new THREE.Vector4()), 'vec4');
-  readonly rebarDepth = uniformArray(Array.from({ length: 4 }, () => new THREE.Vector4()), 'vec4');
-  /** (spacing, phase, depth, radius) */
-  readonly rebarParams = uniformArray(Array.from({ length: 4 }, () => new THREE.Vector4()), 'vec4');
-  readonly rebarCount = uniform(0);
+  readonly rows = uniformArray(Array.from({ length: COUNT_ROW + 1 }, () => new THREE.Vector4()), 'vec4');
+
+  private set(row: number, x: number, y: number, z: number, w: number): void {
+    (this.rows.array[row] as THREE.Vector4).set(x, y, z, w);
+  }
+
+  /** Row `k` of class `cls` (a TSL int node). */
+  classRow(cls: Node, k: number): Node {
+    return this.rows.element(cls.mul(ROWS_PER_CLASS).add(k));
+  }
+
+  rebarRow(family: number, k: number): Node {
+    return this.rows.element(REBAR_ROW + family * 4 + k);
+  }
+
+  get rebarCount(): Node {
+    return this.rows.element(COUNT_ROW).x;
+  }
 
   /** Copy the live look table in; cheap, run every frame. */
   refresh(): void {
     FRACTURE_LOOKS.forEach((look, cls) => {
+      const r = cls * ROWS_PER_CLASS;
       const s = look.shade;
-      (this.base.array[cls] as THREE.Vector4).set(s.base[0], s.base[1], s.base[2], 0);
-      (this.accent.array[cls] as THREE.Vector4).set(s.accent[0], s.accent[1], s.accent[2], 0);
-      (this.a.array[cls] as THREE.Vector4).set(s.accentFill, s.accentSize, s.bumpSize, s.bumpDepth);
-      (this.b.array[cls] as THREE.Vector4).set(s.pores, s.roughness, s.metalness, s.cavity);
+      this.set(r, s.base[0], s.base[1], s.base[2], 0);
+      this.set(r + 1, s.accent[0], s.accent[1], s.accent[2], 0);
+      this.set(r + 2, s.accentFill, s.accentSize, s.bumpSize, s.bumpDepth);
+      this.set(r + 3, s.pores, s.roughness, s.metalness, s.cavity);
+      const k = look.skin;
+      this.set(r + 4, k.color[0], k.color[1], k.color[2], 0);
+      this.set(r + 5, k.color2[0], k.color2[1], k.color2[2], 0);
+      this.set(r + 6, k.scale, k.bump, k.roughness, k.variation);
+      this.set(r + 7, k.grime, k.detail, 0, 0);
     });
   }
 
   setRebar(families: readonly RebarFamily[]): void {
     const n = Math.min(4, families.length);
-    this.rebarCount.value = n;
-    for (let i = 0; i < 4; i += 1) {
+    this.set(COUNT_ROW, n, 0, 0, 0);
+    for (let i = 0; i < n; i += 1) {
       const f = families[i];
-      if (!f) continue;
-      (this.rebarDir.array[i] as THREE.Vector4).set(f.dir[0], f.dir[1], f.dir[2], 0);
-      (this.rebarAcross.array[i] as THREE.Vector4).set(f.across[0], f.across[1], f.across[2], 0);
-      (this.rebarDepth.array[i] as THREE.Vector4).set(f.depthAxis[0], f.depthAxis[1], f.depthAxis[2], 0);
-      (this.rebarParams.array[i] as THREE.Vector4).set(f.spacing, f.phase, f.depth, f.radius);
+      const r = REBAR_ROW + i * 4;
+      this.set(r, f.dir[0], f.dir[1], f.dir[2], 0);
+      this.set(r + 1, f.across[0], f.across[1], f.across[2], 0);
+      this.set(r + 2, f.depthAxis[0], f.depthAxis[1], f.depthAxis[2], 0);
+      this.set(r + 3, f.spacing, f.phase, f.depth, f.radius);
     }
   }
 }
@@ -235,6 +260,12 @@ export interface LabMaterialOptions {
   /** Colour faces by kind instead (exterior / fracture / joint / rebar). */
   debugKinds: boolean;
   wireframe: boolean;
+  /**
+   * The outer faces: 'procedural' skins (concrete form face, brickwork,
+   * timber, paint) that agree with the broken interior, or the city's
+   * photographic texture layers as /city has them.
+   */
+  skin: 'procedural' | 'city';
 }
 
 const LabOut = struct({ albedo: 'vec3', rough: 'float', metal: 'float', ao: 'float', normal: 'vec3' }, 'FractureLabOut');
@@ -245,13 +276,16 @@ export function labMaterial(poses: LabPoses, looks: FractureLookUniforms, option
   const pose = varyingProperty('vec4', 'vCityQuat');
   material.positionNode = posedPosition(poses, pose);
   const restToView = restToViewThrough(pose, quatRotate);
-  const tri = cityTriplanarNodes(options.triplanar, restToView);
+  // Procedural skins replace the city's texture layers entirely, so they are
+  // only sampled when the outer faces actually wear them.
+  const procedural = options.fracture && options.skin === 'procedural';
+  const tri = procedural ? null : cityTriplanarNodes(options.triplanar, restToView);
 
   const out = (Fn(() => {
-    const albedo = vec3(tri.albedo).toVar('labAlbedo');
-    const rough = float(tri.roughness ?? 0.92).toVar('labRough');
-    const ao = float(tri.occlusion ?? 1).toVar('labAo');
-    const nView = vec3(tri.normal ?? normalView).toVar('labNormal');
+    const albedo = vec3(tri ? tri.albedo : vec3(1)).toVar('labAlbedo');
+    const rough = float(tri?.roughness ?? 0.92).toVar('labRough');
+    const ao = float(tri?.occlusion ?? 1).toVar('labAo');
+    const nView = vec3(tri?.normal ?? normalView).toVar('labNormal');
     const metal = float(0).toVar('labMetal');
     const face = attribute('labFace', 'vec4');
     const grainCode = floor(face.x.div(8));
@@ -262,15 +296,46 @@ export function labMaterial(poses: LabPoses, looks: FractureLookUniforms, option
     const fp = max(length(fwidth(restPos)), float(1e-5)).toVar('labFootprint');
     const restN = normalize(normalGeometry).toVar('labRestN');
 
+    const cls = int(face.y);
+    const grain = select(grainCode.equal(0), vec3(1, 0, 0),
+      select(grainCode.equal(1), vec3(0, 1, 0), select(grainCode.equal(2), vec3(0, 0, 1), vec3(0))));
     if (options.fracture) {
+      // Outer faces: the skin, worn through to the interior at the arrises.
+      If(kind.lessThan(0.5), () => {
+        if (procedural) {
+          const sk = skinSurface(
+            restPos, restN, face.y, fp,
+            looks.classRow(cls, 4).xyz, looks.classRow(cls, 5).xyz,
+            looks.classRow(cls, 6), looks.classRow(cls, 7), grain,
+          ).toVar('labSkin');
+          albedo.assign(sk.element(0).xyz);
+          rough.assign(sk.element(0).w);
+          ao.assign(sk.element(1).w);
+          metal.assign(sk.element(2).x);
+          nView.assign(normalize(restToView(sk.element(1).xyz)));
+        } else {
+          // Worn geometry must SHADE round: the interpolated normal, not the
+          // triplanar's flat derivative one.
+          If(face.z.greaterThan(0.02), () => { nView.assign(normalize(restToView(restN))); });
+        }
+        const worn = smoothstep(0.3, 1.0, face.z).toVar('labWorn');
+        If(worn.greaterThan(0.001), () => {
+          const inner = fractureSurface(
+            restPos, restN, face.y, float(-0.2), fp,
+            looks.classRow(cls, 0).xyz, looks.classRow(cls, 1).xyz,
+            looks.classRow(cls, 2), looks.classRow(cls, 3), grain, face.w,
+          ).toVar('labWornInner');
+          albedo.assign(mix(albedo, inner.element(0).xyz, worn));
+          rough.assign(mix(rough, inner.element(0).w, worn));
+          ao.assign(mix(ao, inner.element(1).w, worn));
+          nView.assign(normalize(mix(nView, restToView(inner.element(1).xyz), worn)));
+        });
+      });
       If(kind.greaterThan(0.5).and(kind.lessThan(2.5)), () => {
-        const cls = int(face.y);
-        const grain = select(grainCode.equal(0), vec3(1, 0, 0),
-          select(grainCode.equal(1), vec3(0, 1, 0), select(grainCode.equal(2), vec3(0, 0, 1), vec3(0))));
         const res = fractureSurface(
           restPos, restN, face.y, face.z, fp,
-          looks.base.element(cls).xyz, looks.accent.element(cls).xyz,
-          looks.a.element(cls), looks.b.element(cls), grain, face.w,
+          looks.classRow(cls, 0).xyz, looks.classRow(cls, 1).xyz,
+          looks.classRow(cls, 2), looks.classRow(cls, 3), grain, face.w,
         ).toVar('labFracture');
         albedo.assign(res.element(0).xyz);
         rough.assign(res.element(0).w);
@@ -280,11 +345,11 @@ export function labMaterial(poses: LabPoses, looks: FractureLookUniforms, option
         // a halo of rust bled into the concrete.
         If(cls.equal(1), () => {
           for (let f = 0; f < 4; f += 1) {
-            const prm = looks.rebarParams.element(f);
+            const prm = looks.rebarRow(f, 3);
             const active = select(float(f).lessThan(looks.rebarCount), float(1), float(0));
-            const s = dot(restPos, looks.rebarAcross.element(f).xyz).sub(prm.y);
+            const s = dot(restPos, looks.rebarRow(f, 1).xyz).sub(prm.y);
             const da = s.sub(floor(s.div(prm.x).add(0.5)).mul(prm.x));
-            const dd = dot(restPos, looks.rebarDepth.element(f).xyz).sub(prm.z);
+            const dd = dot(restPos, looks.rebarRow(f, 2).xyz).sub(prm.z);
             const dist = sqrt(da.mul(da).add(dd.mul(dd)));
             const steel = float(1).sub(smoothstep(prm.w.mul(0.82), prm.w, dist)).mul(active);
             const stain = float(1).sub(smoothstep(prm.w, prm.w.mul(2.8), dist)).mul(active).mul(0.6);

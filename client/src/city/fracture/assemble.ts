@@ -11,12 +11,16 @@ import type { FractureLook } from './looks';
 import { FractureClass } from './materialClass';
 import { flatPieceMesh, pieceSkinMesh, type PieceMesh } from './pieceSkin';
 import { rebarStubs, type RebarFamily, type RebarStub } from './rebar';
+import { dot } from './math';
+import { outerPlanes, wearInterface, WearField, type WearPlane } from './wear';
 
 export interface AssembleOptions {
   /** Which contacts have let go. */
   broken: (contact: number) => boolean;
   /** Build crack geometry (else: flat faces, shading only). */
   rough: boolean;
+  /** Round and chip the original outer edges, broken or not. */
+  wear: boolean;
   rebar: boolean;
   /** Lattice density multiplier (LOD). */
   density: number;
@@ -51,6 +55,14 @@ export function assembleBroken(
 ): Assembled {
   const started = performance.now();
   const perPiece = pieces.map(() => new Map<number, { iface: CrackInterface; side: 'a' | 'b' }>());
+  // Each piece's outer planes, structure frame: what its edges wear against.
+  const outer: WearPlane[][] = pieces.map((piece, p) => outerPlanes(piece.poly.faces
+    .filter((_, f) => table.faceKind[p][f] === FaceKind.Exterior)
+    .map((face) => ({ n: face.normal, w: face.d + dot(face.normal, piece.centroid) }))));
+  const fieldOf = (planes: WearPlane[], cls: number): WearField | null => {
+    const look = options.looks[cls].wear;
+    return options.wear && look.radius > 0 && planes.length > 0 ? new WearField(planes, look, options.seed) : null;
+  };
   const stubsOf = pieces.map(() => [] as RebarStub[]);
   const interfaces: CrackInterface[] = [];
   let broken = 0;
@@ -67,6 +79,9 @@ export function assembleBroken(
       look: options.looks[cls].relief, density: options.density, seed: options.seed,
     });
     if (!iface) return;
+    // Where the crack runs into a worn arris, wear it once for both pieces.
+    const field = fieldOf(outerPlanes([...outer[contact.a], ...outer[contact.b]]), cls);
+    if (field) wearInterface(iface, field);
     interfaces.push(iface);
     perPiece[contact.a].set(contact.faceA, { iface, side: 'a' });
     perPiece[contact.b].set(contact.faceB, { iface, side: 'b' });
@@ -80,12 +95,15 @@ export function assembleBroken(
   });
 
   const meshes = pieces.map((piece, p) => {
-    if (!options.rough || (perPiece[p].size === 0 && stubsOf[p].length === 0)) {
+    const field = fieldOf(outer[p], piece.cls);
+    if (!field && (!options.rough || (perPiece[p].size === 0 && stubsOf[p].length === 0))) {
       return flatPieceMesh(piece.poly, table.faceKind[p]);
     }
+    const look = options.looks[piece.cls].wear;
     return pieceSkinMesh({
       piece, kinds: table.faceKind[p], interfaces: perPiece[p], stubs: stubsOf[p],
       rebarSides: options.looks[piece.cls].rebar.sides,
+      wear: field ? { field, spacing: Math.max(look.radius * 1.1, 0.005) / Math.max(0.1, options.density) } : null,
     });
   });
 

@@ -8,7 +8,7 @@ import { hash01 } from '../city/fracture/hash';
 import { add, cross, dot, normalize, scale, sub, type Vec3 } from '../city/fracture/math';
 import type { Specimen } from '../city/fracture/specimens';
 
-export type ExplodeMode = 'radial' | 'crack' | 'book' | 'blast';
+export type ExplodeMode = 'intact' | 'radial' | 'crack' | 'book' | 'blast';
 
 export interface Pose {
   p: Vec3;
@@ -46,6 +46,7 @@ export function splitSide(specimen: Specimen, piece: number): 1 | -1 {
 
 /** Contacts that let go in a mode: all of them, or only those across the split. */
 export function brokenInMode(specimen: Specimen, contacts: readonly Contact[], mode: ExplodeMode): (ci: number) => boolean {
+  if (mode === 'intact') return () => false;
   if (mode === 'radial' || mode === 'blast') return () => true;
   return (ci) => splitSide(specimen, contacts[ci].a) !== splitSide(specimen, contacts[ci].b);
 }
@@ -71,7 +72,7 @@ export function explodedPose(
   specimen: Specimen, piece: number, mode: ExplodeMode, amount: number, spin: number, seed: number,
 ): Pose {
   const c = specimen.pieces[piece].centroid;
-  if (amount <= 0) return { p: c, q: IDENTITY };
+  if (amount <= 0 || mode === 'intact') return { p: c, q: IDENTITY };
   const r = (k: number): number => hash01(seed, piece, k);
   const tumble = (scaleAngle: number): [number, number, number, number] =>
     axisAngle([r(1) - 0.5, r(2) - 0.5, r(3) - 0.5], (r(4) - 0.5) * 2 * scaleAngle * spin * amount);

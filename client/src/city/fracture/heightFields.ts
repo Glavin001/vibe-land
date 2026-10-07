@@ -12,13 +12,15 @@ import type { ReliefLook } from './looks';
 
 export function reliefHeight(
   p: Vec3, nc: Vec3, cls: FractureClass, look: ReliefLook, grain: Vec3 | null, seed: number,
+  /** A point on the crack (its centroid): which joint each course snaps to. */
+  anchor: Vec3 = p,
 ): number {
   switch (cls) {
     case FractureClass.Wood:
       return grain ? woodRelief(p, nc, look, grain, seed) : concreteRelief(p, look, seed);
     case FractureClass.Brick:
     case FractureClass.Mortar:
-      return brickRelief(p, nc, look, seed);
+      return brickRelief(p, nc, look, seed, anchor);
     default:
       return concreteRelief(p, look, seed);
   }
@@ -69,16 +71,34 @@ function woodRelief(p: Vec3, nc: Vec3, look: ReliefLook, grain: Vec3, seed: numb
 }
 
 /**
- * Masonry fails along its mortar: a crack through a brick wall steps up the
- * courses, so alternate courses tooth out of one side and into the other. Bed
- * joints (horizontal cracks) stay nearly flat.
+ * Masonry fails along its mortar. A crack through running-bond brickwork
+ * steps: up a head joint, along a bed joint, up the next head joint half a
+ * brick over. So each course's slice of a vertical crack SNAPS to the head
+ * joint nearest the crack in that course, and a horizontal crack to the
+ * nearest bed joint. The bond grid is the skin's (fractureNodes.ts
+ * skinSurface): courses of `courseHeight`, bricks three courses long, odd
+ * courses offset half a brick, along the horizontal axis the crack faces.
  */
-function brickRelief(p: Vec3, nc: Vec3, look: ReliefLook, seed: number): number {
-  const vertical = 1 - Math.abs(nc[1]);
+function brickRelief(p: Vec3, nc: Vec3, look: ReliefLook, seed: number, anchor: Vec3): number {
   const f = 1 / look.featureSize;
   const grit = fbm3(p[0] * f, p[1] * f, p[2] * f, seed, 2) * look.amplitude;
-  if (look.courseHeight <= 0) return grit;
-  // A square wave over the courses, softened so the lattice can follow it.
-  const wave = Math.max(-1, Math.min(1, Math.sin((Math.PI * p[1]) / look.courseHeight) * 5));
-  return look.toothDepth * wave * vertical + grit;
+  const course = look.courseHeight;
+  if (course <= 0) return grit;
+  const len = course * 3;
+  // The horizontal axis the crack faces along: the wall's length.
+  const alongX = Math.abs(nc[0]) >= Math.abs(nc[2]);
+  const nu = alongX ? nc[0] : nc[2];
+  const u = alongX ? p[0] : p[2];
+  const ua = alongX ? anchor[0] : anchor[2];
+  if (Math.abs(nu) > 0.35 && Math.abs(nc[1]) < 0.7) {
+    const k = Math.floor(p[1] / course);
+    const offset = (k & 1) === 1 ? len / 2 : 0;
+    const joint = Math.round((ua + offset) / len) * len - offset;
+    return (joint - u) / nu + grit;
+  }
+  if (Math.abs(nc[1]) >= 0.7) {
+    const joint = Math.round(anchor[1] / course) * course;
+    return (joint - p[1]) / nc[1] + grit;
+  }
+  return grit;
 }

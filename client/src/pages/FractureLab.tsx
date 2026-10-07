@@ -34,10 +34,12 @@ const DEFAULT_STATE: LabState = {
   bodies: 'visual',
   shading: true,
   rough: true,
+  wear: true,
   rebar: true,
   density: 1,
   debugKinds: false,
   wireframe: false,
+  skin: 'procedural',
   copies: 1,
   seed: 7,
   lookVersion: 0,
@@ -55,7 +57,7 @@ function initialState(): LabState {
   const params = new URLSearchParams(window.location.search);
   const state = { ...DEFAULT_STATE };
   const mode = params.get('mode');
-  if (mode === 'radial' || mode === 'crack' || mode === 'book' || mode === 'blast') state.mode = mode;
+  if (mode === 'intact' || mode === 'radial' || mode === 'crack' || mode === 'book' || mode === 'blast') state.mode = mode;
   const amount = Number(params.get('amount'));
   if (params.has('amount') && Number.isFinite(amount)) state.amount = amount;
   const compare = params.get('compare');
@@ -193,7 +195,7 @@ export function FractureLabPage() {
 
           <Section title="Explode">
             <Row label="Mode">
-              <Seg<ExplodeMode> value={state.mode} options={[['radial', 'Radial'], ['crack', 'Crack'], ['book', 'Book'], ['blast', 'Blast']]} onChange={(v) => set({ mode: v, blastToken: state.blastToken + 1 })} />
+              <Seg<ExplodeMode> value={state.mode} options={[['intact', 'Intact'], ['radial', 'Radial'], ['crack', 'Crack'], ['book', 'Book'], ['blast', 'Blast']]} onChange={(v) => set({ mode: v, blastToken: state.blastToken + 1 })} />
             </Row>
             {state.mode !== 'blast' ? (
               <>
@@ -211,8 +213,12 @@ export function FractureLabPage() {
           </Section>
 
           <Section title="Enhanced layers">
-            <Check label="Fracture shading (no extra geometry)" value={state.shading} onChange={(v) => set({ shading: v })} />
+            <Check label="Surface shading (outer skin + breaks)" value={state.shading} onChange={(v) => set({ shading: v })} />
+            <Row label="Outer skin">
+              <Seg value={state.skin} options={[['procedural', 'Procedural'], ['city', 'City texture']]} onChange={(v) => set({ skin: v })} />
+            </Row>
             <Check label="Rough crack geometry" value={state.rough} onChange={(v) => set({ rough: v })} />
+            <Check label="Worn, chipped outer edges" value={state.wear} onChange={(v) => set({ wear: v })} />
             <Check label="Rebar stubs" value={state.rebar} onChange={(v) => set({ rebar: v })} />
             <Slider label="Detail" min={0.25} max={2} step={0.05} value={state.density} onChange={(v) => set({ density: v })} />
             <Check label="Colour by face kind" value={state.debugKinds} onChange={(v) => set({ debugKinds: v })} />
