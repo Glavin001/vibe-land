@@ -66,7 +66,7 @@ def export(a):
         F = study.gravity_loads(st) + Fc
         Jf, _ = sol.solve(F, Tc)
         t0 = time.time()
-        v = study.verdict_plastic(st, active.copy(), alive.copy(), dict(contacts), total, imp.d, np.zeros(st.n), False)
+        v = None if a.problem_only else study.verdict_plastic(st, active.copy(), alive.copy(), dict(contacts), total, imp.d, np.zeros(st.n), False)
         wall = time.time() - t0
         L = float(st.Ls)
         with open(out / f'{name}.impe', 'wb') as f:
@@ -80,12 +80,17 @@ def export(a):
             for k in range(st.m):
                 b0, b1 = st.b0[k], st.b1[k]; c0, c1 = min(b0, b1), max(b0, b1)
                 n = st.pos[c1] - st.pos[c0]; nrm = st.bn[k] * (1.0 if np.dot(st.bn[k], n) >= 0 else -1.0)
-                f.write(struct.pack('<3I8f', c0, c1, k, *st.bc[k], *nrm, st.ba[k], st.w[k]))
+                w = st.w[k]
+                if a.tie_stiffness and st.bmat[k] == 'wall-tie':
+                    w = np.sqrt(a.tie_stiffness / 30e9)   # k = 30 GPa w^2
+                f.write(struct.pack('<3I8f', c0, c1, k, *st.bc[k], *nrm, st.ba[k], w))
             for J in (Jg, Jf):
                 for k in range(st.m):
                     lin, ang = stage_wrench(st, k, J)
                     f.write(struct.pack('<6f', *lin, *ang))
             f.write(struct.pack('<f', L))
+        if v is None:
+            print(f"{name}: problem written (oracle kept)", flush=True); continue
         # The oracle's final joint forces (stage convention) and each chunk's
         # post-tick velocity (its momentum over its mass), for diagnosis.
         with open(out / f'{name}.oracle.bin', 'wb') as f:
@@ -147,6 +152,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
     e = sub.add_parser('export'); e.add_argument('pack'); e.add_argument('out'); e.add_argument('--scenario', nargs='*')
+    e.add_argument('--problem-only', action='store_true', help='rewrite the .impe only, keep the oracle files')
+    e.add_argument('--tie-stiffness', type=float, help="the wall ties' stiffness (N/m) in the problem's weights (the oracle's verdict does not depend on it)")
     c = sub.add_parser('compare'); c.add_argument('pack'); c.add_argument('base')
     a = ap.parse_args()
     export(a) if a.cmd == 'export' else compare(a)

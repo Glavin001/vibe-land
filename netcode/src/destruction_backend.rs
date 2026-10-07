@@ -79,6 +79,9 @@ pub struct StressSolverSettings {
     /// empty, or parallel to `materials`, each material's ultimate slip (m);
     /// 0 brittle, > 0 a ductile joint that yields at capacity.
     pub ductile_slip: Vec<f32>,
+    /// Empty, or parallel to `materials`: the impact solve's modulus (Pa) where
+    /// a material's elastic modulus is a gravity-sharing concession; 0 none.
+    pub impact_modulus: Vec<f32>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -103,6 +106,7 @@ impl Default for StressSolverSettings {
             materials: vec![StressMaterial::default()],
             crush: Vec::new(),
             ductile_slip: Vec::new(),
+            impact_modulus: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,

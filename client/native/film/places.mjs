@@ -7,6 +7,7 @@
 /** Each scene's meta, relative to the bundle dir the native scripts run in (client/dist-native). */
 export const SCENE_META = {
   town: '../../structures/vibe-town/out/vibe-town.meta.json',
+  hero: '../../structures/vibe-town/out/vibe-town-hero.meta.json',
 };
 
 /** The scene's places, or [] when it names none (or the file cannot be read). */

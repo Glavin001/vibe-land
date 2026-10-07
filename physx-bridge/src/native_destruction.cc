@@ -111,6 +111,35 @@ static bool native_impact_capacity() {
   static const bool value = native_env_f32("VIBE_IMPACT_CAPACITY", 0.0f) != 0.0f;
   return value;
 }
+/// VIBE_BOND_TRUE_STIFFNESS=1 (high-fidelity profile; docs/verification/
+/// FIDELITY_AUDIT.md): each bond's stress-solve stiffness is E A / L at its
+/// own area and spring length, with no floors. The default floors the area at
+/// 1e-4 m^2 and the length at 0.05 m (f34e71ba, 2026-09-18, unexplained):
+/// a sliver is then stiffened up to 1e-4 m^2 while its strength is checked
+/// at its true area, so it draws load it cannot carry, which is why authoring
+/// filters slivers out (structure_lint sliver-bonds, the vehicle preparer).
+/// Parallel members of one material and length then carry one stress, as
+/// they must. A bond of zero area, or one whose chunks share a centre with no
+/// contact length, is an authoring error and is refused.
+/// VIBE_SECTION_ROTATION=1 implies it: the bond's rotational stiffness is
+/// k I/A from its real section, so k itself must be the real E A / L too.
+static bool native_true_bond_stiffness() {
+  static const bool value = native_env_f32("VIBE_BOND_TRUE_STIFFNESS", 0.0f) != 0.0f || native_section_rotation();
+  return value;
+}
+/// VIBE_NATIVE_UNCAPPED_SPIN=1 (high-fidelity profile; docs/verification/
+/// FIDELITY_AUDIT.md): native clusters, vehicle carriers and rounds take the
+/// SDK's numeric range for angular velocity, as add_dynamic's bodies already
+/// do, instead of PhysX's default 100 rad/s clamp, which nothing here ever
+/// chose. The clamp is not physics: PxRigidBody::setMaxAngularVelocity warns
+/// that enforcing it introduces momentum error, and every fragment inherits
+/// its source's limit (PxgDestructionMotionState). A 1 m rod struck 0.4 m off
+/// centre at 100 m/s spins at ~180 rad/s (tests/fidelity_audit.rs).
+static bool native_uncapped_spin() {
+  static const bool value = native_env_f32("VIBE_NATIVE_UNCAPPED_SPIN", 0.0f) != 0.0f;
+  return value;
+}
+static constexpr float kUncappedAngularVelocity = 1.0e16f; // add_dynamic's value
 static float native_depenetration_velocity() {
   static const float value = native_env_f32("VIBE_CITY_NATIVE_DEPEN_VELOCITY", 0.0f);
   return value;
@@ -320,8 +349,16 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
     native_require(settings.ductile_slip.empty() || settings.ductile_slip.size() == settings.materials.size(),
                    "ductile slip table must be empty or parallel to the materials");
     out.ductileSlip = settings.ductile_slip.empty() ? 0.0f : std::max(0.0f, settings.ductile_slip[index]);
-    // Refined per structure once its bonds' weights are normalised (append_bonds).
-    out.impactStiffness = kReferenceModulusPa;
+    // A ratio here, made a stiffness per structure once its bonds' weights are
+    // normalised (append_bonds): the impact solve's modulus over the solve's,
+    // where the material's own is a gravity-sharing concession (a wall tie).
+    native_require(settings.impact_modulus.empty() || settings.impact_modulus.size() == settings.materials.size(),
+                   "impact modulus table must be empty or parallel to the materials");
+    {
+      const float solve = m.elastic_modulus > 0.0f ? m.elastic_modulus : kReferenceModulusPa;
+      const float impact = settings.impact_modulus.empty() ? 0.0f : settings.impact_modulus[index];
+      out.impactStiffness = impact > 0.0f ? impact / solve : 1.0f;
+    }
 #endif
     ++index;
     s.materials.push_back(out);
@@ -410,8 +447,21 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     // VIBE_BOND_CONTACT_LENGTH=1.
     static const bool contact_length_vehicle = native_env_f32("VIBE_VEHICLE_BOND_CONTACT_LENGTH", 1.0f) != 0.0f;
     static const bool contact_length_other = native_env_f32("VIBE_BOND_CONTACT_LENGTH", 0.0f) != 0.0f;
-    const bool contact_length = vehicle ? contact_length_vehicle : contact_length_other;
-    const float length = contact_length ? std::max(distance, std::sqrt(std::max(b.area, 1e-4f))) : distance;
+    // VIBE_SECTION_ROTATION=1: the contact length for every structure, the
+    // physical lower bound in place of the default's 0.05 m floor (a flat
+    // contact is E sqrt(A) stiff: rigid flat punch, k = 2 a E*, K. L. Johnson,
+    // Contact Mechanics, 1985, sec. 3.8).
+    const bool contact_length = native_section_rotation() || (vehicle ? contact_length_vehicle : contact_length_other);
+    // The default's floors (see native_true_bond_stiffness); the high-fidelity
+    // profile takes the bond as it is.
+    const bool exact = native_true_bond_stiffness();
+    native_require(!exact || (std::isfinite(b.area) && b.area > 0.0f),
+                   "VIBE_BOND_TRUE_STIFFNESS: a bond has no area (an authoring error)");
+    const float stiff_area = exact ? b.area : std::max(b.area, 1e-4f);
+    const float length = contact_length ? std::max(distance, std::sqrt(stiff_area)) : distance;
+    native_require(!exact || length > 0.0f,
+                   "VIBE_BOND_TRUE_STIFFNESS: a bond's chunks share a centre and it has no contact length");
+    const float stiff_length = exact ? length : std::max(length, 0.05f);
     // Stiffness exponent (A/B): weight^p compresses the spread of bond
     // stiffness (1 physical, 0 every bond equal). Measured on the fleet,
     // 2026-10-01 (vehicle lab, compare-bond-loads.py): at 0.5 a car's rough-
@@ -425,7 +475,7 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     const float exponent = vehicle ? exponent_vehicle : exponent_other;
     const float weight = std::pow(
         std::sqrt((fm ? 1.0f : modulus > 0.0f ? modulus / kReferenceModulusPa : 1.0f) *
-                  (fa ? 1e-3f : std::max(b.area, 1e-4f)) / (fl ? 0.3f : std::max(length, 0.05f))), exponent);
+                  (fa ? 1e-3f : stiff_area) / (fl ? 0.3f : stiff_length)), exponent);
     log_weight += std::log(weight);
 
     PxDestructionStressBond bond{};
@@ -460,7 +510,7 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     // stiffness E A / L is E_ref mean^2 complianceScale^2: the structure's
     // materials (appended just before its bonds) carry that modulus.
     for (std::size_t m = material_base; m < s.materials.size(); ++m)
-      s.materials[m].impactStiffness = kReferenceModulusPa * mean * mean;
+      s.materials[m].impactStiffness *= kReferenceModulusPa * mean * mean;
 #endif
   }
 }
@@ -654,6 +704,7 @@ void NativeDestruction::create_destructible(
                                     dynamic_solver_velocity_iterations());
     actor->setLinearDamping(settings.linear_damping);
     actor->setAngularDamping(settings.angular_damping);
+    if (native_uncapped_spin()) actor->setMaxAngularVelocity(kUncappedAngularVelocity);
     // Inherited by every fragment of this cluster; see the helpers above.
     if (native_depenetration_velocity() > 0.0f) {
       actor->setMaxDepenetrationVelocity(native_depenetration_velocity());
@@ -747,6 +798,7 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
   actor->setMass(aggregate.mass);actor->setMassSpaceInertiaTensor(moments);
   actor->setCMassLocalPose(PxTransform(aggregate.centerOfMass,axes));
   if(vehicle_depenetration_velocity()>0.0f) actor->setMaxDepenetrationVelocity(vehicle_depenetration_velocity());
+  if(native_uncapped_spin()) actor->setMaxAngularVelocity(kUncappedAngularVelocity);
   const PxU32 material=s.append_materials(structure_id,settings),cluster=PxU32(s.clusters.size());
 #if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
   {
@@ -1490,6 +1542,7 @@ std::uint32_t NativeDestruction::fire_round(const FfiRoundDesc &desc) {
   body->setMassSpaceInertiaTensor(PxVec3(inertia));
   body->setLinearDamping(0.0f);
   body->setAngularDamping(0.0f);
+  if (native_uncapped_spin()) body->setMaxAngularVelocity(kUncappedAngularVelocity);
   body->setLinearVelocity(direction * desc.speed);
   s.scene.addActor(*body);
 

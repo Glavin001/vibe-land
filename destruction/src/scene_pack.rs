@@ -847,6 +847,18 @@ pub fn ductile_slip_table(json: &[u8]) -> Vec<f32> {
     materials.iter().map(|m| m["ductileSlip"].as_f64().unwrap_or(0.0).max(0.0) as f32).collect()
 }
 
+/// Each material's impact-solve modulus (Pa), `materials[].impactElasticModulus`
+/// (town-kit: a wall tie's axial stiffness), where its `elasticModulus` is a
+/// concession for gravity load sharing. Empty when the pack authors none.
+pub fn impact_modulus_table(json: &[u8]) -> Vec<f32> {
+    let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Vec::new() };
+    let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Vec::new() };
+    if !materials.iter().any(|m| m["impactElasticModulus"].as_f64().unwrap_or(0.0) > 0.0) {
+        return Vec::new();
+    }
+    materials.iter().map(|m| m["impactElasticModulus"].as_f64().unwrap_or(0.0).max(0.0) as f32).collect()
+}
+
 #[cfg(test)]
 mod crush_table_tests {
     use super::crush_table;

@@ -104,6 +104,7 @@ fn settings() -> DestructibleSettings {
         }],
         crush: Vec::new(),
         ductile_slip: Vec::new(),
+        impact_modulus: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: true,

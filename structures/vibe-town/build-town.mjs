@@ -20,6 +20,17 @@
 // Everything above ground is destructible: buildings, roads, pavements,
 // paint, fixtures. Only buried footings and road subgrade are fixed.
 //
+// VIBE_TOWN_VARIANT=hero: the town the hero film drives through
+// (client/native/films/hero-run.mjs, --scene hero), as vibe-town-hero.*: the
+// same town plus an approach road and a launch ramp west of Elm Park, the
+// furnished Victorian corner cafe (three storeys, stairs, apartments, a picket
+// fenced garden) on Main Street's corner with Main Avenue in place of four
+// houses, the Market Quarter's Main Street cafe and MARKET grocer furnished,
+// picket fences and brick garden walls along Elm Park's Main Street, and the
+// film's cast parked along its route (.slots, and .fleet: which car where).
+// The furnished buildings stand at the film's 64 stress iterations, not 16
+// (target/qualify-showcase-64c.json): qualify this pack at 64.
+//
 // Writes out/vibe-town.json (ScenePack v2), .visuals.json (tree leaves, stall
 // canopies) and .slots (fleet parking spots with headings, for
 // VIBE_CITY_FLEET_SLOTS: cars in driveways and the car park) and .meta.json
@@ -29,7 +40,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildStripShop, buildCornerGrocery, buildNeighborhoodLibrary, buildArtDecoCinema, buildOutdoorProp, buildTree,
-  composeScene,
+  buildVictorianCorner, buildFence, composeScene,
 } from '../town-kit/src/index.mjs';
 import { Builder } from '../town-kit/src/geometry.mjs';
 import { M, mortarJoints, crushEnabled } from '../town-kit/src/materials.mjs';
@@ -57,7 +68,7 @@ const TREE_STRENGTH = REAL ? 1 : 100, SHELTER_STRENGTH = REAL ? 1 : 30, STALL_ST
 
 // ------------------------------------------------------------- the ground
 /** Streets, pavements, paths, driveways, paint: thin destructible surfacing on buried fixed subgrade. */
-function buildGround({ paths }) {
+function buildGround({ paths, approach = null }) {
   const b = new Builder('vibe-town-streets', { group: 'terrain' });
   const asphalt = b.table.push({ ...b.table[M.footing], name: 'asphalt-subgrade', color: '#4f5655', textureKey: null, roughness: 1 }) - 1;
   const paint = b.table.push({ ...b.table[M.footing], name: 'road-paint', color: '#e8ddac', textureKey: null, roughness: 0.95 }) - 1;
@@ -118,6 +129,16 @@ function buildGround({ paths }) {
         mark(xc - 0.25, xc + 0.25, Math.min(za, za + side * 1.6), Math.max(za, za + side * 1.6));
       }
     }
+  // The hero variant's approach: Main Street carried west out of town, and a
+  // launch ramp on it -- a fixed concrete wedge rising east (static, like the
+  // showcase's kicker: the city has no heightfield).
+  if (approach) {
+    const { from, ramp } = approach;
+    slab(from, WEST, -ROAD, ROAD, asphalt);
+    for (let x = from + 1.5; x + 3 <= WEST - 1.5; x += 7) mark(x, x + 3, -0.06, 0.06);
+    const concrete = b.table.push({ ...b.table[M.footing], name: 'ramp-concrete', color: '#a9a49a', textureKey: 'concrete-wall', roughness: 0.95 }) - 1;
+    b.piece({ axis: 'z', lo: -ramp.half, hi: ramp.half, poly: [[ramp.from, 0.025], [ramp.to, 0.025], [ramp.to, ramp.height]], material: concrete, type: 'ramp', fixed: true });
+  }
   // Garden paths, driveways, the market square's walks and the car park.
   for (const [x0, x1, z0, z1, kind] of paths) slab(x0, x1, z0, z1, kind === 'asphalt' ? asphalt : paving);
   for (const [x0, x1, z0, z1] of paths.filter((p) => p[4] === 'asphalt'))
@@ -176,8 +197,10 @@ const ASSETS = {
   house1: () => once('house1', () => skyline('house-1story.json')),
   house2: () => once('house2', () => skyline('house-2story.json')),
   tower: (style) => once(`tower-${style}`, () => dressTower(skyline('fractured-highrise-10f.json'), style)),
-  shop: (sign, palette) => once(`shop-${sign}-${palette}`, () => buildStripShop({ furnished: false, signText: sign, palette })),
-  grocery: (sign, palette) => once(`grocery-${sign}-${palette}`, () => buildCornerGrocery({ furnished: false, signText: sign, palette })),
+  shop: (sign, palette, furnished = false) => once(`shop-${sign}-${palette}${furnished ? '-furnished' : ''}`, () => buildStripShop({ furnished, signText: sign, palette })),
+  grocery: (sign, palette, furnished = false) => once(`grocery-${sign}-${palette}${furnished ? '-furnished' : ''}`, () => buildCornerGrocery({ furnished, signText: sign, palette })),
+  cafe: () => once('cafe', () => buildVictorianCorner({ storeys: 3, furnished: true, fence: true, palette: 'sage' })),
+  fence: () => once('fence', () => buildFence({ palette: 'cream' })),
   library: () => once('library', () => buildNeighborhoodLibrary({ furnished: false })),
   cinema: () => once('cinema', () => buildArtDecoCinema({ furnished: false })),
   tree: (family, variant) => once(`tree-${family}-${variant}`, () => strengthen(buildTree({ family, variant }), TREE_STRENGTH)),
@@ -189,7 +212,8 @@ const ASSETS = {
 };
 
 // ------------------------------------------------------------- the town
-function layout() {
+function layout(variant = null) {
+  const hero = variant === 'hero';
   const placements = [], paths = [], slots = [], labels = [];
   let n = 0;
   const place = (asset, x, z, yaw, name, y = 0) => placements.push({ ...asset, position: [x, y, z], yaw, group: `${name}@${name}-${n++}` });
@@ -214,10 +238,18 @@ function layout() {
   const FRONT_TREES = [['street', 1], ['ornamental', 0], ['street', 0], ['sapling', 0], ['ornamental', 2], ['street', 2]];
   const BACK_TREES = [['shade', 0], ['conifer', 1], ['shade', 2], ['conifer', 0], ['shade', 1], ['conifer', 2]];
   const CARS = new Set(['0:1:1', '0:-1:4', '48:1:2', '48:-1:5', '-48:1:0', '-48:-1:3', '48:1:6', '-48:1:5']);
+  // The hero variant: the corner cafe and its garden take Main Street's two
+  // north-east lots and the two North Street lots behind them.
+  const CAFE_LOTS = hero ? new Set(['0:1:5', '0:1:6', '48:-1:5', '48:-1:6']) : new Set();
+  // Front-garden boundaries along Elm Park's Main Street (hero): picket
+  // fences, brick garden walls, or open lawn, lot by lot.
+  const BOUNDARY = ['fence', 'wall', null, 'fence', null, 'wall', 'fence'];
+  const boundaries = [];
   let lot = 0;
   for (const z0 of STREETS)
     for (const side of [-1, 1])
       LOTS.forEach((x, i) => {
+        if (CAFE_LOTS.has(`${z0}:${side}:${i}`)) { lot += 1; return; }
         const two = (lot * 7 + i) % 3 !== 0;
         frontage(two ? ASSETS.house2() : ASSETS.house1(), x, z0, side, 10.3, two ? 'house' : 'cottage');
         // Front path to the door; driveway down the east side.
@@ -226,24 +258,45 @@ function layout() {
         // At the street end of the driveway (9.2 m out: just off the
         // pavement), where a camera on the road sees it -- at 13 m the house
         // hid it from most of the street.
-        if (CARS.has(`${z0}:${side}:${i}`)) slots.push([x + 7.7, z0 + side * 9.2, side > 0 ? 180 : 0]);
-        // Mailbox at the kerb of the garden, a tree in the front garden.
+        if (!hero && CARS.has(`${z0}:${side}:${i}`)) slots.push([x + 7.7, z0 + side * 9.2, side > 0 ? 180 : 0]);
+        // Picket fence or a low brick wall along the front garden (hero), either side of the path.
+        const boundary = hero && z0 === 0 ? BOUNDARY[(i + (side > 0 ? 0 : 3)) % BOUNDARY.length] : null;
+        // Sections 2.6 m wide: two left of the path, one right of it (the mailbox and driveway
+        // beyond); none onto an avenue's pavement.
+        const offAvenue = (x0, x1) => !AVENUES.some((a) => x0 < a + WALK + 0.2 && x1 > a - WALK - 0.2);
+        if (boundary === 'fence') for (const dx of [-4.85, -2.2, 2.2]) {
+          if (!offAvenue(x + dx - 1.35, x + dx + 1.35)) continue;
+          place(ASSETS.fence(), x + dx, z0 + side * 7.0, facing(side), 'fence');
+          boundaries.push([x + dx - 1.35, x + dx + 1.35, z0 + side * 7.0]);
+        }
+        if (boundary === 'wall') for (const dx of [-3.6, 2.6]) {
+          if (!offAvenue(x + dx - 1.4, x + dx + 1.4)) continue;
+          place(ASSETS.prop('low-wall'), x + dx, z0 + side * 7.3, facing(side), 'garden-wall');
+          boundaries.push([x + dx - 1.4, x + dx + 1.4, z0 + side * 7.3]);
+        }
+        // Mailbox at the kerb of the garden, a tree in the front garden (not over a fence or wall).
         place(ASSETS.prop('mailbox'), x + 4.5, z0 + side * 7.2, facing(side), 'mailbox');
-        place(ASSETS.tree(...FRONT_TREES[(lot + i) % FRONT_TREES.length]), x - 3.4, z0 + side * 8.3, 0, 'tree');
+        if (!boundary) place(ASSETS.tree(...FRONT_TREES[(lot + i) % FRONT_TREES.length]), x - 3.4, z0 + side * 8.3, 0, 'tree');
         // Back gardens meet the next street's; only one row plants there.
         const back = side > 0 || z0 === STREETS[0];
         if (back && i % 2 === 0) place(ASSETS.tree(...BACK_TREES[(lot + i) % BACK_TREES.length]), x - 1, z0 + side * 24.5, 0, 'tree');
         lot += 1;
       });
+  if (hero) {
+    // The corner cafe on Main Street at Main Avenue: shop and kitchen below,
+    // two furnished flats above (stairs, beds, sofas, kitchens), its picket
+    // fenced garden behind.
+    frontage(ASSETS.cafe(), -25.5, 0, 1, 7.6, 'cafe');
+  }
   labels.push({ title: 'Elm Park', position: [-75, 0, 0] });
 
   // ---- Market Quarter, east of Main Avenue.
-  const shopRow = (z0, side, x0, signs, palettes) => signs.forEach((sign, k) => {
+  const shopRow = (z0, side, x0, signs, palettes, furnished = null) => signs.forEach((sign, k) => {
     // Strip shops are 6 m wide and 10 m deep; 0.4 m between them.
-    frontage(ASSETS.shop(sign, palettes[k % palettes.length]), x0 + k * 6.4, z0, side, 7.4, `shop-${sign.toLowerCase()}`);
+    frontage(ASSETS.shop(sign, palettes[k % palettes.length], furnished?.has(k) ?? false), x0 + k * 6.4, z0, side, 7.4, `shop-${sign.toLowerCase()}`);
   });
   // Main Street north: a row of shops, then the cinema, library and a grocer.
-  shopRow(0, 1, 10, ['BOOKS', 'CAFE', 'BAKERY', 'DELI', 'TOYS', 'FLORIST', 'BARBER', 'CAFE'], ['cream', 'sage', 'rose', 'blue', 'ochre', 'slate']);
+  shopRow(0, 1, 10, ['BOOKS', 'CAFE', 'BAKERY', 'DELI', 'TOYS', 'FLORIST', 'BARBER', 'CAFE'], ['cream', 'sage', 'rose', 'blue', 'ochre', 'slate'], hero ? new Set([1]) : null);
   frontage(ASSETS.cinema(), 86, 0, 1, 7.4, 'cinema');
   frontage(ASSETS.library(), 108, 0, 1, 7.4, 'library');
   frontage(ASSETS.grocery('GROCER', 'ochre'), 132, 0, 1, 7.4, 'grocery');
@@ -252,7 +305,7 @@ function layout() {
   for (const x of [8.5, 16, 24, 31.5]) place(ASSETS.prop('bollard'), x, -7.2, 0, 'bollard');
   place(ASSETS.prop('street-sign'), 35, -7.4, 180, 'bus-sign');
   for (const x of [13, 21, 29]) place(ASSETS.prop('bench'), x, -14, 180, 'bench');
-  frontage(ASSETS.grocery('MARKET', 'rose'), 52, 0, -1, 7.4, 'grocery');
+  frontage(ASSETS.grocery('MARKET', 'rose', hero), 52, 0, -1, 7.4, 'grocery');
   for (const [k, x] of [90, 112, 134].entries()) frontage(ASSETS.tower(['limestone', 'glass', 'brick'][k]), x, 0, -1, 8, 'tower');
   labels.push({ title: 'Bus station', position: [20, 0, -10] });
   // North Street: shops facing south; the market square behind Main Street's shops.
@@ -291,7 +344,8 @@ function layout() {
   // ---- Street furniture: lights along every street and avenue, hydrants, signs.
   const trees = placements.filter((p) => p.group.startsWith('tree@')).map((p) => p.position);
   const clear = (x, z) => !paths.some(([x0, x1, z0, z1]) => x > x0 - 0.8 && x < x1 + 0.8 && z > z0 - 0.8 && z < z1 + 0.8)
-    && !trees.some(([tx, , tz]) => Math.hypot(tx - x, tz - z) < 3.5);
+    && !trees.some(([tx, , tz]) => Math.hypot(tx - x, tz - z) < 3.5)
+    && !boundaries.some(([x0, x1, bz]) => x > x0 - 0.6 && x < x1 + 0.6 && Math.abs(z - bz) < 0.8);
   for (const z0 of STREETS)
     for (const side of [-1, 1])
       for (let x = WEST + 10; x < EAST - 4; x += 26) {
@@ -311,7 +365,29 @@ function layout() {
       place(ASSETS.prop('street-sign'), x - 6.9, z + 6.9, 0, 'street-sign');
       if (clear(x + 6.9, z - 6.9)) place(ASSETS.prop('hydrant'), x + 6.9, z - 6.9, 0, 'hydrant');
     }
-  return { placements, paths, slots, labels };
+  // The hero film's cast (client/native/films/hero-run.mjs): its truck west
+  // of the ramp, and different cars parked along its route -- in driveways,
+  // on both of Main Street's shoulders (the lane it weaves through), beside
+  // the cafe and by the towers. Slot n is the n-th car of .fleet.
+  let fleet = null;
+  if (hero) {
+    const cast = [
+      [[-238, -1.6, 90], 'monster'], // the hero, on the approach, facing east
+      [[-109.3, 9.2, 180], 'desert'], // Elm Park, in a driveway (house 2, north side)
+      [[-88, 2.6, 270], 'derby'], // Main Street's north shoulder
+      [[-58, -2.6, 90], 'circuit'], // Main Street's south shoulder
+      [[-43.3, -9.2, 0], 'buggy'], // a south-side driveway
+      [[-9.5, 9.6, 180], 'trophy'], // beside the cafe
+      [[18, -2.6, 90], 'trail'], // by the bus station
+      [[38, 2.6, 270], 'drift'], // Market Quarter, north shoulder
+      [[60, -2.6, 90], 'circuit'], // Market Quarter, south shoulder
+      [[82, 2.6, 270], 'desert'], // under the towers
+    ];
+    slots.length = 0;
+    slots.push(...cast.map(([slot]) => slot));
+    fleet = cast.map(([, type]) => type);
+  }
+  return { placements, paths, slots, labels, fleet };
 }
 
 // ---------------------------------------------------------- the checks
@@ -356,7 +432,7 @@ function check(placements, pack, surfaces) {
 // --------------------------------------------------------------- places
 const STREET_NAMES = { [-48]: 'South Street', 0: 'Main Street', 48: 'North Street' };
 const AVENUE_NAMES = { [-80]: 'West Avenue', 0: 'Main Avenue', 70: 'East Avenue' };
-const BUILDINGS = /^(house|cottage|shop-.*|cinema|library|grocery|tower)$/;
+const BUILDINGS = /^(house|cottage|shop-.*|cinema|library|grocery|tower|cafe)$/;
 const slug = (text) => text.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 const round = (v) => Math.round(v * 100) / 100;
 
@@ -414,11 +490,15 @@ function namePlaces(placements, pack, slots, labels) {
 }
 
 // --------------------------------------------------------------- build
-export function buildTown() {
-  const { placements, paths, slots, labels } = layout();
-  const { asset: ground, surfaces } = buildGround({ paths });
+/** The approach road and launch ramp west of Elm Park (the hero variant). */
+const APPROACH = { from: -250, ramp: { from: -212, to: -200, height: 1.9, half: 3.2 } };
+
+export function buildTown(variant = process.env.VIBE_TOWN_VARIANT || null) {
+  const hero = variant === 'hero';
+  const { placements, paths, slots, labels, fleet } = layout(variant);
+  const { asset: ground, surfaces } = buildGround({ paths, approach: hero ? APPROACH : null });
   const all = [{ ...ground, position: [0, 0, 0], yaw: 0, group: 'terrain@terrain-0' }, ...placements];
-  const pack = composeScene(all, { key: TOWN_KEY, title: 'Vibe Town' });
+  const pack = composeScene(all, { key: hero ? `${TOWN_KEY}-hero` : TOWN_KEY, title: hero ? 'Vibe Town (hero)' : 'Vibe Town' });
   // The ground is ungrouped (`ground` to the qualifier); everything else is `kind@name-n`.
   pack.scenario.nodeGroups = pack.scenario.nodeGroups.map((g) => (g === 'terrain@terrain-0' ? 'terrain' : g));
   const problems = check(all, pack, surfaces);
@@ -427,11 +507,11 @@ export function buildTown() {
   // per object in every pass, shadow cascades included; the GPU has room for
   // more instances per draw. The kit's 32 m cells made 514 leaf meshes.
   for (const attachment of visuals.attachments) attachment.cell = attachment.cell.map((c) => Math.floor(c / 4));
-  return { pack, visuals, slots, labels, problems, placements: all, places: namePlaces(all, pack, slots, labels) };
+  return { pack, visuals, slots, labels, fleet, problems, placements: all, places: namePlaces(all, pack, slots, labels), variant, approach: hero ? APPROACH : null };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { pack, visuals, slots, labels, problems, placements, places } = buildTown();
+  const { pack, visuals, slots, labels, fleet, problems, placements, places, variant, approach } = buildTown();
   if (problems.length) {
     console.error(problems.slice(0, 40).join('\n'));
     throw new Error(`${problems.length} placement problems`);
@@ -442,7 +522,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   mkdirSync(out, { recursive: true });
   // VIBE_CRUSH=1: the same town with chunk crushing authored (materials.mjs
   // crushFor: masonry, concrete, gypsum, glass), as vibe-town-crush.*.
-  const KEY = `${TOWN_KEY}${crushEnabled() ? '-crush' : ''}${REAL ? '-real' : ''}`;
+  const KEY = `${TOWN_KEY}${variant ? `-${variant}` : ''}${crushEnabled() ? '-crush' : ''}${REAL ? '-real' : ''}`;
   const bytes = JSON.stringify(pack);
   writeFileSync(path.join(out, `${KEY}.json`), bytes);
   writeFileSync(path.join(out, `${KEY}.visuals.json`), JSON.stringify({
@@ -452,7 +532,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     description: 'Elm Park houses with cars in the driveways, and the Market Quarter: shops, towers, a cinema, a library, a bus station and a market square',
   }));
   writeFileSync(path.join(out, `${KEY}.slots`), slots.map((s) => s.join(',')).join(';'));
-  writeFileSync(path.join(out, `${KEY}.meta.json`), JSON.stringify({ districts: labels, parking: slots, places }, null, 1));
+  if (fleet) writeFileSync(path.join(out, `${KEY}.fleet`), fleet.join(','));
+  writeFileSync(path.join(out, `${KEY}.meta.json`), JSON.stringify({ districts: labels, parking: slots, places, ...(approach ? { approach, fleet } : {}) }, null, 1));
   const kinds = {};
   for (const p of placements) { const k = p.group.split('@')[0]; kinds[k] = (kinds[k] ?? 0) + 1; }
   console.log(`${KEY}: ${nodes} nodes, ${pack.scenario.bonds.length} bonds, ${placements.length - 1} placements, ${slots.length} parking spots`);
