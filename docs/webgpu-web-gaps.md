@@ -32,13 +32,20 @@ None of them blocks /city. They are listed here to be filled in later.
 
 ## Pages
 
-Smoke-tested on the WebGPU build: `/`, `/practice`, `/garage`, `/materials`
-and `/city` load and draw without errors. One page does not:
+Smoke-tested on the WebGPU build: `/`, `/practice`, `/garage`, `/materials`,
+`/city` and `/grass` load and draw without errors.
 
-- **`/grass` (the grass lab) crashes:** "this._renderer.hasInitialized is not
-  a function" in `<SkyEnvironment>`. Its `<Canvas>` does not go through
-  `withRenderBackend`, so it creates a WebGLRenderer, and the WebGPU build's
-  sky bake runs three/webgpu's PMREMGenerator against it.
+- **`/grass` (the grass lab)** goes through `withRenderBackend` like the other
+  pages (its Canvas used to create a WebGLRenderer, which crashed the sky's
+  three/webgpu PMREM bake). `node e2e/grass-lab-smoke.mjs --url <dev server>
+  [--backend webgl]` checks it: no page errors, the expected renderer, plants
+  reported, planting, the car and rubble pressing grass, a brush stroke, the
+  quality tiers, and a non-blank canvas. With no game server the shared
+  layout fetch answers 500; the lab reports the server as unavailable.
+- **Not yet checked, and their Canvases do not use `withRenderBackend`:**
+  `StructureViewer`, `BodiesTransportLab`, `RenderBench`, `RagdollLab` and
+  `GodMode` (`client/src/pages/`). On the WebGPU build they create a
+  WebGLRenderer while `three` is three/webgpu.
 
 ## Tests
 

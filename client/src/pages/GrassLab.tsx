@@ -3,6 +3,8 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import { Group, Mesh, Plane, Raycaster, Vector2, Vector3 } from 'three';
+import { CustomMaterialGuard } from '../graphics/webgpu/CustomMaterialGuard';
+import { withRenderBackend } from '../graphics/webgpu/rendererBackend';
 import { CityEnvironment } from '../scene/CityEnvironment';
 import { WorldTerrain } from '../scene/WorldTerrain';
 import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
@@ -222,8 +224,8 @@ export function GrassLabPage() {
   };
   const [stats, setStats] = useState<(GrassStats & { frameMs: number; pressedArea: number }) | null>(null);
   return <main className="grass-lab">
-    <Canvas shadows dpr={[1, 1.5]} camera={{ fov: 55, near: 0.06, far: 450, position: [6, 1.4, 8] }}
-      gl={{ antialias: true, powerPreference: 'high-performance' }}>
+    <Canvas {...withRenderBackend({ shadows: true, gl: { antialias: true, powerPreference: 'high-performance' as const } })}
+      dpr={[1, 1.5]} camera={{ fov: 55, near: 0.06, far: 450, position: [6, 1.4, 8] }}>
       <CityEnvironment fogDensity={0.004} windStrengthMps={wind} />
       <WorldTerrain world={CITY_WORLD_DOCUMENT} grassCover />
       {BUILDINGS.map((b, i) => <group key={i} position={[b.x, 0, b.z]}>
@@ -240,6 +242,7 @@ export function GrassLabPage() {
       <PreviewField quality={quality} wind={wind} enabled={enabled} paused={paused} driving={driving} rubble={rubble} clearTracks={clearTracks} onStats={setStats} />
       <ViewControls view={view} painting={painting} />
       <PaintBrush enabled={painting} brush={brush} radius={radius} onBegin={beginPaint} onSaved={savedPaint} />
+      {__WEBGPU__ && import.meta.env.DEV && <CustomMaterialGuard />}
     </Canvas>
     <header className="grass-lab-title"><a href="/">VIBE LAND <span>/ FIELD STUDY 01</span></a>
       <h1>A little more alive.</h1><p>City grass · wind through every blade</p>
