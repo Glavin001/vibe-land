@@ -690,3 +690,113 @@ fn stabilization_at_rest_and_slow() {
     assert!((on.1 - off.1).abs() <= 1e-4, "stabilization changes a hold on an incline");
     assert!(on.2 <= off.2 + 1e-4 && on.3 >= off.3 - 1e-4, "stabilization leaves the stack further from rest");
 }
+
+/// A 3 x 3 wall of 0.5 m masonry blocks bonded to an anchored footing, made
+/// crushable at a tenth of brick's strength with instant comminution (as
+/// native_gameplay's crush wall), struck by a round. Reports the crush count
+/// and, 90 ticks on, the chunks still held by some simulated body and the
+/// lowest crushed-chunk height.
+fn crush_column() -> (usize, u32, f32) {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    // No ground: a static box beside native chunks fails fetchResults on
+    // today's CuMetal SDKs (native_gameplay's walls and rubble_rest too); the
+    // footing is anchored, and crushed debris must fall under its weight.
+    world.native_attach().unwrap();
+    let mut nodes = vec![ChunkNodeDesc {
+        node_index: 0, centroid: Vec3::new(0.0, 0.05, 0.0), mass: 0.0, volume: 0.15, geom_kind: 0,
+        half_extents: Vec3::new(0.75, 0.05, 0.25), convex_points: Vec::new(), material: 0,
+    }];
+    let mut bonds = Vec::new();
+    for row in 0..3u32 {
+        for col in 0..3u32 {
+            let i = nodes.len() as u32;
+            let (x, y) = (-0.5 + 0.5 * col as f32, 0.35 + 0.5 * row as f32);
+            nodes.push(ChunkNodeDesc {
+                node_index: i, centroid: Vec3::new(x, y, 0.0), mass: 237.5, volume: 0.125, geom_kind: 0,
+                half_extents: Vec3::new(0.25, 0.25, 0.25), convex_points: Vec::new(), material: 0,
+            });
+            let below = if row == 0 { 0 } else { i - 3 };
+            bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: below, node1: i, centroid: Vec3::new(x, y - 0.25, 0.0), normal: Vec3::new(0.0, 1.0, 0.0), area: 0.25, material: 0 });
+            if col > 0 {
+                bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: i - 1, node1: i, centroid: Vec3::new(x - 0.25, y, 0.0), normal: Vec3::new(1.0, 0.0, 0.0), area: 0.25, material: 0 });
+            }
+        }
+    }
+    let fc = 0.68e6f32;
+    let settings = DestructibleSettings {
+        materials: vec![StressMaterialDesc {
+            compression_elastic: 6.8e6, compression_fatal: 6.8e6, tension_elastic: 0.6e6, tension_fatal: 0.6e6,
+            shear_elastic: 1.0e6, shear_fatal: 1.0e6, elastic_modulus: 5e9, residual_area_fraction: 0.0,
+        }],
+        crush: vec![vibe_land_physx_bridge::CrushMaterialDesc {
+            cap_pressure: 2.5 * fc, cohesion: fc * 0.6, friction_slope: 1.2, crush_energy: 1.0, crush_viscosity: 1.0,
+            strain_rate_exponent: 0.0, reference_strain_rate: 1.0, debris_mass_fraction: 0.0, debris_fragment_count: 0, impedance: 0.0,
+        }],
+        maximum_bodies: 0,
+        maximum_fractures_per_actor_per_tick: 0,
+        ..DestructibleSettings::default()
+    };
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }, &nodes, &bonds, settings, GROUP_CHUNK, u32::MAX).unwrap();
+    world.step().unwrap();
+    configure(&mut world);
+    for _ in 0..30 {
+        world.step().unwrap();
+        world.native_tick().unwrap();
+    }
+    let before: u32 = world.native_chunk_body_snapshots().unwrap().iter().map(|b| b.node_count).sum();
+    world
+        .native_fire_round(RoundDesc { position: Vec3::new(0.0, 0.85, 0.25), direction: Vec3::new(0.0, 0.0, -1.0), momentum_ns: 3.0e5, radius: 0.4, speed: 20.0, ttl_ticks: 20 })
+        .unwrap();
+    let mut crushed = Vec::new();
+    for _ in 0..90 {
+        world.step().unwrap();
+        let status = world.native_tick().unwrap();
+        assert_eq!(status.error, 0, "stage rejected the step: {status:?}");
+        crushed.extend(world.native_take_crush_events().unwrap());
+        world.native_take_broken_bonds().unwrap();
+        world.native_take_island_events().unwrap();
+    }
+    let held: u32 = world.native_chunk_body_snapshots().unwrap().iter().filter(|b| !b.sleeping || b.node_count > 0).map(|b| b.node_count).sum();
+    let lowest = crushed
+        .iter()
+        .filter_map(|c| world.native_chunk_aim(0, c.chunk_id & 0xffff).ok().filter(|a| a.found).map(|a| a.center.y))
+        .fold(f32::INFINITY, f32::min);
+    println!("  chunks held before the strike {before}, after {held}; crushed {}", crushed.len());
+    (crushed.len(), before - held, lowest)
+}
+
+/// Crushed mass is conserved (VIBE_CRUSH_CONSERVE_MASS=1, FIDELITY_AUDIT C4):
+/// a crushed chunk is comminuted, not annihilated. Its mass, momentum and
+/// weight stay in the world as debris with a body of its own (the chunk's
+/// hull: the right mass and centre, not the shape of a pile of fines). The
+/// runtime retires "dust" (debrisMassFraction 0) from the world.
+#[test]
+#[ignore = "requires a native GPU destruction SDK with PX_DESTRUCTION_CRUSH_CORRECTION"]
+fn crushed_mass_is_conserved() {
+    if std::env::var(ARM).as_deref() == Ok("crush") {
+        let (crushed, lost, lowest) = crush_column();
+        println!("crushed={crushed}\nlost={lost}\nlowest={lowest}");
+        return;
+    }
+    let arm = |env: &[(&str, &str)]| {
+        let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+        c.args(["--exact", "crushed_mass_is_conserved", "--nocapture", "--ignored"]).env(ARM, "crush").env_remove("VIBE_CRUSH_CONSERVE_MASS");
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let o = c.output().unwrap();
+        let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        assert!(o.status.success(), "{text}");
+        let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or_else(|| panic!("{k}:\n{text}")).trim().parse::<f32>().unwrap();
+        (get("crushed"), get("lost"), get("lowest"))
+    };
+    let runtime = arm(&[]);
+    let conserve = arm(&[("VIBE_CRUSH_CONSERVE_MASS", "1")]);
+    println!("runtime: {} crushed, {} chunks' mass gone from the world", runtime.0, runtime.1);
+    println!("conserve: {} crushed, {} chunks' mass gone; lowest crushed chunk at {:.2} m", conserve.0, conserve.1, conserve.2);
+    assert!(runtime.0 > 0.0 && conserve.0 > 0.0, "the round crushed nothing");
+    assert_eq!(runtime.1, runtime.0, "the runtime no longer retires dust: update the audit");
+    assert_eq!(conserve.1, 0.0, "crushed mass left the world");
+    assert!(conserve.2 < 0.0, "crushed debris did not fall under its weight (lowest at {} m)", conserve.2);
+}

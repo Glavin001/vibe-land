@@ -763,7 +763,13 @@ void NativeDestruction::State::crush_chunk(std::uint32_t id) {
   crush.debris_fragment_count = material.crush.debrisFragmentCount;
   crushes.push_back(crush);
   crushed_total += 1;
-  if (material.crush.debrisMassFraction > 0.0f || chunk.destroyed || chunk.shape == nullptr) {
+  // VIBE_CRUSH_CONSERVE_MASS=1 (high-fidelity profile; docs/verification/
+  // FIDELITY_AUDIT.md C4): crushing comminutes a chunk, it does not annihilate
+  // it. All of its mass stays in the world as debris on its own body (the
+  // chunk's hull: its mass, momentum and weight, not the shape of a pile of
+  // fines), so what lies below still carries it. The runtime retires dust.
+  static const bool conserve = [] { const char *v = std::getenv("VIBE_CRUSH_CONSERVE_MASS"); return v && v[0] && v[0] != '0'; }();
+  if (material.crush.debrisMassFraction > 0.0f || conserve || chunk.destroyed || chunk.shape == nullptr) {
     return; // debris: the chunk keeps its own body and goes on colliding
   }
   // Dust. The stage split the chunk off as a body of its own for the tick it
