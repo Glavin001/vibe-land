@@ -251,6 +251,49 @@ resting on separately anchored walls (the walls broke at rest under its
 contact impulses). The truck still gets through the front wall (lab trial
 framed-house).
 
+### Impact study: what a hit should break (2026-10-06)
+
+`scripts/impact-study.py`, a Python study / test oracle (like
+`scripts/stress/oracle.py`; never a runtime path: the engine is the native GPU
+stage only), runs four stress models on the bungalow, the same graph and hits
+as the lab; `impact-study-report.py` tables them and
+`impact-study-stills.py` draws them (target/native-video/impact-study-*.png):
+
+- **A**, the engine today: static min-norm bond forces, the trial's
+  infinite-mass contact (`M v / dt`: 6.5 MN for the truck, 38 MN for the
+  cannonball); every bond past fatal breaks.
+- **C**, A plus the native crush law on each chunk's virial.
+- **E**, joint capacity and inertia: one tick as an impact of rigid chunks
+  joined by joints that cannot carry more than their strength (Moreau:
+  post-tick kinetic energy minimised over capacity cones from the solver's own
+  stress formula; brittle joints fracture at capacity as the tick's impulse
+  builds, ductile fasteners yield and break past 15 mm of slip). Whatever the
+  joints cannot carry accelerates the chunks instead of reaching the anchors.
+- **Ci**, crush by the impact's own contact stress (`Z1 Z2 / (Z1 + Z2) v`,
+  capped by what the impactor's structure delivers), not the trial's virial.
+
+First contact tick and settling (bonds broken / frame bonds / roof held):
+truck A 46% / 560 / 0%, E 7% / 21 / 100%; corner A 58% / 625 / 5%, E 12% /
+25 / 100%; cannonball A 91% / 820 / 0%, E 8% / 23 / 100%, Ci+E 4% / 19 /
+100%; meteor A 98% / 875 / 0%, E 19% / 126 / 79%, Ci+E 11% / 56 / 88%; a
+100 kg ball between studs A 5% (stopped in the skin), E or Ci+E 0.3-0.5%, no
+frame, through. C changes no bond verdict (it only removes chunks, for the
+meteor 305 of them all over the house). Contact force swept on the truck tick:
+A's breaks beyond 4 m grow 0 / 39 / 124 / 421 at 0.25 / 0.84 / 2 / 6.5 MN, E's
+stay 3-8. The design for E and Ci, in the native GPU stage only, is PhysX
+`docs/destruction/IMPACT_CAPACITY_DESIGN.md`.
+
+Chunk crushing as the stage has it is wired through and opt-in: `VIBE_CRUSH=1`
+builds packs whose masonry, concrete, gypsum and glass materials carry `crush`
+blocks (`materials.mjs` CRUSH and `crushFor`, every number cited); the city
+passes them to the stage; `VIBE_NATIVE_CRUSH=0` ignores them. Off by default.
+Do not turn it on yet: the native stage cannot correct a step that crushes a
+chunk (`installCollisionOwners` refuses a removed shape), and in the lab every
+step after the first crush fails and the scene freezes. Crushed chunks reach
+the server as `NativeCityDestruction::crushes()` events and leave the wire as
+retired singleton islands; dust and debris drawing on the client is still to
+be done.
+
 ## Composed town scenes
 
 See [DISTRICT.md](DISTRICT.md) for the new 24-building Bayline District (four times the initial scene area), its reusable variants, preview, native reviews and isolated launch workflow. The earlier six-building `bayline-town` remains separate.

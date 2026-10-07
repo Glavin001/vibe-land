@@ -3,7 +3,9 @@
 # requires-python = ">=3.10"
 # dependencies = ["numpy>=1.26", "scipy>=1.11", "cvxpy>=1.5", "clarabel>=0.9"]
 # ///
-"""What a hit does to an authored structure under four stress models, on the CPU.
+"""What a hit does to an authored structure under four stress models: a Python
+study and test oracle (like scripts/stress/oracle.py), never a runtime path --
+the engine is the native GPU destruction stage only.
 
 The native stage's trial rigid solve holds an anchored building immovable, so an
 impactor is stopped in one tick and the contact carries its whole momentum
