@@ -27,7 +27,7 @@ import { CONFIGS, sdkFor } from './src/configs.mjs';
 import { judge } from './src/judge.mjs';
 
 const KNOWN = existsSync(new URL('./known-gaps.json', import.meta.url)) ? JSON.parse(readFileSync(new URL('./known-gaps.json', import.meta.url), 'utf8')) : {};
-export const SCENARIOS = ['bridge-piers', 'truss-members', 'house-studs', 'frame-column', 'demolition'];
+export const SCENARIOS = ['bridge-piers', 'truss-members', 'house-studs', 'frame-column', 'demolition', 'masonry-arch'];
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : fallback; };
