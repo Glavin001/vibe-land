@@ -11,7 +11,7 @@ import { anyBasis, faceAcross, type Polytope } from './polytope';
 import { FaceKind, type FracturePiece } from './contacts';
 import { interfacePoint, type CrackInterface } from './interface';
 import { appendTube, type RebarStub, type TubeMesh } from './rebar';
-import { add, dot, orient2, sub, type Vec2, type Vec3 } from './math';
+import { add, cross, dot, orient2, scale, sub, type Vec2, type Vec3 } from './math';
 import { canonicalSign } from './canonical';
 
 export interface PieceMesh {
@@ -95,27 +95,38 @@ export function pieceSkinMesh(input: SkinInput): PieceMesh {
       appendInterface(mesh, replaced.iface, replaced.side, piece.centroid, kinds[f]);
       return;
     }
-    // Outline, splicing in the jagged crack edges of neighbouring faces.
+    // Outline, splicing in the jagged crack edges of neighbouring faces. Where
+    // the crack spalled, the face stops short of the edge (the inset line)
+    // and bevels down to it.
     const outline: Vec3[] = [];
     for (let k = 0; k < face.loop.length; k += 1) {
       const i = face.loop[k];
       const j = face.loop[(k + 1) % face.loop.length];
-      const across = interfaces.get(faceAcross(poly, i, j));
-      let spliced: Vec3[] | null = null;
+      const g = faceAcross(poly, i, j);
+      const across = interfaces.get(g);
+      let run: Vec3[] | null = null;
       if (across) {
         const wi = world(i);
         const wj = world(j);
         for (const edge of across.iface.edges) {
-          if (!edge.jagged) continue;
-          if (near(edge.from, wi) && near(edge.to, wj)) {
-            spliced = edge.indices.map((v) => interfacePoint(across.iface, v, across.side));
-          } else if (near(edge.from, wj) && near(edge.to, wi)) {
-            spliced = edge.indices.slice().reverse().map((v) => interfacePoint(across.iface, v, across.side));
+          if (!edge.jagged || !edge.outer) continue;
+          let indices: number[] | null = null;
+          if (near(edge.from, wi) && near(edge.to, wj)) indices = edge.indices;
+          else if (near(edge.from, wj) && near(edge.to, wi)) indices = edge.indices.slice().reverse();
+          if (!indices) continue;
+          const { iface, side } = across;
+          const inward = side === 'a' ? edge.inwardA : [-edge.inwardA[0], -edge.inwardA[1], -edge.inwardA[2]] as Vec3;
+          const lip = indices.map((v) => interfacePoint(iface, v, side));
+          const inset = indices.map((v, n) => add(add(lip[n], scale(edge.outer!, iface.chipDepth[v])), scale(inward, iface.chipWidth[v])));
+          if (indices.some((v) => iface.chipWidth[v] > 0)) {
+            const crackSide = canonicalSign(iface.normal) * (side === 'a' ? 1 : -1);
+            appendBevel(mesh, lip, inset, edge.outer, inward, piece.centroid, kinds[g], crackSide);
           }
-          if (spliced) break;
+          run = inset;
+          break;
         }
       }
-      const run = spliced ?? [at(i), at(j)];
+      run = run ?? [at(i), at(j)];
       for (let s = 0; s + 1 < run.length; s += 1) outline.push(run[s]);
     }
     appendPolygon(mesh, outline, face.normal, piece.centroid, kinds[f]);
@@ -155,6 +166,43 @@ function appendInterface(mesh: PieceMesh, iface: CrackInterface, side: 'a' | 'b'
   for (let i = 0; i < tris.length; i += 3) {
     if (side === 'a') mesh.indices.push(start + tris[i], start + tris[i + 1], start + tris[i + 2]);
     else mesh.indices.push(start + tris[i], start + tris[i + 2], start + tris[i + 1]);
+  }
+}
+
+/**
+ * The spalled strip between a crack's sunken lip and the outer face's inset
+ * line: broken material, shaded as the crack is. Flat-shaded per triangle,
+ * facing out of the face and toward the crack.
+ */
+function appendBevel(
+  mesh: PieceMesh, lip: readonly Vec3[], inset: readonly Vec3[], outer: Vec3, inward: Vec3,
+  origin: Vec3, kind: number, side: number,
+): void {
+  const facing = sub(outer, scale(inward, 0.6));
+  const tri = (a: Vec3, b: Vec3, c: Vec3): void => {
+    let n = cross(sub(b, a), sub(c, a));
+    const len = Math.hypot(n[0], n[1], n[2]);
+    if (len < 1e-12) return;
+    if (dot(n, facing) < 0) {
+      const t = b;
+      b = c;
+      c = t;
+      n = scale(n, -1);
+    }
+    n = scale(n, 1 / len);
+    const start = mesh.positions.length / 3;
+    for (const p of [a, b, c]) {
+      mesh.positions.push(p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]);
+      mesh.normals.push(n[0], n[1], n[2]);
+      mesh.kinds.push(kind);
+      mesh.relief.push(-0.4);
+      mesh.sides.push(side);
+    }
+    mesh.indices.push(start, start + 1, start + 2);
+  };
+  for (let k = 0; k + 1 < lip.length; k += 1) {
+    tri(lip[k], lip[k + 1], inset[k + 1]);
+    tri(lip[k], inset[k + 1], inset[k]);
   }
 }
 

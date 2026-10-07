@@ -17,7 +17,7 @@
 import { canonicalNormal, planeBasis } from './canonical';
 import { FaceKind, type Contact, type FracturePiece } from './contacts';
 import { triangulateConvex } from './delaunay2d';
-import { hash01, hashU32 } from './hash';
+import { fbm3, hash01, hashU32 } from './hash';
 import { reliefHeight } from './heightFields';
 import type { ReliefLook } from './looks';
 import {
@@ -32,6 +32,8 @@ export interface InterfaceEdge {
   jagged: boolean;
   /** Normal of the outer plane a jagged edge moves within. */
   outer: Vec3 | null;
+  /** In the outer plane, pointing from the crack into piece A (B: negate). */
+  inwardA: Vec3;
   /** World endpoints (undisplaced), for matching the edge from a face loop. */
   from: Vec3;
   to: Vec3;
@@ -53,6 +55,13 @@ export interface CrackInterface {
   normals: Float32Array;
   /** Relief / amplitude per vertex: the shader darkens valleys with it. */
   relief: Float32Array;
+  /**
+   * Spalling along jagged edges: how far each edge vertex was pushed below
+   * the outer face, and how far back into the face the chip reaches. Zero
+   * off the jagged edges. The pieces' outer faces bevel down to it.
+   */
+  chipDepth: Float32Array;
+  chipWidth: Float32Array;
   /** CCW about A's outward normal. */
   triangles: Uint32Array;
   edges: InterfaceEdge[];
@@ -215,6 +224,8 @@ export function buildInterface(input: InterfaceInput): CrackInterface | null {
   const base = new Float64Array(count * 3);
   const off = new Float64Array(count * 3);
   const relief = new Float32Array(count);
+  const chipDepth = new Float32Array(count);
+  const chipWidth = new Float32Array(count);
   const grain = A.grainAxis !== undefined ? axisVector(A.grainAxis) : null;
   for (let v = 0; v < count; v += 1) {
     const q = tri.points[v];
@@ -238,9 +249,20 @@ export function buildInterface(input: InterfaceInput): CrackInterface | null {
     const along = dot(dirH, nc);
     const disp = scale(dirH, along > 1e-6 ? h / Math.max(0.3, along) : 0);
     const recede = scale(project(nA), -look.crackOpening * w);
-    base[v * 3] = p0[0] + disp[0];
-    base[v * 3 + 1] = p0[1] + disp[1];
-    base[v * 3 + 2] = p0[2] + disp[2];
+    // Spall: an edge vertex on ONE outer plane sinks below it, by a noisy
+    // amount; the outer face bevels down to it (pieceSkin.ts).
+    let dip: Vec3 = [0, 0, 0];
+    if (planes.length === 1 && look.chipDepth > 0) {
+      const s = 1 / Math.max(1e-4, look.chipWidth * 2.5);
+      const n1 = 0.5 + 0.5 * fbm3(p0[0] * s, p0[1] * s, p0[2] * s, input.seed + 31, 2);
+      const n2 = 0.5 + 0.5 * fbm3(p0[0] * s + 7.1, p0[1] * s, p0[2] * s - 3.3, input.seed + 37, 2);
+      chipDepth[v] = look.chipDepth * clamp(0.2 + n1 * 1.1, 0, 1.3) * w;
+      chipWidth[v] = look.chipWidth * clamp(0.35 + n2 * 0.9, 0, 1.25) * w;
+      dip = scale(planes[0], -chipDepth[v]);
+    }
+    base[v * 3] = p0[0] + disp[0] + dip[0];
+    base[v * 3 + 1] = p0[1] + disp[1] + dip[1];
+    base[v * 3 + 2] = p0[2] + disp[2] + dip[2];
     off[v * 3] = recede[0];
     off[v * 3 + 1] = recede[1];
     off[v * 3 + 2] = recede[2];
@@ -279,12 +301,14 @@ export function buildInterface(input: InterfaceInput): CrackInterface | null {
     const indices: number[] = [];
     for (let i = start; i < end; i += 1) indices.push(i);
     indices.push(k + 1 < poly2.length ? edgeStart[k + 1] : 0);
-    return { indices, jagged: !pinned[k], outer: outer[k], from: corners[k], to: corners[(k + 1) % corners.length] };
+    const m = outer[k];
+    const inwardA: Vec3 = m ? normalize(scale(sub(nA, scale(m, dot(nA, m))), -1)) : [0, 0, 0];
+    return { indices, jagged: !pinned[k], outer: m, inwardA, from: corners[k], to: corners[(k + 1) % corners.length] };
   });
 
   return {
     contact: input.contactIndex, a: contact.a, b: contact.b, faceA: contact.faceA, faceB: contact.faceB,
-    normal: nA, base, off, normals, relief, triangles, edges,
+    normal: nA, base, off, normals, relief, chipDepth, chipWidth, triangles, edges,
   };
 }
 

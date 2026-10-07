@@ -61,9 +61,11 @@ describe('crack interfaces', () => {
           for (const side of ['a', 'b'] as const) {
             const p = interfacePoint(iface, v, side);
             if (edge.jagged) {
-              // Moved, but only within the outer face it borders.
+              // Moved within the outer face it borders, then sunk below it by
+              // exactly its spall depth (never above it).
               const m = edge.outer!;
-              expect(Math.abs(dot(m, p) - dot(m, edge.from))).toBeLessThan(1e-9);
+              expect(Math.abs(dot(m, p) - dot(m, edge.from) + iface.chipDepth[v])).toBeLessThan(1e-9);
+              expect(iface.chipDepth[v]).toBeGreaterThanOrEqual(0);
               jaggedPoints += 1;
             } else {
               // On the straight segment from -> to.

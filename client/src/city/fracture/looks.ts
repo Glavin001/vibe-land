@@ -38,6 +38,9 @@ export interface ReliefLook {
   toothDepth: number;
   /** Most vertices one crack face may use; the lattice coarsens to fit. */
   maxFaceVerts: number;
+  /** Spalling where a crack meets the outer face: how far back, how deep. */
+  chipWidth: number;
+  chipDepth: number;
 }
 
 export interface ShadeLook {
@@ -81,6 +84,8 @@ const relief = (over: Partial<ReliefLook>): ReliefLook => ({
   courseHeight: 0,
   toothDepth: 0,
   maxFaceVerts: 900,
+  chipWidth: 0.028,
+  chipDepth: 0.014,
   ...over,
 });
 
@@ -108,7 +113,7 @@ function defaults(cls: FractureClass): FractureLook {
       return {
         relief: relief({
           amplitude: 0.012, featureSize: 0.1, ridge: 0.2, tilt: 0.05, lattice: 0.016,
-          courseHeight: 0.075, toothDepth: 0.045,
+          courseHeight: 0.075, toothDepth: 0.045, chipWidth: 0.012, chipDepth: 0.006,
         }),
         shade: shade({
           base: [0.36, 0.13, 0.08], accent: [0.55, 0.52, 0.47], accentFill: 0.2,
@@ -127,6 +132,7 @@ function defaults(cls: FractureClass): FractureLook {
         relief: relief({
           amplitude: 0.06, featureSize: 0.007, ridge: 0.8, detail: 0.3, tilt: 0.35, lattice: 0.0028,
           taper: 0.002, maxDepthFraction: 0.8, splinter: 1, grainStretch: 12, maxFaceVerts: 1600,
+          chipWidth: 0.004, chipDepth: 0.002,
         }),
         shade: shade({
           base: [0.62, 0.44, 0.26], accent: [0.43, 0.27, 0.13], accentFill: 0.35, accentSize: 0.004,
@@ -137,7 +143,10 @@ function defaults(cls: FractureClass): FractureLook {
     case FractureClass.Gypsum:
     case FractureClass.Plaster:
       return {
-        relief: relief({ amplitude: 0.004, featureSize: 0.03, ridge: 0.3, tilt: 0.25, lattice: 0.006, taper: 0.003 }),
+        relief: relief({
+          amplitude: 0.004, featureSize: 0.03, ridge: 0.3, tilt: 0.25, lattice: 0.006, taper: 0.003,
+          chipWidth: 0.006, chipDepth: 0.002,
+        }),
         shade: shade({
           base: [0.80, 0.78, 0.74], accent: [0.62, 0.55, 0.43], accentFill: 0.0, accentSize: 0.003,
           bumpSize: 0.002, bumpDepth: 0.4, pores: 0.12, roughness: 0.98, cavity: 0.3,
@@ -146,7 +155,10 @@ function defaults(cls: FractureClass): FractureLook {
       };
     case FractureClass.Glass:
       return {
-        relief: relief({ amplitude: 0.0008, featureSize: 0.02, ridge: 0, detail: 0, tilt: 0.02, lattice: 0.01, crackOpening: 0.0003 }),
+        relief: relief({
+          amplitude: 0.0008, featureSize: 0.02, ridge: 0, detail: 0, tilt: 0.02, lattice: 0.01, crackOpening: 0.0003,
+          chipWidth: 0.003, chipDepth: 0.001,
+        }),
         shade: shade({
           base: [0.30, 0.42, 0.36], accent: [0.20, 0.32, 0.27], accentFill: 0, bumpSize: 0.003, bumpDepth: 0.15,
           pores: 0, roughness: 0.08, cavity: 0,
@@ -155,7 +167,7 @@ function defaults(cls: FractureClass): FractureLook {
       };
     case FractureClass.Steel:
       return {
-        relief: relief({ amplitude: 0.002, featureSize: 0.02, tilt: 0.05 }),
+        relief: relief({ amplitude: 0.002, featureSize: 0.02, tilt: 0.05, chipWidth: 0, chipDepth: 0 }),
         shade: shade({ base: [0.56, 0.56, 0.57], accent: [0.4, 0.3, 0.22], accentFill: 0.1, pores: 0, roughness: 0.4, metalness: 1, cavity: 0.2 }),
         rebar: { ...DEFAULT_REBAR_LOOK },
       };
