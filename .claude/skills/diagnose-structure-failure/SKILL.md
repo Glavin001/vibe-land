@@ -54,7 +54,7 @@ persistent list is context, not the answer.
 | broke > 0, **large sag** | stiffness, not strength — the member passes its stress check and deflects enough to crack what sits on it | more depth, shorter span. Watch weight |
 | broke = **0**, never settles, peak pinned ~2.95 | damage-arrest ceiling: joints held just below fatal, load never resolving | the load path, not the material. Nothing is failing and nothing is resolving |
 | breaks at `last seen at` **< 1.0x** | not a stress failure at all — impact, or a merge/solver-scale effect | look for contact, overlap, or whether it only happens merged |
-| areas **< 0.05 m²** on the breaks | sliver bonds; the section-modulus term `6/sqrt(area)` amplifies bending hard on small seams | thicker members, coarser fracture, or the sliver filter |
+| areas **< 0.05 m²** on the breaks | sliver bonds. Note the default bending term is `bend * min(6/sqrt(area), 3)`: below 4 m² every bond reads as a 2 m deep section, so bending is *understated* on real members (a 45x90 stud ~20x); see "Bending: capped vs real section" below | thicker members, coarser fracture, or the sliver filter |
 | `slab<->slab` dominant | deck seams, usually span or seam area rather than slab strength | secondary spacing; thickness only upward |
 | settles but sheds a few bonds | genuinely marginal; peak will be ~2.96 against fatal 3.00 | expect ~1% margin, and expect unrelated changes to tip it |
 
@@ -122,6 +122,22 @@ the whole curve.
   shipping, not just its parts.
 - **Never bench while `/city` is serving.** GPU contention kills the server, and
   a dead server looks exactly like a client crash.
+
+## Bending: capped vs real section
+
+`VIBE_SECTION_BENDING=1` (SDKs with `PX_DESTRUCTION_SECTION_BENDING`, `PxDestructionStressDesc::sectionBending`)
+takes each bond's section from its chunks' geometry (`physx-bridge/include/bond_section.h`)
+and grades bending as `|M0|/S0 + |M1|/S1`, twist as `T r_max / I_p`, uncapped;
+`physx-bridge/tests/section_bending.rs` checks it against beam theory. It is
+**not usable alone** (2026-10-06): the solver weights every bond's rotation
+with one length scale (`m_lengthScale`, ~0.45 m), ~100-1000x stiffer than the
+bonds' own sections, so it routes load through bond moments that real
+sections then grade correctly -- veneer houses 75-88% broken at rest, 13/14
+Vibe Town kinds fall. The cap was hiding that. On the CPU,
+`stress-share.py --bending section --angular section` (rotational stiffness
+k I / A per bond) stands the houses again (bungalow 2 bonds past fatal, town
+buildings 0) at 7-100x worse conditioning. Materials tuned under the cap
+(tree branches, outdoor footing seams at ~4 kPa) fail under real sections.
 
 ## Related
 

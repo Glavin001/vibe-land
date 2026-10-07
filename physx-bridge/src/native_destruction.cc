@@ -1,7 +1,7 @@
 #include "native_state.h"
 #include "solver_iterations.h"
 #include "PxNativeVehicle.h"
-#if PX_DESTRUCTION_SCENE_VERSION >= 25
+#if defined(VIBE_PHYSX_HAS_SECTION_BENDING)
 #include "bond_section.h"
 #endif
 
@@ -84,7 +84,7 @@ static float native_env_f32(const char *name, float fallback) {
   return parsed;
 }
 
-/// VIBE_SECTION_BENDING=1 (A/B, SDK v25): bond bending and torsion from each
+/// VIBE_SECTION_BENDING=1 (A/B, SDKs with PX_DESTRUCTION_SECTION_BENDING): bond bending and torsion from each
 /// bond's real cross-section (bond_section.h; PxDestructionStressDesc::
 /// sectionBending) instead of the area-only gain capped by bend_gain_max.
 static bool native_section_bending() {
@@ -286,7 +286,7 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
   return material_base;
 }
 
-#if PX_DESTRUCTION_SCENE_VERSION >= 25
+#if defined(VIBE_PHYSX_HAS_SECTION_BENDING)
 /// Sections for the bonds appended since `bond_base`, from the chunks' shapes
 /// (a vehicle part's extra hulls included). A bond whose chunks' faces do not
 /// overlap in its plane gets none -- the stage then uses the square patch of its area.
@@ -399,7 +399,7 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     s.bonds.push_back(bond);
     s.bond_ids.emplace_back(structure_id, b.bond_index);
   }
-#if PX_DESTRUCTION_SCENE_VERSION >= 25
+#if defined(VIBE_PHYSX_HAS_SECTION_BENDING)
   append_sections(structure_id, base, bond_base);
 #endif
   if (!bonds.empty()) {
@@ -1043,14 +1043,14 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.damageRate = config.damage_rate;
   desc.bendGainMax = config.bend_gain_max;
   desc.fibreBending = config.fibre_bending;
-#if PX_DESTRUCTION_SCENE_VERSION >= 25
+#if defined(VIBE_PHYSX_HAS_SECTION_BENDING)
   desc.sectionBending = native_section_bending();
   desc.bondSections = desc.sectionBending && s.sections.size() == s.bonds.size() ? s.sections.data() : nullptr;
   if (desc.sectionBending)
     std::fprintf(stderr, "[destruction] section bending: on (bend_gain_max unused)\n");
 #else
   native_require(native_env_f32("VIBE_SECTION_BENDING", 0.0f) == 0.0f,
-                 "VIBE_SECTION_BENDING needs a PhysX SDK with PxDestructionStressDesc::sectionBending (v25)");
+                 "VIBE_SECTION_BENDING needs a PhysX SDK with PX_DESTRUCTION_SECTION_BENDING (PhysX feat/real-section-bending)");
 #endif
   // One trial evaluation plus one corrected rigid pass. Zero would leave the
   // stage in its diagnostic mode, where any membership-changing verdict is

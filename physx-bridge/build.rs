@@ -10,7 +10,7 @@ include!("physx_sdk_location.rs");
 /// together with the SDK; a silent bump would change struct layouts under our
 /// device reads, so the build fails loudly instead.
 #[cfg(feature = "native-destruction")]
-const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 8] = [
+const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 7] = [
     "#define PX_DESTRUCTION_SCENE_VERSION 15",
     "#define PX_DESTRUCTION_SCENE_VERSION 16",
     // v17 changes no layout: `internalCorrectionLimit` stops being a boolean
@@ -26,9 +26,6 @@ const NATIVE_DESTRUCTION_SCENE_VERSIONS: [&str; 8] = [
     // v24 adds PxDestructionStressDesc::forceTolerance (force convergence,
     // default 0 = the residual test alone).
     "#define PX_DESTRUCTION_SCENE_VERSION 24",
-    // v25 adds PxDestructionStressDesc::sectionBending / bondSections (real
-    // cross-section bending, opt-in: VIBE_SECTION_BENDING=1).
-    "#define PX_DESTRUCTION_SCENE_VERSION 25",
 ];
 
 #[cfg(feature = "destruction")]
@@ -362,7 +359,7 @@ fn add_native_destruction(
                 NATIVE_DESTRUCTION_SCENE_VERSIONS
             )
         });
-    let version = [15, 16, 17, 18, 22, 23, 24, 25][version];
+    let version = [15, 16, 17, 18, 22, 23, 24][version];
     build.define("VIBE_PHYSX_DESTRUCTION_SCENE_VERSION", version.to_string().as_str());
     println!("cargo:rustc-env=VIBE_PHYSX_DESTRUCTION_SCENE_VERSION={version}");
     // From v17 the stage loops its correction: configureStress takes any
@@ -386,6 +383,12 @@ fn add_native_destruction(
         (
             "PX_DESTRUCTION_CHUNK_LOADS_CORRECTION_LOOP",
             "VIBE_PHYSX_HAS_CHUNK_LOADS_CORRECTION_LOOP",
+        ),
+        // PxDestructionStressDesc::sectionBending / bondSections: bending from
+        // each bond's real cross-section (opt-in, VIBE_SECTION_BENDING=1).
+        (
+            "PX_DESTRUCTION_SECTION_BENDING",
+            "VIBE_PHYSX_HAS_SECTION_BENDING",
         ),
     ] {
         if text.contains(field) {
