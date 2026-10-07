@@ -20,7 +20,7 @@
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 tier=${1:-quick}
-only=textbook,regressions,acceptance
+only=textbook,regressions,acceptance,flagmatrix
 [ "$tier" = quick ] && only=textbook,regressions
 [ "${2:-}" = --only ] && only=${3:?}
 want() { [[ ",$only," == *",$1,"* ]]; }
@@ -156,6 +156,15 @@ if want acceptance; then
     HIGH_PHYSX_ROOT=${VERIFY_HIGH_PHYSX_ROOT:-} "$ROOT/scripts/verify/acceptance.sh" "$p" "$out/acceptance-$p" > "$out/acceptance-$p.log" 2>&1 || failed=1
     echo "[verify] acceptance $p: $(grep -c '"status":"PASS"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) pass, $(grep -c '"status":"KNOWN-GAP"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) known gaps, $(grep -c '"status":"FAIL"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) failing"
   done
+fi
+
+if want flagmatrix; then
+  "$ROOT/scripts/verify/flag-matrix.sh" "$out/flag-matrix" > "$out/flag-matrix.log" 2>&1
+  grep '^\[flag-matrix\]' "$out/flag-matrix.log"
+  python3 -c "
+import json,sys
+rs=[json.loads(l) for l in open('$out/flag-matrix/flag-matrix.jsonl')]
+sys.exit(1 if any(r['broken_pct'] is None or r['broken_pct']>0 for r in rs) else 0)" || failed=1
 fi
 
 python3 "$ROOT/scripts/verify/report.py" "$out" | tee "$out/report.md"
