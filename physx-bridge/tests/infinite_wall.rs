@@ -466,7 +466,8 @@ fn meteor_on_a_foundation() {
 /// normal speed spent in the ground, none returned. The static box returns
 /// e v_n and takes the rest in one tick. Reports the normal speed the rock is
 /// stopped from in that tick and the deceleration (g), against Poncelet's
-/// for loose soil (c2 ~ 1, rho 1800 kg/m^3: about 50 g at 99 m/s for this rock).
+/// for loose soil (c2 ~ 1, rho 1800 kg/m^3: about 200 g at 99 m/s for this rock,
+/// against 666 g measured -- and the soil would keep decelerating it over metres).
 #[test]
 #[ignore = "requires the GPU; a known gap, reported"]
 fn meteor_into_terrain() {
