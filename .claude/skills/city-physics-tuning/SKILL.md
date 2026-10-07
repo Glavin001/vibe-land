@@ -40,7 +40,6 @@ native stage's own knobs are listed in
 
 | variable | default | what it actually controls |
 |---|---|---|
-| `VIBE_WORLD_GRAVITY` | 9.81 | world gravity, m/s^2. One source: physx-bridge `DEFAULT_WORLD_GRAVITY`; the C++ destruction path reads the scene's gravity |
 | `VIBE_WORLD_FRICTION` | 0.75 | contact friction (concrete ~0.6-0.8) |
 | `VIBE_WORLD_RESTITUTION` | 0.02 | rebound; concrete barely bounces |
 | `VIBE_CITY_STRESS_LIMIT_SCALE` | 0.6 | scales elastic **and** fatal together |
@@ -67,9 +66,13 @@ close the city is to failing but never its character. Dropping 0.6 -> 0.5 broke
 18,260 bonds at rest and demolished the city before anyone connected. Any
 recommendation of 0.5 in older comments predates the gravity change and is stale.
 
-**Gravity is 20 m/s^2 everywhere**, matched to the player (Source's
-`sv_gravity 800` = 20.32). The city therefore carries ~2x the load its pack was
-authored for, so every strength number written before that is suspect.
+**Gravity is Earth's, 9.81 m/s^2, everywhere, and it is not a knob.** It was 20
+for a while (Source's `sv_gravity 800`), so strength numbers written then were
+tuned against ~2x the load. One constant, `vibe_netcode::movement::GRAVITY`,
+feeds the players, the PhysX scene, the stress loads, the vehicles and the
+encoder. `VIBE_WORLD_GRAVITY` used to move only the PhysX scene, so it is now
+refused unless it equals 9.81 (`physx-bridge/tests/gravity_single_source.rs`;
+docs/verification/FIDELITY_AUDIT.md G2).
 
 **Damping is not collision energy loss.** Damping is air drag on a body moving
 through empty space; a 10-tonne slab does not feel it. Energy should be lost

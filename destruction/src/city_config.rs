@@ -212,12 +212,10 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
 
 /// Gravity the destructible city runs under, m/s^2.
 ///
-/// Delegates to the movement config rather than restating a number, which is
-/// the whole point: this was a hardcoded -9.81 and the world had been raised to
-/// -20. Everything structural measured against it was measured at half the load
-/// production applies. Anything production decides, this must CALL rather than
-/// copy -- the same rule the bench learned when it fed 9.81 into a 20 m/s^2
-/// PhysX scene, a combination that never runs.
+/// Delegates to the one constant (vibe_netcode::movement::GRAVITY) rather than
+/// restating a number. A copy here once stayed at -9.81 while the world ran at
+/// -20, so everything structural was measured at half the load production
+/// applied. Anything production decides, this must CALL rather than copy.
 pub fn city_gravity() -> [f32; 3] {
     vibe_netcode::movement::default_world_gravity()
 }
