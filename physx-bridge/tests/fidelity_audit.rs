@@ -792,6 +792,14 @@ fn crushed_mass_is_conserved() {
         println!("crushed={crushed}\nlost={lost}\nlowest={lowest}");
         return;
     }
+    // An SDK without PX_DESTRUCTION_CRUSH_CORRECTION turns crushing off (the
+    // bridge warns once): nothing to measure there.
+    if std::env::var("PHYSX_ROOT").map_or(false, |r| {
+        !std::fs::read_to_string(format!("{r}/include/physx/PxDestructionScene.h")).unwrap_or_default().contains("#define PX_DESTRUCTION_CRUSH_CORRECTION 1")
+    }) {
+        println!("skipped: PHYSX_ROOT has no PX_DESTRUCTION_CRUSH_CORRECTION (use garage-crush or garage-hifi)");
+        return;
+    }
     let arm = |env: &[(&str, &str)]| {
         let mut c = std::process::Command::new(std::env::current_exe().unwrap());
         c.args(["--exact", "crushed_mass_is_conserved", "--nocapture", "--ignored"]).env(ARM, "crush").env_remove("VIBE_CRUSH_CONSERVE_MASS");
