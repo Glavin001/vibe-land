@@ -42,7 +42,8 @@ SPEC = ROOT / "scripts/perf/suite.json"
 OUT = ROOT / "target/perf-suite"
 # The machine-wide GPU admission lives in the main checkout (gpu-run.sh header).
 GPU_RUN = Path(os.environ.get("VIBE_GPU_RUN", "/Users/glavin/Development/vibe-land/scripts/perf/gpu-run.sh"))
-CAPTURES = OUT / "captures"
+# Machine-wide (every checkout's suite replays the same inputs): the main checkout's.
+CAPTURES = Path(os.environ.get("PERF_SUITE_CAPTURES", "/Users/glavin/Development/vibe-land/target/perf-suite/captures"))
 
 
 def log(*a):
@@ -169,7 +170,10 @@ def make_jobs(spec: dict, profile: str, tier: str, run_dir: Path) -> list[dict]:
             if "drive" in ph:
                 out["drive"] = ph["drive"]
             events = []
-            for e in ph.get("events", []):
+            listed = ph.get("events", [])
+            if tier == "quick" and "events_quick" in ph:
+                listed = listed[:ph["events_quick"]]
+            for e in listed:
                 events.append(shot_from_place(meta, e) if "place" in e else e)
             if events:
                 out["events"] = events
@@ -425,6 +429,26 @@ def summarise(run_dir: Path) -> dict:
     return out
 
 
+def comparability(report: dict, base: dict) -> list[str]:
+    """What differs between the arms besides the code under test: a delta
+    across different packs, captures or tiers describes another workload."""
+    notes, a, b = [], report.get("fingerprint") or {}, base.get("fingerprint") or {}
+    if report.get("tier") != base.get("tier"):
+        notes.append(f"tier {report.get('tier')} vs baseline {base.get('tier')}: different tick counts")
+    for p, scenes in (a.get("packs") or {}).items():
+        for scene, h in scenes.items():
+            bh = (b.get("packs") or {}).get(p, {}).get(scene)
+            if bh and bh != h:
+                notes.append(f"{p} {scene}: pack differs from the baseline's ({h} vs {bh})")
+    for n, h in (a.get("captures") or {}).items():
+        bh = (b.get("captures") or {}).get(n)
+        if bh and bh != h:
+            notes.append(f"capture {n} differs from the baseline's")
+    if report.get("shared_gpu") or base.get("shared_gpu"):
+        notes.append("an arm ran on a shared GPU: timings indicative only")
+    return notes
+
+
 def score(report: dict, base: dict | None) -> None:
     """Fills each profile's composite: geomean of value/baseline (1.0 = the baseline; lower is faster),
     with its noise band from the per-rep scatter of both runs."""
@@ -503,6 +527,8 @@ def table(report: dict) -> str:
                          f"{st.fmean(i['evaluations'] for i in imp):6.0f} {st.fmean(i['steps'] for i in imp):9.0f} "
                          f"{st.fmean(i['capped'] for i in imp):6.0f} {max(i['longest_dispatch_ms'] for i in imp):7.1f} "
                          f"{fmt((v['cv'] or 0) * 100 if v['cv'] is not None else None):>5}  {dtxt}")
+    if report.get("comparability"):
+        lines.append("\nCOMPARABILITY:\n  " + "\n  ".join(report["comparability"]))
     if report.get("problems"):
         lines.append("\nPROBLEMS:\n  " + "\n  ".join(report["problems"]))
     lines.append("\nScored value per scenario: live = p95 of the server tick (ms); replay = median impact-evaluation time (ms)."
@@ -570,7 +596,7 @@ def main() -> None:
     ap.add_argument("--save-baseline", action="store_true", help="write this run as scripts/perf/suite-baseline.json")
     ap.add_argument("--report", default=None, help="re-read a run directory (no GPU)")
     ap.add_argument("--capture", action="store_true", help="make the impact captures the high-fidelity replays use")
-    ap.add_argument("--replay-runs", type=int, default=None, help="runs of each impact replay (default 2; quick 1)")
+    ap.add_argument("--replay-runs", type=int, default=None, help="runs of each impact replay per rep (default 1: each is a whole impact tick's solve, 2-12 s)")
     ap.add_argument("--timeout", type=float, default=900)
     ap.add_argument("--shared", action="store_true", help="share the GPU (VIBE_GPU_SHARED=1): for developing the suite; timings only indicative")
     ap.add_argument("--exec", default=None, help=argparse.SUPPRESS)
@@ -636,7 +662,7 @@ def main() -> None:
                 "profile_env": penv, "headline": spec.get("headline", "high"), "created": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "extra_env": {p: ({"PX_DESTRUCTION_IMPACT_LOG": "1"} if p == "high" else {}) for p in profiles},
                 "warmups": warmups, "jobs": jobs, "replays": replays, "replay_binary": str(rbin) if rbin else None,
-                "replay_runs": args.replay_runs or (1 if tier == "quick" else 2), "timeout": args.timeout, "fingerprint": fingerprint,
+                "replay_runs": args.replay_runs or 1, "timeout": args.timeout, "fingerprint": fingerprint,
                 "build_seconds": time.monotonic() - t_build, "shared": args.shared}
         (run_dir / "work.json").write_text(json.dumps(work, indent=1))
         log(f"built and planned in {work['build_seconds']:.0f} s -> {run_dir}")
@@ -648,6 +674,7 @@ def main() -> None:
         base = None
     score(report, base)
     report["baseline"] = str(base_path) if base else None
+    report["comparability"] = comparability(report, base) if base else []
     (run_dir / "report.json").write_text(json.dumps(report, indent=1))
     text = table(report)
     (run_dir / "report.txt").write_text(text + "\n")

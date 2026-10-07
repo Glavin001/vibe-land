@@ -145,7 +145,8 @@
               "height": 1.5
             }
           ],
-          "why": "cannonballs and meteors into four houses and the cinema, 1/6 s apart: fracture, correction passes, debris"
+          "why": "cannonballs and meteors into four houses and the cinema, 1/6 s apart: fracture, correction passes, debris; the quick tier fires the first two only",
+          "events_quick": 2
         }
       ]
     },
