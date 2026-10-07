@@ -444,6 +444,62 @@ fn the_wall_stands_until_it_is_hit_and_then_comes_apart() {
     );
 }
 
+/// The wall again, made of a material that crushes (a masonry-like cone at a
+/// tenth of real strength, so a round is enough): it stands at rest with
+/// nothing crushed, and a round crushes what it strikes. A crushed chunk
+/// leaves the simulation: the step completes (its shape is out of the
+/// corrected pass), the bridge announces it once as a crush event and as an
+/// island promoted and retired at once, and nothing else in the stage's
+/// records of who owns which chunk goes wrong.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn a_crushable_wall_crushes_where_it_is_struck() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    let (nodes, bonds) = wall_of(6, 6, false);
+    let chunks = nodes.len() as u32;
+    let mut material = settings();
+    // Masonry's cone (materials.mjs CRUSH), its strength cut tenfold.
+    let fc = 0.68e6f32;
+    material.crush = vec![vibe_land_physx_bridge::CrushMaterialDesc {
+        cap_pressure: 2.5 * fc, cohesion: fc * 0.6, friction_slope: 1.2,
+        crush_energy: 3.5e6, crush_viscosity: 5.9e5, strain_rate_exponent: 0.0, reference_strain_rate: 1.0,
+        debris_mass_fraction: 0.0, debris_fragment_count: 0,
+    }];
+    world.native_attach().expect("stage attach");
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat::IDENTITY },
+        &nodes, &bonds, material, GROUP_CHUNK, ALL).expect("author wall");
+    world.step().expect("identity step");
+    world.native_configure(native_config(chunks)).expect("configure stage");
+    for _ in 0..60 {
+        let status = step_and_observe(&mut world);
+        assert_eq!(status.crushed_chunks, 0, "the wall crushed itself standing still");
+    }
+    assert!(world.native_take_crush_events().expect("drain").is_empty());
+    world.native_fire_round(RoundDesc {
+        position: Vec3::new(0.0, 3.5, 1.2), direction: Vec3::new(0.0, 0.0, -1.0),
+        momentum_ns: 3.0e5, radius: 0.4, speed: 20.0, ttl_ticks: 20,
+    }).expect("fire");
+    let (mut crushed, mut retired) = (Vec::new(), 0usize);
+    for _ in 0..90 {
+        step_and_observe(&mut world);
+        crushed.extend(world.native_take_crush_events().expect("drain"));
+        retired += world.native_take_island_events().expect("drain").iter().filter(|e| e.kind == 1).count();
+        world.native_take_broken_bonds().expect("drain");
+    }
+    assert!(!crushed.is_empty(), "the round crushed nothing");
+    let mut ids: Vec<u32> = crushed.iter().map(|c| c.chunk_id).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), crushed.len(), "a chunk was announced as crushed twice");
+    assert!(retired >= crushed.len(), "a crushed chunk was not retired from the wire");
+    for c in &crushed {
+        assert!(c.mass > 0.0 && c.volume > 0.0 && c.material == 0, "crush event of chunk {}: mass {} volume {} material {}", c.chunk_id, c.mass, c.volume, c.material);
+        assert!(world.native_chunk_aim(0, c.chunk_id & 0xffff).map_or(true, |a| !a.found), "a crushed chunk can still be aimed at");
+    }
+    assert!(world.native_validate_mappings().expect("audit"), "GPU ownership and the CPU mirror disagree after crushing");
+}
+
 /// The same wall built from convex hulls, the chunk geometry the production
 /// city uses: it stands under its own weight, a round breaks it, and the GPU
 /// and CPU records of who owns which chunk still agree afterwards. Nothing in
