@@ -20,5 +20,58 @@
     "note": "under section rotation (garage-multihull 9d5024d1e+) the bungalow's heel joints (rafter to ceiling joist) break at rest and the frame comes down or sheds its roof, intact; the kit is being requalified for rotation (another agent's work)"
    }
   }
- }
+ },
+ "frame-column": {
+  "default": {
+   "ordinary-edge": {
+    "state": "holds",
+    "note": "default bending gain reads the 0.3 x 0.6 beams 2.4x low: survives at real u 2.47"
+   },
+   "with-stair": {
+    "state": "collapses",
+    "note": "the stair tower's step chain breaks at rest under the default rotational stiffness"
+   },
+   "ordinary-corner": {
+    "state": "collapses",
+    "note": "collapses as predicted, but its first breaks are the other frame's corner column (through the transverse beam), not the predicted hogging face"
+   }
+  },
+  "section": {
+   "*": {
+    "state": "*",
+    "note": "section bending without section rotation breaks the intact frame at rest (column joints, tick 1)"
+   }
+  },
+  "rotation": {
+   "robust-corner": {
+    "state": "collapses",
+    "note": "fails at the corner beam ends (weak-axis bending from the transverse beam) where the plane frame bridges at u 0.70: open, needs a 3D check"
+   },
+   "robust-edge": {
+    "state": "collapses",
+    "note": "fails at the beam ends beside the removed edge column, plane frame u 0.59: open, needs a 3D check"
+   }
+  }
+ },
+ "demolition": {
+  "default": {
+   "*": {
+    "state": "*",
+    "note": "blocked: a structure standing on contact supports takes a first-tick contact load of 2-8x its weight at one support and breaks at rest (docs/calibration/demolition.md); needs a stage cut-bonds API"
+   }
+  },
+  "section": {
+   "*": {
+    "state": "*",
+    "note": "blocked: a structure standing on contact supports takes a first-tick contact load of 2-8x its weight at one support and breaks at rest (docs/calibration/demolition.md); needs a stage cut-bonds API"
+   }
+  },
+  "rotation": {
+   "*": {
+    "state": "*",
+    "note": "blocked: a structure standing on contact supports takes a first-tick contact load of 2-8x its weight at one support and breaks at rest (docs/calibration/demolition.md); needs a stage cut-bonds API"
+   }
+  }
+ },
+ "truss-members": {}
 }
