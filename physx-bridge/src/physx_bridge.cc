@@ -4192,6 +4192,9 @@ public:
   rust::Vec<FfiChunkCrushEvent> native_take_crush_events() {
     return native().take_crush_events();
   }
+  FfiCrushMaterial native_crush_material(std::uint32_t structure_id, std::uint32_t material) const {
+    return native().crush_material(structure_id, material);
+  }
   rust::Slice<const FfiChunkBodySnapshot> native_chunk_body_snapshots() const {
     return native().chunk_body_snapshots();
   }
@@ -4760,6 +4763,9 @@ rust::Vec<FfiIslandBodyEvent> World::native_take_island_events() {
 }
 rust::Vec<FfiChunkCrushEvent> World::native_take_crush_events() {
   return impl_->native_take_crush_events();
+}
+FfiCrushMaterial World::native_crush_material(std::uint32_t structure_id, std::uint32_t material) const {
+  return impl_->native_crush_material(structure_id, material);
 }
 
 rust::Slice<const FfiChunkBodySnapshot> World::native_chunk_body_snapshots() const {

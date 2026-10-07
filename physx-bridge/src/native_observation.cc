@@ -138,69 +138,14 @@ void NativeDestruction::State::apply_changed_chunks(
     if (chunk.root != PX_INVALID_U32) {
       affected.emplace(chunk.root, chunk.generation);
     }
-    // An inactive row is a chunk the stage destroyed (crushed): it belongs to
-    // no group from here on.
+    // An inactive row is a chunk an SDK without PX_DESTRUCTION_CRUSH_CORRECTION
+    // destroyed: it belongs to no group from here on.
     if (row.active == 0) {
       if (!chunk.destroyed) destroyed.push_back(row.chunk);
       continue;
     }
     groups[{row.root, row.generation}].push_back(row.chunk);
   }
-  // Each crushed chunk leaves its body: on the wire, a singleton island that is
-  // promoted where the chunk was and retired at once (the client drops it), and
-  // a crush event for its dust and debris.
-  for (const std::uint32_t id : destroyed) {
-    Chunk &chunk = chunks[id];
-    const std::uint32_t structure = chunk.structure;
-    const std::uint32_t packed = native_chunk_id(structure, chunk.authored);
-    PxTransform pose(PxIdentity);
-    PxVec3 velocity(0.0f);
-    if (chunk.shape != nullptr && chunk.shape->getActor() != nullptr) {
-      PxRigidActor *actor = chunk.shape->getActor();
-      pose = actor->getGlobalPose() * chunk.shape->getLocalPose();
-      if (PxRigidDynamic *dynamic = actor->is<PxRigidDynamic>()) {
-        velocity = PxRigidBodyExt::getVelocityAtPos(*dynamic, pose.p);
-      }
-    }
-    const std::uint32_t serial = next_serial.at(structure)++;
-    FfiIslandBodyEvent promote{};
-    promote.structure_id = structure;
-    promote.island_id = serial;
-    promote.kind = 0;
-    promote.mass = properties[id].mass;
-    promote.position = native_ffi(pose.p);
-    promote.rotation = native_ffi(pose.q);
-    promote.linear_velocity = native_ffi(velocity);
-    promote.chunk_ids.push_back(packed);
-    events.push_back(std::move(promote));
-    FfiIslandBodyEvent retire{};
-    retire.structure_id = structure;
-    retire.island_id = serial;
-    retire.kind = 1;
-    events.push_back(std::move(retire));
-    migrations.push_back(FfiChunkMigrationEvent{structure, packed, chunk.serial, serial});
-    migration_total += 1;
-    const PxDestructionStressChunk &node = nodes[id];
-    const PxDestructionMaterial &material = materials[node.material];
-    const std::uint32_t base = material_base.count(structure) ? material_base.at(structure) : 0u;
-    FfiChunkCrushEvent crush{};
-    crush.structure_id = structure;
-    crush.chunk_id = packed;
-    crush.material = node.material - base;
-    crush.mass = properties[id].mass;
-    crush.volume = node.volume;
-    crush.position = native_ffi(pose.p);
-    crush.linear_velocity = native_ffi(velocity);
-    crush.debris_mass_fraction = material.crush.debrisMassFraction;
-    crush.debris_fragment_count = material.crush.debrisFragmentCount;
-    crushes.push_back(crush);
-    crushed_total += 1;
-    chunk.destroyed = true;
-    chunk.serial = serial;
-    chunk.root = PX_INVALID_U32;
-    topology_changes += 2;
-  }
-
   std::map<Key, NativeBody> next;
   for (auto &group : groups) {
     const Key key = group.first;
@@ -317,6 +262,9 @@ void NativeDestruction::State::apply_changed_chunks(
   }
   bodies.merge(next);
   native_require(next.empty(), "committed group merge collided");
+  for (const std::uint32_t id : destroyed) {
+    crush_chunk(id);
+  }
   native_require(bodies.size() == cluster_count,
                  "committed GPU/CPU group count mismatch");
 }
@@ -495,6 +443,10 @@ void NativeDestruction::State::refresh_snapshots() {
   const std::uint32_t quiet_limit = native_settle_ticks();
   for (auto &entry : bodies) {
     NativeBody &body = entry.second;
+    // Dust retired from the world (crush_chunk): no body on the wire.
+    if (body.chunks.size() == 1 && chunks[body.chunks.front()].destroyed) {
+      continue;
+    }
     PxRigidDynamic &actor = *body.actor;
     const bool kinematic =
         actor.getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
@@ -781,6 +733,99 @@ rust::Vec<FfiChunkMigrationEvent> NativeDestruction::take_chunk_migrations() {
   return out;
 }
 
+void NativeDestruction::State::crush_chunk(std::uint32_t id) {
+  if (crushed_seen.size() < chunks.size()) crushed_seen.resize(chunks.size(), 0);
+  if (crushed_seen[id]) return;
+  crushed_seen[id] = 1;
+  Chunk &chunk = chunks[id];
+  const std::uint32_t structure = chunk.structure;
+  const PxDestructionStressChunk &node = nodes[id];
+  const PxDestructionMaterial &material = materials[node.material];
+  PxTransform pose(PxIdentity);
+  PxVec3 velocity(0.0f);
+  PxRigidDynamic *actor = nullptr;
+  if (chunk.shape != nullptr && chunk.shape->getActor() != nullptr) {
+    actor = chunk.shape->getActor()->is<PxRigidDynamic>();
+    pose = chunk.shape->getActor()->getGlobalPose() * chunk.shape->getLocalPose();
+    if (actor != nullptr) velocity = PxRigidBodyExt::getVelocityAtPos(*actor, pose.p);
+  }
+  FfiChunkCrushEvent crush{};
+  crush.structure_id = structure;
+  crush.chunk_id = native_chunk_id(structure, chunk.authored);
+  crush.material = node.material - (material_base.count(structure) ? material_base.at(structure) : 0u);
+  crush.mass = properties[id].mass;
+  crush.volume = node.volume;
+  crush.position = native_ffi(pose.p);
+  crush.linear_velocity = native_ffi(velocity);
+  crush.debris_mass_fraction = material.crush.debrisMassFraction;
+  crush.debris_fragment_count = material.crush.debrisFragmentCount;
+  crushes.push_back(crush);
+  crushed_total += 1;
+  if (material.crush.debrisMassFraction > 0.0f || chunk.destroyed || chunk.shape == nullptr) {
+    return; // debris: the chunk keeps its own body and goes on colliding
+  }
+  // Dust. The stage split the chunk off as a body of its own for the tick it
+  // crushed in; it leaves the world now. Its hull stops colliding and being
+  // hit by queries, and its body is stopped, weightless and asleep, so nothing
+  // can wake or move it. The stage keeps the shape and its records (it never
+  // re-examines a cluster with no bonds), so ownership stays consistent.
+  chunk.destroyed = true;
+  dust_retired += 1;
+  chunk.shape->setFlag(PxShapeFlag::eSCENE_QUERY_SHAPE, false);
+  chunk.shape->setFlag(PxShapeFlag::eSIMULATION_SHAPE, false);
+  if (actor == nullptr) return;
+  bool alone = true;
+  for (const auto &entry : bodies) {
+    if (entry.second.actor != actor) continue;
+    alone = entry.second.chunks.size() == 1;
+    if (alone && entry.second.serial != 0) {
+      FfiIslandBodyEvent retire{};
+      retire.structure_id = entry.second.structure;
+      retire.island_id = entry.second.serial;
+      retire.kind = 1;
+      events.push_back(std::move(retire));
+      topology_changes += 1;
+    }
+    break;
+  }
+  if (alone && !actor->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
+    actor->setActorFlag(PxActorFlag::eDISABLE_GRAVITY, true);
+    actor->setLinearVelocity(PxVec3(0.0f));
+    actor->setAngularVelocity(PxVec3(0.0f));
+    actor->putToSleep();
+  }
+}
+
+void NativeDestruction::State::observe_crushes(const PxDestructionDeviceView &view) {
+  if (view.chunkCrush == nullptr || chunks.empty()) return;
+  NativeReadback read(scene, nullptr); // ordered by the caller's readyEvent.
+  const std::vector<PxDestructionCrushState> state = read.read(view.chunkCrush, chunks.size());
+  observation_bytes += state.size() * sizeof(PxDestructionCrushState);
+  if (crushed_seen.size() < chunks.size()) crushed_seen.resize(chunks.size(), 0);
+  for (std::uint32_t id = 0; id < chunks.size(); ++id) {
+    if (state[id].crushed != 0 && !crushed_seen[id]) crush_chunk(id);
+  }
+}
+
+FfiCrushMaterial NativeDestruction::crush_material(std::uint32_t structure_id, std::uint32_t material) const {
+  const State &s = *state_;
+  const auto base = s.material_base.find(structure_id);
+  native_require(base != s.material_base.end() && base->second + material < s.materials.size(),
+                 "no such structure material");
+  const PxDestructionCrushProperties &c = s.materials[base->second + material].crush;
+  FfiCrushMaterial out{};
+  out.cap_pressure = c.capPressure;
+  out.cohesion = c.cohesion;
+  out.friction_slope = c.frictionSlope;
+  out.crush_energy = c.crushEnergy;
+  out.crush_viscosity = c.crushViscosity;
+  out.strain_rate_exponent = c.strainRateExponent;
+  out.reference_strain_rate = c.referenceStrainRate;
+  out.debris_mass_fraction = c.debrisMassFraction;
+  out.debris_fragment_count = c.debrisFragmentCount;
+  return out;
+}
+
 rust::Vec<FfiChunkCrushEvent> NativeDestruction::take_crush_events() {
   rust::Vec<FfiChunkCrushEvent> out = std::move(state_->crushes);
   state_->crushes = {};
@@ -929,6 +974,8 @@ FfiDestructionStats NativeDestruction::stats() const {
   span("stress_active_island_updates",
        static_cast<double>(s.active_island_updates), 2);
   span("stress_crush_yield_nodes", static_cast<double>(s.crush_yield_nodes), 2);
+  span("native_crushed_chunks", static_cast<double>(s.crushed_total), 2);
+  span("native_dust_retired", static_cast<double>(s.dust_retired), 2);
   span("stress_topology_changes", static_cast<double>(s.topology_changes), 2);
   return out;
 }

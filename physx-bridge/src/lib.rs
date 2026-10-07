@@ -1768,6 +1768,18 @@ impl World {
         self.inner.pin_mut().native_take_crush_events().map_err(operation_error)
     }
 
+    /// The crush properties the stage was given for a structure's material,
+    /// as configured (all zeros when crushing is off or not authored).
+    #[cfg(feature = "native-destruction")]
+    pub fn native_crush_material(&self, structure_id: u32, material: u32) -> Result<CrushMaterialDesc, BridgeError> {
+        self.inner.native_crush_material(structure_id, material).map(|c| CrushMaterialDesc {
+            cap_pressure: c.cap_pressure, cohesion: c.cohesion, friction_slope: c.friction_slope,
+            crush_energy: c.crush_energy, crush_viscosity: c.crush_viscosity,
+            strain_rate_exponent: c.strain_rate_exponent, reference_strain_rate: c.reference_strain_rate,
+            debris_mass_fraction: c.debris_mass_fraction, debris_fragment_count: c.debris_fragment_count,
+        }).map_err(operation_error)
+    }
+
     #[cfg(feature = "native-destruction")]
     pub fn native_take_island_events(&mut self) -> Result<Vec<IslandBodyEvent>, BridgeError> {
         self.inner
@@ -1989,7 +2001,7 @@ fn operation_error(error: cxx::Exception) -> BridgeError {
 
 #[cfg(feature = "gpu")]
 /// The stress solve report types (World::native_stress_solve_report), named by diagnostics.
-pub use ffi::{FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3};
+pub use ffi::{FfiChunkCrushEvent, FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3};
 
 #[cxx::bridge(namespace = "vibe_land::physx_bridge")]
 mod ffi {
@@ -2934,6 +2946,7 @@ mod ffi {
         ) -> Result<Vec<FfiChunkMigrationEvent>>;
         fn native_take_island_events(self: Pin<&mut World>) -> Result<Vec<FfiIslandBodyEvent>>;
         fn native_take_crush_events(self: Pin<&mut World>) -> Result<Vec<FfiChunkCrushEvent>>;
+        fn native_crush_material(self: &World, structure_id: u32, material: u32) -> Result<FfiCrushMaterial>;
         fn native_chunk_body_snapshots(self: &World) -> Result<&[FfiChunkBodySnapshot]>;
         fn native_bond_stress_rows(
             self: &World,

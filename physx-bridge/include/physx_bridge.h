@@ -41,6 +41,7 @@ struct FfiBrokenBondEvent;
 struct FfiChunkMigrationEvent;
 struct FfiIslandBodyEvent;
 struct FfiChunkCrushEvent;
+struct FfiCrushMaterial;
 struct FfiChunkBodySnapshot;
 struct FfiSupportSet;
 struct FfiSupportRow;
@@ -179,6 +180,7 @@ public:
   rust::Vec<FfiChunkMigrationEvent> native_take_chunk_migrations();
   rust::Vec<FfiIslandBodyEvent> native_take_island_events();
   rust::Vec<FfiChunkCrushEvent> native_take_crush_events();
+  FfiCrushMaterial native_crush_material(std::uint32_t structure_id, std::uint32_t material) const;
   rust::Slice<const FfiChunkBodySnapshot> native_chunk_body_snapshots() const;
   rust::Vec<FfiBondStressRow> native_bond_stress_rows(std::uint32_t structure_id) const;
   FfiDestructionStats native_stats() const;

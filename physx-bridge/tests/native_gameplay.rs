@@ -444,28 +444,29 @@ fn the_wall_stands_until_it_is_hit_and_then_comes_apart() {
     );
 }
 
-/// The wall again, made of a material that crushes (a masonry-like cone at a
-/// tenth of real strength, so a round is enough): it stands at rest with
-/// nothing crushed, and a round crushes what it strikes. A crushed chunk
-/// leaves the simulation: the step completes (its shape is out of the
-/// corrected pass), the bridge announces it once as a crush event and as an
-/// island promoted and retired at once, and nothing else in the stage's
-/// records of who owns which chunk goes wrong.
-#[test]
-#[ignore = "requires real native GPU destruction SDK"]
-fn a_crushable_wall_crushes_where_it_is_struck() {
+/// Masonry's crush cone (structures/town-kit materials.mjs CRUSH), its strength
+/// cut tenfold and its comminution made instant (energy and viscosity 1: any
+/// overstress crushes within the tick), so a round is sure to crush what it
+/// strikes; `debris` of its mass survives the crush.
+fn crushable(debris: f32, pieces: u32) -> vibe_land_physx_bridge::CrushMaterialDesc {
+    let fc = 0.68e6f32;
+    vibe_land_physx_bridge::CrushMaterialDesc {
+        cap_pressure: 2.5 * fc, cohesion: fc * 0.6, friction_slope: 1.2,
+        crush_energy: 1.0, crush_viscosity: 1.0, strain_rate_exponent: 0.0, reference_strain_rate: 1.0,
+        debris_mass_fraction: debris, debris_fragment_count: pieces,
+    }
+}
+
+/// The 6 x 6 wall made of `crush`, standing 60 ticks, then a round into it and
+/// 90 ticks more: every step must complete. Returns the world, the crush
+/// events and how many islands were retired on the wire.
+fn crush_wall(crush: Vec<vibe_land_physx_bridge::CrushMaterialDesc>) -> (World, Vec<vibe_land_physx_bridge::FfiChunkCrushEvent>, usize) {
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     let (nodes, bonds) = wall_of(6, 6, false);
     let chunks = nodes.len() as u32;
     let mut material = settings();
-    // Masonry's cone (materials.mjs CRUSH), its strength cut tenfold.
-    let fc = 0.68e6f32;
-    material.crush = vec![vibe_land_physx_bridge::CrushMaterialDesc {
-        cap_pressure: 2.5 * fc, cohesion: fc * 0.6, friction_slope: 1.2,
-        crush_energy: 3.5e6, crush_viscosity: 5.9e5, strain_rate_exponent: 0.0, reference_strain_rate: 1.0,
-        debris_mass_fraction: 0.0, debris_fragment_count: 0,
-    }];
+    material.crush = crush;
     world.native_attach().expect("stage attach");
     world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat::IDENTITY },
         &nodes, &bonds, material, GROUP_CHUNK, ALL).expect("author wall");
@@ -481,23 +482,89 @@ fn a_crushable_wall_crushes_where_it_is_struck() {
         momentum_ns: 3.0e5, radius: 0.4, speed: 20.0, ttl_ticks: 20,
     }).expect("fire");
     let (mut crushed, mut retired) = (Vec::new(), 0usize);
+    let mut stage_crushed = 0u32;
     for _ in 0..90 {
-        step_and_observe(&mut world);
+        stage_crushed += step_and_observe(&mut world).crushed_chunks;
         crushed.extend(world.native_take_crush_events().expect("drain"));
         retired += world.native_take_island_events().expect("drain").iter().filter(|e| e.kind == 1).count();
         world.native_take_broken_bonds().expect("drain");
     }
-    assert!(!crushed.is_empty(), "the round crushed nothing");
     let mut ids: Vec<u32> = crushed.iter().map(|c| c.chunk_id).collect();
     ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), crushed.len(), "a chunk was announced as crushed twice");
+    assert!(world.native_validate_mappings().expect("audit"), "GPU ownership and the CPU mirror disagree after crushing");
+    assert_eq!(crushed.len() as u32, stage_crushed, "the stage's crushes and the bridge's events disagree");
+    (world, crushed, retired)
+}
+
+/// A crushable wall (dust: nothing of a crushed chunk survives) stands at rest
+/// with nothing crushed, and a round crushes what it strikes. Every step
+/// completes -- the stage splits a crushed chunk off as its own body and
+/// corrects the step -- and each crushed chunk is announced once, retired from
+/// the wire and gone from the world: it cannot be aimed at.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn a_crushable_wall_crushes_where_it_is_struck() {
+    let (world, crushed, retired) = crush_wall(vec![crushable(0.0, 0)]);
+    assert!(!crushed.is_empty(), "the round crushed nothing");
     assert!(retired >= crushed.len(), "a crushed chunk was not retired from the wire");
     for c in &crushed {
-        assert!(c.mass > 0.0 && c.volume > 0.0 && c.material == 0, "crush event of chunk {}: mass {} volume {} material {}", c.chunk_id, c.mass, c.volume, c.material);
+        assert!(c.mass > 0.0 && c.volume > 0.0 && c.material == 0 && c.debris_mass_fraction == 0.0,
+            "crush event of chunk {}: mass {} volume {} material {}", c.chunk_id, c.mass, c.volume, c.material);
         assert!(world.native_chunk_aim(0, c.chunk_id & 0xffff).map_or(true, |a| !a.found), "a crushed chunk can still be aimed at");
     }
-    assert!(world.native_validate_mappings().expect("audit"), "GPU ownership and the CPU mirror disagree after crushing");
+}
+
+/// Glass-like debris: the whole of a crushed chunk survives as debris in a
+/// dozen pieces. The chunk keeps a free body of its own (off the anchored
+/// wall) and goes on colliding; the events carry the debris share and count.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn crushed_debris_keeps_a_body_of_its_own() {
+    let (world, crushed, _) = crush_wall(vec![crushable(1.0, 12)]);
+    assert!(!crushed.is_empty(), "the round crushed nothing");
+    let anchored = vibe_land_physx_bridge::native_entity_id(0, 0);
+    for c in &crushed {
+        assert!(c.debris_mass_fraction == 1.0 && c.debris_fragment_count == 12, "debris share or count lost");
+        let aim = world.native_chunk_aim(0, c.chunk_id & 0xffff).expect("aim");
+        assert!(aim.found && aim.entity_id != anchored, "crushed debris is not a free body of its own");
+    }
+}
+
+/// VIBE_NATIVE_CRUSH=0 really turns an authored crush table off: the stage is
+/// given no crush properties and the same round crushes nothing.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn vibe_native_crush_off_crushes_nothing() {
+    std::env::set_var("VIBE_NATIVE_CRUSH", "0");
+    let (world, crushed, _) = crush_wall(vec![crushable(0.0, 0)]);
+    std::env::remove_var("VIBE_NATIVE_CRUSH");
+    let given = world.native_crush_material(0, 0).expect("material");
+    assert_eq!(given.cap_pressure, 0.0, "VIBE_NATIVE_CRUSH=0 still configured a crush cap");
+    assert!(crushed.is_empty(), "VIBE_NATIVE_CRUSH=0 still crushed {} chunks", crushed.len());
+}
+
+/// Every authored crush field reaches the stage unchanged, per material, and a
+/// material without crushing gets none.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn authored_crush_reaches_the_stage_unchanged() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    let (nodes, bonds) = wall_of(2, 2, false);
+    let mut material = settings();
+    material.materials.push(material.materials[0]);
+    let authored = vibe_land_physx_bridge::CrushMaterialDesc {
+        cap_pressure: 17e6, cohesion: 4.08e6, friction_slope: 1.2, crush_energy: 3.5e6, crush_viscosity: 5.9e5,
+        strain_rate_exponent: 0.02, reference_strain_rate: 30.0, debris_mass_fraction: 0.25, debris_fragment_count: 6,
+    };
+    material.crush = vec![vibe_land_physx_bridge::CrushMaterialDesc::default(), authored];
+    world.native_attach().expect("stage attach");
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat::IDENTITY },
+        &nodes, &bonds, material, GROUP_CHUNK, ALL).expect("author wall");
+    assert_eq!(world.native_crush_material(0, 1).expect("material"), authored);
+    assert_eq!(world.native_crush_material(0, 0).expect("material").cap_pressure, 0.0);
 }
 
 /// The same wall built from convex hulls, the chunk geometry the production

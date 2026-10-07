@@ -390,6 +390,13 @@ fn add_native_destruction(
             "PX_DESTRUCTION_SECTION_BENDING",
             "VIBE_PHYSX_HAS_SECTION_BENDING",
         ),
+        // A crushed chunk splits off as its own body and its step completes
+        // under the correction; without it a crush freezes the scene, so the
+        // bridge refuses to pass crush properties to an SDK that lacks it.
+        (
+            "PX_DESTRUCTION_CRUSH_CORRECTION",
+            "VIBE_PHYSX_HAS_CRUSH_CORRECTION",
+        ),
     ] {
         if text.contains(field) {
             build.define(define, None);

@@ -252,7 +252,20 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
   // Chunk crushing is opt-in per material: an empty table crushes nothing.
   // VIBE_NATIVE_CRUSH=0 ignores an authored one (A/B against the same pack).
   const char *crush_env = std::getenv("VIBE_NATIVE_CRUSH");
-  const bool crush = !settings.crush.empty() && !(crush_env && crush_env[0] == '0');
+  bool crush = !settings.crush.empty() && !(crush_env && crush_env[0] == '0');
+#if !defined(VIBE_PHYSX_HAS_CRUSH_CORRECTION)
+  // This SDK removes a crushed chunk inside the correction, refuses that step,
+  // and every step after it fails: crushing stays off rather than freezing the
+  // scene (PhysX PX_DESTRUCTION_CRUSH_CORRECTION, branch fix/crush-in-correction).
+  if (crush) {
+    static bool warned = false;
+    if (!warned) {
+      std::fprintf(stderr, "[native-destruction] chunk crushing authored but this PhysX SDK cannot correct a crush; crushing off\n");
+      warned = true;
+    }
+    crush = false;
+  }
+#endif
   native_require(settings.crush.empty() || settings.crush.size() == settings.materials.size(),
                  "crush table must be empty or parallel to the materials");
   std::size_t index = 0;
@@ -1217,6 +1230,11 @@ FfiNativeStatus NativeDestruction::tick() {
       s.full_reobservations += 1;
     } else {
       s.observe_topology(view);
+    }
+    // Crushed chunks: a crush event each, dust out of the world. A gap may
+    // have hidden one, so a re-read checks every chunk too.
+    if (s.last.crushedChunks != 0 || gap) {
+      s.observe_crushes(view);
     }
     s.observe_ms = now_ms() - observe_started;
 

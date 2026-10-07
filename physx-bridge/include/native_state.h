@@ -186,6 +186,9 @@ struct NativeDestruction::State {
   rust::Vec<FfiIslandBodyEvent> events;
   rust::Vec<FfiChunkCrushEvent> crushes;
   std::uint64_t crushed_total = 0;
+  std::uint64_t dust_retired = 0;
+  /// Chunks whose crush has been announced, by stage chunk index.
+  std::vector<std::uint8_t> crushed_seen;
   mutable std::vector<FfiChunkBodySnapshot> snapshots;
 
   // --- counters published as spans; every one is a real measurement --------
@@ -266,6 +269,13 @@ struct NativeDestruction::State {
   void sleep_resting_islands(
       std::vector<std::pair<NativeBody *, std::size_t>> &awake);
   void sample_bond_verdicts(const physx::PxDestructionDeviceView &view);
+  /// Chunks the stage crushed since the last observation (accepted crush
+  /// state against `crushed_seen`): a crush event each, and a chunk of a
+  /// material that leaves no debris (debrisMassFraction 0, dust) retired --
+  /// its hull out of simulation and queries, its singleton body stopped and
+  /// asleep, and the body retired on the wire. Debris keeps its body.
+  void observe_crushes(const physx::PxDestructionDeviceView &view);
+  void crush_chunk(std::uint32_t id);
   void expire_rounds();
   void release_rounds();
 };
