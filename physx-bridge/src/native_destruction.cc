@@ -691,6 +691,7 @@ void NativeDestruction::create_destructible(
                                     dynamic_solver_velocity_iterations());
     actor->setLinearDamping(settings.linear_damping);
     actor->setAngularDamping(settings.angular_damping);
+    if (native_uncapped_spin()) actor->setMaxAngularVelocity(kUncappedAngularVelocity);
     // Inherited by every fragment of this cluster; see the helpers above.
     if (native_depenetration_velocity() > 0.0f) {
       actor->setMaxDepenetrationVelocity(native_depenetration_velocity());
@@ -784,6 +785,7 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
   actor->setMass(aggregate.mass);actor->setMassSpaceInertiaTensor(moments);
   actor->setCMassLocalPose(PxTransform(aggregate.centerOfMass,axes));
   if(vehicle_depenetration_velocity()>0.0f) actor->setMaxDepenetrationVelocity(vehicle_depenetration_velocity());
+  if(native_uncapped_spin()) actor->setMaxAngularVelocity(kUncappedAngularVelocity);
   const PxU32 material=s.append_materials(structure_id,settings),cluster=PxU32(s.clusters.size());
 #if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
   {
@@ -1527,6 +1529,7 @@ std::uint32_t NativeDestruction::fire_round(const FfiRoundDesc &desc) {
   body->setMassSpaceInertiaTensor(PxVec3(inertia));
   body->setLinearDamping(0.0f);
   body->setAngularDamping(0.0f);
+  if (native_uncapped_spin()) body->setMaxAngularVelocity(kUncappedAngularVelocity);
   body->setLinearVelocity(direction * desc.speed);
   s.scene.addActor(*body);
 

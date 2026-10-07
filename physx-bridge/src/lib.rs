@@ -599,6 +599,11 @@ pub struct DestructibleSettings {
     /// material's ultimate slip in metres (0: brittle -- a joint fractures at
     /// capacity; > 0: ductile -- it yields and breaks past this slip).
     pub ductile_slip: Vec<f32>,
+    /// Empty, or parallel to `materials`: the Young's modulus (Pa) that gives
+    /// a material's joints their stiffness in the impact solve where its
+    /// `elastic_modulus` is a concession for gravity load sharing (a wall tie,
+    /// soft in its wall's plane, stiff along its axis); 0: `elastic_modulus`.
+    pub impact_modulus: Vec<f32>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -628,6 +633,7 @@ impl Default for DestructibleSettings {
             }],
             crush: Vec::new(),
             ductile_slip: Vec::new(),
+            impact_modulus: Vec::new(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -2478,6 +2484,8 @@ mod ffi {
         crush: Vec<FfiCrushMaterial>,
         /// Empty, or parallel to `materials`: ultimate slip (m), 0 brittle.
         ductile_slip: Vec<f32>,
+        /// Empty, or parallel to `materials`: the impact solve's modulus (Pa), 0 elastic_modulus.
+        impact_modulus: Vec<f32>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -3402,6 +3410,7 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
                 })
                 .collect(),
             ductile_slip: value.ductile_slip,
+            impact_modulus: value.impact_modulus,
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,

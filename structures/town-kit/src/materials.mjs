@@ -274,7 +274,13 @@ export const CONNECTIONS = {
  * it is neither a sliver nor stiffened), strengths of capacity / area, and the
  * modulus that gives that stiffness over a 0.4 m chunk-to-chunk distance.
  */
-export const WALL_TIE = { area: 1e-4, tension: 900, compression: 600, shear: 400, stiffness: 2e4, length: 0.4 };
+export const WALL_TIE = { area: 1e-4, tension: 900, compression: 600, shear: 400, stiffness: 2e4, length: 0.4, axialStiffness: 1e6 };
+/*
+ * A hit on the brick loads the tie along its axis, where it is ~1 kN/mm (above):
+ * the impact solve (PhysX impactStiffness, opt-in) takes the tie's joints at
+ * that stiffness, `impactElasticModulus`, the modulus that gives it over the
+ * same 0.4 m and 1e-4 m^2; the stress solve keeps the in-plane one.
+ */
 
 /**
  * Gypsum plasterboard, EN 520 type A 12.5 mm (~8.75 kg/m^2 -> 700 kg/m^3).

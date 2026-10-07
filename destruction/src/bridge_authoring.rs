@@ -157,6 +157,7 @@ pub(crate) fn ffi_settings(settings: &StressSolverSettings) -> DestructibleSetti
             })
             .collect(),
         ductile_slip: settings.ductile_slip.clone(),
+        impact_modulus: settings.impact_modulus.clone(),
         maximum_bodies: settings.maximum_bodies,
         maximum_fractures_per_actor_per_tick: settings.maximum_fractures_per_actor_per_tick,
         apply_excess_forces: settings.apply_excess_forces,

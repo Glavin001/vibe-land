@@ -79,7 +79,7 @@ function materialsFor(b,crush=false){
   compressionElastic:LONG_TERM*WALL_TIE.compression/WALL_TIE.area,compressionFatal:WALL_TIE.compression/WALL_TIE.area,
   tensionElastic:LONG_TERM*WALL_TIE.tension/WALL_TIE.area,tensionFatal:WALL_TIE.tension/WALL_TIE.area,
   shearElastic:LONG_TERM*WALL_TIE.shear/WALL_TIE.area,shearFatal:WALL_TIE.shear/WALL_TIE.area,
-  elasticModulus:WALL_TIE.stiffness*WALL_TIE.length/WALL_TIE.area});
+  elasticModulus:WALL_TIE.stiffness*WALL_TIE.length/WALL_TIE.area,impactElasticModulus:WALL_TIE.axialStiffness*WALL_TIE.length/WALL_TIE.area});
  return {timber,veneer,mortar,drywall,tile,gable,gableFrame,flooring,tie};
 }
 
