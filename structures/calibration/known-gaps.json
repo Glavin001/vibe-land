@@ -73,5 +73,26 @@
    }
   }
  },
- "truss-members": {}
+ "truss-members": {
+  "default": {
+   "step2": {
+    "state": "holds",
+    "note": "default bending gain reads the chords' Vierendeel moments ~10x low: carries a cut centre diagonal at real u 3.1"
+   },
+   "end-diagonal": {
+    "state": "holds",
+    "note": "carries a cut end diagonal at real u 10 (bending gain)"
+   },
+   "top-chord": {
+    "state": "damaged",
+    "note": "a cut top chord breaks only 6 bonds (bending gain)"
+   }
+  },
+  "section": {
+   "*": {
+    "state": "*",
+    "note": "section bending without section rotation breaks the intact truss at rest: the bottom chord's joints carry the moments the default rotational stiffness gives them"
+   }
+  }
+ }
 }

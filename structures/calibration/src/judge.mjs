@@ -104,7 +104,10 @@ export function judge(spec, report, config, model) {
     // within 5% of the worst utilisation (symmetric structures have twins) breaks on the first
     // breaking tick. (Which of the rest also go depends on the order pieces come free: past the
     // first breaks the structure is a mechanism, and `missed` lists them for the record.)
-    const worstU = prediction.u, critical = (prediction.over ?? []).filter((o) => o.u >= 0.95 * worstU).map((o) => o.key);
+    // It starts where the hand calculation has the structure past its capacity: a first-tick break
+    // among the bonds over 1 + band (or, when none is, within 5% of the worst).
+    const worstU = prediction.u, overBand = (prediction.over ?? []).filter((o) => o.u > 1 + (spec.band ?? 0)).map((o) => o.key);
+    const critical = overBand.length ? overBand : (prediction.over ?? []).filter((o) => o.u >= 0.95 * worstU).map((o) => o.key);
     const membersOk = prediction.state === 'holds' ? (m.broken === 0 || m.tolerated === m.broken) : prediction.state === 'collapses' ? critical.some((k) => firstSet.has(k)) : true;
     results.push({ case: c.id, label: c.label, predicted: { state: prediction.state, u: prediction.u, worst: prediction.worst },
       measured: { state: m.state, broken: m.broken, firstTick: m.firstTick, maxDrop: m.maxDrop, maxMove: m.maxMove, fallen: m.fallenChunks, free: m.freeChunks, firstBroken: firstKeys, mustBreak, missed: mustBreak.filter((k) => !firstSet.has(k)) },
