@@ -173,6 +173,15 @@ inline Result section(const std::vector<P3> &a, const std::vector<P3> &b, const 
   }
   A *= 0.5;
   if (!(A > 1e-12)) return r;
+  // A contact cannot be larger than its faces' overlap. Where the authored area
+  // is (beyond the authoring's 1e-6 m^2 rounding), the faces are not the
+  // contact -- an angled or curved part whose bond area comes from the solids'
+  // overlap -- and their overlap, a sliver, says nothing about its shape:
+  // scaled up to the authored area it gave a 0.056 m^2 vehicle bond radii of
+  // gyration of 94 m and 6e-5 m. Such a bond keeps the square patch of its
+  // area. A smaller authored area (a fastener inside a larger overlap) keeps
+  // the overlap's shape, scaled down.
+  if (area > A + 1e-6) return r;
   cx /= 6 * A;
   cy /= 6 * A;
   xx = xx / 12 - A * cx * cx; // int u^2 dA about the patch centroid
