@@ -20,6 +20,16 @@ Fixed constraints, not levers:
 - Cost: 0.4-1.3 s per impact tick in the first projected-gradient version, one block per island. Since 91d5b2aa2 it is ADMM with 6×6 per-chunk block preconditioning.
 - At rest: zero extra.
 - To measure: impact-tick step time against the runtime profile, for the truck, cannonball, meteor and small balls. Re-measure after the coupled impactor contact lands.
+- 2026-10-07, after the convergence fix (122e83998: KKT projection for thin sections, per-residual rho rebalance) and with the evaluation budget raised from 4096 to 32768 steps so impact ticks converge:
+
+  | First tick, sections off | Solves | Steps | Time | Longest dispatch |
+  |---|---|---|---|---|
+  | Truck | 23 | 4.7k | 4.8 s | 60 ms |
+  | Corner | 39 | 9.8k | 7.6 s | 60 ms |
+  | Cannonball | 38 | 11k | 10.5 s | 60 ms |
+  | Meteor | 98 | 24.5k | 20 s | 60 ms |
+
+  A house evaluation at rest converges in 36-42 steps (20-40 ms), or costs nothing with the carried yield state. Levers: fewer ramp levels and brittle cascades, cheaper J-steps, parallel islands. The 32768 budget is a correctness budget, not a performance target.
 
 **2. Rotational stiffness convergence** (`VIBE_SECTION_ROTATION`, PhysX `feat/section-rotational-stiffness`)
 - Cost: about 3× the iterations to the same force error on the two-storey veneer house (319 vs 114, native polynomial, from cold to 1e-3).
