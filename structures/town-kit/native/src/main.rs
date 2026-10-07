@@ -72,7 +72,7 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
  let mats=pack["defaults"]["solver"]["materials"].as_array().ok_or("materials missing")?;
  let crush:Vec<CrushMaterialDesc>=if mats.iter().any(|m|m["crush"].is_object()) { mats.iter().map(|m|{let c=&m["crush"];CrushMaterialDesc{cap_pressure:f(c,"capPressure"),cohesion:f(c,"cohesion"),friction_slope:f(c,"frictionSlope"),
   crush_energy:f(c,"crushEnergy"),crush_viscosity:f(c,"crushViscosity"),strain_rate_exponent:f(c,"strainRateExponent"),reference_strain_rate:f(c,"referenceStrainRate").max(1e-9),
-  debris_mass_fraction:f(c,"debrisMassFraction"),debris_fragment_count:c["debrisFragmentCount"].as_u64().unwrap_or(0) as u32}}).collect() } else { vec![] };
+  debris_mass_fraction:f(c,"debrisMassFraction"),debris_fragment_count:c["debrisFragmentCount"].as_u64().unwrap_or(0) as u32,impedance:f(c,"impedance")}}).collect() } else { vec![] };
  let materials=pack["defaults"]["solver"]["materials"].as_array().ok_or("materials missing")?.iter().map(|m|StressMaterialDesc {
   compression_elastic:f(m,"compressionElastic"),compression_fatal:f(m,"compressionFatal"),tension_elastic:f(m,"tensionElastic"),tension_fatal:f(m,"tensionFatal"),shear_elastic:f(m,"shearElastic"),shear_fatal:f(m,"shearFatal"),elastic_modulus:f(m,"elasticModulus"),residual_area_fraction:f(m,"residualAreaFraction") }).collect();
  let mut wc=WorldConfig::default();wc.gravity=Vec3::new(0.,-9.81,0.);wc.cpu_threads=2;
@@ -94,7 +94,8 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
  }}}else{world.add_static_box(StaticBoxDesc { entity_id:0x10000001,user_id:0,pose:Pose{position:Vec3::new(0.,-0.75,0.),rotation:Quat::IDENTITY},half_extents:Vec3::new(5000.,0.75,5000.),collision_group:1,collision_mask:mask })?;}
  world.native_attach()?;
  world.native_create_destructible(0,Pose::default(),&nodes,&bonds,DestructibleSettings {
-  max_solver_iterations_per_frame:2048,graph_reduction_level:0,materials,crush,maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
+  max_solver_iterations_per_frame:2048,graph_reduction_level:0,materials,crush,
+  ductile_slip:mats.iter().map(|m|m["ductileSlip"].as_f64().unwrap_or(0.0) as f32).collect(),maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
   apply_excess_forces:true,apply_centrifugal:true,excess_force_scale:0.012,linear_damping:0.25,angular_damping:0.35,
  },1<<5,mask)?;
  let mut contact=ContactSettings::default();

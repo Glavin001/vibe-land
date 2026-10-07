@@ -828,9 +828,23 @@ pub fn crush_table(json: &[u8]) -> Vec<vibe_netcode::destruction_backend::CrushM
                 reference_strain_rate: f(c, "referenceStrainRate"),
                 debris_mass_fraction: f(c, "debrisMassFraction"),
                 debris_fragment_count: c["debrisFragmentCount"].as_u64().unwrap_or(0) as u32,
+                impedance: f(c, "impedance"),
             }
         })
         .collect()
+}
+
+/// Each material's ultimate slip (m), from `defaults.solver.materials[].ductileSlip`
+/// of a JSON pack (town-kit materials.mjs ULTIMATE_SLIP): the native stage's
+/// impact capacity lets a joint of such a material yield at capacity and break
+/// past it. Empty when the pack authors none; 0 for a brittle material.
+pub fn ductile_slip_table(json: &[u8]) -> Vec<f32> {
+    let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Vec::new() };
+    let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Vec::new() };
+    if !materials.iter().any(|m| m["ductileSlip"].as_f64().unwrap_or(0.0) > 0.0) {
+        return Vec::new();
+    }
+    materials.iter().map(|m| m["ductileSlip"].as_f64().unwrap_or(0.0).max(0.0) as f32).collect()
 }
 
 #[cfg(test)]

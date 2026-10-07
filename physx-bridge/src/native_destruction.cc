@@ -6,6 +6,7 @@
 #endif
 
 #include "extensions/PxMassProperties.h"
+#include "geometry/PxGeometryQuery.h"
 
 #include <algorithm>
 #include <chrono>
@@ -97,6 +98,17 @@ static bool native_section_rotation() {
 }
 static bool native_section_bending() {
   static const bool value = native_env_f32("VIBE_SECTION_BENDING", 0.0f) != 0.0f || native_section_rotation();
+  return value;
+}
+/// VIBE_IMPACT_CAPACITY=1 (opt-in, SDKs with PX_DESTRUCTION_IMPACT_CAPACITY):
+/// the stage's impact capacity (PhysX docs/destruction/IMPACT_CAPACITY_DESIGN.md
+/// "E"). Where the elastic solve has a bond past its fatal limit, the tick is
+/// solved as an impact of chunks joined by joints of finite capacity: what the
+/// joints cannot carry accelerates the chunks instead of reaching the anchors;
+/// brittle joints fracture as the load builds, ductile ones (the pack's
+/// materials[].ductileSlip) yield and break past their ultimate slip.
+static bool native_impact_capacity() {
+  static const bool value = native_env_f32("VIBE_IMPACT_CAPACITY", 0.0f) != 0.0f;
   return value;
 }
 static float native_depenetration_velocity() {
@@ -300,7 +312,17 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
       out.crush.referenceStrainRate = c.reference_strain_rate > 0.0f ? c.reference_strain_rate : 1.0f;
       out.crush.debrisMassFraction = c.debris_mass_fraction;
       out.crush.debrisFragmentCount = c.debris_fragment_count;
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+      out.impactImpedance = std::max(0.0f, c.impedance);
+#endif
     }
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+    native_require(settings.ductile_slip.empty() || settings.ductile_slip.size() == settings.materials.size(),
+                   "ductile slip table must be empty or parallel to the materials");
+    out.ductileSlip = settings.ductile_slip.empty() ? 0.0f : std::max(0.0f, settings.ductile_slip[index]);
+    // Refined per structure once its bonds' weights are normalised (append_bonds).
+    out.impactStiffness = kReferenceModulusPa;
+#endif
     ++index;
     s.materials.push_back(out);
   }
@@ -433,6 +455,13 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
       s.bonds[i].complianceScale /= mean;
       if (clamp > 1.0f) s.bonds[i].complianceScale = std::clamp(s.bonds[i].complianceScale, 1.0f / clamp, clamp);
     }
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+    // The weights are sqrt(E/E_ref A/L) over their geometric mean, so a bond's
+    // stiffness E A / L is E_ref mean^2 complianceScale^2: the structure's
+    // materials (appended just before its bonds) carry that modulus.
+    for (std::size_t m = material_base; m < s.materials.size(); ++m)
+      s.materials[m].impactStiffness = kReferenceModulusPa * mean * mean;
+#endif
   }
 }
 
@@ -719,6 +748,20 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
   actor->setCMassLocalPose(PxTransform(aggregate.centerOfMass,axes));
   if(vehicle_depenetration_velocity()>0.0f) actor->setMaxDepenetrationVelocity(vehicle_depenetration_velocity());
   const PxU32 material=s.append_materials(structure_id,settings),cluster=PxU32(s.clusters.size());
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+  {
+    // A vehicle's front gives way before it crushes what it hits: EN 1991-1-7
+    // Annex C, F = v sqrt(k m) (k = 300 kN/m, the equivalent stiffness of a
+    // road vehicle's front), over its frontal area (the actor-frame bounds'
+    // width x height, forward is z). As an impedance, per m/s:
+    // sqrt(k m) / A. The impact-pressure crush reads it for any of its parts.
+    PxBounds3 bounds=PxBounds3::empty();
+    for (auto *shape : shapes) {PxBounds3 b;if (PxGeometryQuery::computeGeomBounds(b, shape->getGeometry(), shape->getLocalPose())) bounds.include(b);}
+    const float area=(bounds.maximum.x-bounds.minimum.x)*(bounds.maximum.y-bounds.minimum.y);
+    const float front=area>0.0f?std::sqrt(300e3f*aggregate.mass)/area:0.0f;
+    for (std::size_t m=material;m<s.materials.size();++m) s.materials[m].impactImpedance=front;
+  }
+#endif
   s.next_serial[structure_id]=1;
   if(!s.round_mask) {
     const auto filter=hulls[0][0]->getSimulationFilterData();
@@ -1081,6 +1124,21 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
 #else
   native_require(native_env_f32("VIBE_SECTION_BENDING", 0.0f) == 0.0f,
                  "VIBE_SECTION_BENDING needs a PhysX SDK with PX_DESTRUCTION_SECTION_BENDING (PhysX feat/real-section-bending)");
+#endif
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+  desc.impactCapacity = native_impact_capacity();
+  // Ci, the impact-pressure crush, goes with it where crushing is authored
+  // (VIBE_IMPACT_CRUSH=0 keeps the virial crush, for A/B).
+  bool crushAuthored = false;
+  for (const auto &m : s.materials) crushAuthored = crushAuthored || m.crush.capPressure > 0.0f;
+  desc.impactCrush = desc.impactCapacity && crushAuthored && native_env_f32("VIBE_IMPACT_CRUSH", 1.0f) != 0.0f;
+  if (desc.impactCrush)
+    std::fprintf(stderr, "[destruction] impact-pressure crush: on (Z1 Z2/(Z1+Z2) v at each contact)\n");
+  if (desc.impactCapacity)
+    std::fprintf(stderr, "[destruction] impact capacity: on (joint capacity and inertia on impact ticks)\n");
+#else
+  native_require(!native_impact_capacity(),
+                 "VIBE_IMPACT_CAPACITY needs a PhysX SDK with PX_DESTRUCTION_IMPACT_CAPACITY (PhysX feat/impact-capacity)");
 #endif
   // One trial evaluation plus one corrected rigid pass. Zero would leave the
   // stage in its diagnostic mode, where any membership-changing verdict is
@@ -1452,6 +1510,18 @@ std::uint32_t NativeDestruction::fire_round(const FfiRoundDesc &desc) {
       NativeRound{body, s.tick_index + std::max<std::uint32_t>(desc.ttl_ticks, 1u)});
   s.rounds_fired += 1;
   return static_cast<std::uint32_t>(s.rounds.size());
+}
+
+void NativeDestruction::set_impactor_impedance(std::uint32_t gpu_index, float impedance) {
+  State &s = *state_;
+  native_require(std::isfinite(impedance) && impedance >= 0.0f, "impactor impedance must be finite and non-negative");
+  if (impedance > 0.0f) s.impactors[gpu_index] = impedance; else s.impactors.erase(gpu_index);
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+  std::vector<PxRigidDynamicGPUIndex> bodies;std::vector<PxReal> values;
+  for (const auto &[body, z] : s.impactors) {bodies.push_back(body);values.push_back(z);}
+  native_require(s.stage().setImpactorImpedance(bodies.data(), values.data(), PxU32(bodies.size())),
+                 "the stage refused the impactor impedance table");
+#endif
 }
 
 void NativeDestruction::State::expire_rounds() {

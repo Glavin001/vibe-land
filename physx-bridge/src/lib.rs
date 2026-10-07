@@ -580,6 +580,9 @@ pub struct CrushMaterialDesc {
     /// native stage removes the chunk either way (it creates no new geometry).
     pub debris_mass_fraction: f32,
     pub debris_fragment_count: u32,
+    /// Acoustic impedance rho c (Pa s/m) for the impact-pressure crush
+    /// (PhysX PX_DESTRUCTION_IMPACT_CAPACITY, VIBE_IMPACT_CAPACITY=1). 0: none.
+    pub impedance: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -591,6 +594,11 @@ pub struct DestructibleSettings {
     /// parallel to `materials`, and a chunk crushes by its node's material
     /// (`ChunkNodeDesc::material`). Native GPU stage only.
     pub crush: Vec<CrushMaterialDesc>,
+    /// Impact capacity (PhysX PX_DESTRUCTION_IMPACT_CAPACITY, opt-in with
+    /// VIBE_IMPACT_CAPACITY=1): empty, or parallel to `materials`, each
+    /// material's ultimate slip in metres (0: brittle -- a joint fractures at
+    /// capacity; > 0: ductile -- it yields and breaks past this slip).
+    pub ductile_slip: Vec<f32>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -619,6 +627,7 @@ impl Default for DestructibleSettings {
                 residual_area_fraction: 0.0,
             }],
             crush: Vec::new(),
+            ductile_slip: Vec::new(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -1794,6 +1803,13 @@ impl World {
 
     /// The crush properties the stage was given for a structure's material,
     /// as configured (all zeros when crushing is off or not authored).
+    /// A launched body's acoustic impedance rho c (Pa s/m) for the native
+    /// stage's impact-pressure crush; 0 forgets it.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_set_impactor_impedance(&mut self, entity_id: u32, impedance: f32) -> Result<(), BridgeError> {
+        self.inner.pin_mut().native_set_impactor_impedance(entity_id, impedance).map_err(operation_error)
+    }
+
     #[cfg(feature = "native-destruction")]
     pub fn native_crush_material(&self, structure_id: u32, material: u32) -> Result<CrushMaterialDesc, BridgeError> {
         self.inner.native_crush_material(structure_id, material).map(|c| CrushMaterialDesc {
@@ -1801,6 +1817,7 @@ impl World {
             crush_energy: c.crush_energy, crush_viscosity: c.crush_viscosity,
             strain_rate_exponent: c.strain_rate_exponent, reference_strain_rate: c.reference_strain_rate,
             debris_mass_fraction: c.debris_mass_fraction, debris_fragment_count: c.debris_fragment_count,
+            impedance: c.impedance,
         }).map_err(operation_error)
     }
 
@@ -2449,6 +2466,7 @@ mod ffi {
         reference_strain_rate: f32,
         debris_mass_fraction: f32,
         debris_fragment_count: u32,
+        impedance: f32,
     }
 
     struct FfiDestructibleSettings {
@@ -2458,6 +2476,8 @@ mod ffi {
         materials: Vec<FfiStressMaterial>,
         /// Empty, or parallel to `materials`: opt-in chunk crushing.
         crush: Vec<FfiCrushMaterial>,
+        /// Empty, or parallel to `materials`: ultimate slip (m), 0 brittle.
+        ductile_slip: Vec<f32>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -2972,6 +2992,7 @@ mod ffi {
         fn native_take_island_events(self: Pin<&mut World>) -> Result<Vec<FfiIslandBodyEvent>>;
         fn native_take_crush_events(self: Pin<&mut World>) -> Result<Vec<FfiChunkCrushEvent>>;
         fn native_crush_material(self: &World, structure_id: u32, material: u32) -> Result<FfiCrushMaterial>;
+        fn native_set_impactor_impedance(self: Pin<&mut World>, entity_id: u32, impedance: f32) -> Result<()>;
         fn native_chunk_body_snapshots(self: &World) -> Result<&[FfiChunkBodySnapshot]>;
         fn native_bond_stress_rows(
             self: &World,
@@ -3377,8 +3398,10 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
                     reference_strain_rate: c.reference_strain_rate,
                     debris_mass_fraction: c.debris_mass_fraction,
                     debris_fragment_count: c.debris_fragment_count,
+                    impedance: c.impedance,
                 })
                 .collect(),
+            ductile_slip: value.ductile_slip,
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,

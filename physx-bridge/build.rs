@@ -404,6 +404,12 @@ fn add_native_destruction(
             "PX_DESTRUCTION_CRUSH_CORRECTION",
             "VIBE_PHYSX_HAS_CRUSH_CORRECTION",
         ),
+        // PxDestructionStressDesc::impactCapacity and the materials'
+        // ductileSlip / impactStiffness (opt-in, VIBE_IMPACT_CAPACITY=1).
+        (
+            "PX_DESTRUCTION_IMPACT_CAPACITY",
+            "VIBE_PHYSX_HAS_IMPACT_CAPACITY",
+        ),
     ] {
         if text.contains(field) {
             build.define(define, None);

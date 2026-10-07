@@ -174,6 +174,8 @@ struct NativeDestruction::State {
   /// First stage material index per structure, so a bond's authored material
   /// resolves inside its own structure's table.
   std::map<std::uint32_t, std::uint32_t> material_base;
+  // Impact-pressure crush: impedance (Pa s/m) of bodies that are not chunks, by GPU index.
+  std::map<std::uint32_t, float> impactors;
   std::map<std::uint32_t, std::uint32_t> next_serial;
   std::map<std::pair<std::uint32_t, std::uint64_t>, NativeBody> bodies;
 

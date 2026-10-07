@@ -290,6 +290,7 @@ fn settings() -> DestructibleSettings {
             residual_area_fraction: 0.0,
         }],
         crush: Vec::new(),
+        ductile_slip: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: true,
@@ -453,7 +454,7 @@ fn crushable(debris: f32, pieces: u32) -> vibe_land_physx_bridge::CrushMaterialD
     vibe_land_physx_bridge::CrushMaterialDesc {
         cap_pressure: 2.5 * fc, cohesion: fc * 0.6, friction_slope: 1.2,
         crush_energy: 1.0, crush_viscosity: 1.0, strain_rate_exponent: 0.0, reference_strain_rate: 1.0,
-        debris_mass_fraction: debris, debris_fragment_count: pieces,
+        debris_mass_fraction: debris, debris_fragment_count: pieces, impedance: 0.0,
     }
 }
 
@@ -557,7 +558,7 @@ fn authored_crush_reaches_the_stage_unchanged() {
     material.materials.push(material.materials[0]);
     let authored = vibe_land_physx_bridge::CrushMaterialDesc {
         cap_pressure: 17e6, cohesion: 4.08e6, friction_slope: 1.2, crush_energy: 3.5e6, crush_viscosity: 5.9e5,
-        strain_rate_exponent: 0.02, reference_strain_rate: 30.0, debris_mass_fraction: 0.25, debris_fragment_count: 6,
+        strain_rate_exponent: 0.02, reference_strain_rate: 30.0, debris_mass_fraction: 0.25, debris_fragment_count: 6, impedance: 0.0,
     };
     material.crush = vec![vibe_land_physx_bridge::CrushMaterialDesc::default(), authored];
     world.native_attach().expect("stage attach");

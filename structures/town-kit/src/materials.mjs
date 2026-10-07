@@ -314,23 +314,34 @@ export const WEATHERBOARD = { density: 450 };
  * Timber and steel members are not crushable (they snap or bend); nor are
  * concrete tiles or glass, which fail in flexure (EN 490, EN 572).
  */
-const crushOf = (fc, energy, viscosity, k = 1.2) => ({ capPressure: 2.5 * fc, cohesion: fc * (1 - k / 3), frictionSlope: k, crushEnergy: energy, crushViscosity: viscosity });
+const crushOf = (fc, energy, viscosity, impedance, k = 1.2) => ({ capPressure: 2.5 * fc, cohesion: fc * (1 - k / 3), frictionSlope: k, crushEnergy: energy, crushViscosity: viscosity, impedance });
+/**
+ * Acoustic impedance rho c = sqrt(rho E), Pa s/m: the native stage's
+ * impact-pressure crush (PhysX impactImpedance, opt-in with
+ * VIBE_IMPACT_CAPACITY=1) crushes a struck chunk at the 1-D elastic impact
+ * stress Z1 Z2 / (Z1 + Z2) v instead of at the virial of the solve's forces
+ * (PhysX docs/destruction/IMPACT_CAPACITY_DESIGN.md "Ci").
+ */
+const impedance = (density, modulus) => Math.sqrt(density * modulus);
 export const CRUSH = {
   // Clay-brick veneer panel: masonry f_k = 0.55 f_b^0.7 f_m^0.3 (EN 1996-1-1
   // eq. 3.1, Group 1 clay units, general-purpose mortar) = 6.8 MPa for common
   // facing brick (f_b 20 MPa, EN 771-1 / AS/NZS 4455) in M4 mortar. Brick to
   // 20 mm rubble from 100 mm at Wi 13 kWh/t (fired clay; cement clinker 13.5):
   // 0.51 kWh/t = 1.8 kJ/kg x 1900 kg/m^3 = 3.5 MJ/m^3. DIF 3.6 -> 5.9e5 Pa s.
-  brickVeneer: crushOf(6.8e6, 3.5e6, 5.9e5),
+  // E = 1000 f_k (EN 1996-1-1 3.7.2) = 6.8 GPa at 1900 kg/m^3: 3.6 MPa s/m.
+  brickVeneer: crushOf(6.8e6, 3.5e6, 5.9e5, impedance(1900, 6.8e9)),
   // Gypsum board: core crushes at ~3.5 MPa (GYPSUM above). To 5 mm from its
   // 13 mm at Wi 8.2 (gypsum rock 8.16): 0.44 kWh/t = 1.6 kJ/kg x 700 kg/m^3 =
   // 1.1 MJ/m^3. DIF 5.4 -> 5.1e5 Pa s.
-  gypsum: crushOf(3.5e6, 1.1e6, 5.1e5),
+  // E 2 GPa (GYPSUM) at 700 kg/m^3: 1.2 MPa s/m.
+  gypsum: crushOf(3.5e6, 1.1e6, 5.1e5, impedance(700, 2e9)),
   // Concrete C30/37: f_ck 30 MPa (EN 1992-1-1 Table 3.1). Rubble to 20 mm from
   // 100 mm at Wi 11.6 kWh/t (limestone aggregate, Bond 1961): 0.45 kWh/t =
   // 1.6 kJ/kg x 2400 = 3.9 MJ/m^3. MC90 DIF at 30/s 1.56 -> 5.6e5 Pa s. Reinforced
   // concrete crushes its concrete only; the cage (bonds) still has to snap.
-  concrete: crushOf(30e6, 3.9e6, 5.6e5),
+  // E_cm 33 GPa (EN 1992-1-1 Table 3.1) at 2400 kg/m^3: 8.9 MPa s/m.
+  concrete: crushOf(30e6, 3.9e6, 5.6e5, impedance(2400, 33e9)),
   // Annealed float glass fails by tensile cracking under contact (Hertzian
   // cones), at its characteristic bending strength f_g,k = 45 MPa (EN 572-1),
   // pressure-independent (slope 0). To 1 mm from a 6 mm pane at Wi 3.08 kWh/t
@@ -338,7 +349,9 @@ export const CRUSH = {
   // rate-insensitive -- an assumption, not a measurement: the viscosity lets
   // 1 MPa of overstress shatter a pane within one 60 Hz tick. Shards, not
   // dust: all of its mass in a dozen pieces (for the client's debris).
-  glass: { capPressure: 45e6, cohesion: 45e6, frictionSlope: 0, crushEnergy: 5.2e6, crushViscosity: 3.2e3, debrisMassFraction: 1, debrisFragmentCount: 12 },
+  glass: { capPressure: 45e6, cohesion: 45e6, frictionSlope: 0, crushEnergy: 5.2e6, crushViscosity: 3.2e3, debrisMassFraction: 1, debrisFragmentCount: 12,
+    // E 70 GPa (EN 572-1) at 2500 kg/m^3: 13 MPa s/m.
+    impedance: impedance(2500, 70e9) },
 };
 /**
  * The crush block a material gets by what it is, by name: masonry, concrete,

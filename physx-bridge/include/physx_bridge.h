@@ -182,6 +182,7 @@ public:
   rust::Vec<FfiIslandBodyEvent> native_take_island_events();
   rust::Vec<FfiChunkCrushEvent> native_take_crush_events();
   FfiCrushMaterial native_crush_material(std::uint32_t structure_id, std::uint32_t material) const;
+  void native_set_impactor_impedance(std::uint32_t entity_id, float impedance);
   rust::Slice<const FfiChunkBodySnapshot> native_chunk_body_snapshots() const;
   rust::Vec<FfiBondStressRow> native_bond_stress_rows(std::uint32_t structure_id) const;
   FfiDestructionStats native_stats() const;

@@ -137,6 +137,9 @@ public:
   /// round becomes a real body for the few ticks it takes to strike. Returns
   /// the number of rounds currently live.
   std::uint32_t fire_round(const FfiRoundDesc &desc);
+  /// A non-destructible body's acoustic impedance for the impact-pressure
+  /// crush (0 forgets it). No effect on SDKs without it.
+  void set_impactor_impedance(std::uint32_t gpu_index, float impedance);
 
   /// Where a named chunk is now, and which body owns it.
   FfiChunkAim chunk_aim(std::uint32_t structure_id,

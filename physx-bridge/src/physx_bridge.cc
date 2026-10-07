@@ -4204,6 +4204,14 @@ public:
 
   FfiNativeStatus native_last_status() const { return native().last_status(); }
 
+  void native_set_impactor_impedance(std::uint32_t entity_id, float impedance) {
+    require(!step_in_flight_, "native_set_impactor_impedance must run outside a step");
+    Record &record = find(entity_id);
+    PxRigidDynamic *actor = record.actor != nullptr ? record.actor->is<PxRigidDynamic>() : nullptr;
+    require(actor != nullptr, "an impactor must be a dynamic rigid body");
+    native().set_impactor_impedance(actor->getGPUIndex(), impedance);
+  }
+
   std::uint32_t native_fire_round(const FfiRoundDesc &desc) {
     require(!step_in_flight_, "native_fire_round must run outside a step");
     return native().fire_round(desc);
@@ -4796,6 +4804,9 @@ rust::Vec<FfiIslandBodyEvent> World::native_take_island_events() {
 }
 rust::Vec<FfiChunkCrushEvent> World::native_take_crush_events() {
   return impl_->native_take_crush_events();
+}
+void World::native_set_impactor_impedance(std::uint32_t entity_id, float impedance) {
+  impl_->native_set_impactor_impedance(entity_id, impedance);
 }
 FfiCrushMaterial World::native_crush_material(std::uint32_t structure_id, std::uint32_t material) const {
   return impl_->native_crush_material(structure_id, material);

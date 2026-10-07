@@ -153,8 +153,10 @@ pub(crate) fn ffi_settings(settings: &StressSolverSettings) -> DestructibleSetti
                 reference_strain_rate: if c.reference_strain_rate > 0.0 { c.reference_strain_rate } else { 1.0 },
                 debris_mass_fraction: c.debris_mass_fraction,
                 debris_fragment_count: c.debris_fragment_count,
+                impedance: c.impedance,
             })
             .collect(),
+        ductile_slip: settings.ductile_slip.clone(),
         maximum_bodies: settings.maximum_bodies,
         maximum_fractures_per_actor_per_tick: settings.maximum_fractures_per_actor_per_tick,
         apply_excess_forces: settings.apply_excess_forces,

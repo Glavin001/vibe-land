@@ -1400,6 +1400,8 @@ impl CityRuntime {
         if let Ok(payload) = scene_payload() {
             if !payload.starts_with(b"VLSP") && !payload.starts_with(b"VLSW") {
                 settings.crush = vibe_land_destruction::scene_pack::crush_table(payload);
+                // Ductile joints for the stage's impact capacity (opt-in, VIBE_IMPACT_CAPACITY=1).
+                settings.ductile_slip = vibe_land_destruction::scene_pack::ductile_slip_table(payload);
                 if !settings.crush.is_empty() {
                     let crushable = settings.crush.iter().filter(|c| c.cap_pressure > 0.0).count();
                     tracing::info!(crushable, "scene authors chunk crushing");

@@ -211,6 +211,12 @@ const PHYSX_FRONT_LATERAL_STIFFNESS_PER_N: f32 = 28.0;
 const PHYSX_REAR_LATERAL_STIFFNESS_PER_N: f32 = 32.0;
 const PHYSX_LONGITUDINAL_STIFFNESS_PER_N: f32 = 12.0;
 
+/// Young's modulus of the cannonball's steel (EN 1993-1-1 3.2.6: 210 GPa) and
+/// of the meteor's rock (basalt, ~60 GPa), for their acoustic impedance in the
+/// native stage's impact-pressure crush.
+const BALL_STEEL_MODULUS_PA: f32 = 210e9;
+const METEOR_ROCK_MODULUS_PA: f32 = 60e9;
+
 /// A garage build's bump stop: VIBE_VEHICLE_BUMP_STOP_RATIO (default 10) x the
 /// main spring, damped at VIBE_VEHICLE_BUMP_STOP_DAMPING (default 1) x critical
 /// for a corner's sprung mass. Real jounce bumpers engage at several times the
@@ -1865,7 +1871,9 @@ impl PhysxPhysicsArena {
             return None;
         }
         let id = self.take_pool_id(Pool::Meteor);
-        self.launch_body(id, position, velocity, radius, mass, ttl_ticks)
+        let launched = self.launch_body(id, position, velocity, radius, mass, ttl_ticks);
+        self.set_impactor_impedance(launched, radius, mass, METEOR_ROCK_MODULUS_PA);
+        launched
     }
 
     /// Next id from a ring, retiring whatever still holds it. Without a
@@ -1945,7 +1953,9 @@ impl PhysxPhysicsArena {
         if !position.iter().chain(velocity.iter()).all(|x|x.is_finite()) || !radius.is_finite() || radius<=0.0 || !mass.is_finite() || mass<=0.0 || ttl_ticks==0 {return None;}
         let id=self.take_pool_id(Pool::Ball);
         self.ball_radius_m=radius;
-        self.launch_body(id,position,velocity,radius,mass,ttl_ticks)
+        let launched=self.launch_body(id,position,velocity,radius,mass,ttl_ticks);
+        self.set_impactor_impedance(launched,radius,mass,BALL_STEEL_MODULUS_PA);
+        launched
     }
 
     /// Throw a visible ball from `position` along `direction` and return its id.
@@ -1982,7 +1992,9 @@ impl PhysxPhysicsArena {
         let muzzle = position + unit * (radius + MUZZLE_CLEARANCE_M);
         let id = self.take_pool_id(Pool::Ball);
         self.ball_radius_m = radius;
-        self.launch_body(id, muzzle, unit * speed, radius, mass, ttl_ticks)
+        let launched = self.launch_body(id, muzzle, unit * speed, radius, mass, ttl_ticks);
+        self.set_impactor_impedance(launched, radius, mass, BALL_STEEL_MODULUS_PA);
+        launched
     }
 
     /// How many times a ball has been held at a surface it would have skipped.
@@ -2263,7 +2275,23 @@ impl PhysxPhysicsArena {
         }
     }
 
+    /// A launched ball's acoustic impedance rho c = sqrt(rho E), for the native
+    /// stage's impact-pressure crush (opt-in, VIBE_IMPACT_CAPACITY=1): the
+    /// density from its own mass and radius, the modulus of what it is made of.
+    /// A world without the native stage ignores it.
+    fn set_impactor_impedance(&mut self, launched: Option<u32>, radius: f32, mass: f32, modulus: f32) {
+        #[cfg(feature = "native-destruction")]
+        if let Some(id) = launched {
+            let density = mass / (4.0 / 3.0 * std::f32::consts::PI * radius * radius * radius);
+            let _ = self.world.native_set_impactor_impedance(NS_DYNAMIC | (id & ID_MASK), (density * modulus).sqrt());
+        }
+        #[cfg(not(feature = "native-destruction"))]
+        let _ = (launched, radius, mass, modulus);
+    }
+
     fn retire_launched_ball(&mut self, id: u32) {
+        #[cfg(feature = "native-destruction")]
+        let _ = self.world.native_set_impactor_impedance(NS_DYNAMIC | (id & ID_MASK), 0.0);
         // Dropped from the metadata map first: `snapshot_dynamic_bodies` joins
         // on it, so the ball stops being published even if the actor removal
         // is refused for a reason we have not thought of.

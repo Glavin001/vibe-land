@@ -830,6 +830,9 @@ FfiCrushMaterial NativeDestruction::crush_material(std::uint32_t structure_id, s
   out.reference_strain_rate = c.referenceStrainRate;
   out.debris_mass_fraction = c.debrisMassFraction;
   out.debris_fragment_count = c.debrisFragmentCount;
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+  out.impedance = s.materials[base->second + material].impactImpedance;
+#endif
   return out;
 }
 

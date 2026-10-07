@@ -59,6 +59,9 @@ pub struct CrushMaterial {
     /// Share of the crushed chunk's mass left as debris, and in how many pieces.
     pub debris_mass_fraction: f32,
     pub debris_fragment_count: u32,
+    /// Acoustic impedance rho c (Pa s/m): the impact-pressure crush (native
+    /// stage, VIBE_IMPACT_CAPACITY=1) reads the contact stress Z1 Z2/(Z1+Z2) v.
+    pub impedance: f32,
 }
 
 // Not Copy: the material table is a Vec. Settings are built once per match,
@@ -72,6 +75,10 @@ pub struct StressSolverSettings {
     pub materials: Vec<StressMaterial>,
     /// Opt-in chunk crushing: empty (the default) or parallel to `materials`.
     pub crush: Vec<CrushMaterial>,
+    /// Impact capacity (native GPU stage, opt-in with VIBE_IMPACT_CAPACITY=1):
+    /// empty, or parallel to `materials`, each material's ultimate slip (m);
+    /// 0 brittle, > 0 a ductile joint that yields at capacity.
+    pub ductile_slip: Vec<f32>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -95,6 +102,7 @@ impl Default for StressSolverSettings {
             graph_reduction_level: 0,
             materials: vec![StressMaterial::default()],
             crush: Vec::new(),
+            ductile_slip: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,
