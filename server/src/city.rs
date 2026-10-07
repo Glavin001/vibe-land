@@ -561,7 +561,20 @@ pub fn manifest_asset() -> Option<&'static (String, Arc<DestructionManifest>, Ve
     ASSET
         .get_or_init(|| match build_scene() {
             Ok(scene) => {
-                let manifest = DestructionManifest::from_city(&scene);
+                let mut manifest = DestructionManifest::from_city(&scene);
+                // VIBE_DIAG_CENTROID_COM=1: serve no centre-of-mass offsets,
+                // so clients weigh chunk centroids as they did before
+                // ChunkDef::mass_offset -- and draw a split-off off-centre
+                // roof displaced from the physics. Diagnostic only: for a
+                // before/after film or test of that fix.
+                if std::env::var("VIBE_DIAG_CENTROID_COM").is_ok_and(|v| v == "1") {
+                    tracing::warn!("VIBE_DIAG_CENTROID_COM=1: manifest without mass offsets (pre-fix client frames)");
+                    for structure in &mut manifest.structures {
+                        for chunk in &mut structure.chunks {
+                            chunk.mass_offset = [0.0; 3];
+                        }
+                    }
+                }
                 // to_bytes, not to_json_bytes: the binary VLCM payload.
                 //
                 // This regressed silently in the merge -- no conflict marker,
