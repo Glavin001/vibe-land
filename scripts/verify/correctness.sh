@@ -38,7 +38,7 @@ export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
 # capability). These remain for the single-feature regression tests.
 export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-$I/garage-multihull}
 export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/install/garage-hifi}
-export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/out/build/garage-multihull/package}
+export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/build/garage-hifi/package}
 export IMPACT_BUILD=${VERIFY_IMPACT_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/build/impact-e-tests}
 t_start=$(date +%s)
 failed=0
