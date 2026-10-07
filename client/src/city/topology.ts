@@ -10,7 +10,7 @@
 // rigid, so offsets stay valid until the chunk migrates again.
 
 import type { CityManifest } from './manifest';
-import { bondCountOf, bondEndpoints } from './manifest';
+import { bondCountOf, bondEndpoints, chunkMassCentre } from './manifest';
 import type { BootstrapMessage, TopologyMessage } from './wire';
 
 /** Which writer produced a body pose. See `updateBodyPose`. */
@@ -206,6 +206,18 @@ export class CityTopology {
    * `applyBootstrap` uses to rebuild a damaged city for a late joiner.
    */
   private readonly restPos: Float32Array;
+  /**
+   * Manifest centre of mass per chunk (`centroid + massOffset`), in its
+   * structure's frame: what an island's centre of mass weighs.
+   *
+   * Not `restPos`. That is the chunk's geometry origin, which is where the
+   * renderer draws it from and where the server's shape sits in its body, but
+   * a hull measured from a corner (the town kit's rafters, roof tiles and
+   * gables) has its mass a metre away from it. The server centres each body
+   * on the real centre of mass, so weighing origins put a freshly split
+   * veneer roof 0.46 m above where the server had it.
+   */
+  private readonly restMassCentre: Float32Array;
   /** Manifest mass per chunk, for reconstructing an island's centre of mass. */
   private readonly restMass: Float32Array;
   /** Manifest bounding radius per chunk, m. */
@@ -309,11 +321,13 @@ export class CityTopology {
     this.slotChanged = new Uint8Array(total);
     this.restPos = new Float32Array(total * 3);
     this.restMass = new Float32Array(total);
+    this.restMassCentre = new Float32Array(total * 3);
     this.restRadius = new Float32Array(total);
     for (const structure of manifest.structures) {
       const base = this.slotBase.get(structure.structureId)!;
       for (const chunk of structure.chunks) {
         this.restMass[base + chunk.nodeIndex] = chunk.mass;
+        this.restMassCentre.set(chunkMassCentre(chunk), (base + chunk.nodeIndex) * 3);
         this.restRadius[base + chunk.nodeIndex] = chunk.radius;
       }
     }
@@ -1045,7 +1059,7 @@ export class CityTopology {
    * client currently believes a chunk is. The adapter re-centres a split child
    * on its centre of mass, so an island body's frame is the structure rest
    * frame translated by the COM of its members — which the manifest pins down
-   * exactly (mass + rest centroid per chunk).
+   * exactly (mass + centre of mass per chunk).
    *
    * The old promote path derived offsets as
    * `inverse(promotionPose) ∘ chunkWorldPose(slot)`, which folded in however
@@ -1205,7 +1219,7 @@ export class CityTopology {
     }
     if (destinationWasEmpty) {
       // With one member the frame is fully determined: the centre of mass is
-      // that chunk's own centroid, so its offset is zero. The body's pose is
+      // that chunk's own (its centroid plus its mass offset). The body's pose is
       // left alone -- it heals on the next streamed record rather than being
       // shifted by a delta recovered from the wrong frame.
       const com = this.centreOfMass(destination);
@@ -1226,8 +1240,9 @@ export class CityTopology {
    *
    * The wire contract is `chunk_world = body_pose ∘ (rest_local − island_com)`,
    * and the server expresses every body pose in the frame of a REAL centre of
-   * mass. So this has to be the real one: a zero-mass support node contributes
-   * nothing to it.
+   * mass. So this has to be the real one: each chunk weighs in at its own
+   * centre of mass (`restMassCentre`, not its geometry origin `restPos`), and
+   * a zero-mass support node contributes nothing to it.
    *
    * Weighting supports uniformly instead -- which all three copies of this
    * calculation used to do -- shifts the frame by a fraction of the support's
@@ -1252,9 +1267,9 @@ export class CityTopology {
     for (const slot of slots) {
       const weight = this.restMass[slot];
       if (!(weight > 0)) continue;
-      x += this.restPos[slot * 3] * weight;
-      y += this.restPos[slot * 3 + 1] * weight;
-      z += this.restPos[slot * 3 + 2] * weight;
+      x += this.restMassCentre[slot * 3] * weight;
+      y += this.restMassCentre[slot * 3 + 1] * weight;
+      z += this.restMassCentre[slot * 3 + 2] * weight;
       mass += weight;
     }
     if (mass > 0) {
@@ -1267,9 +1282,9 @@ export class CityTopology {
     z = 0;
     let count = 0;
     for (const slot of slots) {
-      x += this.restPos[slot * 3];
-      y += this.restPos[slot * 3 + 1];
-      z += this.restPos[slot * 3 + 2];
+      x += this.restMassCentre[slot * 3];
+      y += this.restMassCentre[slot * 3 + 1];
+      z += this.restMassCentre[slot * 3 + 2];
       count += 1;
     }
     return count > 0 ? [x / count, y / count, z / count] : null;

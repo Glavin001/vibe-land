@@ -315,6 +315,10 @@ pub struct ChunkTruth {
     slot_base: HashMap<u32, u32>,
     structure_of: Vec<u32>,
     rest: Vec<Vec3>,
+    /// slot -> where its mass is centred (`ChunkDef::mass_center`): what an
+    /// island's centre of mass weighs, which `rest` is not for a hull
+    /// measured from a corner.
+    mass_center: Vec<Vec3>,
     mass: Vec<f32>,
     support: HashMap<u32, Pose>,
     /// slot -> (tick, key) membership changes; GONE after a retire.
@@ -339,6 +343,7 @@ impl ChunkTruth {
         }
         let (mut slot_base, mut structure_of, mut rest, mut mass, mut support) =
             (HashMap::new(), Vec::new(), Vec::new(), Vec::new(), HashMap::new());
+        let mut mass_center = Vec::new();
         // Slot order: structures in manifest order, node index within (topology.ts).
         for structure in &manifest.structures {
             let base = structure_of.len() as u32;
@@ -346,13 +351,15 @@ impl ChunkTruth {
             let mut chunks: Vec<_> = structure.chunks.iter().collect();
             chunks.sort_by_key(|c| c.node_index);
             let n = chunks.last().map_or(0, |c| c.node_index + 1) as usize;
-            let (mut r, mut m) = (vec![Vec3::ZERO; n], vec![0.0f32; n]);
+            let (mut r, mut m, mut c) = (vec![Vec3::ZERO; n], vec![0.0f32; n], vec![Vec3::ZERO; n]);
             for chunk in chunks {
                 r[chunk.node_index as usize] = Vec3::from_array(chunk.centroid);
+                c[chunk.node_index as usize] = Vec3::from_array(chunk.mass_center());
                 m[chunk.node_index as usize] = chunk.mass;
             }
             structure_of.extend(std::iter::repeat(structure.structure_id).take(n));
             rest.extend(r);
+            mass_center.extend(c);
             mass.extend(m);
             support.insert(
                 structure.structure_id,
@@ -378,6 +385,7 @@ impl ChunkTruth {
             last_tick: first_tick.unwrap_or(0),
             slot_base,
             structure_of,
+            mass_center,
             rest,
             mass,
             support,
@@ -420,15 +428,15 @@ impl ChunkTruth {
         (slot < self.chunk_count && self.structure_of[slot as usize] == structure).then_some(slot)
     }
 
-    /// Mass-weighted rest centroid of the island's members (topology.ts
-    /// `restCentreOfMassOf`: massless members are skipped; no mass at all
-    /// falls back to the plain centroid).
+    /// Mass-weighted centre of the island's members' own mass centres
+    /// (topology.ts `restCentreOfMassOf`: massless members are skipped; no
+    /// mass at all falls back to the plain mean).
     fn refresh_com(&mut self, key: u32, tick: u32) {
         let Some(island) = self.islands.get_mut(&key) else { return };
         let (mut sum, mut mass, mut plain, mut n) = (Vec3::ZERO, 0.0f32, Vec3::ZERO, 0.0f32);
         for &slot in &island.members {
             let m = self.mass[slot as usize];
-            let r = self.rest[slot as usize];
+            let r = self.mass_center[slot as usize];
             if m > 0.0 {
                 sum += r * m;
                 mass += m;

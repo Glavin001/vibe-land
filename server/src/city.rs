@@ -734,7 +734,7 @@ impl V3Live {
             };
             let centroid = glam::Vec3::from_array(def.centroid);
             let weight = if def.mass > 0.0 { def.mass } else { 1.0 };
-            com += centroid * weight;
+            com += glam::Vec3::from_array(def.mass_center()) * weight; // the body frame is centred on mass
             weight_total += weight;
             members.push((centroid, def.radius));
         }

@@ -109,6 +109,7 @@ mod tests {
             radius: 0.5,
             support: false,
             material: 0,
+            mass_offset: [0.0; 3],
         }
     }
 

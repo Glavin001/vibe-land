@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest';
 
 import { decodeBinaryManifest, looksBinary } from './manifestBinary';
 import {
+  chunkMassCentre,
   bondCountOf,
   bondEndpoints,
   bondGeometry,
@@ -124,5 +125,36 @@ describe('binary city manifest', () => {
     const wrong = buffer.slice(0);
     new DataView(wrong).setUint32(4, 99, true);
     expect(() => decodeBinaryManifest(wrong)).toThrow(/unsupported/i);
+  });
+});
+
+// Format 2 adds each chunk's centre of mass relative to its centroid. The
+// fixture (write_ts_mass_offset_fixture in destruction/tests/manifest_binary.rs)
+// is a support block and a roof tile whose hull is measured from its corner.
+describe('binary city manifest, format 2', () => {
+  const v2 = readFileSync(path.join(here, '__fixtures__/manifest-mass-offset.bin'));
+  const v2Buffer = v2.buffer.slice(v2.byteOffset, v2.byteOffset + v2.byteLength);
+
+  it('reads each chunk\'s centre-of-mass offset, and omits a zero one', () => {
+    expect(new DataView(v2Buffer).getUint32(4, true)).toBe(2);
+    const structure = decodeBinaryManifest(v2Buffer).structures[0];
+    expect(structure.structureId).toBe(3);
+    const [block, tile] = structure.chunks;
+    expect(block.massOffset).toBeUndefined();
+    expect(tile.massOffset).toBeDefined();
+    expect(tile.massOffset![0]).toBeCloseTo(0.5, 6);
+    expect(tile.massOffset![1]).toBeCloseTo(0.05, 6);
+    expect(tile.massOffset![2]).toBeCloseTo(1, 6);
+    expect(chunkMassCentre(tile).map((x) => Math.round(x * 1e5) / 1e5)).toEqual([0.5, 3.05, 1]);
+    expect(chunkMassCentre(block)).toEqual([0, 0.5, 0]);
+    // Everything after the new section still lines up.
+    expect(bondCountOf(structure)).toBe(1);
+    expect(Array.from(bondEndpoints(structure).node1)).toEqual([1]);
+  });
+
+  it('still reads format 1, with no offsets', () => {
+    expect(new DataView(buffer).getUint32(4, true)).toBe(1);
+    const structure = decodeBinaryManifest(buffer).structures[0];
+    expect(structure.chunks.every((chunk) => chunk.massOffset === undefined)).toBe(true);
   });
 });

@@ -82,6 +82,33 @@ export interface ManifestChunk {
    * it is 0 so those manifests keep their content hash.
    */
   material?: number;
+  /**
+   * Where the chunk's mass is centred, relative to `centroid` (structure
+   * frame). Absent means zero: a cuboid, or a hull centred on its centroid.
+   *
+   * `centroid` is the origin the geometry is drawn from; it is not the centre
+   * of mass when an authoring tool measured a hull from a corner (the town
+   * kit's rafters, roof tiles and gables). The server's bodies are centred on
+   * the real centre of mass and island poses arrive in that frame, so an
+   * island's centre of mass must weigh `centroid + massOffset`. See
+   * `chunkMassCentre`.
+   */
+  massOffset?: [number, number, number];
+}
+
+/**
+ * A chunk's centre of mass in its structure's frame: `centroid + massOffset`,
+ * summed in float32 exactly as the server's bridge sums it
+ * (native_destruction.cc: `centroid + PxMassProperties(hull).centerOfMass`).
+ */
+export function chunkMassCentre(chunk: ManifestChunk): [number, number, number] {
+  const offset = chunk.massOffset;
+  if (!offset) return [chunk.centroid[0], chunk.centroid[1], chunk.centroid[2]];
+  return [
+    Math.fround(Math.fround(chunk.centroid[0]) + Math.fround(offset[0])),
+    Math.fround(Math.fround(chunk.centroid[1]) + Math.fround(offset[1])),
+    Math.fround(Math.fround(chunk.centroid[2]) + Math.fround(offset[2])),
+  ];
 }
 
 export interface ManifestBond {

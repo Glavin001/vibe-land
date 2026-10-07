@@ -38,6 +38,10 @@ pub struct ChunkIndex {
     global_ids: Vec<u32>,
     /// Dense index -> rest centroid in its structure's frame.
     rest: Vec<Vec3>,
+    /// Dense index -> where its mass is centred (`ChunkDef::mass_center`),
+    /// which is what an island's centre of mass weighs. Not `rest`: a hull
+    /// measured from a corner has its centroid metres from its mass.
+    mass_center: Vec<Vec3>,
     /// Dense index -> mass. Zero marks a world-support anchor.
     mass: Vec<f32>,
     /// Dense index -> owning structure id.
@@ -56,6 +60,7 @@ impl ChunkIndex {
         let mut index = Self {
             global_ids: Vec::with_capacity(total),
             rest: Vec::with_capacity(total),
+            mass_center: Vec::with_capacity(total),
             mass: Vec::with_capacity(total),
             structure: Vec::with_capacity(total),
             structure_pose: Vec::with_capacity(total),
@@ -78,6 +83,7 @@ impl ChunkIndex {
                 index.by_global.insert(global, dense);
                 index.global_ids.push(global);
                 index.rest.push(Vec3::from_array(chunk.centroid));
+                index.mass_center.push(Vec3::from_array(chunk.mass_center()));
                 index.mass.push(chunk.mass);
                 index.structure.push(structure.structure_id);
                 index.structure_pose.push(pose);
@@ -108,6 +114,37 @@ impl ChunkIndex {
 
     pub fn mass(&self, dense: u32) -> f32 {
         self.mass[dense as usize]
+    }
+
+    pub fn mass_center(&self, dense: u32) -> Vec3 {
+        self.mass_center[dense as usize]
+    }
+
+    /// Centre of mass of these chunks in structure-rest coordinates: the
+    /// frame an island body's wire pose is expressed in. The client's
+    /// `restCentreOfMassOf` (topology.ts), and it must stay that: each chunk
+    /// weighs in at its own centre of mass, massless supports not at all, and
+    /// a set with no mass anywhere falls back to the plain mean so it still
+    /// has a frame.
+    pub fn rest_centre_of_mass(&self, members: impl IntoIterator<Item = u32>) -> Option<Vec3> {
+        let (mut sum, mut mass, mut plain, mut count) = (Vec3::ZERO, 0.0f32, Vec3::ZERO, 0u32);
+        for dense in members {
+            let m = self.mass(dense);
+            let at = self.mass_center(dense);
+            if m > 0.0 {
+                sum += at * m;
+                mass += m;
+            }
+            plain += at;
+            count += 1;
+        }
+        if mass > 0.0 {
+            Some(sum / mass)
+        } else if count > 0 {
+            Some(plain / count as f32)
+        } else {
+            None
+        }
     }
 
     pub fn structure(&self, dense: u32) -> u32 {
@@ -176,20 +213,13 @@ impl Membership {
             self.com.remove(&body);
             return;
         }
-        let mut sum = Vec3::ZERO;
-        let mut weight_total = 0.0f32;
-        for &dense in set {
-            // Support anchors carry zero mass; the client weights them 1 so a
-            // body made only of anchors still has a defined frame.
-            let mass = index.mass(dense);
-            let weight = if mass > 0.0 { mass } else { 1.0 };
-            sum += index.rest(dense) * weight;
-            weight_total += weight;
-        }
-        if weight_total > 0.0 {
-            self.com.insert(body, sum / weight_total);
-        } else {
-            self.com.remove(&body);
+        match index.rest_centre_of_mass(set.iter().copied()) {
+            Some(com) => {
+                self.com.insert(body, com);
+            }
+            None => {
+                self.com.remove(&body);
+            }
         }
     }
 

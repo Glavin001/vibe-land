@@ -26,7 +26,8 @@ import type {
 } from './manifest';
 
 const MAGIC = 0x4d434c56; // "VLCM" little-endian
-const FORMAT_VERSION = 1;
+/** 2 added each chunk's centre-of-mass offset; 1 still reads, with none. */
+const FORMAT_VERSION = 2;
 const GEOMETRY_CUBOID = 0;
 const NO_SHAPE = 0xffffffff;
 
@@ -85,7 +86,7 @@ export function decodeBinaryManifest(bytes: ArrayBuffer): CityManifest {
   const cursor = new Cursor(bytes);
   cursor.u32(); // magic, already checked
   const format = cursor.u32();
-  if (format !== FORMAT_VERSION) {
+  if (format !== 1 && format !== FORMAT_VERSION) {
     throw new Error(`unsupported binary city manifest format ${format}`);
   }
   const version = cursor.u32();
@@ -106,7 +107,7 @@ export function decodeBinaryManifest(bytes: ArrayBuffer): CityManifest {
 
   const structures: ManifestStructure[] = [];
   for (let i = 0; i < structureCount; i += 1) {
-    structures.push(readStructure(cursor));
+    structures.push(readStructure(cursor, format));
   }
 
   let materialAppearance: MaterialAppearance[] | undefined;
@@ -123,7 +124,7 @@ export function decodeBinaryManifest(bytes: ArrayBuffer): CityManifest {
   return manifest;
 }
 
-function readStructure(cursor: Cursor): ManifestStructure {
+function readStructure(cursor: Cursor, format: number): ManifestStructure {
   const structureId = cursor.u32();
   const position = cursor.f32Array(3);
   const rotation = cursor.f32Array(4);
@@ -144,6 +145,8 @@ function readStructure(cursor: Cursor): ManifestStructure {
   const pointOffset = cursor.u32Array(chunkCount);
   const pointLength = cursor.u32Array(chunkCount);
   const inlinePoints = cursor.f32Array(cursor.u32());
+  // Format 2: centre of mass relative to the centroid, per chunk.
+  const massOffset = format >= 2 ? cursor.f32Array(chunkCount * 3) : null;
 
   const chunks: ManifestChunk[] = new Array(chunkCount);
   for (let i = 0; i < chunkCount; i += 1) {
@@ -172,6 +175,13 @@ function readStructure(cursor: Cursor): ManifestStructure {
     // Omitted rather than zero, matching the JSON the server skips, so nothing
     // downstream can tell the two paths apart.
     if (material[i] !== 0) chunk.material = material[i];
+    // Omitted when zero, as the JSON path omits it.
+    if (
+      massOffset
+      && (massOffset[i * 3] !== 0 || massOffset[i * 3 + 1] !== 0 || massOffset[i * 3 + 2] !== 0)
+    ) {
+      chunk.massOffset = vec3(massOffset, i);
+    }
     chunks[i] = chunk;
   }
 

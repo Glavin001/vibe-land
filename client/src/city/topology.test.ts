@@ -1272,3 +1272,131 @@ describe('CityTopology frame rebasing', () => {
   });
 });
 
+
+// A hull measured from a corner has its centroid (the geometry origin) away
+// from its centre of mass. The town kit authors every sloped piece that way
+// (hull-origins.mjs), and the server's bodies are centred on the REAL centre
+// of mass, so an island pose arrives in that frame. Weighing centroids put the
+// veneer house's roof 0.46 m above where the server had it the instant it
+// split off: a roof that jumped up, with a gap above the walls, then fell.
+describe('CityTopology centre of mass with off-centre hulls', () => {
+  // Node 1: a 1 x 0.1 x 2 m roof tile whose hull is measured from its corner,
+  // so its mass sits (0.5, 0.05, 1.0) from its centroid. Node 2: a centred
+  // cuboid.
+  const offCentre = (): CityManifest => ({
+    version: 1,
+    structures: [
+      {
+        structureId: 0,
+        worldPosition: [10, 0, 0],
+        worldRotation: [0, 0, 0, 1],
+        chunks: [
+          {
+            nodeIndex: 0, centroid: [0, 0.5, 0], mass: 0, volume: 1, size: [1, 1, 1],
+            geometry: { kind: 'Cuboid', halfExtents: [0.5, 0.5, 0.5] }, radius: 0.87, support: true,
+          },
+          {
+            nodeIndex: 1, centroid: [0, 3, 0], mass: 30, volume: 0.2, size: [1, 0.1, 2],
+            geometry: {
+              kind: 'ConvexHull',
+              points: [0, 0, 0, 1, 0, 0, 0, 0.1, 0, 1, 0.1, 0, 0, 0, 2, 1, 0, 2, 0, 0.1, 2, 1, 0.1, 2],
+            },
+            radius: 2.24, support: false, massOffset: [0.5, 0.05, 1],
+          },
+          {
+            nodeIndex: 2, centroid: [0, 2.5, 0], mass: 10, volume: 1, size: [1, 1, 1],
+            geometry: { kind: 'Cuboid', halfExtents: [0.5, 0.5, 0.5] }, radius: 0.87, support: false,
+          },
+        ],
+        bonds: [
+          { bondIndex: 0, node0: 0, node1: 2, centroid: [0, 1, 0], normal: [0, 1, 0], area: 1 },
+          { bondIndex: 1, node0: 2, node1: 1, centroid: [0, 3, 0], normal: [0, 1, 0], area: 1 },
+        ],
+      },
+    ],
+  });
+  // What PhysX centres the island {1, 2} on: mass 30 at (0.5, 3.05, 1) and
+  // mass 10 at (0, 2.5, 0) -> (0.375, 2.9125, 0.75) in the structure frame.
+  const com: [number, number, number] = [0.375, 2.9125, 0.75];
+  const split = (rotation: [number, number, number, number]): TopologyMessage => ({
+    topoSeq: 1,
+    simTick: 10,
+    batches: [{
+      structureId: 0,
+      brokenBondIndices: [0],
+      promotions: [{
+        structureId: 0,
+        islandId: 1,
+        nodes: [1, 2],
+        position: [10 + com[0], com[1], com[2]],
+        rotation,
+        linearVelocity: [0, 0, 0],
+        angularVelocity: [0, 0, 0],
+      }],
+      retiredIslandIds: [],
+      migrations: [],
+    }],
+    settled: [],
+    wakes: [],
+  });
+
+  it('composes the server\'s centre-of-mass pose back to each chunk\'s rest origin', () => {
+    const topology = new CityTopology(offCentre());
+    expect(topology.apply(split([0, 0, 0, 1]))).toBe(true);
+    const tile = topology.chunkWorldPose(topology.slotOf(0, 1)).position;
+    const block = topology.chunkWorldPose(topology.slotOf(0, 2)).position;
+    // Where they were drawn a moment before, on the intact structure.
+    expect(tile[0]).toBeCloseTo(10, 5);
+    expect(tile[1]).toBeCloseTo(3, 5);
+    expect(tile[2]).toBeCloseTo(0, 5);
+    expect(block[0]).toBeCloseTo(10, 5);
+    expect(block[1]).toBeCloseTo(2.5, 5);
+    expect(block[2]).toBeCloseTo(0, 5);
+  });
+
+  it('turns each chunk about the real centre of mass', () => {
+    const topology = new CityTopology(offCentre());
+    const half = Math.SQRT1_2;
+    // A quarter turn about +y: (x, z) -> (z, -x).
+    expect(topology.apply(split([0, half, 0, half]))).toBe(true);
+    const tile = topology.chunkWorldPose(topology.slotOf(0, 1)).position;
+    const rel: [number, number, number] = [0 - com[0], 3 - com[1], 0 - com[2]];
+    expect(tile[0]).toBeCloseTo(10 + com[0] + rel[2], 5);
+    expect(tile[1]).toBeCloseTo(com[1] + rel[1], 5);
+    expect(tile[2]).toBeCloseTo(com[2] - rel[0], 5);
+  });
+
+  it('keeps the rest of a body world-fixed when the off-centre tile leaves it', () => {
+    const topology = new CityTopology(offCentre());
+    expect(topology.apply(split([0, 0, 0, 1]))).toBe(true);
+    // The tile breaks off the block: the block's island now centres on the
+    // block alone, and its pose moves with that, but nothing is drawn moving.
+    expect(topology.apply({
+      topoSeq: 2,
+      simTick: 11,
+      batches: [{
+        structureId: 0,
+        brokenBondIndices: [1],
+        promotions: [{
+          structureId: 0,
+          islandId: 2,
+          nodes: [1],
+          position: [10.5, 3.05, 1],
+          rotation: [0, 0, 0, 1],
+          linearVelocity: [0, 0, 0],
+          angularVelocity: [0, 0, 0],
+        }],
+        retiredIslandIds: [],
+        migrations: [],
+      }],
+      settled: [],
+      wakes: [],
+    })).toBe(true);
+    const tile = topology.chunkWorldPose(topology.slotOf(0, 1)).position;
+    const block = topology.chunkWorldPose(topology.slotOf(0, 2)).position;
+    expect(tile[1]).toBeCloseTo(3, 5);
+    expect(tile[2]).toBeCloseTo(0, 5);
+    expect(block[1]).toBeCloseTo(2.5, 5);
+    expect(block[2]).toBeCloseTo(0, 5);
+  });
+});

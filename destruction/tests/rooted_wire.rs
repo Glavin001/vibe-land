@@ -33,6 +33,7 @@ fn manifest() -> DestructionManifest {
                 radius: 0.87,
                 support: row == 0,
                 material: 0,
+                mass_offset: [0.0; 3],
             });
             if row > 0 {
                 bonds.push(BondDef {

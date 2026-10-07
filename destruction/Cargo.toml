@@ -15,6 +15,10 @@ sha2 = "0.10"
 # dictionary, so compressor drift is a wire change.
 zstd = "=0.13.3"
 vibe-netcode = { path = "../netcode" }
+# parry's convex hull, for a hull chunk's centre of mass (variants.rs
+# `collider_mass_offset`). Already in the tree through vibe-netcode; the same
+# features, so nothing new is compiled.
+rapier3d = { version = "0.30", default-features = false, features = ["dim3", "f32"] }
 
 [features]
 default = []

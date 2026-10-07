@@ -44,7 +44,9 @@ use crate::manifest::{
 };
 
 pub const MAGIC: &[u8; 4] = b"VLCM";
-pub const FORMAT_VERSION: u32 = 1;
+/// 2 added each chunk's centre-of-mass offset (`ChunkDef::mass_offset`) after
+/// the inline hull points. 1 still decodes, with zero offsets.
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Geometry discriminants, parallel to `ChunkGeometry`.
 const GEOMETRY_CUBOID: u32 = 0;
@@ -233,6 +235,11 @@ fn write_structure(w: &mut Writer, structure: &StructureManifest) {
     }
     w.u32(inline_points.len() as u32);
     w.f32s(&inline_points);
+    // Format 2: centre-of-mass offset from the centroid. Zero for nearly every
+    // chunk of most packs, which is what gzip is best at.
+    for chunk in chunks {
+        w.f32s(&chunk.mass_offset);
+    }
 
     for bond in bonds {
         w.u32(bond.bond_index);
@@ -261,7 +268,7 @@ fn estimated_size(manifest: &DestructionManifest) -> usize {
     let chunks: usize = manifest.structures.iter().map(|s| s.chunks.len()).sum();
     let bonds: usize = manifest.structures.iter().map(|s| s.bonds.len()).sum();
     let shape_points: usize = manifest.shape_library.iter().map(Vec::len).sum();
-    64 + chunks * 22 * 4 + bonds * 12 * 4 + shape_points * 4
+    64 + chunks * 25 * 4 + bonds * 12 * 4 + shape_points * 4
 }
 
 pub fn looks_binary(bytes: &[u8]) -> bool {
@@ -316,7 +323,7 @@ pub fn decode(bytes: &[u8]) -> Result<DestructionManifest, DecodeError> {
     }
     let mut r = Reader { bytes, at: 4 };
     let format = r.u32("format version")?;
-    if format != FORMAT_VERSION {
+    if format != 1 && format != FORMAT_VERSION {
         return Err(DecodeError::Unsupported(format));
     }
     let version = r.u32("manifest version")?;
@@ -346,7 +353,7 @@ pub fn decode(bytes: &[u8]) -> Result<DestructionManifest, DecodeError> {
 
     let mut structures = Vec::with_capacity(structure_count);
     for _ in 0..structure_count {
-        structures.push(read_structure(&mut r)?);
+        structures.push(read_structure(&mut r, format)?);
     }
 
     let material_appearance: Vec<MaterialAppearanceDef> = if appearance_len == 0 {
@@ -369,7 +376,7 @@ pub fn decode(bytes: &[u8]) -> Result<DestructionManifest, DecodeError> {
     })
 }
 
-fn read_structure(r: &mut Reader<'_>) -> Result<StructureManifest, DecodeError> {
+fn read_structure(r: &mut Reader<'_>, format: u32) -> Result<StructureManifest, DecodeError> {
     let structure_id = r.u32("structure id")?;
     let world_position = r.f32_array::<3>("world position")?;
     let world_rotation = r.f32_array::<4>("world rotation")?;
@@ -421,6 +428,14 @@ fn read_structure(r: &mut Reader<'_>) -> Result<StructureManifest, DecodeError> 
     }
     let inline_len = r.u32("inline point count")? as usize;
     let inline_points = r.f32_vec(inline_len, "inline points")?;
+    let mut mass_offset = Vec::with_capacity(chunk_count);
+    for _ in 0..chunk_count {
+        mass_offset.push(if format >= 2 {
+            r.f32_array::<3>("mass offset")?
+        } else {
+            [0.0; 3]
+        });
+    }
 
     let mut chunks = Vec::with_capacity(chunk_count);
     for i in 0..chunk_count {
@@ -449,6 +464,7 @@ fn read_structure(r: &mut Reader<'_>) -> Result<StructureManifest, DecodeError> 
             radius: radius[i],
             support: support[i],
             material: material[i],
+            mass_offset: mass_offset[i],
         });
     }
 

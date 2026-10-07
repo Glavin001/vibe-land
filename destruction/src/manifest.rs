@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use crate::city::CityScene;
 use crate::ids;
 use crate::scene_pack::SceneCollider;
-use crate::variants::collider_bounding_radius;
+use crate::variants::{collider_bounding_radius, collider_mass_offset};
 
 pub const MANIFEST_VERSION: u32 = 1;
 
@@ -101,6 +101,37 @@ pub struct ChunkDef {
     /// so an unguarded field here would invalidate every client's cached copy.
     #[serde(default, skip_serializing_if = "is_default_material")]
     pub material: u32,
+    /// The chunk's centre of mass relative to `centroid`, in the structure
+    /// frame: zero for a cuboid, the hull's volume centroid for a hull.
+    ///
+    /// `centroid` is the origin the geometry is measured from, which an
+    /// authoring tool may put anywhere -- the town kit references sloped hulls
+    /// from a corner. PhysX centres every body on the real centre of mass
+    /// (`centroid + hull centerOfMass`, native_destruction.cc), and the wire
+    /// pose of an island is that body's centre-of-mass frame, so anything
+    /// composing `rest − island_com` must weigh `mass_center()`, not
+    /// `centroid`. Skipped when zero, so a pack of centred chunks hashes as it
+    /// did before this field existed.
+    #[serde(default, skip_serializing_if = "is_zero3")]
+    pub mass_offset: [f32; 3],
+}
+
+fn is_zero3(v: &[f32; 3]) -> bool {
+    v.iter().all(|x| *x == 0.0)
+}
+
+impl ChunkDef {
+    /// Where this chunk's mass is centred, in its structure's frame: the point
+    /// an island's centre of mass weighs. The same f32 sum the bridge forms
+    /// (`centroid + centerOfMass`), so the two agree to the bit when the
+    /// offsets do.
+    pub fn mass_center(&self) -> [f32; 3] {
+        [
+            self.centroid[0] + self.mass_offset[0],
+            self.centroid[1] + self.mass_offset[1],
+            self.centroid[2] + self.mass_offset[2],
+        ]
+    }
 }
 
 /// Collider geometry as served to clients.
@@ -176,6 +207,18 @@ fn is_default_material(material: &u32) -> bool {
 
 impl DestructionManifest {
     pub fn from_city(city: &CityScene) -> Self {
+        // A pack's hulls repeat (a shape library, and every instance of a pack
+        // stamps the same nodes), so each distinct one is solved once.
+        let mut offsets: std::collections::HashMap<Vec<u32>, [f32; 3]> =
+            std::collections::HashMap::new();
+        let mut mass_offset = |collider: &SceneCollider| -> [f32; 3] {
+            match collider {
+                SceneCollider::Cuboid { .. } => [0.0; 3],
+                SceneCollider::ConvexHull { points, .. } => *offsets
+                    .entry(points.iter().map(|p| p.to_bits()).collect())
+                    .or_insert_with(|| collider_mass_offset(collider).to_array()),
+            }
+        };
         let structures = city
             .instances
             .iter()
@@ -209,6 +252,7 @@ impl DestructionManifest {
                             radius: collider_bounding_radius(&pack.node_colliders[node_index]),
                             support: node.is_support(),
                             material: node.material,
+                            mass_offset: mass_offset(&pack.node_colliders[node_index]),
                         })
                         .collect(),
                     bonds: pack

@@ -47,6 +47,7 @@ fn manifest() -> DestructionManifest {
         radius: 0.87,
         support,
         material: 0,
+        mass_offset: [0.0; 3],
     };
     DestructionManifest {
         version: 1,

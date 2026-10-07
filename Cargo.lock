@@ -3075,6 +3075,7 @@ version = "0.1.0"
 dependencies = [
  "blast-stress-solver",
  "glam 0.27.0",
+ "rapier3d",
  "serde",
  "serde_json",
  "sha2",
