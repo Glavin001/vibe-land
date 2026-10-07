@@ -8,6 +8,9 @@ export HIGH_PHYSX_ROOT=$HIFI_SDK RUNTIME_PHYSX_ROOT=$HIFI_SDK
 source "$HIFI_ROOT/scripts/fidelity/${1:?usage: source env.sh runtime|high}.env"
 eval "$("$HIFI_ROOT/scripts/fidelity/packs.sh" "$1")"
 export VIBE_GPU_SHARED=1
+# Every GPU job through the machine-wide admission (at most 4 shared jobs);
+# one GPU job at a time per agent.
+export GPU_RUN=/Users/glavin/Development/vibe-land/scripts/perf/gpu-run.sh
 export MYSTRAL_ROOT=${MYSTRAL_ROOT:-/Users/glavin/Development/mystralnative}
 export VIBE_SIM_TARGET=$HIFI_ROOT/target/hifi-sim CARGO_TARGET_DIR=$HIFI_ROOT/target/hifi
 export TOWN_KIT_AUTHORING_ROOT=${TOWN_KIT_AUTHORING_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/blast/blast-stress-solver/structures}
