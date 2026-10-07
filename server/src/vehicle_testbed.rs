@@ -55,7 +55,8 @@ fn app_settings() {
     // VIBE_TESTBED_SERVER_POLICY=1: the stage policy as the plain server sets
     // it (main.rs apply_stage_policy_defaults), not the app's list below --
     // run with PX_DESTRUCTION_ALLOW_UNCONVERGED unset to test that path.
-    if std::env::var_os("VIBE_TESTBED_SERVER_POLICY").is_some() { crate::apply_stage_policy_defaults(); }
+    let server_policy = std::env::var_os("VIBE_TESTBED_SERVER_POLICY").is_some();
+    if server_policy { crate::apply_stage_policy_defaults(); }
     for (name, value) in [
         ("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1"),
         ("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1"),
@@ -67,8 +68,10 @@ fn app_settings() {
         ("VIBE_CITY_GRID", "1"),
         ("VIBE_CITY_VARIED_HEIGHTS", "0"),
     ] {
+        if server_policy && name == "PX_DESTRUCTION_ALLOW_UNCONVERGED" { continue; }
         if std::env::var_os(name).is_none() { std::env::set_var(name, value); }
     }
+    if server_policy { eprintln!("[testbed] server stage policy: PX_DESTRUCTION_ALLOW_UNCONVERGED={:?}", std::env::var("PX_DESTRUCTION_ALLOW_UNCONVERGED").ok()); }
     if std::env::var_os("VIBE_CITY_SCENE").is_none() {
         let pack = if town() { "structures/vibe-town/out/vibe-town.json" } else { "structures/vehicle-lab/out/vehicle-lab.json" };
         std::env::set_var("VIBE_CITY_SCENE", repo().join(pack));
