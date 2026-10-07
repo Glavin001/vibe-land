@@ -90,7 +90,8 @@ export function runScene({ scene, out, config, ticks, extraEnv = {} }) {
   };
   const log = out.replace(/\.json$/, '.log');
   const r = spawnSync(path.join(REPO, 'scripts/perf/gpu-run.sh'), [`calib-${config}`, exe, 'calibration_run', '--ignored', '--nocapture', '--test-threads=1'],
-    { cwd: path.join(REPO, 'server'), env, encoding: 'utf8', maxBuffer: 1 << 28 });
+    // A run whose GPU work stalls (a shared, saturated GPU) is cut off: CALIB_TIMEOUT_S (default 1800).
+    { cwd: path.join(REPO, 'server'), env, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 1000 * Number(process.env.CALIB_TIMEOUT_S ?? 1800), killSignal: 'SIGKILL' });
   writeFileSync(log, `${r.stdout}\n${r.stderr}`);
   if (r.status !== 0 || !existsSync(out)) throw Error(`calibration run (${config}) failed: see ${log}\n${(r.stderr ?? '').split('\n').filter((l) => /panicked|error|Error/.test(l)).slice(0, 8).join('\n')}`);
   const line = (r.stderr ?? '').split('\n').find((l) => l.startsWith('[calibration]') && l.includes('ticks in'));
