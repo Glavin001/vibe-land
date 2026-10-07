@@ -6,6 +6,10 @@ describe('resolveAppRoute', () => {
     expect(resolveAppRoute('/audio')).toEqual({ kind: 'audioLab' });
     expect(resolveAppRoute('/audio/')).toEqual({ kind: 'audioLab' });
   });
+  it('routes the material lab without a session', () => {
+    expect(resolveAppRoute('/materials')).toEqual({ kind: 'materialsLab' });
+    expect(resolveAppRoute('/materials/')).toEqual({ kind: 'materialsLab' });
+  });
   it('uses the city simulation for the town-kit playground', () => {
     for (const route of ['/town-kit', '/town-kit/']) {
       expect(resolveAppRoute(route)).toEqual({ kind: 'game', mode: 'multiplayer', matchFallback: 'city-town-kit' });

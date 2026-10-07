@@ -4,6 +4,7 @@ export type AppRoute =
   | { kind: 'launcher' }
   | { kind: 'garage' }
   | { kind: 'grassLab' }
+  | { kind: 'materialsLab' }
   | { kind: 'audioLab' }
   | { kind: 'game'; mode: GameMode; matchFallback?: string }
   | { kind: 'sharedPractice'; id: string }
@@ -51,6 +52,8 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
       return { kind: 'garage' };
     case '/grass':
       return { kind: 'grassLab' };
+    case '/materials':
+      return { kind: 'materialsLab' };
     case '/play':
       return { kind: 'game', mode: 'multiplayer' };
     case '/town-kit':

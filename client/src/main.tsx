@@ -28,6 +28,7 @@ import './agentDrive';
 const AudioLabPage = lazy(() => import('./pages/AudioLab').then(m => ({ default: m.AudioLabPage })));
 const GaragePage = lazy(() => import('./pages/Garage').then(m => ({default: m.GaragePage})));
 const GrassLabPage = lazy(() => import('./pages/GrassLab').then(m => ({ default: m.GrassLabPage })));
+const MaterialsLabPage = lazy(() => import('./pages/MaterialsLab').then(m => ({ default: m.MaterialsLabPage })));
 
 const root = createRoot(document.getElementById('root')!);
 // The entry module can be replaced while tuning audio. Release old component
@@ -64,6 +65,9 @@ switch (route.kind) {
     break;
   case 'grassLab':
     root.render(<Suspense fallback={<div>Opening grass preview…</div>}><GrassLabPage /></Suspense>);
+    break;
+  case 'materialsLab':
+    root.render(<Suspense fallback={<div>Opening material lab…</div>}><MaterialsLabPage /></Suspense>);
     break;
   case 'garage':
     root.render(<Suspense fallback={<div>Opening garage…</div>}><GaragePage /></Suspense>);

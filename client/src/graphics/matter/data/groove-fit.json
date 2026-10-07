@@ -1,0 +1,17 @@
+{
+  "patch_m": [
+    0.004,
+    0.012
+  ],
+  "seed": 20260906,
+  "grooves": 96,
+  "rms_slope": [
+    0.05082775442872502,
+    0.001382590914388769
+  ],
+  "ggx_alpha_fit": [
+    0.040662203542980016,
+    0.0011060727315110152
+  ],
+  "note": "RMS-slope matched central lobe; GGX tails are an approximation, not an exact fit to finite abrasive geometry."
+}

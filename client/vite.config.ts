@@ -17,9 +17,12 @@ export default defineConfig(({ mode }) => {
     ? { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }
     : undefined;
 
-  // Renderer backend, fixed at build time. `vite --mode webgpu` (npm run
-  // dev:webgpu) builds the simple three/webgpu path the native app draws
-  // with; every other mode is the WebGL client, unchanged. The webgpu build
+  // Renderer backend, fixed at build time. WebGPU is the default: the web
+  // client draws through three's WebGPURenderer, the same path as the native
+  // app. `VITE_RENDER_BACKEND=webgl` (npm run dev:webgl / build:webgl) is the
+  // rollback flag: it builds the legacy WebGLRenderer client. Unit tests
+  // (vitest, mode `test`) keep the WebGL modules unless
+  // VITE_RENDER_BACKEND=webgpu asks otherwise. The webgpu build
   // draws with its own three (`three-webgpu`, the release mystralnative is
   // tested against): bare `three` goes to a shim over its three/webgpu that
   // adds the few WebGL-only names drei imports, and the subpaths follow it.
@@ -32,7 +35,8 @@ export default defineConfig(({ mode }) => {
   // build plus the native shell (src/native), as one ES module for
   // mystralnative (see scripts/native-mac.sh).
   const native = mode === 'native';
-  const webgpu = native || mode === 'webgpu' || env.VITE_RENDER_BACKEND === 'webgpu';
+  const backend = env.VITE_RENDER_BACKEND || (mode === 'test' ? 'webgl' : 'webgpu');
+  const webgpu = native || mode === 'webgpu' || backend !== 'webgl';
 
   return {
     plugins: [

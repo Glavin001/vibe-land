@@ -15,16 +15,16 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "cd client && exec npx vite --mode webgpu --port 3013 --strictPort"
+        "cd client && exec npx vite --port 3013 --strictPort"
       ],
       "port": 3013
     },
     {
-      "name": "client-webgl-ab",
+      "name": "client-webgl",
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "cd client && exec npx vite --port 3014 --strictPort"
+        "cd client && VITE_RENDER_BACKEND=webgl exec npx vite --port 3014 --strictPort"
       ],
       "port": 3014
     },
