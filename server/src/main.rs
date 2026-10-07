@@ -1389,6 +1389,7 @@ struct MatchState {
 #[tokio::main]
 pub async fn main() -> Result<()> {
     load_repo_env();
+    apply_stage_policy_defaults();
 
     // `from_default_env()` with RUST_LOG unset builds an EMPTY filter, which
     // discards everything -- not even ERROR survives. A container image does
@@ -2133,6 +2134,20 @@ fn load_repo_env() {
     match dotenvy::from_path(&repo_env) {
         Ok(()) => info!(path = %repo_env.display(), "loaded repo .env"),
         Err(err) => warn!(path = %repo_env.display(), error = %err, "failed to load repo .env"),
+    }
+}
+
+/// The native destruction stage's step policy, as AGENTS.md states it: an
+/// unconverged stress solve publishes its step and continues next tick
+/// (PX_DESTRUCTION_ALLOW_UNCONVERGED=1). The stage reads the variable itself
+/// and refuses such steps when it is unset, so a server launched without it
+/// rejected every fracture tick that hit the iteration cap: the monster truck
+/// stopped dead at a wall and balls went through houses breaking nothing. The
+/// native app (sim-native apply_app_defaults) and the launch scripts already
+/// set it; this makes the plain server agree. An explicit value still wins.
+fn apply_stage_policy_defaults() {
+    if std::env::var_os("PX_DESTRUCTION_ALLOW_UNCONVERGED").is_none() {
+        std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
     }
 }
 
