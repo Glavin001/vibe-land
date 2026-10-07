@@ -7,6 +7,10 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 LOCK="$ROOT/target/perf-tools/gpu.lock"
 mkdir -p "$(dirname "$LOCK")"
 label=$1; shift
+# Correctness runs (tests, trials, qualification, films) are small next to the
+# game's own load and may share the GPU: VIBE_GPU_SHARED=1 skips the lock.
+# Anything that measures time must not set it.
+if [ "${VIBE_GPU_SHARED:-0}" = 1 ]; then exec "$@"; fi
 until mkdir "$LOCK" 2>/dev/null; do
   owner=$(cat "$LOCK/owner" 2>/dev/null); pid=${owner%% *}
   if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
