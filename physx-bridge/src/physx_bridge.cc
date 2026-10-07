@@ -2426,6 +2426,16 @@ public:
     // reaches the building and one that drops short of it.
     actor->setLinearDamping(0.0f);
     actor->setAngularDamping(0.0f);
+    // What-if (unset: PhysX's unbounded default): a launched body's
+    // depenetration speed, m/s. A ball or meteor covers 1-2.3 m a tick, so a
+    // step can leave it deep inside a wall or the ground; how fast the solver
+    // pushes it out decides whether that overlap turns into a launch
+    // (structures/vehicle-lab wall matrix, physx-bridge/tests/infinite_wall.rs).
+    static const float depenetration = [] {
+      const char *raw = std::getenv("VIBE_CITY_BALL_MAX_DEPENETRATION");
+      return raw ? std::strtof(raw, nullptr) : 0.0f;
+    }();
+    if (depenetration > 0.0f) actor->setMaxDepenetrationVelocity(depenetration);
     actor->setLinearVelocity(velocity);
   }
 
