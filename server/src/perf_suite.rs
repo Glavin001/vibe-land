@@ -26,7 +26,8 @@
 //!
 //! Each recorded tick prints `SUITE_TICK {...}` on stderr: the server tick's
 //! wall time (player sim, vehicles and dynamics, city step), its parts, the
-//! host's wait for the GPU, and the stage's counts (stress iterations, whether
+//! PhysX fetch (where the host waits for the GPU; the exact GPU wait on the
+//! bridge's sampled steps), and the stage's counts (stress iterations, whether
 //! it converged, stress and correction passes, bonds broken, error bits).
 //! Anything the engine prints during the tick (the impact solve's
 //! `[impact] pass` lines under PX_DESTRUCTION_IMPACT_LOG=1) comes before the
@@ -153,11 +154,15 @@ impl Rig {
         let total_ms = started.elapsed().as_secs_f32() * 1000.0;
         let (status, counts) = self.city.native_tick_view().map(|(s, c, _)| (s, c)).unwrap_or_default();
         let stats = self.city.stats();
-        let w = self.arena.physx_world_mut().and_then(|w| w.stats().ok()).unwrap_or_default();
+        // This step's own phases (no ring means): the fetch is where the host
+        // waits for the GPU (the destruction stage runs inside it); the exact
+        // GPU wait is measured on sampled steps only (1 in 16).
+        let w = self.arena.physx_world_mut().and_then(|w| w.step_phases().ok()).unwrap_or_default();
         self.tick += 1;
         serde_json::json!({
             "total": total_ms, "player": player_ms, "dyn": dyn_ms, "city": city_ms,
-            "gpu_wait": w.last_gpu_wait_ms, "simulate": w.last_simulate_ms, "fetch_copy": w.last_fetch_copy_ms,
+            "fetch": w.fetch_ms, "simulate": w.simulate_ms, "callbacks": w.callbacks_ms,
+            "gpu_wait": if w.gpu_wait_sampled { Some(w.gpu_wait_ms) } else { None },
             "it": status.iterations, "conv": status.converged, "passes": status.stress_passes,
             "corr": status.correction_passes, "broken": status.broken_bonds,
             "post_broken": status.post_correction_broken_bonds, "crushed": status.crushed_chunks,

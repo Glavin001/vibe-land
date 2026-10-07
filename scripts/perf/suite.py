@@ -276,8 +276,10 @@ def execute(run_dir: Path) -> None:
 # ---------------------------------------------------------------- reading the logs
 
 IMPACT_EVAL = re.compile(r"\[impact\] evaluation (\d+) pass (\d+): ([\d.]+) ms in (\d+) dispatches \(longest ([\d.]+) ms\)")
-IMPACT_PASS = re.compile(r"\[impact\] pass (\d+): (\d+) islands, (\d+) solves, (\d+) iterations \((\d+) capped\), (\d+) rounds, "
-                         r"broke (\d+), yielded (\d+), (\d+) contacts from (\d+) impactors, error (\d+)")
+# The stage's summary of a triggered evaluation (PX_DESTRUCTION_IMPACT_LOG=1); the
+# diverged count and the tail (held stops, infeasible projections) are newer fields.
+IMPACT_PASS = re.compile(r"\[impact\] pass (\d+): (\d+) islands, (\d+) solves, (\d+) iterations \((\d+) capped(?:, (\d+) diverged)?\), "
+                         r"(\d+) rounds, broke (\d+), yielded (\d+), (\d+) contacts from (\d+) impactors.*?error (\d+)\s*$")
 REPLAY = re.compile(r": (\d+) chunks, (\d+) bonds, (\d+) rows; (\d+) islands, (\d+) solves, (\d+) iterations \((\d+) capped\), (\d+) rounds; "
                     r"broke (\d+), yielded (\d+); (\d+) contacts, (\d+) impactors; error (\d+); ([\d.]+) ms in (\d+) dispatches \(longest ([\d.]+) ms\)")
 
@@ -303,8 +305,9 @@ def read_job(path: Path) -> dict:
         elif (m := IMPACT_EVAL.search(line)):
             pending["evals"].append({"ms": float(m[3]), "dispatches": int(m[4]), "longest": float(m[5])})
         elif (m := IMPACT_PASS.search(line)):
-            pending["passes"].append({"solves": int(m[3]), "iterations": int(m[4]), "capped": int(m[5]), "rounds": int(m[6]),
-                                      "broke": int(m[7]), "error": int(m[11])})
+            pending["passes"].append({"solves": int(m[3]), "iterations": int(m[4]), "capped": int(m[5]),
+                                      "diverged": int(m[6]) if m[6] is not None else int(bool(int(m[12]) & 2)),
+                                      "rounds": int(m[7]), "broke": int(m[8]), "error": int(m[12])})
     return {"phases": phases, "setup": setup, "done": done, "complete": done is not None}
 
 
@@ -317,20 +320,24 @@ def pct(v: list[float], p: float) -> float:
 
 def live_metrics(ticks: list[dict]) -> dict:
     total = [t["total"] for t in ticks]
-    wait = [t["gpu_wait"] for t in ticks]
+    fetch = [t["fetch"] for t in ticks]
+    wait = [t["gpu_wait"] for t in ticks if t.get("gpu_wait") is not None]
     evals = [e for t in ticks for e in t["impact_evals"]]
     passes = [p for t in ticks for p in t["impact_passes"]]
     return {
         "kind": "live", "ticks": len(ticks),
         "step_ms": {"median": st.median(total), "p95": pct(total, 95), "max": max(total), "mean": st.fmean(total)},
         "parts_ms_median": {k: st.median(t[k] for t in ticks) for k in ("player", "dyn", "city")},
-        "gpu_wait_ms": {"median": st.median(wait), "p95": pct(wait, 95), "sum": sum(wait)},
+        # The fetch: the host blocked on the GPU's step (the destruction stage runs in it).
+        "fetch_ms": {"median": st.median(fetch), "p95": pct(fetch, 95), "sum": sum(fetch)},
+        # The bridge's exact GPU wait, on its sampled steps (1 in 16).
+        "gpu_wait_ms": {"median": st.median(wait) if wait else None, "samples": len(wait)},
         "stress": {"iterations": sum(t["it"] for t in ticks), "iterations_per_tick": st.fmean(t["it"] for t in ticks),
                    "iterations_max": max(t["it"] for t in ticks), "unconverged_ticks": sum(1 for t in ticks if not t["conv"]),
                    "passes": sum(t["passes"] for t in ticks), "correction_passes": sum(t["corr"] for t in ticks)},
         "impact": {"evaluations": len(passes), "solves": sum(p["solves"] for p in passes),
                    "steps": sum(p["iterations"] for p in passes), "capped": sum(p["capped"] for p in passes),
-                   "diverged": sum(1 for p in passes if p["error"] & 2), "round_budget": sum(1 for p in passes if p["error"] & 4),
+                   "diverged": sum(p["diverged"] for p in passes), "round_budget": sum(1 for p in passes if p["error"] & 4),
                    "ms": sum(e["ms"] for e in evals), "longest_dispatch_ms": max((e["longest"] for e in evals), default=0.0),
                    "logged": bool(evals) or bool(passes)},
         "work": {"bonds_broken": sum(t["committed"] for t in ticks), "crushed": sum(t["crushed"] for t in ticks),
@@ -468,7 +475,7 @@ def table(report: dict) -> str:
         if sc:
             head += f", SCORE {sc['value']:.3f} vs baseline (±{fmt(sc['band_pct'])}%{', significant' if sc['significant'] else ', within noise'})"
         lines.append(head)
-        lines.append(f"{'scenario':<17} {'kind':<6} {'median':>8} {'p95':>8} {'worst':>8} {'gpu wait':>8} {'it/tick':>7} "
+        lines.append(f"{'scenario':<17} {'kind':<6} {'median':>8} {'p95':>8} {'worst':>8} {'fetch':>8} {'it/tick':>7} "
                      f"{'unconv':>6} {'imp.ev':>6} {'imp.steps':>9} {'capped':>6} {'longest':>7} {'cv%':>5}  vs baseline")
         for s, v in prof["scenarios"].items():
             ms = [r["step_ms"] for r in v["reps"]]
@@ -477,7 +484,7 @@ def table(report: dict) -> str:
             worst = max(m["max"] for m in ms)
             r0 = v["reps"]
             imp = [r["impact"] for r in r0]
-            wait = st.fmean(r["gpu_wait_ms"]["median"] for r in r0) if v["kind"] == "live" else None
+            wait = st.fmean(r["fetch_ms"]["median"] for r in r0) if v["kind"] == "live" else None
             it = st.fmean(r["stress"]["iterations_per_tick"] for r in r0) if v["kind"] == "live" else None
             unc = st.fmean(r["stress"]["unconverged_ticks"] for r in r0) if v["kind"] == "live" else None
             d = v.get("delta")
@@ -492,7 +499,9 @@ def table(report: dict) -> str:
                          f"{fmt((v['cv'] or 0) * 100 if v['cv'] is not None else None):>5}  {dtxt}")
     if report.get("problems"):
         lines.append("\nPROBLEMS:\n  " + "\n  ".join(report["problems"]))
-    lines.append("\nScored value per scenario: live = p95 of the server tick (ms); replay = median impact-evaluation time (ms).")
+    lines.append("\nScored value per scenario: live = p95 of the server tick (ms); replay = median impact-evaluation time (ms)."
+                 "\nfetch = median PhysX fetch (host blocked on the GPU step, the stage inside it); it/tick = stress iterations;"
+                 "\nunconv = unconverged ticks; imp.* = impact solve: triggered evaluations, ADMM steps, capped solves, longest dispatch (ms).")
     return "\n".join(lines)
 
 
