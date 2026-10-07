@@ -1,3 +1,4 @@
+import {realCapacitiesEnabled,greenWood} from './real-capacities.mjs';
 import * as THREE from '../../../client/node_modules/three/build/three.module.js';
 import {ConvexGeometry} from '../../../client/node_modules/three/examples/jsm/geometries/ConvexGeometry.js';
 import {TreeSkeleton} from '../vendor/ez-tree/skeleton.mjs';
@@ -48,6 +49,10 @@ export function buildTree({family='shade',variant=0,seed=20260925,trunkSections=
   tensionElastic:4e4,tensionFatal:8e4,shearElastic:6e4,shearFatal:1.2e5,compressionElastic:8e6,compressionFatal:16e6,elasticModulus:2e9})-1;
  const rootWood=b.table.push({...b.table[wood],name:`root-wood-${family}`,tensionElastic:3e6,tensionFatal:6e6,shearElastic:4e6,shearFatal:8e6})-1;
  const branchWood=b.table.push({...b.table[wood],name:`branch-fibre-${family}`,tensionElastic:4e3,tensionFatal:8e3,shearElastic:6e3,shearFatal:1.2e4})-1;
+ // VIBE_REAL_CAPACITIES=1: stem, branch and root all green clear wood of the
+ // family's species (real-capacities.mjs greenWood; Wood Handbook Table 5-3).
+ if(realCapacitiesEnabled()){const {species,...green}=greenWood(family);
+  for(const k of [wood,rootWood,branchWood])Object.assign(b.table[k],green,{name:`${b.table[k].name}-${species.replace(/ /g,'-')}`});}
  const bond=(a,c,center,normal,area,material=wood)=>b.s.bonds.push({node0:a,node1:c,centroid:v(center),normal:v(normal),area:round(area),m:material});
  // Separate cross-sections let the solver fracture the main stem at different
  // heights while the rooted lower section stays supported.

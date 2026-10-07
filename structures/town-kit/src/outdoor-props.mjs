@@ -1,3 +1,4 @@
+import {realCapacitiesEnabled,applyRealProp} from './real-capacities.mjs';
 import {Builder} from './geometry.mjs';
 import {M} from './materials.mjs';
 
@@ -145,6 +146,8 @@ export function buildOutdoorProp(type,{palette='sage',seed=20260925}={}) {
   }
   bond.m=fractureMaterials.get(bond.m);
  }
+ // VIBE_REAL_CAPACITIES=1: the real members, joints and masses (real-capacities.mjs).
+ if(realCapacitiesEnabled())applyRealProp(pack,type);
  const dynamic=nodes.map((n,i)=>[n,i]).filter(([n])=>n.mass>0),top=dynamic.reduce((a,v)=>v[0].centroid.y>a[0].centroid.y?v:a);
  const support=pack.scenario.nodeTypes.map((t,i)=>t==='support'&&nodes[i].centroid.y<.5?i:-1).filter(i=>i>=0);
  const preferred=pack.scenario.nodeTypes.findIndex(t=>({mailbox:'lid','wheelie-bin':'lid',dumpster:'lid',bench:'seat-slat',planter:'planter-wall',streetlight:'lamp-base','street-sign':'sign','bike-rack':'rack-arm',hydrant:'hydrant-nozzle',pallet:'pallet-slat',crate:'lid','sandwich-board':'board','low-wall':'wall-cap',bollard:'support','road-barrier':'barrier','bus-shelter':'shelter-glass','market-stall':'counter',carport:'roof',scaffold:'platform',billboard:'advertising-panel'})[type]===t);

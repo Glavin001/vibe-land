@@ -33,6 +33,7 @@ import {
 } from '../town-kit/src/index.mjs';
 import { Builder } from '../town-kit/src/geometry.mjs';
 import { M, mortarJoints, crushEnabled } from '../town-kit/src/materials.mjs';
+import { realCapacitiesEnabled } from '../town-kit/src/real-capacities.mjs';
 import { composeVisuals } from '../town-kit/src/outdoor-visuals.mjs';
 import { dressTownProp } from '../town-kit/src/town-dressing-visuals.mjs';
 import { strengthen } from './strengthen.mjs';
@@ -49,7 +50,10 @@ const WEST = -150, EAST = 150, SOUTH = -76, NORTH = 76;
 const ROAD = 4, WALK = 6; // half widths: asphalt, asphalt + pavement
 
 /** Bond strength factors (candidates.mjs --sweep: the smallest that stands, x3 margin; trees all at the shade tree's). */
-const TREE_STRENGTH = 100, SHELTER_STRENGTH = 30, STALL_STRENGTH = 30;
+// VIBE_REAL_CAPACITIES=1: none -- trees and props carry their real capacities
+// (town-kit/src/real-capacities.mjs) and stand on them (vibe-town-real.*).
+const REAL = realCapacitiesEnabled();
+const TREE_STRENGTH = REAL ? 1 : 100, SHELTER_STRENGTH = REAL ? 1 : 30, STALL_STRENGTH = REAL ? 1 : 30;
 
 // ------------------------------------------------------------- the ground
 /** Streets, pavements, paths, driveways, paint: thin destructible surfacing on buried fixed subgrade. */
@@ -146,7 +150,25 @@ function dressTower(asset, style) {
   // Its nodes name no material: every piece draws (and weighs) as material 0.
   const [textureKey, color, roughness] = TOWER_STYLES[style];
   Object.assign(asset.pack.defaults.solver.materials[0], { textureKey, color, roughness });
+  if (REAL) monolithicFacade(asset.pack);
   return asset;
+}
+/**
+ * VIBE_REAL_CAPACITIES=1: the ten-storey tower's walls are read as what its
+ * geometry is -- reinforced concrete cast against its columns and slabs over
+ * the whole face (0.4 x 1.4 m interfaces carrying up to 400 kN m) -- so its
+ * wall interfaces take the pack's own reinforced-concrete limits instead of a
+ * hung-panel clip's (1.5 MPa tension). Precast panels on clips would bear on
+ * the slab edges through a few brackets; the pack bonds them over their whole
+ * face, which no bracket can carry.
+ */
+function monolithicFacade(pack) {
+  const table = pack.defaults.solver.materials;
+  const rc = table.findIndex((m) => m.name === 'reinforced-concrete');
+  if (rc < 0) throw new Error('tower pack without reinforced-concrete');
+  for (const bond of pack.scenario.bonds) {
+    if (/^facade-(clip|panel)$/.test(table[bond.m ?? 0].name)) bond.m = rc;
+  }
 }
 const cache = new Map();
 const once = (key, build) => { if (!cache.has(key)) cache.set(key, build()); return cache.get(key); };
@@ -420,7 +442,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   mkdirSync(out, { recursive: true });
   // VIBE_CRUSH=1: the same town with chunk crushing authored (materials.mjs
   // crushFor: masonry, concrete, gypsum, glass), as vibe-town-crush.*.
-  const KEY = crushEnabled() ? `${TOWN_KEY}-crush` : TOWN_KEY;
+  const KEY = `${TOWN_KEY}${crushEnabled() ? '-crush' : ''}${REAL ? '-real' : ''}`;
   const bytes = JSON.stringify(pack);
   writeFileSync(path.join(out, `${KEY}.json`), bytes);
   writeFileSync(path.join(out, `${KEY}.visuals.json`), JSON.stringify({
