@@ -1,1 +1,23 @@
 # Acceptance known gaps: profile	scenario	check	measured when recorded	cause
+# runtime, full-2 (2026-10-07)
+runtime	packs-stand-at-rest	veneer: structures with a bond broken at rest	2 of 4: veneer-house 0.02%, veneer-house--frame 0.04%	bonds break at rest (settle included): runtime grading
+runtime	packs-stand-at-rest	town: structures with a bond broken at rest	5 of 265: tower-165 0.03%, tower-166 0.03%, tower-167 0.03%, tower-187 0.03%, tower-188 0.03%	bonds break at rest (settle included): runtime grading
+runtime	truck-through-house	veneer house: bonds broken in the house (share, oracle band)	2851 of 3084 (92.4%)	the whole veneer house comes down from one hit (runtime: area-gain grading, uniform rotational stiffness)
+runtime	truck-through-house	veneer house: roof stays up (mean drop of its members)	2.62 m	the whole veneer house comes down from one hit (runtime: area-gain grading, uniform rotational stiffness)
+runtime	truck-through-house	veneer house: roof holds (members dropped > 0.5 m)	102 of 102	the whole veneer house comes down from one hit (runtime: area-gain grading, uniform rotational stiffness)
+runtime	truck-through-house	veneer house: frame holds (frame chunks still anchored)	0.00	the whole veneer house comes down from one hit (runtime: area-gain grading, uniform rotational stiffness)
+runtime	truck-through-house	one-storey house: through the house (m past the back wall z 27.9)	-2.80	the whole veneer house comes down from one hit (runtime: area-gain grading, uniform rotational stiffness)
+runtime	shots-through-house	three 100 kg balls between the studs: bonds broken in the house (share, oracle band)	2064 of 3084 (66.9%)	the whole veneer house comes down from one hit (runtime)
+runtime	shots-through-house	three 100 kg balls between the studs: roof stays up (mean drop of its members)	1.95 m	the whole veneer house comes down from one hit (runtime)
+runtime	shots-through-house	three 100 kg balls between the studs: roof holds (members dropped > 0.5 m)	92 of 102	the whole veneer house comes down from one hit (runtime)
+runtime	shots-through-house	three 100 kg balls between the studs: frame holds (frame chunks still anchored)	0.02	the whole veneer house comes down from one hit (runtime)
+runtime	shots-through-house	cannonball: bonds broken in the house (share, oracle band)	2991 of 3084 (97.0%)	the whole veneer house comes down from one hit (runtime)
+runtime	shots-through-house	cannonball: roof stays up (mean drop of its members)	2.62 m	the whole veneer house comes down from one hit (runtime)
+runtime	shots-through-house	cannonball: roof holds (members dropped > 0.5 m)	102 of 102	the whole veneer house comes down from one hit (runtime)
+runtime	shots-through-house	cannonball: frame holds (frame chunks still anchored)	0.00	the whole veneer house comes down from one hit (runtime)
+runtime	shots-through-house	cannonball: damage local (bonds broken > 8 m from the hit)	612 of 2991	the whole veneer house comes down from one hit (runtime)
+runtime	shots-through-house	meteor: bonds broken in the house (share, oracle band)	3067 of 3084 (99.4%)	the whole veneer house comes down from one hit (runtime)
+runtime	crush-only-where-hit	crushes are where the projectile hit (positions)	not recorded	no harness records crush positions in the lab (textbook crush-locality covers a wall)
+runtime	studless-houses-collapse	veneer-house--no-ground-front-studs: collapses (bonds broken at rest)	0.84%	without only the ground floor front studs the two-storey stands (0.84%)
+runtime	stairs-walkable	route walk: up and down the stair	fails: FAIL  down-upper-flight: fell 0.242 m at Vec3(0.13733491, 2.7154164, -2.0747907)	without ground snap the player falls 0.24 m going down the upper flight (high profile snaps)
+runtime	turning-slalom-avoidance	slalom and avoidance on the GPU (scripts/turning-lab.sh slalom|avoid)	not gated	no automated gate for slalom and avoidance (turning-lab is a film)
