@@ -530,7 +530,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                     let out = 140. * flight / (1. + slope * slope).sqrt();
                     let start = target + Vector3::new(bearing.sin() * out, out * slope, bearing.cos() * out);
                     let tt = (start - target).norm() / 140.;
-                    let velocity = (target - start) / tt + Vector3::new(0., 9.81 * tt * 0.5, 0.);
+                    let velocity = (target - start) / tt + Vector3::new(0., (vibe_netcode::movement::GRAVITY as f32) * tt * 0.5, 0.);
                     projectile = arena.launch_meteor(start, velocity, tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks).or(projectile);
                 }
             }
@@ -559,7 +559,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                 let out = 140. * flight / (1. + slope * slope).sqrt();
                 let start = target + Vector3::new(bearing.sin() * out, out * slope, bearing.cos() * out);
                 let tt = (start - target).norm() / 140.;
-                let velocity = (target - start) / tt + Vector3::new(0., 9.81 * tt * 0.5, 0.);
+                let velocity = (target - start) / tt + Vector3::new(0., (vibe_netcode::movement::GRAVITY as f32) * tt * 0.5, 0.);
                 projectile = arena.launch_meteor(start, velocity, tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks);
             }
         }
@@ -575,7 +575,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                 let out = 140. * flight / (1. + slope * slope).sqrt();
                 let start = target + Vector3::new(bearing.sin() * out, out * slope, bearing.cos() * out);
                 let tt = (start - target).norm() / 140.;
-                let velocity = (target - start) / tt + Vector3::new(0., 9.81 * tt * 0.5, 0.);
+                let velocity = (target - start) / tt + Vector3::new(0., (vibe_netcode::movement::GRAVITY as f32) * tt * 0.5, 0.);
                 projectile = arena.launch_meteor(start, velocity, tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks).or(projectile);
                 launched += 1;
             }
@@ -593,7 +593,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                 let origin = target + Vector3::new(bearing.sin(), f("slope"), bearing.cos()) * f("distance");
                 let speed = crate::city::city_ball_speed_ms();
                 let tt = (origin - target).norm() / speed;
-                let velocity = (target - origin) / tt + Vector3::new(0., 0.5 * 9.81 * tt, 0.);
+                let velocity = (target - origin) / tt + Vector3::new(0., 0.5 * (vibe_netcode::movement::GRAVITY as f32) * tt, 0.);
                 let mass = shot_def["mass"].as_f64().unwrap_or(100.) as f32;
                 let radius = (mass / crate::city::city_ball_density_kg_m3() * 3. / (4. * std::f32::consts::PI)).cbrt();
                 projectile = arena.launch_ball_from_muzzle(origin, velocity, radius, mass, 600).or(projectile);
@@ -617,7 +617,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                         let meteor = a["projectile"] == "meteor";
                         let speed = if meteor { 140. } else { crate::city::city_ball_speed_ms() };
                         let tt = (origin - target).norm() / speed;
-                        let velocity = (target - origin) / tt + Vector3::new(0., 0.5 * 9.81 * tt, 0.);
+                        let velocity = (target - origin) / tt + Vector3::new(0., 0.5 * (vibe_netcode::movement::GRAVITY as f32) * tt, 0.);
                         projectile = if meteor {
                             let tuning = crate::meteor::MeteorTuning::from_env();
                             arena.launch_meteor(origin, velocity, tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks)
@@ -637,7 +637,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                         let target = s.p;
                         let origin = target + right * 12. + Vector3::new(0., 0.4, 0.);
                         let tt = 12. / ball_speed;
-                        projectile = arena.launch_ball_from_muzzle(origin, (target - origin) / tt + Vector3::new(0., 0.5 * 9.81 * tt, 0.), radius, mass, 600);
+                        projectile = arena.launch_ball_from_muzzle(origin, (target - origin) / tt + Vector3::new(0., 0.5 * (vibe_netcode::movement::GRAVITY as f32) * tt, 0.), radius, mass, 600);
                     }
                     "debris" => {
                         // A loose chunk thrown at the car (a blast's debris): `mass` kg,
@@ -655,7 +655,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                         let dir = fwd * bearing.cos() + right * bearing.sin();
                         let origin = aim + dir * 6.;
                         let tt = 6. / f("speed");
-                        projectile = arena.launch_ball_from_muzzle(origin, (aim - origin) / tt + Vector3::new(0., 0.5 * 9.81 * tt, 0.) + s.v, f("radius"), f("mass"), 600);
+                        projectile = arena.launch_ball_from_muzzle(origin, (aim - origin) / tt + Vector3::new(0., 0.5 * (vibe_netcode::movement::GRAVITY as f32) * tt, 0.) + s.v, f("radius"), f("mass"), 600);
                     }
                     "meteor" => {
                         let tuning = crate::meteor::MeteorTuning::from_env();
@@ -733,7 +733,7 @@ fn run(r: &Run, meta: &Value) -> Value {
             }
         }
         let after = car_state(&mut arena, id);
-        let accel_g = prev_v.map_or(0., |pv| (after.v - pv).norm() / DT / 9.81);
+        let accel_g = prev_v.map_or(0., |pv| (after.v - pv).norm() / DT / (vibe_netcode::movement::GRAVITY as f32));
         peak_decel = peak_decel.max(accel_g);
         prev_v = Some(after.v);
         if let Some(pid) = projectile {

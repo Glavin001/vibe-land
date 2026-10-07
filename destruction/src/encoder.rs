@@ -253,7 +253,7 @@ fn default_one() -> f32 {
 }
 
 fn default_world_gravity_y() -> f32 {
-    -9.81
+    -(vibe_netcode::movement::GRAVITY as f32)
 }
 
 /// A body is in free fall when its tick-to-tick acceleration is within this
@@ -269,7 +269,7 @@ const FREE_FALL_MIN_TICKS: u16 = 2;
 /// it extrapolates the record's velocities, undamped, for at most this many
 /// ticks and then holds; a ballistic record also falls under this gravity.
 pub const CLIENT_MAX_EXTRAPOLATION_TICKS: u32 = 8;
-pub const CLIENT_EXTRAPOLATION_GRAVITY_Y: f32 = -9.81;
+pub const CLIENT_EXTRAPOLATION_GRAVITY_Y: f32 = -(vibe_netcode::movement::GRAVITY as f32);
 /// The predictive client's constants (`client/src/city/cityClient.ts`):
 /// its playout delay beyond the send interval, the render clock's lead over
 /// the completed tick, and the longest lead it draws at.

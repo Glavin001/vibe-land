@@ -101,7 +101,7 @@ pub fn decode(bytes: &[u8]) -> R<WarmBundle<'_>> {
     {
         return Err(bad("provenance"));
     }
-    if descriptor.gravity != [0., -9.81, 0.]
+    if descriptor.gravity != [0., -vibe_netcode::movement::GRAVITY, 0.]
         || descriptor.timestep != 1. / 60.
         || descriptor.tolerance != 1e-5
     {

@@ -140,7 +140,7 @@ impl Bombardment {
 #[derive(Clone, Copy, Debug)]
 pub struct Shot { pub origin: Vector3<f32>, pub velocity: Vector3<f32> }
 pub fn aimed_shot(origin: Vector3<f32>, target: Vector3<f32>, flight_time: f32) -> Shot {
-    Shot { origin, velocity: (target-origin)/flight_time + Vector3::new(0.0, 9.81*flight_time*0.5, 0.0) }
+    Shot { origin, velocity: (target-origin)/flight_time + Vector3::new(0.0, (vibe_netcode::movement::GRAVITY as f32)*flight_time*0.5, 0.0) }
 }
 
 #[cfg(test)]

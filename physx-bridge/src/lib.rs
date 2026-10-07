@@ -108,9 +108,18 @@ fn env_f32(name: &str, default: f32) -> f32 {
 /// deck sits at 99% of its cracking stress with no safety factor, so realistic
 /// concrete cracked it under its own weight.
 ///
-/// Override with VIBE_WORLD_GRAVITY (a positive magnitude).
+/// No override. VIBE_WORLD_GRAVITY used to move the PhysX scene alone while
+/// the players, the encoder, the vehicles and the stress-load references kept
+/// 9.81 (docs/verification/FIDELITY_AUDIT.md G2); a value other than Earth's
+/// is now refused rather than half-applied.
 pub fn world_gravity_magnitude() -> f32 {
-    env_f32("VIBE_WORLD_GRAVITY", DEFAULT_WORLD_GRAVITY).abs()
+    let g = env_f32("VIBE_WORLD_GRAVITY", DEFAULT_WORLD_GRAVITY).abs();
+    assert!(
+        g == DEFAULT_WORLD_GRAVITY,
+        "VIBE_WORLD_GRAVITY={g} is not supported: gravity is Earth's ({DEFAULT_WORLD_GRAVITY} m/s^2) everywhere, \
+         and the override only ever reached the PhysX scene"
+    );
+    g
 }
 
 /// Earth. The one default for world gravity. Must match
@@ -639,8 +648,14 @@ impl Default for DestructibleSettings {
             apply_excess_forces: true,
             apply_centrifugal: true,
             excess_force_scale: 0.012,
-            linear_damping: 0.25,
-            angular_damping: 0.35,
+            // No damping: a falling chunk loses energy in its contacts, not in
+            // the air. Drag on a 1 m, 1 t chunk at 10 m/s is ~60 N, an
+            // equivalent damping of 0.006 /s; the 0.25 / 0.35 this carried cost
+            // 8% of a 1 s free fall (tests/fidelity_audit.rs
+            // default_settings_fall_freely; FIDELITY_AUDIT F5). The city sets 0
+            // itself (city_config debris_damping) and vehicles ignore it.
+            linear_damping: 0.0,
+            angular_damping: 0.0,
         }
     }
 }
@@ -2050,6 +2065,7 @@ fn operation_error(error: cxx::Exception) -> BridgeError {
 /// The stress solve report types (World::native_stress_solve_report), named by diagnostics.
 pub use ffi::{FfiChunkCrushEvent, FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3};
 
+#[cfg(feature = "gpu")]
 #[cxx::bridge(namespace = "vibe_land::physx_bridge")]
 mod ffi {
     struct FfiVec3 {

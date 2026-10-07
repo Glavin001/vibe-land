@@ -496,3 +496,197 @@ fn stabilization_on_an_incline() {
     assert!(((off - textbook) / textbook).abs() < 0.03, "without stabilization the slide is not the textbook's");
     println!("  stabilization changes the slide by {:.2}%", 100.0 * (on - off) / off);
 }
+
+/// A free two-chunk cluster built with DestructibleSettings::default(), let go
+/// from rest: y after n steps of semi-implicit Euler with no damping is
+/// g dt^2 n (n + 1) / 2 (free fall, Hibbeler 12.3). The default used to carry
+/// linear damping 0.25 / angular 0.35 (FIDELITY_AUDIT F5): air drag on a
+/// 1 m, 1 t chunk at 10 m/s is 60 N, 0.006 /s of damping, 40x less.
+#[test]
+#[ignore = "requires the native GPU destruction SDK"]
+fn default_settings_fall_freely() {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.native_attach().unwrap();
+    let nodes: Vec<ChunkNodeDesc> = [-0.25f32, 0.25]
+        .iter()
+        .enumerate()
+        .map(|(i, &x)| ChunkNodeDesc {
+            node_index: i as u32,
+            centroid: Vec3::new(x, 0.0, 0.0),
+            mass: 500.0,
+            volume: 0.125,
+            geom_kind: 0,
+            half_extents: Vec3::new(0.25, 0.25, 0.25),
+            convex_points: Vec::new(),
+            material: 0,
+        })
+        .collect();
+    let bonds = [ChunkBondDesc { bond_index: 0, node0: 0, node1: 1, centroid: Vec3::new(0.0, 0.0, 0.0), normal: Vec3::new(1.0, 0.0, 0.0), area: 0.25, material: 0 }];
+    let never = 1e13f32;
+    let settings = DestructibleSettings {
+        materials: vec![StressMaterialDesc {
+            compression_elastic: never, compression_fatal: never, tension_elastic: never, tension_fatal: never,
+            shear_elastic: never, shear_fatal: never, elastic_modulus: 30e9, residual_area_fraction: 0.0,
+        }],
+        ..DestructibleSettings::default()
+    };
+    let start = 100.0f32;
+    world
+        .native_create_destructible(0, Pose { position: Vec3::new(0.0, start, 0.0), rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }, &nodes, &bonds, settings, GROUP_CHUNK, GROUP_CHUNK)
+        .unwrap();
+    world.step().unwrap();
+    configure(&mut world);
+    let n = 60u32;
+    for _ in 0..n {
+        world.step().unwrap();
+        world.native_tick().unwrap();
+    }
+    let body: Vec<f32> = world.native_chunk_body_snapshots().unwrap().iter().filter(|b| !b.kinematic).map(|b| b.position.y).collect();
+    assert_eq!(body.len(), 1);
+    let dt = FIXED_TIMESTEP;
+    // One step ran before configure: n + 1 steps of fall in all.
+    let n = n + 1;
+    let want = start - DEFAULT_WORLD_GRAVITY * dt * dt * (n * (n + 1)) as f32 / 2.0;
+    println!("free fall {n} ticks from {start} m: y {:.4} m, undamped {want:.4} m, drop {:.2}% of the undamped", body[0], 100.0 * (start - body[0]) / (start - want));
+    assert!((body[0] - want).abs() < 1e-3 * (start - want), "a default destructible does not fall freely");
+}
+
+/// A crushable material (capPressure > 0) without its crush energy or
+/// viscosity, or with a strain-rate exponent and no reference rate, is an
+/// authoring error. The bridge used to substitute 1.0 silently (FIDELITY_AUDIT
+/// C6): a crush energy of 1 J/m^3 against concrete's ~1e6.
+#[test]
+#[ignore = "requires the native GPU destruction SDK"]
+fn crush_parameters_are_required() {
+    let try_crush = |energy: f32, viscosity: f32, exponent: f32, reference: f32| {
+        let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+        world.native_attach().unwrap();
+        let nodes: Vec<ChunkNodeDesc> = [-0.25f32, 0.25].iter().enumerate().map(|(i, &x)| ChunkNodeDesc {
+            node_index: i as u32, centroid: Vec3::new(x, 0.0, 0.0), mass: if i == 0 { 0.0 } else { 100.0 }, volume: 0.125,
+            geom_kind: 0, half_extents: Vec3::new(0.25, 0.25, 0.25), convex_points: Vec::new(), material: 0,
+        }).collect();
+        let bonds = [ChunkBondDesc { bond_index: 0, node0: 0, node1: 1, centroid: Vec3::new(0.0, 0.0, 0.0), normal: Vec3::new(1.0, 0.0, 0.0), area: 0.25, material: 0 }];
+        let settings = DestructibleSettings {
+            materials: vec![StressMaterialDesc {
+                compression_elastic: 30e6, compression_fatal: 30e6, tension_elastic: 3e6, tension_fatal: 3e6,
+                shear_elastic: 4e6, shear_fatal: 4e6, elastic_modulus: 30e9, residual_area_fraction: 0.0,
+            }],
+            crush: vec![vibe_land_physx_bridge::CrushMaterialDesc {
+                cap_pressure: 17e6, cohesion: 4e6, friction_slope: 1.2, crush_energy: energy, crush_viscosity: viscosity,
+                strain_rate_exponent: exponent, reference_strain_rate: reference, debris_mass_fraction: 0.0,
+                debris_fragment_count: 0, impedance: 0.0,
+            }],
+            ..DestructibleSettings::default()
+        };
+        world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 5.0, 0.0), rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }, &nodes, &bonds, settings, GROUP_CHUNK, GROUP_CHUNK).is_ok()
+    };
+    assert!(try_crush(3.5e6, 5.9e5, 0.0, 0.0), "a complete crush material was refused");
+    assert!(!try_crush(0.0, 5.9e5, 0.0, 0.0), "a crush material without crush energy was accepted");
+    assert!(!try_crush(3.5e6, 0.0, 0.0, 0.0), "a crush material without viscosity was accepted");
+    assert!(!try_crush(3.5e6, 5.9e5, 0.02, 0.0), "a strain-rate exponent without a reference rate was accepted");
+}
+
+/// The production stress configuration (see `solve`).
+fn configure(world: &mut World) {
+    world
+        .native_configure(NativeConfig {
+            max_iterations: STRESS_ITERATIONS,
+            tolerance: STRESS_TOLERANCE,
+            force_tolerance: 0.0,
+            warm_start: true,
+            damage_rate: 2.0,
+            bend_gain_max: 3.0,
+            fibre_bending: true,
+            reserved_contact_pairs: 64,
+            preserve_unchanged_contact_pairs: true,
+            gpu_island_repair: true,
+            verdict_sample_ticks: 1,
+        })
+        .unwrap();
+}
+
+/// One scene: a static floor tilted by `degrees` about z, and `boxes` 20 cm,
+/// 8 kg cubes stacked from its surface (the first kicked along the slope at
+/// `kick` m/s once it has rested for 0.5 s). Returns each cube's displacement
+/// along the slope (+ downhill) and up the stack after `seconds`, and how
+/// many sleep at the end.
+fn floor_scene(degrees: f32, boxes: u32, kick: f32, seconds: f32) -> (Vec<[f32; 2]>, usize) {
+    let theta = degrees.to_radians();
+    let q = Quat { x: 0.0, y: 0.0, z: (theta / 2.0).sin(), w: (theta / 2.0).cos() };
+    let (t, n) = ([theta.cos(), theta.sin()], [-theta.sin(), theta.cos()]);
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1, user_id: 1, pose: Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: q },
+            half_extents: Vec3::new(5.0, 0.1, 1.0), collision_group: 1, collision_mask: u32::MAX,
+        })
+        .unwrap();
+    let mut starts = Vec::new();
+    for k in 0..boxes {
+        let lift = 0.1 + 0.1 + 0.2 * k as f32 + 0.0005 * (k + 1) as f32;
+        let p = [n[0] * lift, n[1] * lift];
+        world
+            .add_dynamic_box(DynamicBoxDesc {
+                entity_id: 2 + k, user_id: 2 + k, pose: Pose { position: Vec3::new(p[0], p[1], 0.0), rotation: q },
+                half_extents: Vec3::new(0.1, 0.1, 0.1), mass: 8.0, collision_group: 1, collision_mask: u32::MAX,
+            })
+            .unwrap();
+        starts.push(p);
+    }
+    let rest = 30u32;
+    let total = (seconds / FIXED_TIMESTEP).round() as u32;
+    for i in 0..total {
+        if i == rest && kick != 0.0 {
+            world.apply_impulse(2, Vec3::new(-t[0] * 8.0 * kick, -t[1] * 8.0 * kick, 0.0)).unwrap();
+        }
+        world.step().unwrap();
+    }
+    let snaps = world.body_snapshots().unwrap();
+    let mut out = Vec::new();
+    let mut sleeping = 0;
+    for k in 0..boxes {
+        let b = snaps.iter().find(|b| b.entity_id == 2 + k).expect("cube");
+        sleeping += b.sleeping as usize;
+        let d = [b.pose.position.x - starts[k as usize][0], b.pose.position.y - starts[k as usize][1]];
+        out.push([-(d[0] * t[0] + d[1] * t[1]), d[0] * n[0] + d[1] * n[1]]);
+    }
+    (out, sleeping)
+}
+
+/// Scene stabilization at rest and at low speed, where PhysX applies it
+/// (PxSceneFlag::eENABLE_STABILIZATION: extra damping and reduced gravity on
+/// slow bodies in contact). Textbook answers (Hibbeler, Dynamics, 13.4;
+/// Statics, 8.2):
+/// - a cube kicked at 0.5 m/s across a flat floor, mu 0.5, stops after
+///   v^2 / (2 mu g) = 25.5 mm;
+/// - a cube at rest on a 20 degree incline (tan 20 = 0.36 < mu) stays put;
+/// - a column of five cubes stands still.
+#[test]
+#[ignore = "requires the GPU PhysX scene"]
+fn stabilization_at_rest_and_slow() {
+    let run = |stab: bool| {
+        if stab { std::env::remove_var("VIBE_PHYSX_STABILIZATION") } else { std::env::set_var("VIBE_PHYSX_STABILIZATION", "0") }
+        let slide = floor_scene(0.0, 1, 0.5, 2.0).0[0][0];
+        let hold = floor_scene(20.0, 1, 0.0, 3.0).0[0][0];
+        let (column, asleep) = floor_scene(0.0, 5, 0.0, 5.0);
+        let drift = column.iter().map(|d| (d[0] * d[0]).sqrt().max(0.0)).fold(0.0f32, f32::max);
+        let sag = column.iter().map(|d| d[1]).fold(0.0f32, f32::min);
+        (slide, hold, drift, sag, asleep)
+    };
+    let on = run(true);
+    let off = run(false);
+    std::env::remove_var("VIBE_PHYSX_STABILIZATION");
+    let stop = 0.5f32 * 0.5 / (2.0 * 0.5 * DEFAULT_WORLD_GRAVITY);
+    println!("kicked cube, 0.5 m/s, mu 0.5: textbook {:.2} mm; stabilization on {:.2} mm, off {:.2} mm", 1e3 * stop, 1e3 * on.0, 1e3 * off.0);
+    println!("cube at rest on 20 degrees: on moved {:.3} mm, off {:.3} mm (textbook 0)", 1e3 * on.1, 1e3 * off.1);
+    println!("column of 5: horizontal drift on {:.3} mm, off {:.3} mm; settled sag on {:.3} mm, off {:.3} mm; asleep on {}/5, off {}/5",
+        1e3 * on.2, 1e3 * off.2, 1e3 * on.3, 1e3 * off.3, on.4, off.4);
+    // Stabilization is kept if it moves nothing that slides or holds and
+    // leaves the stack no further from standing still than without it. The
+    // stack's own error (cm-scale sag and drift for five cubes) is the rigid
+    // solver's (VIBE_PHYSX_POSITION_ITERS / VELOCITY_ITERS, PGS), not this flag's.
+    assert!((on.0 - off.0).abs() <= 0.01 * off.0.abs(), "stabilization changes a slow slide");
+    assert!((on.1 - off.1).abs() <= 1e-4, "stabilization changes a hold on an incline");
+    assert!(on.2 <= off.2 + 1e-4 && on.3 >= off.3 - 1e-4, "stabilization leaves the stack further from rest");
+}

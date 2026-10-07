@@ -44,7 +44,7 @@ import {
 } from '../town-kit/src/index.mjs';
 import { Builder } from '../town-kit/src/geometry.mjs';
 import { M, mortarJoints, crushEnabled } from '../town-kit/src/materials.mjs';
-import { realCapacitiesEnabled } from '../town-kit/src/real-capacities.mjs';
+import { realCapacitiesEnabled, characteristicLegacy } from '../town-kit/src/real-capacities.mjs';
 import { composeVisuals } from '../town-kit/src/outdoor-visuals.mjs';
 import { dressTownProp } from '../town-kit/src/town-dressing-visuals.mjs';
 import { strengthen } from './strengthen.mjs';
@@ -156,6 +156,7 @@ function skyline(file) {
   s.nodePieces ??= s.nodes.map((_, i) => i);
   s.nodeMaterials ??= s.nodes.map((node) => pack.defaults.solver.materials[node.m ?? 0].name);
   mortarJoints(pack);
+  if (REAL) characteristicLegacy(pack.defaults.solver.materials);   // FIDELITY_AUDIT D1
   return { pack };
 }
 /**
@@ -372,7 +373,7 @@ function layout(variant = null) {
   let fleet = null;
   if (hero) {
     const cast = [
-      [[-238, -1.6, 90], 'monster'], // the hero, on the approach, facing east
+      [[-262, 0, 90], 'monster'], // the hero, on the approach, facing east (films/hero-run-plan.mjs HERO_START)
       [[-109.3, 9.2, 180], 'desert'], // Elm Park, in a driveway (house 2, north side)
       [[-88, 2.6, 270], 'derby'], // Main Street's north shoulder
       [[-58, -2.6, 90], 'circuit'], // Main Street's south shoulder
@@ -491,7 +492,7 @@ function namePlaces(placements, pack, slots, labels) {
 
 // --------------------------------------------------------------- build
 /** The approach road and launch ramp west of Elm Park (the hero variant). */
-const APPROACH = { from: -250, ramp: { from: -212, to: -200, height: 1.9, half: 3.2 } };
+const APPROACH = { from: -272, ramp: { from: -206, to: -195, height: 3.0, half: 3.2 } };
 
 export function buildTown(variant = process.env.VIBE_TOWN_VARIANT || null) {
   const hero = variant === 'hero';

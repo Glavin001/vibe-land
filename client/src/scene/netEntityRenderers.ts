@@ -1,3 +1,4 @@
+import { lookTuning } from '../graphics/lookTuning';
 import { VehicleVisual } from '../vehicles/VehicleVisual';
 import { defaultConfiguration, vehicles as vehicleModels } from '../vehicles/configuration.mjs';
 import { registerShaderWarmup } from './ShaderWarmup';
@@ -324,12 +325,15 @@ function dynamicBodyMesh(id: number, shapeType: number, halfExtents: ArrayLike<n
     return rock;
   }
   if (shapeType === 1) {
-    geom = new THREE.SphereGeometry(halfExtents[0], 16, 12);
-    mat = new THREE.MeshStandardMaterial({
-      color: BALL_COLORS[id % BALL_COLORS.length],
-      roughness: 0.4,
-      metalness: 0.1,
-    });
+    geom = new THREE.SphereGeometry(halfExtents[0], 24, 16);
+    // A film's cannonball is cast iron (lookTuning ironBalls); the playground's balls are toys.
+    mat = lookTuning().ironBalls
+      ? new THREE.MeshStandardMaterial({ color: 0x2b2d2f, roughness: 0.55, metalness: 0.85 })
+      : new THREE.MeshStandardMaterial({
+        color: BALL_COLORS[id % BALL_COLORS.length],
+        roughness: 0.4,
+        metalness: 0.1,
+      });
   } else {
     geom = new THREE.BoxGeometry(halfExtents[0] * 2, halfExtents[1] * 2, halfExtents[2] * 2);
     mat = new THREE.MeshStandardMaterial({

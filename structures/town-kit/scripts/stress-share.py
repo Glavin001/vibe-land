@@ -145,7 +145,10 @@ def bond_sections(s, tol=1e-4):
         # A contact cannot exceed its faces' overlap: where the authored area
         # does (beyond the 1e-6 m^2 rounding) the faces are not the contact and
         # the bond keeps the square patch of its area (bond_section.h).
-        if bd['area'] > area + 1e-6: out.append(None); continue
+        # The slice takes faces within tol of the plane, so the overlap is
+        # uncertain by a band tol wide around its perimeter.
+        perimeter = np.sqrt((np.roll(x, -1) - x) ** 2 + (np.roll(y, -1) - y) ** 2).sum()
+        if bd['area'] > area + perimeter * tol + 1e-6: out.append(None); continue
         cx, cy = ((x + x1) * cr).sum() / (6 * area), ((y + y1) * cr).sum() / (6 * area)
         Ixx = ((x * x + x * x1 + x1 * x1) * cr).sum() / 12 - area * cx * cx   # int u^2
         Iyy = ((y * y + y * y1 + y1 * y1) * cr).sum() / 12 - area * cy * cy   # int v^2
@@ -213,7 +216,9 @@ def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
         if angular == 'section':
             # The engine under VIBE_SECTION_ROTATION=1: E A / L at the bond's
             # own area, L the contact length max(distance, sqrt(A)), no floors.
-            L = max(np.linalg.norm(pos[i] - pos[j]), np.sqrt(bd['area']))
+            # the centres' separation along the bond normal (VIBE_SECTION_ROTATION)
+            nrm_b = np.array([bd['normal'][k] for k in 'xyz']); nrm_b = nrm_b / np.linalg.norm(nrm_b)
+            L = max(abs(nrm_b @ (pos[j] - pos[i])), np.sqrt(bd['area']))
             w[b] = np.sqrt(E / 30e9 * bd['area'] / L)
         else:
             L = max(np.linalg.norm(pos[i] - pos[j]), 0.05)

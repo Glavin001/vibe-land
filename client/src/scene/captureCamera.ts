@@ -178,6 +178,27 @@ export function eyePoint(eyes: AssetEyes, eye: MountPoint | Vec3): Vec3 {
 }
 
 let smoothedHeading: { yaw: number; atMs: number } | null = null;
+
+/**
+ * A camera in a seat looks out through the car's glass, which is drawn
+ * opaque (tinted, metallic): from inside it is a black screen. While a seat
+ * mount is on, that vehicle's glass is hidden -- the view a driver has -- and
+ * shown again when the mount moves elsewhere.
+ */
+let hiddenGlass: THREE.Object3D[] = [];
+function seeThroughGlass(object: THREE.Object3D | null): void {
+  if (object && hiddenGlass.length && hiddenGlass[0].userData.captureHiddenOn === object.id) return;
+  for (const o of hiddenGlass) { o.visible = true; delete o.userData.captureHiddenOn; }
+  hiddenGlass = [];
+  if (!object) return;
+  object.traverse((child) => {
+    if (child.userData?.material === 'glass' && child.visible) {
+      child.visible = false;
+      child.userData.captureHiddenOn = object.id;
+      hiddenGlass.push(child);
+    }
+  });
+}
 const q = new THREE.Quaternion();
 const qLevel = new THREE.Quaternion();
 const qFrame = new THREE.Quaternion();
@@ -191,9 +212,10 @@ const euler = new THREE.Euler(0, 0, 0, 'YXZ');
  * vehicles are placed for the frame. Returns whether it took over.
  */
 export function applyCaptureMount(camera: THREE.Camera, objectOf: (vehicleId: number) => THREE.Object3D | undefined): boolean {
-  if (!mount) return false;
+  if (!mount) { if (hiddenGlass.length) seeThroughGlass(null); return false; }
   const object = objectOf(mount.vehicleId);
   if (!object) return false;
+  seeThroughGlass(mount.eye === 'driver' || mount.eye === 'passenger' ? object : null);
   q.copy(object.quaternion);
   euler.setFromQuaternion(q, 'YXZ');
   // The heading the camera frame uses: the car's, or smoothed after it.

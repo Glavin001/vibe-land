@@ -1,0 +1,222 @@
+#!/usr/bin/env node
+// Acceptance scenarios: every behaviour the owner asked for this week, as data,
+// judged from the existing harnesses' outputs. scripts/verify/acceptance.sh runs
+// the harnesses for an engine profile; this file says what each scenario is,
+// which harness output it reads and what passes.
+//
+//   node scripts/verify/acceptance.mjs list              the scenarios as JSON (for other suites)
+//   node scripts/verify/acceptance.mjs judge PROFILE DIR  read DIR's harness outputs, print the
+//                                                        table, append rows to DIR/acceptance.jsonl
+//
+// Criteria marked `proposed` are numbers this suite introduces where no harness
+// gated the behaviour before (locality, roof and frame holding, crushes only
+// where hit): they are acceptance thresholds for the owner to confirm, stated
+// with the reasoning, never tuned to make a run pass.
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+
+const testbedRuns = (dir) => {
+  const f = path.join(dir, 'testbed.json');
+  return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')).runs : null;
+};
+const testbedVerdict = (dir) => {
+  const f = path.join(dir, 'testbed-verdict.json');
+  return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')).cars.flatMap((c) => c.rows.map((r) => ({ ...r, car: c.car }))) : null;
+};
+const qualify = (dir, name) => {
+  const f = path.join(dir, `qualify-${name}.json`);
+  return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : null;
+};
+const status = (dir, name) => {
+  const f = path.join(dir, `${name}.status`);
+  return existsSync(f) ? readFileSync(f, 'utf8').trim() : null;
+};
+const run = (runs, trial) => runs?.find((r) => r.trial === trial && r.car === 'monster');
+const fmt = (v, d = 2) => (v == null || Number.isNaN(v) ? '-' : typeof v === 'number' ? v.toFixed(d) : String(v));
+
+// The house probe's own definitions (server/src/vehicle_testbed.rs HouseProbe):
+// a roof member is "down" when it has dropped > 0.5 m; the frame fraction is
+// the share of frame chunks (studs, plates, joists, rafters) still on the
+// anchored body.
+const ROOF_DOWN_ALLOWED = 0; // proposed: the roof holds = no roof member dropped > 0.5 m
+const FRAME_KEPT = 0.8; // proposed: a 2.5 m wide truck path through a ~10 m house
+//                         removes the studs it hits (front and back wall, ~2 x 25%
+//                         of those walls, ~10-15% of the frame); 80% kept is "the
+//                         frame holds" with that allowance, not a collapse
+const FAR = '8m+'; // proposed: a cannonball's damage stays within 8 m of where it hit
+
+function houseChecks(r, { through, local }) {
+  const h = r?.house;
+  if (!r) return [{ check: 'trial ran', measured: 'missing', threshold: 'ran', pass: false }];
+  const out = [];
+  if (through) out.push(through(r));
+  out.push({ check: 'roof holds (members dropped > 0.5 m)', measured: h ? `${h.roofMembersDown} of ${h.roofMembers}` : '-', threshold: `<= ${ROOF_DOWN_ALLOWED} (proposed)`, pass: !!h && h.roofMembersDown <= ROOF_DOWN_ALLOWED });
+  out.push({ check: 'frame holds (frame chunks still anchored)', measured: h ? fmt(h.frameAnchoredFrac) : '-', threshold: `>= ${FRAME_KEPT} (proposed)`, pass: !!h && h.frameAnchoredFrac >= FRAME_KEPT });
+  if (local) out.push({ check: 'damage local (bonds broken > 8 m from the hit)', measured: h ? `${h.byDistance?.[FAR]} of ${h.broken}` : '-', threshold: '0 (proposed)', pass: !!h && (h.byDistance?.[FAR] ?? 1) === 0 });
+  out.push({ check: 'every step completed', measured: r.failedSteps, threshold: '0', pass: r.failedSteps === 0 });
+  return out;
+}
+
+export const SCENARIOS = [
+  {
+    id: 'truck-through-house',
+    behaviour: 'The monster truck drives into a house, through the front wall and through the house; damage is local, the frame and the roof hold',
+    harness: { kind: 'testbed', build: 'monster', trials: ['framed-house', 'house'] },
+    judge(dir) {
+      const runs = testbedRuns(dir);
+      const framed = run(runs, 'framed-house'), old = run(runs, 'house');
+      return [
+        ...houseChecks(framed, { through: (r) => ({ check: 'veneer house: through the front wall (m past the brick face z 20.1)', measured: fmt(r.maxZ - 20.1), threshold: '>= 0', pass: r.maxZ - 20.1 >= 0 }) }).map((c) => ({ ...c, check: `veneer house: ${c.check.replace('veneer house: ', '')}` })),
+        { check: 'one-storey house: through the house (m past the back wall z 27.9)', measured: old ? fmt(old.maxZ - 27.9) : 'missing', threshold: '>= 0', pass: !!old && old.maxZ - 27.9 >= 0 },
+      ];
+    },
+  },
+  {
+    id: 'shots-through-house',
+    behaviour: 'A cannonball and a meteor go through a house with local damage; the roof holds unless its support truly fails',
+    harness: { kind: 'testbed', build: 'monster', trials: ['cannonball-framed-house', 'meteor-framed-house'] },
+    judge(dir) {
+      const runs = testbedRuns(dir);
+      const ball = run(runs, 'cannonball-framed-house'), meteor = run(runs, 'meteor-framed-house');
+      return [
+        ...houseChecks(ball, { local: true, through: (r) => ({ check: 'gets past the front wall (m)', measured: fmt(r.attack?.pastTarget), threshold: '>= 1', pass: (r.attack?.pastTarget ?? 0) >= 1 }) }).map((c) => ({ ...c, check: `cannonball: ${c.check}` })),
+        // The meteor (2 m radius, through the whole house) takes the roof's
+        // supports on its path, so its roof may come down where they went: only
+        // through-ness and the steps are gated, the rest measured.
+        ...houseChecks(meteor, { through: (r) => ({ check: 'goes through the house (m past the front wall)', measured: fmt(r.attack?.pastTarget), threshold: '>= 8', pass: (r.attack?.pastTarget ?? 0) >= 8 }) })
+          .map((c) => ({ ...c, check: `meteor: ${c.check}`, ...(c.check.startsWith('roof') || c.check.startsWith('frame') ? { threshold: 'measured (its path takes supports)', pass: true } : {}) })),
+      ];
+    },
+  },
+  {
+    id: 'crush-only-where-hit',
+    behaviour: 'Crushing happens only where the projectile actually hits',
+    harness: { kind: 'testbed+qualify', build: 'monster', trials: ['rest', 'near-miss', 'knock-mirror', 'cannonball-framed-house'], qualify: ['veneer', 'town'] },
+    judge(dir, profile) {
+      const runs = testbedRuns(dir);
+      const out = [];
+      for (const t of ['rest', 'near-miss', 'knock-mirror']) {
+        const r = run(runs, t);
+        out.push({ check: `${t}: chunks crushed (nothing hits a structure)`, measured: r ? r.crushedChunks : 'missing', threshold: '0', pass: !!r && r.crushedChunks === 0 });
+      }
+      const hit = run(runs, 'cannonball-framed-house');
+      out.push({ check: 'cannonball into the house: chunks crushed', measured: hit ? hit.house?.crushedChunks ?? hit.crushedChunks : 'missing', threshold: profile === 'high' ? '>= 1 (crush on)' : 'measured (crush off)', pass: !!hit && (profile !== 'high' || (hit.house?.crushedChunks ?? hit.crushedChunks) >= 1) });
+      for (const q of ['veneer', 'town']) {
+        const res = qualify(dir, q);
+        const crushed = res?.filter((r) => r.verdict === 'CRUSH').length;
+        out.push({ check: `${q} at rest: structures that crush`, measured: res ? crushed : 'missing', threshold: '0', pass: !!res && crushed === 0 });
+      }
+      out.push({ check: 'crushes are where the projectile hit (positions)', measured: 'not recorded', threshold: 'every crushed chunk within the projectile\'s swept radius', pass: false, note: 'gap: no harness records crush positions (native_gameplay a_crushable_wall_crushes_where_it_is_struck checks only that something crushed)' });
+      return out;
+    },
+  },
+  {
+    id: 'houses-stand-and-converge',
+    behaviour: 'Houses stand at rest and converge',
+    harness: { kind: 'qualify', pack: 'veneer', structures: ['veneer-bungalow', 'veneer-house', 'veneer-bungalow--frame', 'veneer-house--frame'] },
+    judge(dir) {
+      const res = qualify(dir, 'veneer');
+      return ['veneer-bungalow', 'veneer-house', 'veneer-bungalow--frame', 'veneer-house--frame'].map((s) => {
+        const r = res?.find((x) => x.structure === s);
+        return { check: `${s}: stands and converges at rest`, measured: r ? `${r.verdict}, ${fmt(r.unconverged_pct, 1)}% unconverged, ${fmt(r.broken_pct)}% broken` : 'missing', threshold: 'PASS (<= 10% unconverged, <= 0.5% broken)', pass: r?.verdict === 'PASS' };
+      });
+    },
+  },
+  {
+    id: 'studless-houses-collapse',
+    behaviour: 'With the studs removed, the houses collapse',
+    harness: { kind: 'qualify', pack: 'veneer', structures: ['veneer-bungalow--no-front-studs', 'veneer-house--no-front-studs', 'veneer-house--no-ground-front-studs'] },
+    judge(dir) {
+      const res = qualify(dir, 'veneer');
+      // qualify-veneer-houses.mjs COLLAPSE_SHARE: 2% of bonds broken at rest.
+      return ['veneer-bungalow--no-front-studs', 'veneer-house--no-front-studs', 'veneer-house--no-ground-front-studs'].map((s) => {
+        const r = res?.find((x) => x.structure === s);
+        return { check: `${s}: collapses (bonds broken at rest)`, measured: r ? `${fmt(r.broken_pct)}%` : 'missing', threshold: '>= 2% (qualify-veneer-houses COLLAPSE_SHARE)', pass: !!r && r.broken_pct >= 2 };
+      });
+    },
+  },
+  {
+    id: 'roof-drawn-where-physics-has-it',
+    behaviour: 'The roof is drawn where the physics has it (client chunk placement vs server, 1 mm)',
+    harness: { kind: 'wire-poses', tests: ['a_studless_house_collapsing_is_drawn_where_the_server_has_it', 'a_cannonball_hit_is_drawn_where_the_server_has_it'] },
+    judge(dir) {
+      return ['a_studless_house_collapsing_is_drawn_where_the_server_has_it', 'a_cannonball_hit_is_drawn_where_the_server_has_it'].map((t) => {
+        const s = status(dir, `wire-${t}`);
+        return { check: t.replaceAll('_', ' '), measured: s ?? 'missing', threshold: 'ok (worst <= 1 mm)', pass: s?.startsWith('ok') };
+      });
+    },
+  },
+  {
+    id: 'stairs-walkable',
+    behaviour: 'Stairs are walkable (the game player walks the two-storey veneer house up and down)',
+    harness: { kind: 'walk', pack: 'veneer', structure: 'veneer-house' },
+    judge(dir) {
+      const s = status(dir, 'walk');
+      return [{ check: 'route walk: up and down the stair', measured: s ?? 'missing', threshold: 'ok (no fall > a riser, headroom >= 2.032 m, nothing breaks)', pass: s?.startsWith('ok') }];
+    },
+  },
+  {
+    id: 'car-coasts-ride-height',
+    behaviour: 'The car coasts down; its ride height is right after near misses and lost parts',
+    harness: { kind: 'testbed', build: 'monster', trials: ['coast', 'knock-mirror', 'knock-mirror-driving', 'debris-wheel', 'near-miss'] },
+    judge(dir) {
+      const v = testbedVerdict(dir);
+      const rows = v?.filter((r) => r.car === 'monster' && (r.trial === 'coast' || (['knock-mirror', 'knock-mirror-driving', 'debris-wheel', 'near-miss'].includes(r.trial) && r.criterion.startsWith('ride height'))));
+      if (!rows?.length) return [{ check: 'criteria rows', measured: 'missing', threshold: 'present', pass: false }];
+      return rows.map((r) => ({ check: `${r.trial}: ${r.criterion}`, measured: r.value, threshold: `${r.threshold} (criteria.mjs)`, pass: r.pass }));
+    },
+  },
+  {
+    id: 'turning-slalom-avoidance',
+    behaviour: 'Turning, slalom and avoidance still pass',
+    harness: { kind: 'testbed+node', build: 'monster', trials: ['drift'], node: 'node --test client/native/film/*.test.mjs' },
+    judge(dir) {
+      const v = testbedVerdict(dir);
+      const rows = (v ?? []).filter((r) => r.car === 'monster' && r.trial === 'drift').map((r) => ({ check: `drift: ${r.criterion}`, measured: r.value, threshold: `${r.threshold} (criteria.mjs)`, pass: r.pass }));
+      const s = status(dir, 'driving-tests');
+      rows.push({ check: 'driving and film unit tests (node --test client/native/film/*.test.mjs)', measured: s ?? 'missing', threshold: 'ok', pass: s?.startsWith('ok') });
+      rows.push({ check: 'slalom and avoidance on the GPU (scripts/turning-lab.sh slalom|avoid)', measured: 'not gated', threshold: 'cones hit 0, gates passed', pass: false, note: 'gap: turning-lab is an in-app film with no pass/fail criteria; it reports cones hit, path RMS and gate offsets only' });
+      return rows;
+    },
+  },
+  {
+    id: 'vibe-town-qualifies',
+    behaviour: 'Vibe Town qualifies at rest (every structure converges and stands)',
+    harness: { kind: 'qualify', pack: 'town' },
+    judge(dir) {
+      const res = qualify(dir, 'town');
+      if (!res) return [{ check: 'qualification', measured: 'missing', threshold: 'all PASS', pass: false }];
+      const by = (v) => res.filter((r) => r.verdict === v).length;
+      const bad = res.filter((r) => ['FAIL', 'FALLS', 'ERROR', 'CRUSH'].includes(r.verdict));
+      return [{ check: 'structures that fail, fall, crush or error at rest', measured: `${bad.length} of ${res.length} (PASS ${by('PASS')}, FREE ${by('FREE')}, FAIL ${by('FAIL')}, FALLS ${by('FALLS')}, CRUSH ${by('CRUSH')}, ERROR ${by('ERROR')})${bad.length ? ': ' + bad.slice(0, 6).map((r) => `${r.structure} ${r.verdict}`).join(', ') : ''}`, threshold: '0', pass: bad.length === 0 }];
+    },
+  },
+];
+
+const [cmd, profile, dir] = process.argv.slice(2);
+if (cmd === 'list') {
+  console.log(JSON.stringify(SCENARIOS.map(({ judge, ...s }) => s), null, 1));
+} else if (cmd === 'judge') {
+  const expected = new Map();
+  const ef = path.join(path.dirname(new URL(import.meta.url).pathname), 'acceptance-expected.tsv');
+  if (existsSync(ef)) for (const line of readFileSync(ef, 'utf8').split('\n')) {
+    if (!line.trim() || line.startsWith('#')) continue;
+    const [p, id, check, measured] = line.split('\t');
+    expected.set(`${p}\t${id}\t${check}`, measured);
+  }
+  let failing = 0;
+  for (const s of SCENARIOS) {
+    console.log(`\n${s.id} -- ${s.behaviour}`);
+    for (const c of s.judge(dir, profile)) {
+      const known = expected.has(`${profile}\t${s.id}\t${c.check}`);
+      const st = c.pass ? (known ? 'FIXED' : 'PASS') : known ? 'KNOWN-GAP' : 'FAIL';
+      if (st === 'FAIL') failing++;
+      console.log(`  ${c.check.padEnd(64)} ${String(c.measured).padEnd(28)} ${String(c.threshold).padEnd(34)} ${st}${c.note ? `  (${c.note})` : ''}`);
+      appendFileSync(path.join(dir, 'acceptance.jsonl'), JSON.stringify({ profile, scenario: s.id, behaviour: s.behaviour, check: c.check, measured: c.measured, threshold: c.threshold, status: st, note: c.note ?? null }) + '\n');
+    }
+  }
+  process.exitCode = failing ? 1 : 0;
+} else {
+  console.error('usage: acceptance.mjs list | judge PROFILE DIR');
+  process.exitCode = 2;
+}

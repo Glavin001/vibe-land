@@ -16,7 +16,7 @@ pub const SOLVER_MIN_BOND_AREA_M2: f32 = 1e-4;
 /// append_bonds' reference modulus and length floor (stiffness weight).
 const REFERENCE_MODULUS_PA: f32 = 30e9;
 const MIN_WEIGHT_LENGTH_M: f32 = 0.05;
-const G: f32 = 9.81;
+const G: f32 = vibe_netcode::movement::GRAVITY as f32;
 
 #[derive(Clone, Debug)]
 pub struct LintNode {
@@ -104,10 +104,23 @@ pub struct LintOptions {
     /// for the city (VIBE_BOND_CONTACT_LENGTH, default off). Must match what
     /// append_bonds gives the stage, or the spread reported is not the one solved.
     pub contact_length: bool,
+    /// The bridge's VIBE_BOND_TRUE_STIFFNESS (implied by VIBE_SECTION_ROTATION):
+    /// bond stiffness E A / L with no area or length floor, so a sliver carries
+    /// only its own share and is no longer a blocker (FIDELITY_AUDIT A1, H1).
+    pub true_stiffness: bool,
+}
+
+/// Whether this process runs the bridge's true bond stiffness (same flags,
+/// same reading as physx-bridge native_destruction.cc).
+pub fn true_stiffness_from_env() -> bool {
+    let on = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<f32>().ok()).is_some_and(|v| v != 0.0);
+    on("VIBE_BOND_TRUE_STIFFNESS") || on("VIBE_SECTION_ROTATION")
 }
 
 impl Default for LintOptions {
-    fn default() -> Self { Self { mass_ratio_warning: 100., sole_attachment_g_warning: 10., contact_length: false } }
+    fn default() -> Self {
+        Self { mass_ratio_warning: 100., sole_attachment_g_warning: 10., contact_length: false, true_stiffness: true_stiffness_from_env() }
+    }
 }
 
 impl LintOptions {
@@ -118,12 +131,15 @@ impl LintOptions {
 fn dist(a: [f32; 3], b: [f32; 3]) -> f32 { ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() }
 
 /// The stiffness weight append_bonds gives a bond (before normalisation),
-/// with the bridge's contact length when `contact_length`.
-pub fn stiffness_weight(nodes: &[LintNode], b: &LintBond, contact_length: bool) -> f32 {
+/// with the bridge's contact length when `contact_length`, and without its
+/// floors when `true_stiffness`.
+pub fn stiffness_weight(nodes: &[LintNode], b: &LintBond, contact_length: bool, true_stiffness: bool) -> f32 {
     let centres = dist(nodes[b.a].position, nodes[b.b].position);
-    let length = if contact_length { centres.max(b.area.max(SOLVER_MIN_BOND_AREA_M2).sqrt()) } else { centres }.max(MIN_WEIGHT_LENGTH_M);
+    let area = if true_stiffness { b.area } else { b.area.max(SOLVER_MIN_BOND_AREA_M2) };
+    let length = if contact_length { centres.max(area.sqrt()) } else { centres };
+    let length = if true_stiffness { length } else { length.max(MIN_WEIGHT_LENGTH_M) };
     let modulus = if b.modulus > 0. { b.modulus / REFERENCE_MODULUS_PA } else { 1. };
-    (modulus * b.area.max(SOLVER_MIN_BOND_AREA_M2) / length).sqrt()
+    (modulus * area / length).sqrt()
 }
 
 /// Bonds whose removal disconnects the graph (Tarjan), by bond index.
@@ -187,7 +203,12 @@ pub fn lint(nodes: &[LintNode], bonds: &[LintBond], options: &LintOptions) -> Li
         stats.area_quantiles_m2 = [q(0.), q(0.1), q(0.5), q(0.9), q(1.)];
     }
     let slivers: Vec<&LintBond> = bonds.iter().filter(|b| b.area < SOLVER_MIN_BOND_AREA_M2).collect();
-    if !slivers.is_empty() {
+    if !slivers.is_empty() && options.true_stiffness {
+        findings.push(Finding { check: "sliver-bonds", severity: Severity::Info,
+            summary: format!("{} bond(s) under {SOLVER_MIN_BOND_AREA_M2:e} m², each stiffened and checked at its true area", slivers.len()),
+            basis: "VIBE_BOND_TRUE_STIFFNESS: k = E A / L with no floor, so a sliver carries only its own share (physx-bridge tests/fidelity_audit.rs bond_stiffness_floors)",
+            examples: slivers.iter().take(8).map(|b| format!("{} ({:.1e} m²)", bond_name(b), b.area)).collect() });
+    } else if !slivers.is_empty() {
         findings.push(Finding { check: "sliver-bonds", severity: Severity::Blocker,
             summary: format!("{} bond(s) below the solver's {SOLVER_MIN_BOND_AREA_M2:e} m² stiffness floor", slivers.len()),
             basis: "append_bonds stiffens a bond at max(area, 1e-4) but checks strength at its true area: a sliver draws load it cannot carry (2026-09-26, 7-8% of vehicle bonds; removing them let trophy and monster drive with zero breaks)",
@@ -195,7 +216,7 @@ pub fn lint(nodes: &[LintNode], bonds: &[LintBond], options: &LintOptions) -> Li
     }
 
     // 2. Stiffness spread (what the solver's weights make of modulus, area, length).
-    let weights: Vec<f32> = bonds.iter().map(|b| stiffness_weight(nodes, b, options.contact_length)).collect();
+    let weights: Vec<f32> = bonds.iter().map(|b| stiffness_weight(nodes, b, options.contact_length, options.true_stiffness)).collect();
     if let (Some(lo), Some(hi)) = (weights.iter().cloned().reduce(f32::min), weights.iter().cloned().reduce(f32::max)) {
         stats.stiffness_spread = (hi / lo).powi(2);
     }
@@ -312,13 +333,33 @@ mod tests {
     fn finds_slivers_bridges_and_floating_parts() {
         let nodes = vec![node("ground", 0., 0.), node("post", 1., 100.), node("sign", 2., 50.), node("loose", 5., 1.)];
         let bonds = vec![bond(0, 1, 0.01), bond(1, 2, 1e-6)];
-        let r = lint(&nodes, &bonds, &LintOptions::default());
+        let r = lint(&nodes, &bonds, &LintOptions { true_stiffness: false, ..LintOptions::default() });
         let checks: Vec<&str> = r.findings.iter().map(|f| f.check).collect();
         assert!(checks.contains(&"sliver-bonds"), "{checks:?}");
         assert!(checks.contains(&"floating-component"), "{checks:?}");
         assert_eq!(r.stats.sole_attachments, 2);
         // The sign (50 kg) on a 1e-6 m² bond: 174 N / (50 kg * g) < 1 g.
         assert!(r.stats.weakest_sole_attachment_g < 1., "{}", r.stats.weakest_sole_attachment_g);
+    }
+
+    /// Under the bridge's true stiffness a sliver is stiffened at its own
+    /// area, so it draws only its share: reported, not a blocker, and its
+    /// weight is the unfloored sqrt(E/E_ref A / L).
+    #[test]
+    fn a_sliver_is_not_a_blocker_under_true_stiffness() {
+        let nodes = vec![node("ground", 0., 0.), node("post", 1., 100.), node("sign", 1.02, 50.)];
+        let bonds = vec![bond(0, 1, 0.01), bond(1, 2, 1e-6)];
+        let floored = lint(&nodes, &bonds, &LintOptions { true_stiffness: false, ..LintOptions::default() });
+        let exact = lint(&nodes, &bonds, &LintOptions { true_stiffness: true, ..LintOptions::default() });
+        let sev = |r: &LintReport| r.findings.iter().find(|f| f.check == "sliver-bonds").map(|f| f.severity);
+        assert_eq!(sev(&floored), Some(Severity::Blocker));
+        assert_eq!(sev(&exact), Some(Severity::Info));
+        let w = stiffness_weight(&nodes, &bonds[1], false, true);
+        let want = (200e9f32 / 30e9 * 1e-6 / 0.02).sqrt();
+        assert!((w - want).abs() < 1e-6 * want, "{w} vs {want}");
+        // Floored: area 1e-4 and length 0.05, sqrt(100 * 0.4) = 6.32x stiffer.
+        let ratio = stiffness_weight(&nodes, &bonds[1], false, false) / w;
+        assert!((ratio - 40f32.sqrt()).abs() < 1e-3, "{ratio}");
     }
 
     #[test]

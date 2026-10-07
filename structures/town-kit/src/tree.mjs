@@ -116,7 +116,7 @@ export function buildTree({family='shade',variant=0,seed=20260925,trunkSections=
  return {pack,visuals:{version:1,meshes,attachments},metadata:{kind:'tree',type:family,options:{family,variant,seed,trunkSections,branchSections},route:[],
   shots:{furniture:[shot([lp.x,lp.y,lp.z],80)],collapse:[shot([0,cutY+.8,0],40000,.35)]},shotGroups:{furniture:b.group,collapse:b.group},
   fractureReview:{requireBranchBreak:true,requireTrunkBreak:true,rootNode:root},
-  strengthCalibration:'Effective gameplay fracture thresholds; not engineering wood strengths.',
+  strengthCalibration:realCapacitiesEnabled()?`Green clear wood of ${greenWood(family).species} (USDA Wood Handbook FPL-GTR-282 Table 5-3).`:'Effective gameplay fracture thresholds; not engineering wood strengths.',
   collapseNodes:trunk.slice(1),cameras:{hero:{position:[11,h*.8,-12],target:[0,h*.52,0]},front:{position:[0,h*.6,-15],target:[0,h*.5,0]}},
   gameplay:{resistance:family==='sapling'?'light':family==='shade'?'heavy':'medium',physicalChunks:b.s.nodes.length,leafPhysics:false}}};
 }

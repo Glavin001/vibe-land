@@ -144,7 +144,7 @@ impl CoastResistance {
 
     /// The force holding the car back at `speed` m/s (rolling + drag), N.
     fn force(&self, speed: f32) -> f32 {
-        COAST_ROLLING_RESISTANCE * self.mass * 9.81
+        COAST_ROLLING_RESISTANCE * self.mass * (vibe_netcode::movement::GRAVITY as f32)
             + 0.5 * AIR_DENSITY_KG_M3 * COAST_DRAG_COEFFICIENT * self.frontal_area * speed * speed
     }
 
@@ -524,7 +524,7 @@ impl PhysxPhysicsArena {
         // A quarter of the chassis on each corner; rest compression about a
         // third of the travel, critically damped.
         let sprung = mass / 4.0;
-        let rest_load = sprung * 9.81;
+        let rest_load = sprung * (vibe_netcode::movement::GRAVITY as f32);
         let stiffness = rest_load / prepared.map(|p| p.neutral_jounce).unwrap_or(travel / 3.0);
         let damping = 2.0 * (stiffness * sprung).sqrt();
         bridge::VehicleDesc {
@@ -1261,7 +1261,7 @@ impl PhysxPhysicsArena {
                 // Driver-assist input shaping, not a force/velocity clamp. Limit
                 // the requested cornering acceleration before Vehicle2 solves slip.
                 let lock_limit = vehicle.steering_geometry.map(|(wheelbase, lock, grip)| {
-                    let lateral_accel = (0.65 * grip * 9.81).min(7.5);
+                    let lateral_accel = (0.65 * grip * (vibe_netcode::movement::GRAVITY as f32)).min(7.5);
                     (lateral_accel * wheelbase / forward_speed.powi(2).max(0.01)).atan() / lock
                 }).unwrap_or(1.0).min(1.0);
                 let mut cmd = shape_tuned_vehicle_commands(&input, forward_speed, &mut vehicle.steer_command, dt, vehicle.steering_response, lock_limit);

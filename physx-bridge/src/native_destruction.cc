@@ -317,6 +317,17 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
 #endif
   native_require(settings.crush.empty() || settings.crush.size() == settings.materials.size(),
                  "crush table must be empty or parallel to the materials");
+  // A crushable material carries its own crush law; nothing is substituted
+  // for a missing parameter (FIDELITY_AUDIT C6: 1.0 used to stand in, a crush
+  // energy of 1 J/m^3 against concrete's ~1e6). Checked whatever the SDK.
+  for (const FfiCrushMaterial &c : settings.crush) {
+    if (c.cap_pressure <= 0.0f) continue;
+    native_require(std::isfinite(c.crush_energy) && c.crush_energy > 0.0f &&
+                       std::isfinite(c.crush_viscosity) && c.crush_viscosity > 0.0f,
+                   "a crushable material needs its crush energy and viscosity");
+    native_require(!(c.strain_rate_exponent > 0.0f) || c.reference_strain_rate > 0.0f,
+                   "a crushable material with a strain-rate exponent needs its reference strain rate");
+  }
   std::size_t index = 0;
   for (const FfiStressMaterial &m : settings.materials) {
     PxDestructionMaterial out;
@@ -458,7 +469,16 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     native_require(!exact || (std::isfinite(b.area) && b.area > 0.0f),
                    "VIBE_BOND_TRUE_STIFFNESS: a bond has no area (an authoring error)");
     const float stiff_area = exact ? b.area : std::max(b.area, 1e-4f);
-    const float length = contact_length ? std::max(distance, std::sqrt(stiff_area)) : distance;
+    // VIBE_SECTION_ROTATION=1: the material a bond strains lies across its
+    // interface, so its spring length is the centres' separation along the
+    // bond normal, not their distance: a wide block hung from three equal
+    // hangers otherwise gives the outer two (0.42 m centre to centre) a
+    // longer spring than the middle one (0.30 m) and the sliver between them
+    // 1.18x their stress, against the textbook's equal stress (W / sum A).
+    const float spring_distance = native_section_rotation()
+        ? std::abs(normal.getNormalized().dot(s.nodes[base + b.node1].position - s.nodes[base + b.node0].position))
+        : distance;
+    const float length = contact_length ? std::max(spring_distance, std::sqrt(stiff_area)) : spring_distance;
     native_require(!exact || length > 0.0f,
                    "VIBE_BOND_TRUE_STIFFNESS: a bond's chunks share a centre and it has no contact length");
     const float stiff_length = exact ? length : std::max(length, 0.05f);

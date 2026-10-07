@@ -1428,7 +1428,7 @@ impl CityRuntime {
             // The tolerance the stage will actually solve at: a warm start baked
             // at any other one is rejected rather than imported.
             let tolerance = vibe_land_destruction::native_runtime::stress_tolerance();
-            if runtime.as_deref().map_or(false, |hash| warm.compatible(hash, [0.,-9.81,0.], 1./sim_hz as f32, tolerance)) {
+            if runtime.as_deref().map_or(false, |hash| warm.compatible(hash, vibe_netcode::movement::default_world_gravity(), 1./sim_hz as f32, tolerance)) {
                 anyhow::ensure!(manifest.structures.len() == warm.descriptor.structures.len(), "warm structure count mismatch");
                 // The guesses cover the city's bonds only; a stage that also holds
                 // destructible cars (city_fleet) has more, and the import refuses.

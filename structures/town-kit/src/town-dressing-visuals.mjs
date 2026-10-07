@@ -1,10 +1,11 @@
+import {realCapacitiesEnabled} from './real-capacities.mjs';
 import * as THREE from '../../../client/node_modules/three/build/three.module.js';
 import {buildTree} from './tree.mjs';
 
 /** Lightweight dressing follows physical roof, counter and planter chunks. */
 export function dressTownProp(asset,type,index){
  // Outdoor cafe joinery releases before the whole table skates away.
- if(type==='table'){
+ if(type==='table' && !realCapacitiesEnabled()){   // real capacities: the glued joint as it is
   const materials=asset.pack.defaults.solver.materials,seams=new Map();
   for(const bond of asset.pack.scenario.bonds){
    if(!seams.has(bond.m)){const seam={...materials[bond.m],name:`cafe-${materials[bond.m].name}-seam`};
