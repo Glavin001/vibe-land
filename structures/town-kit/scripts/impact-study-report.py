@@ -51,13 +51,15 @@ def main():
                              pen=r['penetration'] - s0, exit=r['exitSpeed'], stop=(r['stoppedBy'] or [None])[0],
                              impulse=r['deliveredImpulse'] / max(r['infiniteMassImpulse'], 1e-9), solves=r['solvesPerTick'],
                              seconds=r['wallSeconds']))
-    order = {k: i for i, k in enumerate(['A', 'C', 'E', 'C+E', 'E coupled', 'C+E coupled'])}
+    order = {k: i for i, k in enumerate(['A', 'C', 'E', 'C+E', 'Ci+E', 'E coupled', 'C+E coupled', 'Ci+E coupled'])}
     scen = ['truck', 'truck-corner', 'cannonball', 'meteor', 'small-1.52', 'small-0.34', 'small+0.86']
     rows.sort(key=lambda r: (scen.index(r['scenario']) if r['scenario'] in scen else 99, order.get(r['option'], 99)))
-    print('| scenario | option | bonds broken | impact / settle | frame / skin | crushed | breaks <1 m / <2 m / >=2 m of path | frame held | roof held | penetration (exit m/s) | stopped by | contact impulse / initial momentum | QP solves per tick |')
+    print('| scenario | option | bonds broken | impact / settle | frame / skin | crushed | breaks <1 m / <2 m / >=2 m of path | frame held | roof held | got in (speed left) | stopped by | contact impulse / initial momentum | QP solves per tick |')
     print('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     for r in rows:
-        pen = f"{r['pen']:.1f} m" + (f" ({r['exit']:.0f})" if r['exit'] > 0.05 else ' (stopped)')
+        # The house is 7.8 m deep: past that with speed left it went through.
+        pen = (f"through ({r['exit']:.0f} m/s)" if r['exit'] > 0.05 and r['pen'] >= 7.8 else
+               f"{min(r['pen'], 7.8):.1f} m in" + (f" ({r['exit']:.0f} m/s)" if r['exit'] > 0.05 else ', stopped'))
         print(f"| {r['scenario']} | {r['option']} | {100*r['broken']:.1f}% | {r['impact']} / {r['settle']} | {r['structural']} / {r['cosmetic']} | {r['crushed']} | "
               f"{r['path1']} / {r['path2']} / {r['beyond2']} | {100*r['held']:.0f}% | {100*r['roof']:.0f}% | {pen} | {r['stop'] or '-'} | {r['impulse']:.2f} | {r['solves']} |")
 

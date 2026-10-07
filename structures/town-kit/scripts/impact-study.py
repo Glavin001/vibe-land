@@ -119,6 +119,11 @@ CRUSH = {
     'drywall': crush_props(3.5e6, 1.1e6, 5.1e5),
 }
 
+# Acoustic impedance rho c of the crushable chunk materials, c = sqrt(E / rho):
+# brick masonry E = 1000 f_k (EN 1996-1-1 3.7.2) = 6.8 GPa at 1900 kg/m3 ->
+# 1890 m/s; gypsum board E 2 GPa (materials.mjs GYPSUM) at 700 -> 1690 m/s.
+IMPEDANCE = {'brick-veneer': 1900 * math.sqrt(6.8e9 / 1900), 'drywall': 700 * math.sqrt(2e9 / 700)}
+
 STRUCTURAL = {'foundation', 'stud', 'king-stud', 'jack-stud', 'cripple-stud', 'junction-stud', 'bottom-plate', 'top-plate',
               'header', 'sill-trimmer', 'rim-joist', 'ceiling-joist', 'floor-joist', 'subfloor', 'rafter', 'ridge-board', 'gable-frame'}
 ROOF = {'rafter', 'ridge-board', 'ceiling-joist', 'gable-frame'}
@@ -296,8 +301,11 @@ def crush_threshold(st, damage):
 # ---------------------------------------------------------------------------
 
 class Impactor:
-    def __init__(self, name, mass, speed, direction, aim, shape, size, offset=0.0):
+    def __init__(self, name, mass, speed, direction, aim, shape, size, impedance=None, pressure_cap=np.inf):
         self.name, self.M, self.u = name, mass, speed
+        # Acoustic impedance rho c (Pa s/m) and the most contact pressure its own
+        # structure can deliver (Pa): what the impact-pressure crush reads.
+        self.Z, self.pressure_cap = impedance, pressure_cap
         d = np.array(direction, float); self.d = d / np.linalg.norm(d)
         self.aim = np.array(aim, float); self.shape, self.size = shape, size
         up = np.array([0, 1.0, 0]); e1 = np.cross(up, self.d)
@@ -555,7 +563,8 @@ def run(st, imp, option, coupled=False, max_ticks=90, log=None):
     damage = np.zeros(st.n)
     M, u = imp.M, imp.u
     crush = option in ('C', 'C+E')
-    events_model = option in ('E', 'C+E')
+    events_model = option in ('E', 'C+E', 'Ci+E')
+    impact_crush = option == 'Ci+E'
     t0 = time.time()
     # Start one tick before the leading face reaches the first surface it covers.
     pts, near = imp.contacts(st, alive, 1e9)
@@ -568,9 +577,42 @@ def run(st, imp, option, coupled=False, max_ticks=90, log=None):
         s_new = s + u * DT
         contacts, _ = imp.contacts(st, alive, s_new)
         if not contacts:
-            s = s_new; ticks.append(dict(tick=tick, contacts=0, u=u)); continue
-        total = M * u / DT
+            s = s_new; ticks.append(dict(tick=tick, contacts=0, u=u))
+            if s > 12: break
+            continue
         tt = time.time()
+        crushed_now = np.zeros(st.n, bool)
+        if impact_crush:
+            # Ci: the impact pressure on each struck crushable chunk, the 1-D
+            # elastic impact stress Z1 Z2 / (Z1 + Z2) v (capped by what the
+            # impactor's own structure delivers), as a uniaxial stress through
+            # the native crush law. A crushed layer is gone and its comminution
+            # energy is the impactor's; the next layer in this tick's sweep is
+            # struck in turn.
+            for _ in range(8):
+                hit = []
+                for k in list(contacts):
+                    c = st.crush[k]; Zt = IMPEDANCE.get(st.nmat[k])
+                    if c is None or Zt is None or not alive[k]: continue
+                    sigma = min(imp.Z * Zt / (imp.Z + Zt) * u, imp.pressure_cap)
+                    ex = max(sigma - (c['cohesion'] + c['slope'] * sigma / 3), sigma / 3 - c['cap'], 0.0)
+                    if damage[k] + ex * ex * DT / (c['viscosity'] * c['energy']) >= 1.0: hit.append(k)
+                if not hit: break
+                for k in hit:
+                    alive[k] = False; crushed_now[k] = True; damage[k] = 1.0
+                    # Comminution energy of what the impactor's section sweeps out
+                    # of the chunk (the native stage removes the whole chunk).
+                    depth = float(np.abs(imp.d) @ (st.hi[k] - st.lo[k]))
+                    swept = min(st.vol[k], contacts[k][0] * 0.01 * depth)
+                    u = math.sqrt(max(u * u - 2 * st.crush[k]['energy'] * swept / M, 0.0))
+                if u <= 0.05: break
+                contacts, _ = imp.contacts(st, alive, s_new)
+            crushed_total |= crushed_now
+            gone = active & ~(alive[st.b0] & alive[st.b1])
+            broke_at[gone] = tick; active &= ~gone
+            if not contacts or u <= 0.05:
+                s = s_new; ticks.append(dict(tick=tick, contacts=0, crushed=int(crushed_now.sum()), u=u)); continue
+        total = M * u / DT
         if events_model:
             v = verdict_plastic(st, active, alive, contacts, total, imp.d, damage, crush, impactor=(M, u) if coupled else None)
         else:
@@ -579,6 +621,7 @@ def run(st, imp, option, coupled=False, max_ticks=90, log=None):
         delivered += v['delivered']
         newly = v['broken'] & active
         broke_at[newly] = tick; active &= ~v['broken']
+        Ec = 0.0
         if v['crushed'].any():
             crushed_total |= v['crushed']; alive &= ~v['crushed']
             if option == 'C+E':
@@ -591,13 +634,13 @@ def run(st, imp, option, coupled=False, max_ticks=90, log=None):
         free_groups = {lab[k] for k in remaining if not held[k]}
         push = st.free & alive & ~held & np.isin(lab, list(free_groups)) if free_groups else np.zeros(st.n, bool)
         mp = st.mass[push].sum()
-        rec = dict(tick=tick, contacts=len(contacts), u=u, broken=int(newly.sum()), crushed=int(v['crushed'].sum()),
+        rec = dict(tick=tick, contacts=len(contacts), u=u, broken=int(newly.sum()), crushed=int(v['crushed'].sum() + crushed_now.sum()),
                    yielded=int(v['yielded'].sum()), solves=v['solves'], events=v['events'], ms=round(ms, 1),
                    lam=round(v['lam'], 4), anchoredContacts=len(anchored_contact), pushed=round(float(mp), 1))
         if coupled and v.get('u_new') is not None:
             # The coupled solve already moved the impactor (and what it struck)
             # by the impulses the structure could actually take.
-            u = max(v['u_new'], 0.0); M = M + mp
+            u = math.sqrt(max(max(v['u_new'], 0.0) ** 2 - 2 * Ec / M, 0.0)); M = M + mp
             if anchored_contact and u < 0.05: stopped_by = [st.types[k] for k in anchored_contact][:6]
         elif anchored_contact:
             # The corrected pass meets a chunk still held to the anchors: infinite mass.
@@ -659,26 +702,36 @@ def summarize(st, imp, option, active, alive, broke_at, crushed, ticks, stopped_
 # the lab places the bungalow at (124, 0, 24): lab = local + that)
 # ---------------------------------------------------------------------------
 
+# Impactors' impedance: steel rho 7850, c = sqrt(210 GPa / rho) = 5170 m/s; the
+# meteor's rock at the server's 3300 kg/m3 with basalt's E ~60 GPa (4260 m/s).
+# The truck delivers no more than its front's crush pressure: EN 1991-1-7
+# Annex C, F = v sqrt(k m), k = 300 kN/m -> 0.84 MN at 21.7 m/s for 5 t, over
+# its 3.3 x 1.6 m front: 0.16 MPa.
+STEEL_Z = 7850 * math.sqrt(210e9 / 7850)
+ROCK_Z = 3300 * math.sqrt(60e9 / 3300)
+TRUCK_PRESSURE = 21.7 * math.sqrt(300e3 * 5000) / (3.3 * 1.6)
+
+
 def scenarios():
     ball_r = (10650 / 7850 * 3 / (4 * math.pi)) ** (1 / 3)
     small_r = (100 / 7850 * 3 / (4 * math.pi)) ** (1 / 3)
     meteor_dir = np.array([0, -0.3, 1.0])
     out = {
         # The lab's cannonball-framed-house: [122, 1.4, 20.1] square on.
-        'cannonball': Impactor('cannonball', 10650, 60, [0, 0, 1], [-2.0, 1.4, -4.5], 'disk', ball_r),
+        'cannonball': Impactor('cannonball', 10650, 60, [0, 0, 1], [-2.0, 1.4, -4.5], 'disk', ball_r, impedance=STEEL_Z),
         # meteor-framed-house: [124, 2.0, 20.1] from 140 m out at slope 0.3.
-        'meteor': Impactor('meteor', 110e3, 140, meteor_dir, [0, 2.0, -3.9] - meteor_dir / np.linalg.norm(meteor_dir) * 0.6, 'disk', 2.0),
+        'meteor': Impactor('meteor', 110e3, 140, meteor_dir, [0, 2.0, -3.9] - meteor_dir / np.linalg.norm(meteor_dir) * 0.6, 'disk', 2.0, impedance=ROCK_Z),
         # framed-house: the monster truck (5000 kg) at 21.7 m/s into the front
         # wall's middle; its front 3.3 m wide (57 in tyres outboard) and from
         # 0.3 to 1.9 m up (bumper to bonnet line).
-        'truck': Impactor('truck', 5000, 21.7, [0, 0, 1], [0.0, 0.0, -4.5], 'rect', (3.3, 0.3, 1.9)),
+        'truck': Impactor('truck', 5000, 21.7, [0, 0, 1], [0.0, 0.0, -4.5], 'rect', (3.3, 0.3, 1.9), impedance=STEEL_Z, pressure_cap=TRUCK_PRESSURE),
         # The same truck centred on the front-left corner (x -5).
-        'truck-corner': Impactor('truck-corner', 5000, 21.7, [0, 0, 1], [-5.0, 0.0, -4.5], 'rect', (3.3, 0.3, 1.9)),
+        'truck-corner': Impactor('truck-corner', 5000, 21.7, [0, 0, 1], [-5.0, 0.0, -4.5], 'rect', (3.3, 0.3, 1.9), impedance=STEEL_Z, pressure_cap=TRUCK_PRESSURE),
     }
     # Smaller hits: a 100 kg steel ball (r 0.146 m) at 60 m/s between studs
     # (front wall studs at x -1.80, -1.24, -0.64, -0.04, 0.56, 1.16).
     for x in (-1.52, -0.34, 0.86):
-        out[f'small{x:+.2f}'] = Impactor(f'small{x:+.2f}', 100, 60, [0, 0, 1], [x, 1.2, -4.5], 'disk', small_r)
+        out[f'small{x:+.2f}'] = Impactor(f'small{x:+.2f}', 100, 60, [0, 0, 1], [x, 1.2, -4.5], 'disk', small_r, impedance=STEEL_Z)
     return out
 
 
@@ -712,7 +765,7 @@ def main():
     sc = scenarios()
     for name in a.scenario or list(sc):
         for opt in a.options.split(','):
-            for coupled in ([False, True] if a.coupled and opt in ('E', 'C+E') else [False]):
+            for coupled in ([False, True] if a.coupled and opt in ('E', 'C+E', 'Ci+E') else [False]):
                 label = opt + (' coupled' if coupled else '')
                 if a.trace_events: TRACE_EVENTS[:] = [sc[name].aim]
                 r = run(st, sc[name], opt, coupled=coupled, max_ticks=a.max_ticks, log=(lambda rec: print('   ', rec)) if a.verbose else None)
