@@ -625,7 +625,7 @@ case "${1:-run}" in
     slots=$(node -e 'const m=require(process.argv[1]);process.stdout.write(process.argv[2].split(",").map(id=>{const t=m.trials.find(t=>t.id===id);if(!t)throw Error("no trial "+id);return t.slot.join(",")}).join(";"))' "$meta" "$trials")
     export VIBE_CITY_DESTRUCTIBLE_VEHICLES=$(node -e 'process.stdout.write(Array(process.argv[2].split(",").length).fill(process.argv[1]).join(","))' "$build" "$trials") \
       VIBE_CITY_FLEET_SLOTS="$slots" FILM_CHECK="${FILM_CHECK-1}" \
-      FILM_DEFINES="--define:VEHICLE_LAB_TRIALS=\"$trials\" --define:VEHICLE_LAB_BUILD=\"$build\" --define:VEHICLE_LAB_NOTE=\"${VEHICLE_LAB_NOTE:-}\""
+      FILM_DEFINES="--define:VEHICLE_LAB_TRIALS=\"$trials\" --define:VEHICLE_LAB_BUILD=\"$build\" --define:VEHICLE_LAB_NOTE=\"$(printf %s "${VEHICLE_LAB_NOTE:-}" | tr " " "_")\""
     runtime; sim; film_bundle; film vehicle-lab "$@"
     log=$(ls -t "$ROOT"/target/native-video/vehicle-lab-*.log | head -1)
     node "$ROOT/structures/vehicle-lab/native-report.mjs" "$log" ;;

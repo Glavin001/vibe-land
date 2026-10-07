@@ -17,7 +17,8 @@ import { placeResolver } from './film/places.mjs';
 const TRIALS = typeof VEHICLE_LAB_TRIALS === 'string' ? VEHICLE_LAB_TRIALS.split(',') : [];
 const BUILD = typeof VEHICLE_LAB_BUILD === 'string' ? VEHICLE_LAB_BUILD : 'monster';
 /** A line under every caption (VEHICLE_LAB_NOTE): which build of the engine or the lab this is. */
-const NOTE = typeof VEHICLE_LAB_NOTE === 'string' ? VEHICLE_LAB_NOTE : '';
+// Spaces travel as underscores (the film's defines are split on whitespace).
+const NOTE = typeof VEHICLE_LAB_NOTE === 'string' ? VEHICLE_LAB_NOTE.replace(/_/g, ' ') : '';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Seconds a trial's result stays on screen before the next trial. */
 const RESULT_HOLD = 3;
