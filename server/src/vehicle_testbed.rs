@@ -754,7 +754,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         if let Some(strength) = strength.as_ref() {
             // The impactor: the car (its front, along its starting heading) or the shot.
             let state = if driving {
-                probe.get_or_insert_with(|| wall_matrix::Probe::new(geometry.mass as f32, 0.));
+                probe.get_or_insert_with(|| wall_matrix::Probe::new(geometry.mass as f32, 0., trial["layer"].as_f64().unwrap_or(0.3) as f32));
                 Some((after.p, after.v, heading0, (after.p + after.forward * front - probe_target.unwrap_or(start.p)).dot(&heading0)))
             } else if let (Some(pid), Some((target, dir))) = (projectile, shot) {
                 if probe_pid != Some(pid) { probe = None; probe_last = None; probe_pid = Some(pid); }
@@ -765,7 +765,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                         let (mass, radius) = if a["projectile"] == "meteor" { let t = crate::meteor::MeteorTuning::from_env(); (t.mass_kg, t.radius_m) }
                             else if let Some(m) = a["mass"].as_f64().map(|m| m as f32) { (m, (m / crate::city::city_ball_density_kg_m3() * 3. / (4. * std::f32::consts::PI)).cbrt()) }
                             else { (crate::city::city_ball_mass_kg(), crate::city::city_ball_radius_m()) };
-                        probe = Some(wall_matrix::Probe::new(mass, radius));
+                        probe = Some(wall_matrix::Probe::new(mass, radius, trial["layer"].as_f64().unwrap_or(0.3) as f32));
                     }
                     (p, Vector3::new(b.4[0], b.4[1], b.4[2]), dir, (p - target).dot(&dir))
                 })
