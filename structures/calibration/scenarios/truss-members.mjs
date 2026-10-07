@@ -16,7 +16,7 @@ import { stateOf } from '../src/scenario.mjs';
 export const id = 'truss-members';
 export const title = 'Calibration: glulam Pratt truss footbridge, members cut';
 export const ticks = 600;
-export const spacing = 6;
+export const spacing = 9;
 export const band = 0.15;
 export const configModel = { default: 'gain', section: 'kit', rotation: 'kit' };
 export const models = {
@@ -34,7 +34,7 @@ const CASES = [
 ];
 
 const gainS = (b, h) => { const A = b * h; return A / Math.min(6 / Math.sqrt(A), 3); };
-const keyOf = (b) => (b.end === 0 ? `${b.member}:0` : b.end === 1 ? `${b.member}:1` : b.at != null ? `${b.member}:mid` : b.member);
+const keyOf = (b) => (b.type === 'bearing' || b.type === 'cross-beam' ? b.member : b.end === 0 ? `${b.member}:0` : b.end === 1 ? `${b.member}:1` : b.at != null ? `${b.member}:mid` : b.member);
 
 function predict(removed, faces) {
   const P = T.TRUSS, out = {};
@@ -55,7 +55,9 @@ function predict(removed, faces) {
     // Real: the joints slip, so an intact (or still triangulated) truss is read pinned; a mechanism falls back on the rigid frame.
     if (model === 'real') { if (Number.isFinite(extra)) { u = extra; worst = 'pin-jointed member'; } }
     const over = c.bonds.filter((b) => b.u >= 1 - band).sort((a, b) => b.u - a.u).map((b) => ({ key: b.key, u: +b.u.toFixed(3) }));
-    out[model] = { state: stateOf(u, band), u: +u.toFixed(3), worst, over, bonds: Object.fromEntries(c.bonds.map((b) => [b.key, +b.u.toFixed(4)])), pinned: Number.isFinite(pinnedU) ? +pinnedU.toFixed(3) : 'mechanism' };
+    // Both trusses carry the same: each bond key twice (S: and N:).
+    const both = (k) => [`S:${k}`, `N:${k}`];
+    out[model] = { state: stateOf(u, band), u: +u.toFixed(3), worst: worst.includes(':') && !worst.startsWith('pin') ? `S:${worst}` : worst, over: over.flatMap((o) => both(o.key).map((key) => ({ ...o, key }))), bonds: Object.fromEntries(c.bonds.flatMap((b) => both(b.key).map((k) => [k, +b.u.toFixed(4)]))), pinned: Number.isFinite(pinnedU) ? +pinnedU.toFixed(3) : 'mechanism' };
   }
   return out;
 }
