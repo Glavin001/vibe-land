@@ -7,8 +7,11 @@
 // nearby breaks, each with a world position, a magnitude and the velocity of
 // the material that made it. The emission policy turns sources into clouds.
 //
-// Five kinds of event feed it:
+// Six kinds of event feed it:
 //   fracture  bonds broke      -> where the bonds were, Σ area, a little
+//   crush     a chunk was crushed to dust -> where it was, its whole mass
+//             (the server announces such a chunk as an island promoted and
+//             retired in the same batch: it is gone the tick it is crushed)
 //   entry     the first break a shot made -> the near face, spall toward the shooter
 //   shed      an island was born and is moving -> its centre of mass, its mass
 //   impact    a body's velocity dropped sharply -> the contact, mass·Δv
@@ -29,7 +32,7 @@ import type { CityTopology } from './topology';
 import { bodyKey } from './topology';
 import type { TopologyMessage } from './wire';
 
-export type DustSourceKind = 'fracture' | 'entry' | 'shed' | 'impact' | 'wave';
+export type DustSourceKind = 'fracture' | 'entry' | 'shed' | 'impact' | 'wave' | 'crush';
 
 /** One clustered destruction event in world space. A pooled view: copy what you keep. */
 export interface DustSource {
@@ -54,6 +57,7 @@ export interface DustSource {
    * a bond whose chunks stay together counts 15%). Entry: the fracture,
    * doubled. Shed: mass/500 (≈1 per median chunk). Impact: mass·|Δv|/4000
    * (≈1 per median chunk hitting the ground at 8 m/s). Wave: Σ impacts.
+   * Crush: mass/100 -- all of the chunk turned to dust, five times a shed.
    */
   magnitude: number;
   /** Events folded into this source. */
@@ -112,13 +116,15 @@ const MAX_IMPACT_MEMBERS = 256;
 const FRACTURE_UNITS_PER_M2 = 3;
 const SHED_KG_PER_UNIT = 500;
 const IMPACT_J_PER_UNIT = 5000;
+const CRUSH_KG_PER_UNIT = 100;
 
 const KIND_FRACTURE = 0;
 const KIND_SHED = 1;
 const KIND_IMPACT = 2;
 const KIND_ENTRY = 3;
 const KIND_WAVE = 4;
-const KIND_NAMES: readonly DustSourceKind[] = ['fracture', 'shed', 'impact', 'entry', 'wave'];
+const KIND_CRUSH = 5;
+const KIND_NAMES: readonly DustSourceKind[] = ['fracture', 'shed', 'impact', 'entry', 'wave', 'crush'];
 
 /**
  * A ring of sources waiting for the frame. Several messages can apply between
@@ -248,9 +254,11 @@ export interface DustExtractStats {
   bondsUnresolved: number;
   droppedByCap: number;
   entries: number;
+  /** Chunks crushed to dust (a promotion retired in its own batch). */
+  crushes: number;
 }
 
-const stats: DustExtractStats = { clustersOverflowed: 0, bondsUnresolved: 0, droppedByCap: 0, entries: 0 };
+const stats: DustExtractStats = { clustersOverflowed: 0, bondsUnresolved: 0, droppedByCap: 0, entries: 0, crushes: 0 };
 
 /** Cumulative counters, for the stats panel. */
 export function dustExtractStats(): Readonly<DustExtractStats> {
@@ -267,7 +275,7 @@ function cellKeyOf(structureId: number, kind: number, x: number, y: number, z: n
   const cy = fold(Math.floor(y / size));
   const cz = fold(Math.floor(z / size));
   // Spread into a double so three 20-bit cells and a structure id stay distinct.
-  return (((structureId * 4 + kind) * 1048576 + cx) * 1048576 + cy) * 1048576 + cz;
+  return (((structureId * 8 + kind) * 1048576 + cx) * 1048576 + cy) * 1048576 + cz;
 }
 
 function clusterFor(structureId: number, kind: number, key: number): number {
@@ -441,6 +449,18 @@ export function extractDustSources(
         mass += topology.restMassOf(topology.slotOf(batch.structureId, node));
       }
       const v = promotion.linearVelocity;
+      if (batch.retiredIslandIds.includes(promotion.islandId)) {
+        // Born and gone in one batch: crushed to dust. All of it is dust,
+        // moving as the material was, in the chunk's own material.
+        const p = promotion.position;
+        const node = promotion.nodes[0];
+        const material = node !== undefined ? structure.chunks?.[node]?.material ?? 0 : 0;
+        const key = cellKeyOf(batch.structureId, KIND_CRUSH, p[0], p[1], p[2], opts.cellSizeM);
+        const c = clusterFor(batch.structureId, KIND_CRUSH, key);
+        accumulate(c, mass, p[0], p[1], p[2], 0, 0, 0, v[0], v[1], v[2], mass / CRUSH_KG_PER_UNIT, material);
+        stats.crushes += 1;
+        continue;
+      }
       const speed = Math.hypot(v[0], v[1], v[2]);
       const units = mass / SHED_KG_PER_UNIT;
       const p = promotion.position;

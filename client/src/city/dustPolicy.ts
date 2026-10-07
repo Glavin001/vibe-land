@@ -312,7 +312,7 @@ export class DustPolicy {
     }
     this.stats.emitted += n;
 
-    if (kind === 'fracture' || kind === 'entry') this.feedSmoulder(source, palette);
+    if (kind === 'fracture' || kind === 'entry' || kind === 'crush') this.feedSmoulder(source, palette);
     return n;
   }
 

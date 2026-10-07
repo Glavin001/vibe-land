@@ -159,6 +159,30 @@ describe('extractDustSources', () => {
     expect(s.magnitude).toBeCloseTo(3 * 0.5 + 0.25 * (500 / 500));
   });
 
+  it('turns a chunk crushed to dust (promoted and retired in one batch) into a crush, and hides it', () => {
+    const manifest: CityManifest = { version: 1, structures: [column(1, [0, 0, 0])] };
+    manifest.structures[0].chunks[3].material = 4;
+    const { ctx, topology } = context(manifest);
+    const promotion = {
+      structureId: 1, islandId: 5, nodes: [3], position: [1, 3.5, 0] as [number, number, number],
+      rotation: [0, 0, 0, 1] as [number, number, number, number],
+      linearVelocity: [12, 0, 0] as [number, number, number], angularVelocity: [0, 0, 0] as [number, number, number],
+    };
+    const msg = message({ batches: [{ ...fracture(1, [2], [promotion]), retiredIslandIds: [5] }] });
+    topology.apply(msg);
+    extractDustSources(msg, ctx, queue, 0);
+    const sources = drained(queue);
+    const crush = sources.find((s) => s.kind === 'crush')!;
+    // All 500 kg of it is dust, moving as the material was, in its own material.
+    expect(crush.magnitude).toBeCloseTo(500 / 100);
+    expect([crush.x, crush.y, crush.vx]).toEqual([1, 3.5, 12]);
+    expect(crush.material).toBe(4);
+    expect(sources.some((s) => s.kind === 'shed')).toBe(false);
+    // Gone the tick it was crushed: no body, the chunk retired.
+    expect(topology.body(bodyKey(1, 5))).toBeUndefined();
+    expect(topology.isChunkRetired(topology.slotOf(1, 3))).toBe(true);
+  });
+
   it('raises an impact where a fast island came to rest, and none for a crawl', () => {
     const manifest: CityManifest = { version: 1, structures: [column(1, [0, 0, 0])] };
     const { ctx, topology, speeds } = context(manifest);
