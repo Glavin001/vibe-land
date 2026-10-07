@@ -30,6 +30,16 @@ None of them blocks /city. They are listed here to be filled in later.
   - r182's WebGPU equirect lookup reads a DataTexture's first row as straight
     down, where r185 reads it as up.
 
+## Pages
+
+Smoke-tested on the WebGPU build: `/`, `/practice`, `/garage`, `/materials`
+and `/city` load and draw without errors. One page does not:
+
+- **`/grass` (the grass lab) crashes:** "this._renderer.hasInitialized is not
+  a function" in `<SkyEnvironment>`. Its `<Canvas>` does not go through
+  `withRenderBackend`, so it creates a WebGLRenderer, and the WebGPU build's
+  sky bake runs three/webgpu's PMREMGenerator against it.
+
 ## Tests
 
 - **Unit tests run on the WebGL modules.** Vitest keeps the WebGL build's
