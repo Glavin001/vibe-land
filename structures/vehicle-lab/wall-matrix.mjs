@@ -41,7 +41,10 @@ export const TARGETS = [
   { id: 'brick-house-corner', name: 'one-storey brick house corner', group: 'house@house', aim: [51.3, 0.95, 20.005], face: 180, along: 'x', layer: 0.25 },
   // The two-storey across North Street (lane street, house@street-1): stone
   // 0.3 m, street face x 98.85, facing west.
-  { id: 'stone-house', name: 'two-storey stone house wall', group: 'house@street-1', aim: [98.85, 1.31, 2.01], face: 270, along: 'z', layer: 0.3 },
+  // Shot from the street (its centre x 88): a shot from further west would pass
+  // through the one-storey across it first, so balls from 9 m, meteors steeply.
+  { id: 'stone-house', name: 'two-storey stone house wall', group: 'house@street-1', aim: [98.85, 1.31, 2.01], face: 270, along: 'z', layer: 0.3,
+    distance: { ball: 9, meteor: 40 }, meteorSlope: 0.6 },
   // The rubble pile (lane rubble, x 16): loose pieces, nothing anchored.
   { id: 'pile', name: 'rubble pile', group: 'debris', aim: [16, 0.5, 4.0], face: 180, along: 'x', layer: 3 },
 ];
@@ -97,8 +100,8 @@ function trial(pack, target, impactorId, angle, point = 'centre', extra = {}) {
     return { ...base, at: `slot/${start[0].toFixed(2)},${start[1].toFixed(2)},${heading}`, drive: { kind: 'cruise', speed }, seconds: run / speed + 3.5 };
   }
   const attack = { kind: 'shot', projectile: imp.attack === 'meteor' ? 'meteor' : 'cannonball', at: 0.5, target: aim, from,
-    slope: target.slope ?? (target.town ? (imp.attack === 'meteor' ? 0.5 : 0.1) : imp.attack === 'meteor' ? 0.05 : 0.02),
-    distance: target.town ? (imp.attack === 'meteor' ? 40 : 12) : imp.attack === 'meteor' ? 70 : 30, ...(imp.mass ? { mass: imp.mass } : {}) };
+    slope: target.slope ?? (imp.attack === 'meteor' ? target.meteorSlope : undefined) ?? (target.town ? (imp.attack === 'meteor' ? 0.5 : 0.1) : imp.attack === 'meteor' ? 0.05 : 0.02),
+    distance: target.distance?.[imp.attack === 'meteor' ? 'meteor' : 'ball'] ?? (target.town ? (imp.attack === 'meteor' ? 40 : 12) : imp.attack === 'meteor' ? 70 : 30), ...(imp.mass ? { mass: imp.mass } : {}) };
   if (extra.repeat) {
     // A previously damaged wall: the same shot twice, a second apart; the probe reads the second.
     return { ...base, at: 'pad/rest', slot: [110, -120, 0], drive: { kind: 'park' }, seconds: 2.8,
