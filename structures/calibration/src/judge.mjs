@@ -35,7 +35,12 @@ export function measure(spec, report, c) {
   const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   (c.bondNodes ?? []).forEach(([a, b]) => { if (!gone.has(`${Math.min(a, b)}-${Math.max(a, b)}`)) parent[find(a)] = find(b); });
   const anchored = new Set(c.anchors.map(find));
-  const free = [...Array(n).keys()].filter((i) => !anchored.has(find(i)));
+  // Only chunks that hung from an anchor as built count: a piece built loose (a precast plank on
+  // its bearing, a kentledge block) is not "freed".
+  const parent0 = [...Array(n).keys()], find0 = (i) => (parent0[i] === i ? i : (parent0[i] = find0(parent0[i])));
+  (c.bondNodes ?? []).forEach(([a, b]) => { parent0[find0(a)] = find0(b); });
+  const anchored0 = new Set(c.anchors.map(find0));
+  const free = [...Array(n).keys()].filter((i) => anchored0.has(find0(i)) && !anchored.has(find(i)));
   // collapses: it fell. fractured: a piece is free of every anchor but has not fallen (it is jammed
   // or resting on the rest). damaged: bonds broke, everything still hangs from an anchor.
   const state = maxDrop >= spec.criteria.collapseMinDrop ? 'collapses' : free.length ? 'fractured' : broken.length === 0 && maxMove <= spec.criteria.holdsMaxDrop ? 'holds' : 'damaged';

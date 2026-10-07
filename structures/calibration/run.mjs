@@ -118,7 +118,9 @@ export async function run(id, { configs, ticks, judgeOnly = false, specOnly = fa
     const out = path.join(dir, `report-${config}.json`);
     const iterations = process.env.VIBE_CITY_NATIVE_STRESS_ITERATIONS ?? (scenario.iterations ? String(scenario.iterations) : undefined);
     const extraEnv = { ...(iterations ? { VIBE_CITY_NATIVE_STRESS_ITERATIONS: iterations } : {}), ...(spec.charges ? { VIBE_CALIB_CHARGES: spec.charges } : {}) };
-    const report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks, extraEnv });
+    let report;
+    try { report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks, extraEnv }); }
+    catch (error) { console.log(`\n${config}: NO RUN -- ${error.message.split('\n')[0]}`); verdicts.push({ config, passed: false, error: error.message.split('\n')[0], cases: [] }); continue; }
     // Held to the engineering prediction (`real`); the configuration's own model (the stage's
     // failure law with its bending and limits) is judged too, as a diagnostic of why it differs.
     const own = scenario.configModel?.[config] ?? CONFIGS[config].model;

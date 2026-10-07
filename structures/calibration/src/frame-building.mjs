@@ -187,10 +187,12 @@ export function build(P = FRAME, kind = 'ordinary', removed = [], { stair = true
     }
   }
   // Beams along x in each frame, chunked; transverse beams along z at each column line.
-  const cuts = beamCuts(P);
+  const cuts = beamCuts(P), xbeams = {}, tbeams = [];
+  const bedding = { ...packMaterial('mortar-bedding', { density: 2000, E: 10e9, compression: 10e6, tension: 0.6e6, shear: 1.0e6 }), color: '#bfb8aa' };
   for (let fz = 0; fz < 2; fz++) for (let k = 0; k < P.storeys; k++) for (let i = 0; i < xs.length - 1; i++) {
     const [y0, y1] = beamY(P, k), z = frames[fz], ids = [];
     for (let q = 0; q < cuts.length - 1; q++) ids.push(pk.box({ min: [xs[i] + cuts[q], y0, z - P.beam.b / 2], max: [xs[i] + cuts[q + 1], y1, z + P.beam.b / 2], material: beamMat, type: 'beam', name: `beam-${fz}-${k}-${i}-${q}` }));
+    xbeams[`${fz}-${k}-${i}`] = ids;
     bond(joints[fz][k][i], ids[0], beamMat, `beam@${k + 1}:${(i * P.bay + cuts[0]).toFixed(2)}${fz ? '/N' : ''}`);
     for (let q = 0; q < ids.length - 1; q++) bond(ids[q], ids[q + 1], beamMat, `beam@${k + 1}:${(i * P.bay + cuts[q + 1]).toFixed(2)}${fz ? '/N' : ''}`);
     bond(ids.at(-1), joints[fz][k][i + 1], beamMat, `beam@${k + 1}:${(i * P.bay + cuts.at(-1)).toFixed(2)}${fz ? '/N' : ''}`);
@@ -198,9 +200,22 @@ export function build(P = FRAME, kind = 'ordinary', removed = [], { stair = true
   for (let k = 0; k < P.storeys; k++) for (let i = 0; i < xs.length; i++) {
     const [y0, y1] = beamY(P, k), x = xs[i];
     const t = pk.box({ min: [x - P.beam.b / 2, y0, c], max: [x + P.beam.b / 2, y1, P.depth - c], material: beamMat, type: 'transverse-beam', name: `tbeam-${k}-${i}` });
+    (tbeams[k] ??= [])[i] = t;
     bond(joints[0][k][i], t, beamMat, `tbeam@${k + 1}:${i}:0`); bond(t, joints[1][k][i], beamMat, `tbeam@${k + 1}:${i}:1`);
   }
-  // Planks: unbonded, on the beams (and an in-situ strip over each transverse beam).
+  // A plank's bearing on frame fz's beam: a bond to every beam chunk under it.
+  const bedOn = (pl, fz, k, i) => {
+    const box = pk.boxes[pl];
+    for (const id of xbeams[`${fz}-${k}-${i}`]) {
+      const bb = pk.boxes[id];
+      if (Math.min(box.max[0], bb.max[0]) - Math.max(box.min[0], bb.min[0]) > 1e-3) { pk.bond(id, pl, bedding); bonds.push(`bed@${k + 1}:${fz}`); }
+    }
+  };
+  // Planks bedded in mortar on the beams (EN 1168 / EN 1992-1-1 10.9.5: a mortar bed, no ties):
+  // a bond of the bearing patch with mortar-joint limits (EN 1996 values: tension 0.6 MPa, shear
+  // 1.0 MPa) -- they carry the floor down, hold nothing together. And an in-situ strip over each
+  // transverse beam, bedded the same way. (Resting by contact alone, the planks' first-tick contact
+  // impulses loaded the frame as an impact.)
   for (let k = 0; k < P.storeys; k++) {
     const yt = floorY(P, k), yb = yt - P.plank.t;
     for (let i = 0; i < xs.length - 1; i++) {
@@ -208,11 +223,15 @@ export function build(P = FRAME, kind = 'ordinary', removed = [], { stair = true
       const end = xs[i + 1] - c;
       while (x < end - 1e-6) {
         const w = Math.min(P.plank.w, end - x);
-        pk.box({ min: [x + 0.005, yb, -P.beam.b / 2], max: [x + w - 0.005, yt, P.depth + P.beam.b / 2], material: plank, type: 'plank', name: `plank-${k}-${i}-${x.toFixed(1)}` });
+        const pl = pk.box({ min: [x + 0.005, yb, -P.beam.b / 2], max: [x + w - 0.005, yt, P.depth + P.beam.b / 2], material: plank, type: 'plank', name: `plank-${k}-${i}-${x.toFixed(1)}` });
+        for (const fz of [0, 1]) bedOn(pl, fz, k, i);
         x += w;
       }
     }
-    for (let i = 0; i < xs.length; i++) pk.box({ min: [xs[i] - P.beam.b / 2 + 0.005, yb, c + 0.005], max: [xs[i] + P.beam.b / 2 - 0.005, yt, P.depth - c - 0.005], material: plank, type: 'plank', name: `strip-${k}-${i}` });
+    for (let i = 0; i < xs.length; i++) {
+      const st = pk.box({ min: [xs[i] - P.beam.b / 2 + 0.005, yb, c + 0.005], max: [xs[i] + P.beam.b / 2 - 0.005, yt, P.depth - c - 0.005], material: plank, type: 'plank', name: `strip-${k}-${i}` });
+      pk.bond(tbeams[k][i], st, bedding); bonds.push(`bed@${k + 1}:t${i}`);
+    }
   }
   if (stair) stairTower(pk, P, anchor);
   // The charged columns' sections: [{line i, frame, box: [min, max]}].
@@ -231,8 +250,11 @@ export function build(P = FRAME, kind = 'ordinary', removed = [], { stair = true
  */
 function stairTower(pk, P, anchor) {
   const x0 = columnsX(P).at(-1) + P.column / 2 + 0.01, width = 1.25, gap = 0.06, run = 0.29, halfLanding = 1.35;
-  const n = Math.round(P.storey / 2 / 0.18), rise = P.storey / (2 * n), well = 2 * width + 3 * gap, z0 = 1.0, deep = 0.4;
-  const stair = packMaterial('stair-concrete', { density: RC_DENSITY, E: 30e9, compression: 30e6, tension: 3e6, shear: 3e6, color: '#cfc9bc', textureKey: 'concrete-floor' });
+  const n = Math.round(P.storey / 2 / 0.18), rise = P.storey / (2 * n), well = 2 * width + 3 * gap, z0 = 1.0, deep = 0.55;
+  // A reinforced stair: each step block bonds to the next over deep - rise (0.375 m) of the flight's
+  // 1.25 m width, a waist reinforced at 0.5% (B500B): M_Rk ~ 270 kN m against ~13 kN m of a
+  // flight's own weight over its 2.9 m going.
+  const stair = { ...rcMaterial('rc-stair', rcRect({ b: width, h: deep - rise, cover: 0.04, As: 0.0025 * width * (deep - rise), concrete: P.concrete })), color: '#cfc9bc', textureKey: 'concrete-floor' };
   const zH = z0 + n * run, zEnd = zH + halfLanding, colW = 0.25;
   const level = (k) => (k === 0 ? 0 : floorY(P, k - 1));
   // Floor landings (the ground one an anchor), z in [z0 - 1.2, z0].
