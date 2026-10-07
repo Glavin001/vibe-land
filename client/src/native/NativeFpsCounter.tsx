@@ -105,7 +105,12 @@ export function NativeFpsCounter() {
       if (tracking && resolveTimestamps && --g.countdown <= 0) {
         g.countdown = TIMESTAMP_EVERY;
         void resolveTimestamps('render').then((ms) => {
-          if (typeof ms === 'number' && ms > 0) g.ms = ms;
+          if (typeof ms === 'number' && ms > 0) {
+            g.ms = ms;
+            // For harnesses (client/native/matter-look.mjs): a second reader
+            // would race this one for the query set.
+            (globalThis as { __VIBE_NATIVE_GPU_MS__?: number }).__VIBE_NATIVE_GPU_MS__ = ms;
+          }
         }).catch(() => {});
       }
       work.current.started = performance.now();

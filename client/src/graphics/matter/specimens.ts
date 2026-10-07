@@ -113,7 +113,8 @@ export class MatterStage implements MatterView {
     // reflection (steel, polished marble, oak's finish) went dark. The
     // renderer must be initialised before a stage is made.
     const pmrem = new T.PMREMGenerator(renderer);
-    this.envTarget = pmrem.fromEquirectangular(this.env);
+    // (fromEquirectangular is missing from @types/three 0.170's WebGPU PMREMGenerator.)
+    this.envTarget = (pmrem as unknown as { fromEquirectangular(t: T.Texture): T.RenderTarget }).fromEquirectangular(this.env);
     pmrem.dispose();
     this.scene.environment = this.envTarget.texture;
     this.scene.environmentIntensity = 0.72;

@@ -548,6 +548,12 @@ export interface VibeE2EBridge {
     chunks: number;
   }>;
   /**
+   * The city's materials: each one's name, the Matter look it maps to and
+   * whether it is wearing it, how many chunks, and a few of their rest
+   * positions to aim a camera at.
+   */
+  cityMaterials(): CityMaterialE2E[];
+  /**
    * Run the per-feature cost sweep and hand back the report.
    *
    * The same one the panel's button downloads -- exposed here so a spec can
@@ -621,9 +627,25 @@ const refs = {
   statsSnapshot: { ...DEFAULT_STATS } as DebugStats,
   city: null as CityE2EStats | null,
   cityStructures: [] as Array<{ structureId: number; position: [number, number, number]; top: number; chunks: number }>,
+  cityMaterials: [] as CityMaterialE2E[],
 };
 
 /** Called once the city manifest is known; cleared with null. */
+export interface CityMaterialE2E {
+  index: number;
+  name: string | null;
+  /** The Matter look this material maps to (graphics/matter/appearanceMatter.ts). */
+  look: string | null;
+  /** Whether it is wearing it now (false: Matter off, or a WebGL build). */
+  worn: boolean;
+  chunks: number;
+  samples: Array<[number, number, number]>;
+}
+
+export function updateCityMaterialsE2E(materials: CityMaterialE2E[] | null): void {
+  refs.cityMaterials = materials ?? [];
+}
+
 export function updateCityStructuresE2E(structures: typeof refs.cityStructures | null): void {
   refs.cityStructures = structures ?? [];
 }
@@ -806,6 +828,7 @@ const bridge: VibeE2EBridge = {
   townKit: () => townKitSnapshot(),
   markShaderWarmupDone: () => markShaderWarmupDone(),
   cityStructures: () => refs.cityStructures,
+  cityMaterials: () => refs.cityMaterials,
   dustBurst: (next) => {
     const normal = next.normal ?? [0, 1, 0];
     pushDebugDustSource({

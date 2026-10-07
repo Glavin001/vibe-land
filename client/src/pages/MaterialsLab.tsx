@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { DEFAULTS, KINDS, MATERIALS, type MaterialKind, type MaterialRecipe } from '../graphics/matter/recipes';
+import { DEFAULTS, KINDS, MATERIALS, type MaterialKind, type MaterialRecipe, cloneRecipe } from '../graphics/matter/recipes';
 import type { SpecimenCamera, SpecimenView } from '../graphics/matter/lab';
 import type { Lighting, ShapeName, StageOptions } from '../graphics/matter/specimens';
 
@@ -65,7 +65,7 @@ export function MaterialsLabPage() {
       for (const shape of SHAPES) {
         for (const kind of KINDS) {
           if (cancelled) return;
-          const url = await lab.camera.snapshot(structuredClone(DEFAULTS[kind]), shape, TILE, 'image/webp');
+          const url = await lab.camera.snapshot(cloneRecipe(DEFAULTS[kind]), shape, TILE, 'image/webp');
           if (!cancelled) setTiles((prev) => ({ ...prev, [`${kind}/${shape}`]: url }));
         }
       }
@@ -141,7 +141,7 @@ function Row(props: { shape: ShapeName; row: number; tiles: Record<string, strin
 function Inspector(props: { lab: Lab; initial: { kind: MaterialKind; shape: ShapeName }; onClose: () => void }) {
   const host = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<SpecimenView | null>(null);
-  const [recipe, setRecipe] = useState<MaterialRecipe>(() => structuredClone(DEFAULTS[props.initial.kind]));
+  const [recipe, setRecipe] = useState<MaterialRecipe>(() => cloneRecipe(DEFAULTS[props.initial.kind]));
   const [shape, setShape] = useState<ShapeName>(props.initial.shape);
   const [options, setOptions] = useState<StageOptions>({ light: 'Studio', exposure: 1, cut: 0, ablation: false, optical: false });
   const [frameMs, setFrameMs] = useState(0);
@@ -174,7 +174,7 @@ function Inspector(props: { lab: Lab; initial: { kind: MaterialKind; shape: Shap
   const json = useMemo(() => JSON.stringify(recipe), [recipe]);
   const set = (group: 'structure' | 'finish', index: number, value: number) =>
     setRecipe((r) => {
-      const next = structuredClone(r);
+      const next = cloneRecipe(r);
       next[group][index] = value;
       return next;
     });
@@ -196,7 +196,7 @@ function Inspector(props: { lab: Lab; initial: { kind: MaterialKind; shape: Shap
         <select
           className="mt-1 w-full rounded bg-[#222] p-1"
           value={recipe.kind}
-          onChange={(e) => setRecipe(structuredClone(DEFAULTS[e.target.value as MaterialKind]))}
+          onChange={(e) => setRecipe(cloneRecipe(DEFAULTS[e.target.value as MaterialKind]))}
         >
           {KINDS.map((k) => <option key={k} value={k}>{MATERIALS[k].name}</option>)}
         </select>
@@ -243,7 +243,7 @@ function Inspector(props: { lab: Lab; initial: { kind: MaterialKind; shape: Shap
           <button type="button" className="rounded bg-white/10 px-2 py-1 hover:bg-white/20"
             onClick={() => setRecipe((r) => ({ ...r, seed: Math.floor(Math.random() * 1_000_000) }))}>New seed</button>
           <button type="button" className="rounded bg-white/10 px-2 py-1 hover:bg-white/20"
-            onClick={() => setRecipe(structuredClone(DEFAULTS[recipe.kind]))}>Reset</button>
+            onClick={() => setRecipe(cloneRecipe(DEFAULTS[recipe.kind]))}>Reset</button>
           <button type="button" className="rounded bg-white/10 px-2 py-1 hover:bg-white/20"
             onClick={() => void navigator.clipboard?.writeText(json)}>Copy recipe JSON</button>
         </div>

@@ -36,7 +36,7 @@ export function buildPropRaw(type,{palette='sage',seed=20260920,omitLeftPost=fal
    for(const [x0,x1] of [[-.56,-.555],[.555,.56]])for(const y of [.20,h-.25])box([x0,y,-.30],[x1,y+.08,-.265],M.metal,'cabinet-hinge');
    for(const x of [-.07,.07])box([x-.015,h*.62,-.345],[x+.015,h*.62+.14,-.30],M.metal,'handle');
   }
-  const tm=type==='refrigerator'?M.appliance:M.oak;
+  const tm=type==='refrigerator'?M.appliance:['counter','sink','hob'].includes(type)?M.worktop:M.oak;
   if(type==='sink') {
    box([-.6,h,-.32],[-.3,h+.055,.32],tm);box([.3,h,-.32],[.6,h+.055,.32],tm);
    box([-.3,h,-.32],[.3,h+.055,-.20],tm);box([-.3,h,.20],[.3,h+.055,.32],tm);

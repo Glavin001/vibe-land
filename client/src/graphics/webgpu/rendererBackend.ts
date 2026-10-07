@@ -61,6 +61,17 @@ export function withRenderBackend<P extends CanvasProps>(props: P): P {
   };
 }
 
+let webgpuBackend = false;
+
+/**
+ * Whether the renderer runs on real WebGPU, rather than WebGPURenderer's
+ * WebGL2 fallback (no navigator.gpu). WGSL-only visuals (graphics/matter)
+ * need it. Known once the renderer's init() has resolved.
+ */
+export function webgpuBackendActive(): boolean {
+  return webgpuBackend;
+}
+
 export function createWebGPURenderer(
   canvas: HTMLCanvasElement,
   options: { antialias?: boolean; powerPreference?: string; trackTimestamp?: boolean } = {},
@@ -81,6 +92,7 @@ export function createWebGPURenderer(
   const init = renderer.init.bind(renderer);
   renderer.init = async () => {
     const ready = await init();
+    webgpuBackend = (renderer as unknown as { backend?: { isWebGPUBackend?: boolean } }).backend?.isWebGPUBackend === true;
     fixArrayTextureGrad(renderer as unknown as Parameters<typeof fixArrayTextureGrad>[0]);
     monitorShaderBuilds(renderer as unknown as Parameters<typeof monitorShaderBuilds>[0]);
     return ready;

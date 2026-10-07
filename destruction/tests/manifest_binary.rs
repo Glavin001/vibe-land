@@ -163,3 +163,19 @@ fn dump_for_measurement() {
         manifest.total_bonds(),
     );
 }
+
+/// A material's procedural recipe (`matter`) is opaque JSON to the server and
+/// rides in the appearance blob; it must reach the client exactly as authored.
+#[test]
+fn a_matter_recipe_round_trips() {
+    use vibe_land_destruction::manifest::MaterialAppearanceDef;
+    let mut manifest = manifest_for("algedra-tower");
+    let recipe = serde_json::json!({"kind": "steel", "scale": 2.0, "finish": [0.68, 0.12, 0.27, 1.0]});
+    manifest.material_appearance = vec![
+        MaterialAppearanceDef { name: Some("plain".into()), texture_key: Some("brick".into()), ..Default::default() },
+        MaterialAppearanceDef { name: Some("fridge".into()), matter: Some(recipe.clone()), ..Default::default() },
+    ];
+    let decoded = manifest_binary::decode(&manifest_binary::encode(&manifest)).expect("decode");
+    assert_eq!(decoded, manifest);
+    assert_eq!(decoded.material_appearance[1].matter.as_ref(), Some(&recipe));
+}

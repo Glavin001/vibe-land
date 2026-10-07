@@ -51,6 +51,16 @@ export function registerSlotNodeMaterial(factory: SlotNodeMaterialFactory): void
   slotNodeMaterial = factory;
 }
 
+// Whether chunks may wear Matter materials (graphics/matter): WGSL, so only
+// on a real WebGPU backend, registered by the WebGPU build's install.
+let matterAvailability: (() => boolean) | null = null;
+export function registerMatterAvailability(available: () => boolean): void {
+  matterAvailability = available;
+}
+export function matterMaterialsAvailable(): boolean {
+  return matterAvailability?.() ?? false;
+}
+
 function webgpuSlotMaterial(source: THREE.Material, poses: CityGpuPoses): THREE.Material {
   if (!slotNodeMaterial) throw new Error('WebGPU slot material not registered (@render-backend/install)');
   return slotNodeMaterial(source, poses);

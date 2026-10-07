@@ -53,7 +53,8 @@ export class Builder {
    if(!contact||contact.area<1e-7)continue;
    const A=s.nodes[i],B=s.nodes[j],normal=[...contact.normal];if(normal.reduce((q,x,k)=>q+x*(a(B.centroid)[k]-a(A.centroid)[k]),0)<0)for(let k=0;k<3;k++)normal[k]*=-1;
    let mat=this.table[A.m].tensionFatal<=this.table[B.m].tensionFatal?A.m:B.m;
-   if(s.nodePieces[i]!==s.nodePieces[j]&&[M.frame,M.siding,M.trim,M.dark,M.oak,M.fabric,M.bedding,M.wall].includes(A.m)&&[M.frame,M.siding,M.trim,M.dark,M.oak,M.fabric,M.bedding,M.wall].includes(B.m))mat=M.joint;
+   // (The marble worktop is the oak worktop to the solver: materials.mjs.)
+   if(s.nodePieces[i]!==s.nodePieces[j]&&[M.frame,M.siding,M.trim,M.dark,M.oak,M.worktop,M.fabric,M.bedding,M.wall].includes(A.m)&&[M.frame,M.siding,M.trim,M.dark,M.oak,M.worktop,M.fabric,M.bedding,M.wall].includes(B.m))mat=M.joint;
    if(mat===M.joint&&this.group.startsWith('prop-')&&!/fence|gate/.test(this.group))mat=M.furnitureJoint;
    if(s.nodeTypes[i]==='siding'||s.nodeTypes[j]==='siding'||s.nodeTypes[i]==='dentil'||s.nodeTypes[j]==='dentil')mat=M.fastener;
    // Masonry on masonry, or bedded on a footing: a mortar joint (materials.mjs MORTAR_JOINT).

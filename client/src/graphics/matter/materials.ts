@@ -77,6 +77,12 @@ export interface MatterOptions {
    * of their own and have split normals at hard edges, where it opens cracks.
    */
   displacement?: boolean;
+  /**
+   * Glass without three's transmission pass (no backdrop copy, no
+   * refraction): a transparent physical surface with the recipe's IOR and
+   * roughness. What a city full of windows can afford.
+   */
+  glassLite?: boolean;
 }
 
 /** The lab's space: the mesh's own geometry and model matrix. */
@@ -129,9 +135,10 @@ class MatterLighting extends PhysicalModel {
     fiber: Texture | null,
     optics: Node,
     space: MatterSpace,
+    transmission: boolean,
   ) {
     // clearcoat, sheen, iridescence, anisotropy, transmission, dispersion
-    super(kind === 'oak', false, false, kind === 'steel', kind === 'glass', kind === 'glass');
+    super(kind === 'oak', false, false, kind === 'steel', transmission, transmission);
     this.kind = kind;
     this.field = field;
     this.a = a;
@@ -291,7 +298,12 @@ export function createMaterial(input: MaterialRecipe, options: MatterOptions = {
       .pow(0.25)
       .clamp(0.06, 0.8);
   }
-  if (recipe.kind === 'glass') {
+  const transmission = recipe.kind === 'glass' && !options.glassLite;
+  if (recipe.kind === 'glass' && options.glassLite) {
+    material.iorNode = b.x;
+    material.transparent = true;
+  }
+  if (transmission) {
     material.transmission = 1;
     material.iorNode = b.x;
     material.thicknessNode = a.x;
@@ -301,7 +313,7 @@ export function createMaterial(input: MaterialRecipe, options: MatterOptions = {
   }
   material.userData.recipe = recipe;
   material.userData.physicalThickness = 0.18;
-  material.setupLightingModel = (() => new MatterLighting(recipe.kind, field, a, b, fiber, optics, space)) as never;
+  material.setupLightingModel = (() => new MatterLighting(recipe.kind, field, a, b, fiber, optics, space, transmission)) as never;
 
   return {
     recipe,

@@ -7,7 +7,7 @@
 import * as T from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-import { DEFAULTS, type MaterialKind, type MaterialRecipe } from './recipes';
+import { DEFAULTS, type MaterialKind, type MaterialRecipe, cloneRecipe } from './recipes';
 import { MatterStage, type ShapeName, type StageOptions } from './specimens';
 
 async function webgpuRenderer(canvas?: HTMLCanvasElement): Promise<T.WebGPURenderer> {
@@ -137,6 +137,6 @@ declare global {
 
 export function installLabHook(camera: SpecimenCamera) {
   window.__MATTER_LAB__ = {
-    snapshot: (kind, shape, size = 400) => camera.snapshot(structuredClone(DEFAULTS[kind]), shape, size),
+    snapshot: (kind, shape, size = 400) => camera.snapshot(cloneRecipe(DEFAULTS[kind]), shape, size),
   };
 }

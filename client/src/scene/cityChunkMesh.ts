@@ -38,7 +38,13 @@ import {
   heroTilingEnabled,
   shadowsEnabled,
 } from '../app/renderQuality';
-import { CityGpuPoses, CitySlotMesh, SlotGeometryBuilder, type CityRenderable } from './citySlotMesh';
+import {
+  CityGpuPoses,
+  CitySlotMesh,
+  SlotGeometryBuilder,
+  matterMaterialsAvailable,
+  type CityRenderable,
+} from './citySlotMesh';
 import type { LedgerBody } from '../city/topology';
 import { initCityPoses, writeBodyPoseInto, writeChunkRecordInto } from '../city/cityPoseStore';
 import { renderStats } from '../city/renderStats';
@@ -46,6 +52,8 @@ import { applyCityTriplanar } from './cityMaterialShader';
 import { bakeRestAnchors } from './cityTexAnchor';
 import { layerCodeForBuilding, layerCodeForTextureKey } from './cityTextures';
 import { bondEndpoints, type MaterialAppearance } from '../city/manifest';
+import { matterForAppearance, type ResolvedMatter } from '../graphics/matter/appearanceMatter';
+import { bakeMatterFrames, type MatterCellSlot } from './cityMatterFrames';
 
 const TMP_POSITION = new THREE.Vector3();
 const TMP_QUATERNION = new THREE.Quaternion();
@@ -70,6 +78,8 @@ export type CityMeshState = {
   poses: CityGpuPoses;
   /** Every material the cells share: the concrete, any glass, the shadow depth. */
   materials: THREE.Material[];
+  /** Per manifest material: the Matter look it wears, or null (the triplanar). */
+  matterLooks: Array<string | null>;
 };
 
 /**
@@ -139,6 +149,22 @@ function buildGlassMaterial(appearance: MaterialAppearance): THREE.Material {
 }
 
 /**
+ * The source material of chunks wearing a Matter look. A placeholder that
+ * only carries the look: the WebGPU slot material (scene/cityMatterNodes.ts)
+ * is what draws, and only builds that can draw it get here.
+ */
+function matterSourceMaterial(matter: ResolvedMatter, appearance: MaterialAppearance): THREE.Material {
+  const source = new THREE.MeshStandardMaterial();
+  source.name = `matter:${matter.name}`;
+  source.userData.cityMatter = {
+    matter,
+    opacity: appearance.opacity ?? null,
+    color: appearance.opacity != null ? appearance.color ?? null : null,
+  };
+  return source;
+}
+
+/**
  * Per-slot material index, and which slots are transparent.
  *
  * Absent on every pack that authors no per-node material, in which case every
@@ -148,14 +174,20 @@ function buildGlassMaterial(appearance: MaterialAppearance): THREE.Material {
 function resolveChunkMaterials(client: CityClient, count: number): {
   materialOfSlot: Int32Array;
   transparentBySlot: Uint8Array;
+  /** Slots whose material wears a Matter look: they get cells of their own. */
+  matterBySlot: Uint8Array;
   appearance: MaterialAppearance[];
+  /** Per material: its Matter look, or null for the triplanar. */
+  matterOfMaterial: Array<ResolvedMatter | null>;
 } {
   const manifest = client.manifest.manifest;
   const appearance = manifest.materialAppearance ?? [];
   const materialOfSlot = new Int32Array(count);
   const transparentBySlot = new Uint8Array(count);
+  const matterBySlot = new Uint8Array(count);
+  const matterOfMaterial = cityMatterEnabled() ? appearance.map((a) => matterForAppearance(a)) : [];
   if (appearance.length === 0) {
-    return { materialOfSlot, transparentBySlot, appearance };
+    return { materialOfSlot, transparentBySlot, matterBySlot, appearance, matterOfMaterial };
   }
   for (const structure of manifest.structures) {
     for (const chunk of structure.chunks) {
@@ -163,9 +195,28 @@ function resolveChunkMaterials(client: CityClient, count: number): {
       const material = chunk.material ?? 0;
       materialOfSlot[slot] = material;
       if (appearance[material]?.opacity != null) transparentBySlot[slot] = 1;
+      if (matterOfMaterial[material]) matterBySlot[slot] = 1;
     }
   }
-  return { materialOfSlot, transparentBySlot, appearance };
+  const worn = matterOfMaterial.flatMap((m, i) => (m ? [`${appearance[i]?.name ?? i} -> ${m.name}`] : []));
+  if (worn.length > 0) console.info('[city] matter materials', worn);
+  return { materialOfSlot, transparentBySlot, matterBySlot, appearance, matterOfMaterial };
+}
+
+/**
+ * Whether city chunks wear Matter materials (graphics/matter): on a real
+ * WebGPU backend, on the PRETTY tier, unless `?matter=0` or (native, where
+ * there is no URL) `globalThis.__VIBE_MATTER_OFF__` -- A/B switches: the
+ * triplanar textures throughout.
+ */
+function cityMatterEnabled(): boolean {
+  if (!matterMaterialsAvailable() || !cityPbrLighting()) return false;
+  if ((globalThis as { __VIBE_MATTER_OFF__?: boolean }).__VIBE_MATTER_OFF__) return false;
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('matter') !== '0';
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -255,6 +306,8 @@ type ResolvedShapes = {
   anchors: Float32Array;
   /** Distinct bonded components, i.e. how many buildings the concrete spans. */
   buildingCount: number;
+  /** Slot -> the slot identifying its building (resolveBuildingIds). */
+  buildingOfSlot: Int32Array;
 };
 
 /**
@@ -337,7 +390,7 @@ function resolveShapes(
       { rotatedStructures },
     );
   }
-  return { shapeBySlot, scales, radii, localXZ, anchors, buildingCount };
+  return { shapeBySlot, scales, radii, localXZ, anchors, buildingCount, buildingOfSlot };
 }
 
 
@@ -349,6 +402,7 @@ type BuildSink = {
   scales: Float32Array;
   radii: Float32Array;
   anchors: Float32Array;
+  buildingOfSlot: Int32Array;
   poses: CityGpuPoses;
   totalVertices: number;
 };
@@ -419,8 +473,15 @@ function buildCell(
 
   const builder = new SlotGeometryBuilder(vertexBudget, indexBudget);
   const meshIndex = sink.renderables.length;
+  const matter = material.userData.cityMatter as { matter: ResolvedMatter } | undefined;
+  const matterSlots: MatterCellSlot[] = [];
+  let vertexCursor = 0;
   for (const slot of slots) {
     const geometry = prototypeOf(slot);
+    if (matter) {
+      matterSlots.push({ slot, firstVertex: vertexCursor, vertexCount: geometry.attributes.position.count, geometry });
+      vertexCursor += geometry.attributes.position.count;
+    }
     // Rewrite the prototype's anchor in place: the builder COPIES, so one
     // mutable prototype per shape serves every instance of it. The anchor is
     // rest position plus rest scale times local position, so it is baked
@@ -429,7 +490,9 @@ function buildCell(
     builder.append(geometry, slot, sink.scales[slot * 3], sink.scales[slot * 3 + 1], sink.scales[slot * 3 + 2]);
     sink.meshOfSlot[slot] = meshIndex;
   }
-  const mesh = new CitySlotMesh(builder.build(), material, depth, sink.poses, slots);
+  const built = builder.build();
+  if (matter) bakeMatterFrames(built, matter.matter, matterSlots, sink);
+  const mesh = new CitySlotMesh(built, material, depth, sink.poses, slots);
   mesh.castShadow = shadowsEnabled();
   mesh.receiveShadow = shadowsEnabled();
   // Whole-cell culling is one sphere test that can drop a block. Only worth
@@ -459,7 +522,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   const count = client.topology.chunkCount;
 
   const materials = resolveChunkMaterials(client, count);
-  const { shapeBySlot, scales, radii, localXZ, anchors }
+  const { shapeBySlot, scales, radii, localXZ, anchors, buildingOfSlot }
     = resolveShapes(client, count, materials);
   const poses = new CityGpuPoses(count, radii);
 
@@ -470,6 +533,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     scales,
     radii,
     anchors,
+    buildingOfSlot,
     poses,
     totalVertices: 0,
   };
@@ -482,11 +546,12 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
   const glassByKey = new Map<number, THREE.Material>();
   const materialFor = (key: number): THREE.Material => {
-    const glass = key < 0 ? undefined : materials.appearance[key];
-    if (!glass || glass.opacity == null) return concrete;
+    const appearance = key < 0 ? undefined : materials.appearance[key];
+    const matter = key < 0 ? null : materials.matterOfMaterial[key] ?? null;
+    if (!appearance || (!matter && appearance.opacity == null)) return concrete;
     let built = glassByKey.get(key);
     if (!built) {
-      built = buildGlassMaterial(glass);
+      built = matter ? matterSourceMaterial(matter, appearance) : buildGlassMaterial(appearance);
       glassByKey.set(key, built);
     }
     return built;
@@ -507,12 +572,13 @@ export function buildCityMesh(client: CityClient): CityMeshState {
       cellCount += 1;
       // Split by MATERIAL. Transparency is a property of the material and
       // cannot ride on a vertex, so a cell holding both glazing and concrete
-      // gets a mesh of each. Only transparency splits: opaque chunks of every
-      // material share one, because which brick or concrete they wear travels
-      // in the anchor.
+      // gets a mesh of each; so is a Matter look (its own shader). Other
+      // opaque chunks of every material share one, because which brick or
+      // concrete they wear travels in the anchor.
       const byMaterial = new Map<number, number[]>();
       for (const slot of slots) {
-        const key = materials.transparentBySlot[slot] ? materials.materialOfSlot[slot] : -1;
+        const own = materials.transparentBySlot[slot] || materials.matterBySlot[slot];
+        const key = own ? materials.materialOfSlot[slot] : -1;
         const list = byMaterial.get(key) ?? [];
         list.push(slot);
         byMaterial.set(key, list);
@@ -531,6 +597,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     radii,
     poses,
     materials: [concrete, depth, ...glassByKey.values()],
+    matterLooks: materials.appearance.map((_, i) => materials.matterOfMaterial[i]?.name ?? null),
   };
   // Every record and every body the ledger has, so the first frame draws the
   // city exactly as the ledger holds it -- intact, or mid-collapse for a late

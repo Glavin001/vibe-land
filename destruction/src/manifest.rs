@@ -151,6 +151,9 @@ pub struct MaterialAppearanceDef {
     pub roughness: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metalness: Option<f32>,
+    /// Procedural material recipe for the WebGPU client (graphics/matter).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matter: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -268,11 +271,12 @@ impl DestructionManifest {
                         texture_key: a.texture_key.clone(),
                         roughness: a.roughness,
                         metalness: a.metalness,
+                        matter: a.matter.clone(),
                     })
                     .collect::<Vec<_>>()
             })
             .filter(|table: &Vec<MaterialAppearanceDef>| table.iter().any(|a| {
-                a.color.is_some() || a.opacity.is_some() || a.texture_key.is_some()
+                a.color.is_some() || a.opacity.is_some() || a.texture_key.is_some() || a.matter.is_some()
             }))
             .unwrap_or_default();
         // Hoist every shard the pack named into a manifest-level library and

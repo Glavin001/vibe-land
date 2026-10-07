@@ -3,8 +3,9 @@
 // never imports three/webgpu itself.
 import { registerSkyNodeMaterial } from '../SkyEnvironment';
 import { registerGroundNodeMaterial } from '../../scene/cityMaterialShader';
-import { registerSlotNodeMaterial } from '../../scene/citySlotMesh';
-import { slotNodeMaterial } from '../../scene/citySlotNodes';
+import { registerMatterAvailability, registerSlotNodeMaterial } from '../../scene/citySlotMesh';
+import { matterSlotMaterial } from '../../scene/cityMatterNodes';
+import { registerMatterSlotMaterial, slotNodeMaterial } from '../../scene/citySlotNodes';
 import { groundNodeMaterial } from '../../scene/groundNodes';
 import { registerGrassNodeMaterials } from '../../scene/grass/grassMaterial';
 import { grassNodeMaterials } from '../../scene/grass/grassNodes';
@@ -19,9 +20,12 @@ import { registerMeteorNodeMaterials } from '../../vfx/meteorRock';
 import { meteorEmberNodes, meteorFireNodeMaterial, meteorRockNodeMaterial } from '../../vfx/meteorNodes';
 import { setPartBatchFactory } from '../../vehicles/dune/live-geometry.mjs';
 import { createPartBatch } from '../../vehicles/partBatchNodes';
+import { webgpuBackendActive } from './rendererBackend';
 import { skyNodeMaterial } from './skyNodes';
 
 registerSlotNodeMaterial(slotNodeMaterial);
+registerMatterSlotMaterial(matterSlotMaterial);
+registerMatterAvailability(webgpuBackendActive);
 registerSkyNodeMaterial(skyNodeMaterial);
 registerGroundNodeMaterial(groundNodeMaterial);
 registerGrassNodeMaterials(grassNodeMaterials);

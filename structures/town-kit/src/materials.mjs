@@ -27,9 +27,14 @@ export function materials(palette='sage') {
   mat('insulated-appliance-panel','wood-frame','#e6e4d4',null,280,{compressionElastic:8e6,compressionFatal:16e6,tensionElastic:5e5,tensionFatal:1e6,shearElastic:1e6,shearFatal:2e6,elasticModulus:1e9,roughness:.25,metalness:.15}),
  ];
  table.push(mortarMaterial(table[4]));
+ // Kitchen worktops: polished marble to look at (the WebGPU client's Matter
+ // material, client/src/graphics/matter/appearanceMatter.ts, by name), with
+ // the oak worktop's solver values, so nothing about how a kitchen holds up
+ // or breaks changes.
+ table.push({...structuredClone(table[M.oak]),name:'marble-countertop',color:'#e7e3d8',textureKey:'white-concrete'});
  return table;
 }
-export const M={frame:0,siding:1,trim:2,plaster:3,brick:4,footing:5,glass:6,roof:7,dark:8,oak:9,ceramic:10,metal:11,fabric:12,bedding:13,glassJoint:14,wall:15,joint:16,furnitureJoint:17,fastener:18,appliance:19,mortar:20};
+export const M={frame:0,siding:1,trim:2,plaster:3,brick:4,footing:5,glass:6,roof:7,dark:8,oak:9,ceramic:10,metal:11,fabric:12,bedding:13,glassJoint:14,wall:15,joint:16,furnitureJoint:17,fastener:18,appliance:19,mortar:20,worktop:21};
 
 /**
  * Masonry fails at its joints, not through its bricks: Eurocode 6 puts the

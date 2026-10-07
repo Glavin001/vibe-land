@@ -12,6 +12,7 @@
 import { decodeBinaryManifest, looksBinary } from './manifestBinary';
 import { gunzipSync } from 'fflate';
 import { sha256 } from '../platform/sha256';
+import type { MatterSpec } from '../graphics/matter/appearanceMatter';
 
 export interface ChunkGeometryCuboid {
   // Server serde emits camelCase enum tags ("cuboid"); accept both.
@@ -239,6 +240,11 @@ export interface MaterialAppearance {
   textureKey?: string;
   roughness?: number;
   metalness?: number;
+  /**
+   * An explicit procedural material for the WebGPU client
+   * (graphics/matter/appearanceMatter.ts); most materials get theirs by name.
+   */
+  matter?: MatterSpec;
 }
 
 export interface LoadedCityManifest {

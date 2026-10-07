@@ -49,20 +49,107 @@ const quatMul = (a: Node, b: Node): Node =>
     a.w.mul(b.w).sub(dot(a.xyz, b.xyz)),
   );
 
-const quatRotate = (q: Node, v: Node): Node =>
+export const quatRotate = (q: Node, v: Node): Node =>
   v.add(cross(q.xyz, cross(q.xyz, v).add(q.w.mul(v))).mul(2.0));
 
 const nodeMaterials = new WeakMap<THREE.Material, THREE.Material>();
 
 /**
+ * A matter material's builder (scene/cityMatterNodes.ts), registered there so
+ * this file does not pull the Matter shaders into every WebGPU build that
+ * draws a slot mesh.
+ */
+type MatterSlotFactory = (source: THREE.Material, poses: CityGpuPoses) => THREE.Material;
+let matterSlotMaterial: MatterSlotFactory | null = null;
+export function registerMatterSlotMaterial(factory: MatterSlotFactory): void {
+  matterSlotMaterial = factory;
+}
+
+/** What a slot mesh's node material is built from: its chunk's composed pose. */
+export interface SlotPoseNodes {
+  /** The vertex's posed position (assigns normalLocal, the tint and the pose varyings). */
+  positionNode: Node;
+  /** The body tint (settled dimming, debug palette), a vertex varying. */
+  tint: Node;
+  /** The chunk's rest-to-world rotation (quaternion), a vertex varying. */
+  pose: Node;
+  quatRotate: (q: Node, v: Node) => Node;
+  /** Keep the per-frame uniforms live for this material. */
+  bind(material: THREE.Material): void;
+}
+
+/**
+ * The pose composition every slot material shares. `extra(q)` runs in the
+ * vertex stage with the chunk's world rotation, for materials that need more
+ * of the frame posed (the steel's brushing tangent).
+ */
+export function slotPoseNodes(poses: CityGpuPoses, extra?: (q: Node) => void): SlotPoseNodes {
+  // Integer texel fetches: no UV transform (texture() without a uv turns
+  // the texture's matrix on, and load() keeps it).
+  const chunks = texture(poses.chunkTexture);
+  const bodies = texture(poses.bodyTexture);
+  chunks.updateMatrix = false;
+  bodies.updateMatrix = false;
+  poses.onBodyTextureReplaced((next) => {
+    bodies.value = next;
+  });
+  const hideY = uniform(CHUNK_HIDE_Y_M);
+  const bodyColours = uniform(poses.bodyColoursUniform.value);
+  const tint = varyingProperty('vec3', 'vCityTint');
+  // The chunk's rest-to-world rotation, for the fragment's directions.
+  const pose = varyingProperty('vec4', 'vCityQuat');
+
+  const texel = (tex: Node, index: Node): Node => {
+    const size = int(textureSize(tex, int(0)).x);
+    return tex.load(ivec2(index.mod(size), index.div(size)));
+  };
+
+  const positionNode = Fn(() => {
+    const slot = int(attribute('citySlot', 'float'));
+    const record0 = texel(chunks, slot.mul(2));
+    const record1 = texel(chunks, slot.mul(2).add(1));
+    const body = int(record0.x);
+    const body0 = texel(bodies, body.mul(4));
+    const body1 = texel(bodies, body.mul(4).add(1));
+    const q = normalize(quatMul(body1, record1));
+    const p = body0.xyz.add(quatRotate(body1, record0.yzw));
+    const visible = select(p.y.lessThan(hideY).or(body.lessThan(0)), float(0), float(1));
+    tint.assign(
+      select(bodyColours.greaterThan(0.5), texel(bodies, body.mul(4).add(2)).rgb.mul(body0.w), vec3(body0.w)),
+    );
+    normalLocal.assign(quatRotate(q, normalGeometry));
+    pose.assign(q);
+    extra?.(q);
+    return quatRotate(q, positionGeometry).mul(visible).add(p);
+  })();
+
+  return {
+    positionNode,
+    tint,
+    pose,
+    quatRotate,
+    // Keep the debug palette switch live: the uniform follows the WebGL one.
+    bind: () => bodyColours.onFrameUpdate(() => poses.bodyColoursUniform.value),
+  };
+}
+
+/**
  * The node material a slot mesh draws with on WebGPU: the triplanar
  * concrete (cityMaterialNodes.ts), placed by its chunk's composed pose, tinted by
  * its body (settled rubble is dimmer; the debug palette colours by body).
- * One per source material, shared across cells like the WebGL path.
+ * One per source material, shared across cells like the WebGL path. A source
+ * carrying a Matter look (userData.cityMatter, scene/cityChunkMesh.ts) draws
+ * that instead.
  */
 export function slotNodeMaterial(source: THREE.Material, poses: CityGpuPoses): THREE.Material {
   const cached = nodeMaterials.get(source);
   if (cached) return cached;
+
+  if (source.userData.cityMatter && matterSlotMaterial) {
+    const material = matterSlotMaterial(source, poses);
+    nodeMaterials.set(source, material);
+    return material;
+  }
 
   const base = source as THREE.MeshStandardMaterial;
   const transparent = base.transparent && base.opacity < 1;
@@ -80,54 +167,17 @@ export function slotNodeMaterial(source: THREE.Material, poses: CityGpuPoses): T
     side: base.side,
   });
 
-  // Integer texel fetches: no UV transform (texture() without a uv turns
-  // the texture's matrix on, and load() keeps it).
-  const chunks = texture(poses.chunkTexture);
-  const bodies = texture(poses.bodyTexture);
-  chunks.updateMatrix = false;
-  bodies.updateMatrix = false;
-  poses.onBodyTextureReplaced((next) => {
-    bodies.value = next;
-  });
-  const hideY = uniform(CHUNK_HIDE_Y_M);
-  const bodyColours = uniform(poses.bodyColoursUniform.value);
-  const tint = varyingProperty('vec3', 'vCityTint');
-  // The chunk's rest-to-world rotation, for the triplanar's normals.
-  const pose = varyingProperty('vec4', 'vCityQuat');
-
-  const texel = (tex: Node, index: Node): Node => {
-    const size = int(textureSize(tex, int(0)).x);
-    return tex.load(ivec2(index.mod(size), index.div(size)));
-  };
-
-  material.positionNode = Fn(() => {
-    const slot = int(attribute('citySlot', 'float'));
-    const record0 = texel(chunks, slot.mul(2));
-    const record1 = texel(chunks, slot.mul(2).add(1));
-    const body = int(record0.x);
-    const body0 = texel(bodies, body.mul(4));
-    const body1 = texel(bodies, body.mul(4).add(1));
-    const q = normalize(quatMul(body1, record1));
-    const p = body0.xyz.add(quatRotate(body1, record0.yzw));
-    const visible = select(p.y.lessThan(hideY).or(body.lessThan(0)), float(0), float(1));
-    tint.assign(
-      select(bodyColours.greaterThan(0.5), texel(bodies, body.mul(4).add(2)).rgb.mul(body0.w), vec3(body0.w)),
-    );
-    normalLocal.assign(quatRotate(q, normalGeometry));
-    pose.assign(q);
-    return quatRotate(q, positionGeometry).mul(visible).add(p);
-  })();
-  material.colorNode = materialColor.mul(tint);
+  const nodes = slotPoseNodes(poses);
+  material.positionNode = nodes.positionNode;
+  material.colorNode = materialColor.mul(nodes.tint);
   if (textured && triplanar) {
-    const nodes = cityTriplanarNodes(triplanar, restToViewThrough(pose, quatRotate));
-    material.colorNode = materialColor.mul(tint).mul(nodes.albedo);
-    if (nodes.normal) material.normalNode = nodes.normal;
-    if (nodes.roughness) material.roughnessNode = nodes.roughness;
-    if (nodes.occlusion) material.aoNode = nodes.occlusion;
+    const surface = cityTriplanarNodes(triplanar, restToViewThrough(nodes.pose, quatRotate));
+    material.colorNode = materialColor.mul(nodes.tint).mul(surface.albedo);
+    if (surface.normal) material.normalNode = surface.normal;
+    if (surface.roughness) material.roughnessNode = surface.roughness;
+    if (surface.occlusion) material.aoNode = surface.occlusion;
   }
-
-  // Keep the debug palette switch live: the uniform follows the WebGL one.
-  bodyColours.onFrameUpdate(() => poses.bodyColoursUniform.value);
+  nodes.bind(material);
 
   nodeMaterials.set(source, material);
   return material;

@@ -563,8 +563,16 @@ export const DEFAULTS: Record<MaterialKind, MaterialRecipe> = {
     finish: [1.52, 0.025, 1, 1],
   },
 };
+/**
+ * A deep copy of a recipe (plain JSON). Not structuredClone: the native app's
+ * runtime (mystralnative) does not have it.
+ */
+export function cloneRecipe<T extends object>(recipe: T): T {
+  return JSON.parse(JSON.stringify(recipe)) as T;
+}
+
 export function freshRecipe(kind: MaterialKind): MaterialRecipe {
-  return structuredClone(DEFAULTS[kind]);
+  return cloneRecipe(DEFAULTS[kind]);
 }
 export function validateRecipe(input: unknown): MaterialRecipe {
   if (!input || typeof input !== 'object')
@@ -600,5 +608,5 @@ export function validateRecipe(input: unknown): MaterialRecipe {
     throw new Error('Tint must be three channel multipliers from 0 to 4.');
   if (r.finish[3] < 0 || r.finish[3] > 1)
     throw new Error('Detail contribution must be between 0 and 1.');
-  return structuredClone(r);
+  return cloneRecipe(r);
 }

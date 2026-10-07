@@ -196,6 +196,10 @@ struct LimitsJson {
     roughness: Option<f32>,
     #[serde(default)]
     metalness: Option<f32>,
+    /// A procedural material recipe for the WebGPU renderer
+    /// (client/src/graphics/matter): opaque here, validated by the client.
+    #[serde(default)]
+    matter: Option<serde_json::Value>,
     compression_elastic: f32,
     compression_fatal: f32,
     tension_elastic: f32,
@@ -223,6 +227,8 @@ pub struct MaterialAppearance {
     pub texture_key: Option<String>,
     pub roughness: Option<f32>,
     pub metalness: Option<f32>,
+    /// The procedural material recipe, passed through to the client untouched.
+    pub matter: Option<serde_json::Value>,
 }
 
 impl MaterialAppearance {
@@ -234,6 +240,7 @@ impl MaterialAppearance {
             && self.texture_key.is_none()
             && self.roughness.is_none()
             && self.metalness.is_none()
+            && self.matter.is_none()
     }
 }
 
@@ -342,6 +349,7 @@ fn appearance_from(json: &LimitsJson) -> MaterialAppearance {
         texture_key: json.texture_key.clone(),
         roughness: json.roughness,
         metalness: json.metalness,
+        matter: json.matter.clone(),
     }
 }
 
@@ -680,6 +688,18 @@ mod tests {
         assert_eq!(pack.materials.len(), 2);
         assert_eq!(pack.bonds[0].material, 1, "explicit m is honoured");
         assert_eq!(pack.bonds[1].material, 0, "omitted m means the first material");
+    }
+
+    /// A material's procedural recipe rides along with its appearance, as
+    /// authored, for the renderer; the solver never sees it.
+    #[test]
+    fn v2_carries_a_matter_recipe_untouched() {
+        let recipe = serde_json::json!({"kind": "marble", "scale": 1.5, "tint": [1.0, 0.98, 0.95]});
+        let json = v2_with(|v| v["defaults"]["solver"]["materials"][1]["matter"] = recipe.clone());
+        let pack = parse_scene_pack(&json).expect("parse");
+        assert_eq!(pack.appearances[1].matter.as_ref(), Some(&recipe));
+        assert!(!pack.appearances[1].is_empty());
+        assert_eq!(pack.appearances[0].matter, None);
     }
 
     /// The facade material authors -1 for tension and shear, meaning "same as

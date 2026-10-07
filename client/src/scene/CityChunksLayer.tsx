@@ -57,7 +57,8 @@ import {
 import { advanceCityPoses, type CityPoseFrameState } from '../city/cityPoseStore';
 import { clearCityDrawn, noteCityDrawn } from './cityDrawnSample';
 import { loadCityTextures } from './cityTextures';
-import { updateCityE2E, updateCityStructuresE2E } from '../e2eBridge';
+import { updateCityE2E, updateCityMaterialsE2E, updateCityStructuresE2E } from '../e2eBridge';
+import { matterForAppearance } from '../graphics/matter/appearanceMatter';
 import { POSE_SOURCES, poseTraceRecord, poseTraceWanted } from '../city/poseTrace';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import {
@@ -725,6 +726,7 @@ export function CityChunksLayer({
         teleportProbe.reset();
         materialVariantRef.current = `${cityPbrLighting() ? 'pbr' : 'flat'}:${cityTextureDetail()}:${heroTilingEnabled() ? 'hero' : 'plain'}`;
         builtShareThresholdRef.current = instanceShareThresholdSetting();
+        updateCityMaterialsE2E(cityMaterialsE2E(client, stateRef.current.matterLooks));
         for (const { mesh } of stateRef.current.renderables) {
           group.add(mesh);
         }
@@ -1260,4 +1262,43 @@ export function CityChunksLayer({
   });
 
   return <group ref={groupRef} />;
+}
+
+/** The city's materials for the e2e bridge: name, look, count, a few rest positions. */
+function cityMaterialsE2E(client: CityClient, looks: Array<string | null>) {
+  const manifest = client.manifest.manifest;
+  const appearance = manifest.materialAppearance ?? [];
+  const rows = appearance.map((a, index) => ({
+    index,
+    name: a.name ?? null,
+    look: matterForAppearance(a)?.name ?? null,
+    worn: looks[index] != null,
+    chunks: 0,
+    samples: [] as Array<[number, number, number]>,
+  }));
+  // Two passes: count, then up to 12 samples spread evenly through each
+  // material's chunks (so a material used in several places shows each).
+  for (const structure of manifest.structures) {
+    for (const chunk of structure.chunks) {
+      const row = rows[chunk.material ?? 0];
+      if (row) row.chunks += 1;
+    }
+  }
+  const seen = rows.map(() => 0);
+  for (const structure of manifest.structures) {
+    for (const chunk of structure.chunks) {
+      const index = chunk.material ?? 0;
+      const row = rows[index];
+      if (!row) continue;
+      const stride = Math.max(1, Math.floor(row.chunks / 12));
+      if (seen[index]++ % stride === 0 && row.samples.length < 12) {
+        row.samples.push([
+          structure.worldPosition[0] + chunk.centroid[0],
+          structure.worldPosition[1] + chunk.centroid[1],
+          structure.worldPosition[2] + chunk.centroid[2],
+        ]);
+      }
+    }
+  }
+  return rows;
 }

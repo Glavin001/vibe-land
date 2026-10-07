@@ -11,6 +11,7 @@
 #   scripts/native-mac.sh film NAME     # a film (client/native/film) to target/native-video/NAME-*
 #   scripts/native-mac.sh qa [scenarios] # destruction QA: city-play-qa's checks + vehicle-qa's scenarios
 #   scripts/native-mac.sh look          # camera poses saved to target/look/native/*.png
+#   scripts/native-mac.sh matter-look   # Matter materials up close: target/look/native-matter/*.png
 #   scripts/native-mac.sh perf          # frame and sim timings through heavy destruction
 #   scripts/native-mac.sh app           # build target/native-app/out/vibe-land.app
 #   scripts/native-mac.sh shots         # the scene from above and from the player, target/native-scene/
@@ -156,7 +157,15 @@ case "$SCENE" in
     [ -f "$pack.json" ] || node "$ROOT/structures/town-kit/scripts/build-veneer-reel.mjs"
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_VEHICLES=0 \
       VIBE_CITY_DESTRUCTIBLE_VEHICLES=0 VIBE_CITY_SPAWN_X=0 VIBE_CITY_SPAWN_Z=-60 ;;
-  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, lab, town, veneer)" >&2; exit 2 ;;
+  materials)
+    # The town kit's material showcase: a kitchen run, a dining set and a
+    # porch house on open ground, for the Matter materials up close
+    # (matter-look; structures/town-kit/scripts/build-material-showcase.mjs).
+    pack="$ROOT/structures/town-kit/out/material-showcase/material-showcase"
+    node "$ROOT/structures/town-kit/scripts/build-material-showcase.mjs" > /dev/null
+    export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_VEHICLES=0 \
+      VIBE_CITY_DESTRUCTIBLE_VEHICLES=0 VIBE_CITY_SPAWN_X=0 VIBE_CITY_SPAWN_Z=-12 ;;
+  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, lab, town, veneer, materials)" >&2; exit 2 ;;
 esac
 [ "$SCENE" = city ] || echo "scene: $SCENE (${VIBE_CITY_SCENE})"
 
@@ -387,6 +396,23 @@ look() {
     --platform=browser --target=es2022 --log-level=warning \
     --define:LOOK_OUT="\"$out\"" --outfile="$BUNDLE_DIR/look-capture.js"
   (launch look-capture.js --headless "$@") 2>&1 | tee "$ROOT/target/look/native.log" | grep --line-buffered '\[look' || true
+}
+
+# The Matter materials up close (client/native/matter-look.mjs): two views of
+# a chunk of every material wearing one, saved to target/look/native-matter/
+# with each pose's GPU frame time. MATTER_OFF=1: the same poses on the
+# triplanar textures (target/look/native-matter-off/), the A/B baseline.
+# The web side is client/e2e/matter-look.mjs.
+matter_look() {
+  iife
+  local off="${MATTER_OFF:-0}" out="$ROOT/target/look/native-matter"
+  [ "$off" = 1 ] && out="$ROOT/target/look/native-matter-off"
+  mkdir -p "$out"
+  "$ROOT/client/node_modules/.bin/esbuild" "$ROOT/client/native/matter-look.mjs" --bundle --format=esm \
+    --platform=browser --target=es2022 --log-level=warning \
+    --define:MATTER_OUT="\"$out\"" --define:MATTER_OFF="$([ "$off" = 1 ] && echo true || echo false)" \
+    --outfile="$BUNDLE_DIR/matter-look.js"
+  (launch matter-look.js --headless "$@") 2>&1 | tee "$ROOT/target/look/native-matter.log" | grep --line-buffered '\[matter' || true
 }
 
 # Performance through heavy destruction (client/native/perf-capture.mjs):
@@ -624,6 +650,7 @@ case "${1:-run}" in
   film-determinism) shift || true; runtime; sim; bundle; film_determinism "$@" ;;
   trace-writes) shift || true; runtime; sim; bundle; trace_writes "$@" ;;
   shots) shift || true; runtime; sim; bundle; shots "$@" ;;
+  matter-look) shift || true; runtime; sim; bundle; matter_look "$@" ;;
   structures) shift || true; structures "$@" ;;
   vehicle-lab) shift || true
     # The vehicle test bed in the app: one car of the build per trial
