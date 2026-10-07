@@ -118,9 +118,15 @@ textbook() {
   return $rc
 }
 
+# Provenance first: it rebuilds stale high-fidelity packs (which the anchor lint
+# and acceptance read) and refuses a stale or dirty high SDK.
+high_ok=0
+(source "$ROOT/scripts/fidelity/high.env"; "$ROOT/scripts/fidelity/provenance.sh" high) > "$out/provenance-high.log" 2>&1 && high_ok=1
+echo "[verify] provenance high: $(grep -m1 'high: ' "$out/provenance-high.log")"
+
 if want textbook; then
   textbook runtime runtime || failed=1
-  if (source "$ROOT/scripts/fidelity/high.env"; "$ROOT/scripts/fidelity/provenance.sh" high) > "$out/provenance-high.log" 2>&1; then
+  if [ "$high_ok" = 1 ]; then
     textbook high high || failed=1
   else
     echo "[verify] textbook high: REFUSED, $(grep -m1 'high: ' "$out/provenance-high.log")"
