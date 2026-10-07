@@ -352,6 +352,29 @@ fn layered_wall() {
     assert!(failures.is_empty(), "an infinite wall:\n{}", failures.join("\n"));
 }
 
+/// The impact solve's bound-only corrected pass (VIBE_IMPACT_CAPACITY=1): the
+/// grid again, its weak plates already off under gravity, so on the ball's
+/// tick nothing breaks; the strong pair deflects in the impact solve, and the
+/// corrected pass -- requested by the contact bound alone, with no topology
+/// change -- lets the ball on with what the pair did not take. Gated: the
+/// ball keeps at least the closed form (>= 7.7 m/s), and the tick that slowed
+/// it ran a correction with no bond broken.
+#[test]
+#[ignore = "requires the GPU and an SDK with PX_DESTRUCTION_IMPACT_CAPACITY"]
+fn bound_only_correction() {
+    let floor = (BALL_MASS * V0 - 2.0 * STRONG * DT) / (BALL_MASS + 4.0 * PLATE_MASS);
+    let text = run_arm("grid", &[("VIBE_IMPACT_CAPACITY", "1")]);
+    let min = reported(&text, "v_min");
+    // "tick T vz V broken B after-correction A corrections C"
+    let bound_only = text.lines().filter(|l| l.starts_with("tick ")).any(|l| {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        f.len() >= 10 && f[5] == "0" && f[9] == "1" && f[3].parse::<f32>().map_or(false, |v| v < 0.95 * V0)
+    });
+    println!("grid with the impact solve: v_min {min:.2} (closed form >= {floor:.2}); a bound-only correction: {bound_only}");
+    assert!(bound_only, "no tick slowed the ball with a correction and no break (the bound-only corrected pass)\n{text}");
+    assert!(min >= 0.9 * floor, "an infinite wall: the ball fell to {min:.2} m/s; the strong plates can take it no lower than {floor:.2}\n{text}");
+}
+
 /// Load moved in the corrected pass. Struck at the grid's centre, the trial
 /// (all four plates kinematic) shares the stop four ways, about 0.28 m v0 / dt
 /// a plate: the weak pair breaks, the strong pair (0.3 m v0 / dt each) holds.
