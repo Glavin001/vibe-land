@@ -20,6 +20,7 @@
 //! VIBE_CALIB_SAMPLE    every this many ticks, every chunk's position (default 30)
 //! VIBE_CALIB_ROWS_AT   comma list of ticks at which every bond's stress row is kept (default 2,
 //!                      the first solve at rest)
+//! VIBE_CALIB_WAKE     every this many ticks, wake every body (default 0: never)
 //! VIBE_CALIB_TRACE    per tick (the first 20, then every 60): each case's most utilised bond and
 //!                      how many of its bonds read zero health or broken
 //! VIBE_CALIB_CHARGES   a JSON file: [{"tick": t, "boxes": [[min, max], ...]}, ...] -- static
@@ -110,6 +111,7 @@ fn calibration_run() {
 
     let mut first_broken: BTreeMap<u32, (u32, Value)> = BTreeMap::new();
     let trace = std::env::var_os("VIBE_CALIB_TRACE").is_some();
+    let wake = env_u32("VIBE_CALIB_WAKE", 0);
     let mut last_row: BTreeMap<u32, Value> = BTreeMap::new();
     let mut rows_kept: Vec<Value> = Vec::new();
     let mut positions: Vec<Value> = Vec::new();
@@ -134,6 +136,8 @@ fn calibration_run() {
     let started = std::time::Instant::now();
     for tick in 1..=ticks {
         if let Some(c) = charges.as_mut() { c.apply(tick, offset, arena.physx_world_mut().unwrap()); }
+        // VIBE_CALIB_WAKE=N: wake every body every N ticks (is a piece at rest held, or only asleep?).
+        if wake > 0 && tick % wake == 0 { arena.physx_world_mut().unwrap().wake_bodies_near(vibe_land_physx_bridge::Vec3::new(offset[0], offset[1], offset[2]), 1.0e4).ok(); }
         if trace && tick == 1 { arena.physx_world_mut().unwrap().native_set_stress_solve_report(1).ok(); }
         arena.step_vehicles_and_dynamics(DT);
         let _ = city.step(tick, DT, gravity, arena.physx_world_mut());
