@@ -93,8 +93,16 @@ function materialsFor(b,crush=false){
  * stiffness k is k L / A, with the kind's median L and A: k from fastener slip
  * (SLIP), or from cross-grain bearing E90 A / t where the joint bears.
  */
+/**
+ * A timber connection's elastic limit. LONG_TERM (0.6, EN 1995-1-1 k_mod for permanent load) is
+ * where a joint loaded for years starts to fail; the runtime damages a bond past it. Real-capacity
+ * packs grade a session's load (minutes): k_mod for short-term and instantaneous actions is 0.9-1.1
+ * (EN 1995-1-1 Table 3.1, service class 1), connections included (8.1.x), and a nailed joint holds
+ * to its Johansen capacity, so it is elastic up to its capacity, as the timber members are.
+ */
+const connectionElastic=()=>realCapacitiesEnabled()?1:LONG_TERM;
 function jointMaterial(b,kind,area,length,table=CONNECTIONS){
- const c=table[kind],k=c.per==='joint'?1/area:1/(c.perArea??1);
+ const c=table[kind],k=c.per==='joint'?1/area:1/(c.perArea??1),LONG_TERM=connectionElastic();
  const f={compression:c.compression,tension:c.tension*k,shear:c.shear*k};
  const perArea=c.bearing?BEARING.elasticModulus/c.bearing:c.per==='joint'?c.slip/area:c.slip/(c.perArea??1);
  const elastic=perArea*length;
@@ -531,6 +539,7 @@ export function buildVeneerHouse(options={}){
 
 /** Particleboard flooring nailed to joists: like the gypsum, per area (AS 1860.2: nails at 150 mm on edges, 300 mm in the field). */
 function jointMaterialFlooring(b,length,name='flooring-nail-joint'){
+ const LONG_TERM=connectionElastic();
  const area=.3*.045,f={compression:BEARING.compression,tension:NAIL_WITHDRAWAL()/area,shear:770/area};
  return b.table.push({...structuredClone(b.table[M.frame]),name,color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:719e3/area*length,ductileSlip:ULTIMATE_SLIP,
   compressionElastic:LONG_TERM*f.compression,compressionFatal:f.compression,tensionElastic:LONG_TERM*f.tension,tensionFatal:f.tension,shearElastic:LONG_TERM*f.shear,shearFatal:f.shear})-1;
