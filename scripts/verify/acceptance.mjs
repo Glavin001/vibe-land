@@ -31,6 +31,20 @@ const status = (dir, name) => {
   const f = path.join(dir, `${name}.status`);
   return existsSync(f) ? readFileSync(f, 'utf8').trim() : null;
 };
+// The projectiles as the server fires them: the cannonball 10,650 kg at 60 m/s
+// (server/src/city.rs city_ball_mass_kg, city_ball_speed_ms); the meteor a 2 m
+// radius sphere of 3,300 kg/m3 (110.6 t) at 140 m/s (server/src/meteor.rs).
+const SHOT_KE = { cannonball: 0.5 * 10650 * 60 * 60, meteor: 0.5 * (3300 * 4 / 3 * Math.PI * 8) * 140 * 140 };
+// A shot that stops short of getting through has lost all its kinetic energy
+// inside the house. The joints and crushed chunks are the only dissipation the
+// engine models there (plus contact), and the test bed reports only their count:
+// a stop with a few dozen joints broken is energy vanishing (an infinite wall).
+const energyCheck = (r, kind, need) => {
+  const past = r?.attack?.pastTarget ?? 0;
+  const ke = SHOT_KE[kind];
+  const h = r?.house;
+  return { check: `${kind}: no energy vanishes (gets through, or the house absorbs it)`, measured: r ? (past >= need ? `through (${fmt(past)} m past)` : `stopped ${fmt(past)} m past the face: ${(ke / 1e6).toFixed(1)} MJ lost to ${h?.broken ?? '?'} joints broken, ${h?.crushedChunks ?? '?'} crushed`) : 'missing', threshold: `past >= ${need} m`, pass: !!r && past >= need };
+};
 const run = (runs, trial) => runs?.find((r) => r.trial === trial && r.car === 'monster');
 const fmt = (v, d = 2) => (v == null || Number.isNaN(v) ? '-' : typeof v === 'number' ? v.toFixed(d) : String(v));
 
@@ -110,6 +124,8 @@ export const SCENARIOS = [
       const ball = run(runs, 'cannonball-framed-house'), meteor = run(runs, 'meteor-framed-house'), small = run(runs, 'smallshots-framed-house');
       return [
         ...houseChecks(small, { band: BAND.small, through: (r) => ({ check: 'gets past the brick face (m)', measured: fmt(r.attack?.pastTarget), threshold: '>= 1', pass: (r.attack?.pastTarget ?? 0) >= 1 }) }).map((c) => ({ ...c, check: `three 100 kg balls between the studs: ${c.check}` })),
+        energyCheck(ball, 'cannonball', 1),
+        energyCheck(meteor, 'meteor', 8),
         ...houseChecks(ball, { local: true, band: BAND.ball, through: (r) => ({ check: 'gets past the front wall (m)', measured: fmt(r.attack?.pastTarget), threshold: '>= 1', pass: (r.attack?.pastTarget ?? 0) >= 1 }) }).map((c) => ({ ...c, check: `cannonball: ${c.check}` })),
         // The meteor (2 m radius, through the whole house) takes the roof's
         // supports on its path, so its roof may come down where they went: only

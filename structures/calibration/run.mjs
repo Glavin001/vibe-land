@@ -109,6 +109,19 @@ function table(v) {
 }
 
 export async function run(id, { configs, ticks, judgeOnly = false, specOnly = false }) {
+  // A configuration that needs its own pack build (the high profile) runs as its own variant.
+  const own = configs.filter((c) => CONFIGS[c]?.variant), rest = configs.filter((c) => !CONFIGS[c]?.variant);
+  if (own.length && !process.env.CALIB_VARIANT) {
+    let passed = true;
+    if (rest.length) passed = (await run(id, { configs: rest, ticks, judgeOnly, specOnly })).passed && passed;
+    for (const c of own) {
+      const saved = { ...process.env };
+      Object.assign(process.env, CONFIGS[c].build ?? {}, { CALIB_VARIANT: CONFIGS[c].variant });
+      try { passed = (await run(id, { configs: [c], ticks, judgeOnly, specOnly })).passed && passed; }
+      finally { for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); }
+    }
+    return { passed };
+  }
   const scenario = await import(`./scenarios/${id}.mjs`);
   // CALIB_VARIANT: the same scenario built another way (e.g. VIBE_REAL_CAPACITIES=1 CALIB_VARIANT=real-capacities),
   // in its own out/<id>-<variant>/ and known-gaps entry.
@@ -159,7 +172,7 @@ export async function run(id, { configs, ticks, judgeOnly = false, specOnly = fa
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const ids = flag('--all') ? SCENARIOS : argv.filter((a, i) => !a.startsWith('--') && !(i > 0 && argv[i - 1].startsWith('--') && !['--all', '--judge-only', '--spec-only'].includes(argv[i - 1])));
-  const configs = (opt('--configs', 'default,section,rotation')).split(',');
+  const configs = (opt('--configs', 'default,section,rotation,high')).split(',');
   const ticks = opt('--ticks') ? Number(opt('--ticks')) : undefined;
   let failed = 0;
   for (const id of ids) {

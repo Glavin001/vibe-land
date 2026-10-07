@@ -90,3 +90,26 @@ if acc:
         cells = [f"{by[(sc, check, p)]['measured']} **{by[(sc, check, p)]['status']}**" if (sc, check, p) in by else '' for p in profiles]
         print(f"| {sc} | {check} | {first['threshold']} | " + ' | '.join(cells) + ' |')
     print()
+
+fm = load('flag-matrix/flag-matrix.jsonl')
+if fm:
+    print('## Flag-interaction matrix at rest\n')
+    print('Bonds broken at rest (from tick 0) per structure, each arm in its own run. Any broken bond is a failure.\n')
+    arms = []
+    for r in fm:
+        if r['arm'] not in arms:
+            arms.append(r['arm'])
+    structs = []
+    for r in fm:
+        if r['structure'] not in structs:
+            structs.append(r['structure'])
+    by = {(r['arm'], r['structure']): r for r in fm}
+    print('| arm | ' + ' | '.join(structs) + ' |')
+    print('|' + '---|' * (1 + len(structs)))
+    for a in arms:
+        cells = []
+        for st in structs:
+            r = by.get((a, st))
+            cells.append('' if not r else (r['verdict'] if r['broken_pct'] is None else f"{r['broken_pct']:.2f}%"))
+        print(f'| {a} | ' + ' | '.join(cells) + ' |')
+    print()

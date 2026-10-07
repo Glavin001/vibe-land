@@ -28,6 +28,7 @@
  * upper uncertainty bound.
  */
 export { C24, LONG_TERM, CONNECTIONS, NAIL, SLIP, BEARING, GYPSUM, MORTAR_JOINT } from '../../town-kit/src/materials.mjs';
+import { CRUSH, crushEnabled } from '../../town-kit/src/materials.mjs';
 
 const G = 9.81;
 
@@ -87,11 +88,15 @@ export function rcRect({ b, h, cover, As, concrete = CONCRETE.C35, fyk = REBAR.f
 
 /** The engine material for a reinforced-concrete member of section `sec` (rcRect). */
 export function rcMaterial(name, sec, opts = {}) {
-  return packMaterial(name, {
+  const m = packMaterial(name, {
     density: RC_DENSITY, E: sec.E,
     tension: sec.M_Rk / sec.S, compression: sec.N_Rk / sec.A, shear: sec.V_Rk / sec.A,
     sustained: { compression: 0.85 }, ...opts,
   });
+  // Chunk crushing, opt-in (VIBE_CRUSH=1, the high profile): the town kit's cited C30/37 crush block
+  // (materials.mjs CRUSH.concrete) -- what lets a jammed concrete block crush at its hinge edges.
+  if (crushEnabled()) m.crush = structuredClone(CRUSH.concrete);
+  return m;
 }
 
 /**

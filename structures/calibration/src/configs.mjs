@@ -22,6 +22,7 @@
  * PHYSX_ROOT, when set, replaces every configuration's SDK (one SDK per run).
  */
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { REPO } from './scenario.mjs';
 
 const PHYSX = path.resolve(REPO, '../PhysX/out/install');
@@ -30,13 +31,28 @@ export const SDKS = {
   roof: path.join(PHYSX, 'garage-roof'),
   // Section rotational stiffness (PhysX feat/section-rotational-stiffness).
   multihull: path.join(PHYSX, 'garage-multihull'),
+  // Every accuracy capability (PhysX integration/high-fidelity): scripts/fidelity/high.env's SDK.
+  hifi: process.env.HIGH_PHYSX_ROOT ?? path.resolve(REPO, '../PhysX/.claude/worktrees/hifi/out/install/garage-hifi'),
 };
+
+/** A profile's runtime flags, read from scripts/fidelity/<name>.env (its `export X=1` lines, not PHYSX_ROOT or pack flags). */
+function profileEnv(name) {
+  const text = readFileSync(path.join(REPO, 'scripts/fidelity', `${name}.env`), 'utf8'), env = {};
+  for (const m of text.matchAll(/^export (VIBE_[A-Z_]+|PX_[A-Z_]+)=([^\s$]+)$/gm)) if (!['VIBE_CRUSH', 'VIBE_REAL_CAPACITIES', 'VIBE_PACK_SET', 'VIBE_FIDELITY'].includes(m[1])) env[m[1]] = m[2];
+  return env;
+}
 
 export const CONFIGS = {
   default: { env: {}, sdk: 'roof', model: 'gain' },
   section: { env: { VIBE_SECTION_BENDING: '1' }, sdk: 'roof', model: 'real' },
   rotation: { env: { VIBE_SECTION_ROTATION: '1' }, sdk: 'multihull', model: 'real' },
   impact: { env: { VIBE_IMPACT_CAPACITY: '1', VIBE_SECTION_BENDING: '1' }, sdk: null, model: 'real' },
+  // The project's two engine profiles (scripts/fidelity/{runtime,high}.env): `runtime` is what ships
+  // (= default, on the clean SDK); `high` is every accuracy capability on, on the combined SDK
+  // (garage-hifi), with its pack-build flags (VIBE_CRUSH, VIBE_REAL_CAPACITIES, centroid hulls) applied
+  // to the scenario's packs: run.mjs builds a `high` variant of the spec for it.
+  runtime: { env: {}, sdk: 'roof', model: 'gain' },
+  high: { env: profileEnv('high'), sdk: 'hifi', model: 'real', variant: 'high', build: { VIBE_CRUSH: '1', VIBE_REAL_CAPACITIES: '1', TOWN_KIT_HULL_ORIGIN: 'centroid' } },
 };
 
 /** The SDK a configuration runs against (PHYSX_ROOT wins). */

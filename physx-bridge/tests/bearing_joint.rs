@@ -37,6 +37,12 @@ fn v3(a: [f64; 3]) -> Vec3 {
 /// Does the foot joint break? `left` / `right`: the arms' masses (kg);
 /// `capacity`: the foot's tension capacity (Pa over its area).
 fn foot_breaks(left: f64, right: f64, capacity: f64, bearing: bool) -> bool {
+    joint_breaks(left, right, capacity, bearing, false)
+}
+
+/// `hanging`: the stud hangs under its plate (the plate above, the joint
+/// pulled straight apart by the stud's and arms' weight).
+fn joint_breaks(left: f64, right: f64, capacity: f64, bearing: bool, hanging: bool) -> bool {
     stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     world.native_attach().unwrap();
@@ -44,11 +50,13 @@ fn foot_breaks(left: f64, right: f64, capacity: f64, bearing: bool) -> bool {
     let arm_half = [ARM / 2.0 - hd / 2.0, 0.05, hw];
     let arm_x = hd + arm_half[0];
     // (centre, half extents, mass): plate (anchor), stud, left arm, right arm.
+    // Hanging: the same stud mirrored under the plate (y -> -y).
+    let sy = if hanging { -1.0 } else { 1.0 };
     let chunks = [
-        ([0.0, -0.01, 0.0], [0.2, 0.01, 0.1], 0.0),
-        ([0.0, hh, 0.0], [hd, hh, hw], 420.0 * DEPTH * WIDTH * HEIGHT),
-        ([-arm_x, HEIGHT - 0.05, 0.0], arm_half, left),
-        ([arm_x, HEIGHT - 0.05, 0.0], arm_half, right),
+        ([0.0, -0.01 * sy, 0.0], [0.2, 0.01, 0.1], 0.0),
+        ([0.0, hh * sy, 0.0], [hd, hh, hw], 420.0 * DEPTH * WIDTH * HEIGHT),
+        ([-arm_x, (HEIGHT - 0.05) * sy, 0.0], arm_half, left),
+        ([arm_x, (HEIGHT - 0.05) * sy, 0.0], arm_half, right),
     ];
     let nodes: Vec<ChunkNodeDesc> = chunks
         .iter()
@@ -69,8 +77,8 @@ fn foot_breaks(left: f64, right: f64, capacity: f64, bearing: bool) -> bool {
     };
     let bonds = vec![
         bond(0, 0, 1, [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], DEPTH * WIDTH, 1),
-        bond(1, 2, 1, [-hd, HEIGHT - 0.05, 0.0], [1.0, 0.0, 0.0], 0.1 * WIDTH, 0),
-        bond(2, 1, 3, [hd, HEIGHT - 0.05, 0.0], [1.0, 0.0, 0.0], 0.1 * WIDTH, 0),
+        bond(1, 2, 1, [-hd, (HEIGHT - 0.05) * sy, 0.0], [1.0, 0.0, 0.0], 0.1 * WIDTH, 0),
+        bond(2, 1, 3, [hd, (HEIGHT - 0.05) * sy, 0.0], [1.0, 0.0, 0.0], 0.1 * WIDTH, 0),
     ];
     let strong = StressMaterialDesc {
         compression_elastic: 1e12, compression_fatal: 1e12, tension_elastic: 1e12, tension_fatal: 1e12,
@@ -145,4 +153,23 @@ fn bearing_joint_grades_by_its_fasteners() {
             assert!(foot_breaks(left, right, 1.1 * nails, false), "{label}: the glued patch held at 1.1 T (fibre {fibre:.0} Pa)");
         }
     }
+}
+
+/// A stud pulled straight off its plate: no moment, so the nails carry the
+/// whole pull, T = N, in withdrawal (EN 1995-1-1 8.3.2: F_ax,Rk per nail;
+/// here the joint's tension capacity over its area). It breaks at the pull,
+/// not never.
+#[test]
+#[ignore = "requires a native GPU destruction SDK with PX_DESTRUCTION_BEARING_JOINTS"]
+fn bearing_joint_pulled_apart_breaks_at_its_withdrawal() {
+    std::env::set_var("VIBE_SECTION_BENDING", "1");
+    let g = -(WorldConfig::default().gravity.y as f64);
+    let stud = 420.0 * DEPTH * WIDTH * HEIGHT;
+    let (left, right) = (5.0, 5.0);
+    let pull = (stud + left + right) * g / (DEPTH * WIDTH);
+    println!("hanging stud: pull {pull:.0} Pa on its nails");
+    assert!(joint_breaks(left, right, 0.9 * pull, true, true), "the nails held a pull 1.1x their capacity (T = N dropped?)");
+    assert!(!joint_breaks(left, right, 1.1 * pull, true, true), "the nails broke under 0.9x their capacity");
+    // A glued patch in pure tension grades the same pull.
+    assert!(joint_breaks(left, right, 0.9 * pull, false, true), "the glued patch held 1.1x its capacity");
 }

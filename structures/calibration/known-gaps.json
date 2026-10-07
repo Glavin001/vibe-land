@@ -94,5 +94,37 @@
     "note": "section bending without section rotation breaks the intact truss at rest: the bottom chord's joints carry the moments the default rotational stiffness gives them"
    }
   }
+ },
+ "house-studs-real-capacities": {
+  "rotation": {
+   "frame-3": {
+    "state": "damaged",
+    "note": "7 joints break beside the 2.4 m gap (king stud's top joint, ceiling joist bearing): the kit's sustained bearing limit where a real plate only deforms"
+   },
+   "frame-4": {
+    "state": "damaged",
+    "note": "9 joints break beside the 2.77 m gap, the plate holds"
+   },
+   "built-0": {
+    "state": "damaged",
+    "note": "a drywall screw at the top plate breaks at rest"
+   },
+   "built-1": {
+    "state": "damaged",
+    "note": "drywall screws at the top plate break"
+   },
+   "built-2": {
+    "state": "collapses",
+    "note": "as built the house comes down with 2 studs out (stud bottom joints, then the frame)"
+   },
+   "built-3": {
+    "state": "collapses",
+    "note": "as built-2"
+   },
+   "built-4": {
+    "state": "collapses",
+    "note": "as built-2"
+   }
+  }
  }
 }

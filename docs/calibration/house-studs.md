@@ -167,6 +167,37 @@ load at its tip.
    reproduce. `VIBE_STRENGTH_SHORT_TERM` (f03f4cc9, opt-in) drops sub-fatal
    damage and should make the stage match `real`. Not yet run here.
 
+## With the stiffness agent's real capacities (62cb4a59), under rotation
+
+A stud end bears on its plate (E_90 stiffness at rest) and bends on its nails
+as a pin. Run with `VIBE_REAL_CAPACITIES=1 CALIB_VARIANT=real-capacities
+node structures/calibration/run.mjs house-studs --configs rotation` (engine at
+89ace658, SDK garage-multihull). Output goes to `out/house-studs-real-capacities/`.
+
+| Studs out | Prediction (real) | frame, re-chunked | frame, as authored | as built |
+|---|---|---|---|---|
+| 0-2 | holds | **holds** | holds | 1-9 drywall screws at the top plate break; with 2 out it collapses |
+| 3 (2.4 m) | holds | damaged: 7 joints beside the gap | holds | collapses |
+| 4 (2.77 m) | holds | damaged: 9 joints, the plate holds | holds | collapses |
+| 5 (3.33 m) | either (0.77-1.16) | **collapses** (891 bonds, the roof down 4.3 m) | collapses | collapses |
+
+This is the first configuration in which the house stands intact and comes
+down where the engineering prediction puts its strength limit.
+
+- **Frame, re-chunked.** Its plate bonds read 1.1x the hand calculation at
+  4 studs out, and 1.6x at 3 out, which is where the soft-stud load sharing
+  still differs.
+- **Joints before the plate.** The joints that break at 3-4 out are the
+  bearing joints beside the gap (the king stud's top, a junction stud's foot).
+  This is the kit's sustained bearing limit, the `kit` model's prediction. A
+  real plate only deforms there.
+- **As built.** The house is still too weak. Its drywall screws at the top
+  plate break at rest, and with two studs out it comes down. That is the
+  board-as-deep-beam path the stiffness agent is working on.
+
+All of these cases are recorded in `known-gaps.json`
+(`house-studs-real-capacities`).
+
 ## Reproduce
 
 ```sh

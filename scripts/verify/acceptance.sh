@@ -22,6 +22,9 @@ case $profile in
   high) source "$ROOT/scripts/fidelity/high.env"; [ -f "$ROOT/target/fidelity/high/structures/vehicle-lab/out/vehicle-lab-crush.json" ] || "$ROOT/scripts/fidelity/build-packs.sh" high ;;
 esac
 source "$ROOT/scripts/fidelity/check.sh" --degrade
+# Provenance: a stale or dirty SDK, or packs older than their sources, would
+# measure yesterday's engine (high: refused; runtime: reported).
+"$ROOT/scripts/fidelity/provenance.sh" "$profile" | tee "$out/provenance.log" || { echo "[acceptance] refused: see $out/provenance.log"; exit 1; }
 eval "$("$ROOT/scripts/fidelity/packs.sh" "$profile")"
 export VIBE_GPU_SHARED=1
 sdk=$(basename "$PHYSX_ROOT")
