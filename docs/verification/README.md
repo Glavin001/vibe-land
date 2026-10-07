@@ -322,32 +322,45 @@ the profile's SDK and packs, then judges.
 
 | Scenario | Harness | Gate |
 |---|---|---|
-| truck-through-house | test bed `framed-house`, `house` | through the front wall (`>= 0` m past z 20.1); through the house (past the back wall, z 27.9); roof holds; frame holds; no failed step |
-| shots-through-house | test bed `cannonball-framed-house`, `meteor-framed-house` | through; roof and frame hold for the cannonball; damage within 8 m; the meteor's roof and frame are measured only |
-| crush-only-where-hit | test bed `rest`, `near-miss`, `knock-mirror`, cannonball; qualification | no crush without a hit; crush on a hit (high); no structure crushes at rest |
+| packs-stand-at-rest | qualification of every structure in the lab, veneer and town packs, each alone; the lab's `rest` trial | no bond broken from tick 0, the settle included (the deliberately studless variants excepted) |
+| truck-through-house | test bed `framed-house`, `house` | through the front wall; in high fidelity, through the house (past the back face, z 27.9); house bonds broken within the oracle band 7-12% of 3,084; the roof's mean drop under 0.2 m; no roof member down more than 0.5 m; at least 80% of the frame still anchored; no failed step |
+| shots-through-house | test bed `smallshots-framed-house`, `cannonball-framed-house`, `meteor-framed-house` | three 100 kg balls between the studs: through, under 1% of the bonds. Cannonball: through, 4-10%, roof and frame hold, nothing broken more than 8 m away. Meteor: through the house, 12-20% (the oracle's ~490 of 3,084); its roof and frame are measured only (its path takes supports) |
+| crush-only-where-hit | test bed `rest`, `near-miss`, `knock-mirror`, cannonball; qualification; textbook crush-locality | no crush without a hit; a crush on a hit (high); crushed chunks within 1.4 m of the point struck (textbook, high) |
 | houses-stand-and-converge | qualification of the veneer houses | PASS (<= 10% unconverged, <= 0.5% broken) |
-| studless-houses-collapse | qualification, no-front-studs variants | >= 2% of bonds broken (`COLLAPSE_SHARE`) |
+| studless-houses-collapse | qualification of the no-front-studs variants | >= 2% of bonds broken (`COLLAPSE_SHARE`) |
 | roof-drawn-where-physics-has-it | `wire_chunk_poses` | worst <= 1 mm |
 | stairs-walkable | `walk_route.py` (with `--snap` in high) | the walk passes |
 | car-coasts-ride-height | test bed `coast`, `knock-mirror(-driving)`, `debris-wheel`, `near-miss` | criteria.mjs |
-| turning-slalom-avoidance | test bed `drift`; `node --test client/native/film` | criteria.mjs; unit tests |
+| turning-slalom-avoidance | test bed `drift`; the film unit tests | criteria.mjs; unit tests |
 | vibe-town-qualifies | qualification of the town pack | no FAIL, FALLS, CRUSH or ERROR |
 
-Thresholds this suite introduces are marked *proposed* in `acceptance.mjs`, with
-their reasoning, for the owner to confirm:
+`structures/vehicle-lab/criteria.mjs` has only lower bounds ("house damaged >=
+20"), so a hit that destroys the whole house passes it. The bands above come
+from the impact oracle (`structures/town-kit/scripts/impact-study.py`,
+`impact-e-replay`). The other thresholds are marked *proposed* in
+`acceptance.mjs` for the owner to confirm:
 
-- the roof holds = no roof member dropped more than 0.5 m (the house probe's
-  own definition);
-- the frame holds = at least 80% of frame chunks still anchored;
-- a cannonball's damage stays within 8 m.
+- roof members down more than 0.5 m;
+- 80% of the frame still anchored;
+- nothing broken more than 8 m away;
+- crush within 1.4 m.
 
-Two behaviours have no automated gate:
+Two behaviours have no automated gate yet:
 
-- crush **positions**: no harness records them;
-- slalom and avoidance: `scripts/turning-lab.sh` is an in-app film with no
-  pass/fail.
+- slalom and avoidance: `scripts/turning-lab.sh` is a film with no pass/fail;
+- crush positions in the vehicle lab: only the textbook wall checks them.
 
-They are listed as gaps.
+### Running on a shared machine
+
+- Every GPU job goes through `scripts/perf/gpu-run.sh` (main checkout's path),
+  which admits at most 4 shared jobs machine-wide. The suite runs one at a time.
+- A test whose log stops growing for 10 minutes is killed and rerun once,
+  reported ENV if it fails again. That is a process stuck in a GPU wait behind
+  another process's hung dispatch.
+- A Metal command-buffer timeout (`kIOGPUCommandBufferCallbackErrorTimeout`,
+  CUDA error 2) is also rerun and reported ENV.
+- PhysX's own ctests never receive the `PX_DESTRUCTION_ALLOW_UNCONVERGED`
+  backstop: their strict tests pin it.
 
 ## Reusing the scenarios (performance suite)
 
