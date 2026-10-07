@@ -62,6 +62,21 @@ Fixed constraints, not levers:
 - Measured: within run-to-run noise (1-2 ms) on impact steps with crushing on (vehicle lab, 2026-10-07).
 - Re-measure with contact crush inside the impact solve.
 
+**6. Runtime fracture ticks** (shipping profile, PhysX `perf/runtime-fracture-tick`, 2026-10-07)
+- Where a correction tick goes (CuMetal commit/sync traces, perf suite + perf_bench, M3 Max):
+  - lab house hits, 28-36 ms: GPU busy ~18 ms (stress solve at 64 iterations 4-5 ms a pass, twice; stress topology rebuild 2-4 ms; broadphase ~0.5 ms a pass); ~19-24 host waits; the rest GPU idle between them;
+  - Vibe Town, 25-28 ms: GPU busy ~19 ms (topology rebuild ~3.9 ms each, often two a tick; split preparation ~2.5 ms a pass; broadphase ~1.1 ms a pass; stress ~1.4 ms a pass); ~26 host waits;
+  - inside a rebuild, the motion modes (pointer jumping, closures, axis constraints) are ~2.7 of ~3.9 ms.
+- Done: per-island residual reduction summed in the warp before its atomic (d361d7c51): 0.84 ms a solve on Apple GPUs (one float atomic per island, islands named by node), suite score 0.941 (-5.9% +-3.3%), town medians -0.7 to -0.9 ms.
+- Done: the native sleep commit's five setters share one host wait (72be6dea3): sleepCommit 1.29 -> 0.76 ms on the ticks that commit sleep.
+- Both replay perf_bench meteor (1,207 ticks) with identical per-tick broken bonds, iterations, convergence, contacts and clusters.
+- Rejected: an early exit for the motion-mode pointer jumping. Its rounds past the longest tour already cost ~3 us each.
+- Next levers:
+  - the component stress solve, one threadgroup per component on CuMetal: the biggest component is the critical path;
+  - the whole-scene union-find and sorts in every topology rebuild;
+  - the second rebuild when the corrected pass fractures again;
+  - the remaining host waits in the correction path (finishAndReserve, acceptCorrection, finalPublication).
+
 ## The performance suite
 Built: `scripts/perf/suite.sh` (`--quick`, `--compare`), described in
 [SUITE.md](SUITE.md); the baseline is `scripts/perf/suite-baseline.json`.
