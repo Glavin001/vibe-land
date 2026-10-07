@@ -1,6 +1,9 @@
 #include "native_state.h"
 #include "solver_iterations.h"
 #include "PxNativeVehicle.h"
+#if PX_DESTRUCTION_SCENE_VERSION >= 25
+#include "bond_section.h"
+#endif
 
 #include "extensions/PxMassProperties.h"
 
@@ -79,6 +82,14 @@ static float native_env_f32(const char *name, float fallback) {
   const float parsed = std::strtof(raw, &end);
   if (end == nullptr || *end != '\0' || !std::isfinite(parsed)) return fallback;
   return parsed;
+}
+
+/// VIBE_SECTION_BENDING=1 (A/B, SDK v25): bond bending and torsion from each
+/// bond's real cross-section (bond_section.h; PxDestructionStressDesc::
+/// sectionBending) instead of the area-only gain capped by bend_gain_max.
+static bool native_section_bending() {
+  static const bool value = native_env_f32("VIBE_SECTION_BENDING", 0.0f) != 0.0f;
+  return value;
 }
 static float native_depenetration_velocity() {
   static const float value = native_env_f32("VIBE_CITY_NATIVE_DEPEN_VELOCITY", 0.0f);
@@ -275,6 +286,54 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
   return material_base;
 }
 
+#if PX_DESTRUCTION_SCENE_VERSION >= 25
+/// Sections for the bonds appended since `bond_base`, from the chunks' shapes
+/// (a vehicle part's extra hulls included). A bond whose chunks' faces do not
+/// overlap in its plane gets none -- the stage then uses the square patch of its area.
+void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::uint32_t base,
+                                               std::size_t bond_base) {
+  State &s = *this;
+  s.sections.resize(s.bonds.size());
+  if (!native_section_bending()) return;
+  std::map<PxU32, std::vector<const PxShape *>> extra;
+  for (const auto &e : s.extra_shapes) extra[e.chunk].push_back(e.shape);
+  std::map<PxU32, std::vector<vibe_bond_section::P3>> vertices;
+  const auto chunk_vertices = [&](PxU32 chunk) -> const std::vector<vibe_bond_section::P3> & {
+    auto it = vertices.find(chunk);
+    if (it != vertices.end()) return it->second;
+    std::vector<vibe_bond_section::P3> v;
+    if (s.chunks[chunk].shape) vibe_bond_section::append_vertices(*s.chunks[chunk].shape, v);
+    if (auto e = extra.find(chunk); e != extra.end())
+      for (const PxShape *shape : e->second) vibe_bond_section::append_vertices(*shape, v);
+    return vertices.emplace(chunk, std::move(v)).first->second;
+  };
+  std::size_t found = 0;
+  std::vector<double> depths, ratios;
+  for (std::size_t i = bond_base; i < s.bonds.size(); ++i) {
+    const auto &b = s.bonds[i];
+    const auto r = vibe_bond_section::section(chunk_vertices(b.chunk0), chunk_vertices(b.chunk1), b.centroid,
+                                              b.normal, b.area);
+    s.sections[i] = r.section;
+    if (r.found) {
+      ++found;
+      depths.push_back(r.depth);
+      ratios.push_back(r.geometric_area / b.area);
+    }
+  }
+  const auto pct = [](std::vector<double> &v, double q) {
+    if (v.empty()) return 0.0;
+    std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(q * double(v.size() - 1)), v.end());
+    return v[std::size_t(q * double(v.size() - 1))];
+  };
+  std::fprintf(stderr,
+               "[destruction] sections: structure %u (base %u): %zu of %zu bonds from chunk geometry, "
+               "the rest a square patch of their area; shallow depth p10 %.3f median %.3f m; "
+               "geometric/authored area p10 %.2f median %.2f p90 %.2f\n",
+               structure_id, base, found, s.bonds.size() - bond_base, pct(depths, 0.1), pct(depths, 0.5),
+               pct(ratios, 0.1), pct(ratios, 0.5), pct(ratios, 0.9));
+}
+#endif
+
 void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uint32_t base,
     rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings, bool vehicle) {
   State &s = *this;
@@ -340,6 +399,9 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     s.bonds.push_back(bond);
     s.bond_ids.emplace_back(structure_id, b.bond_index);
   }
+#if PX_DESTRUCTION_SCENE_VERSION >= 25
+  append_sections(structure_id, base, bond_base);
+#endif
   if (!bonds.empty()) {
     const float mean =
         std::exp(static_cast<float>(log_weight / static_cast<double>(bonds.size())));
@@ -981,6 +1043,15 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.damageRate = config.damage_rate;
   desc.bendGainMax = config.bend_gain_max;
   desc.fibreBending = config.fibre_bending;
+#if PX_DESTRUCTION_SCENE_VERSION >= 25
+  desc.sectionBending = native_section_bending();
+  desc.bondSections = desc.sectionBending && s.sections.size() == s.bonds.size() ? s.sections.data() : nullptr;
+  if (desc.sectionBending)
+    std::fprintf(stderr, "[destruction] section bending: on (bend_gain_max unused)\n");
+#else
+  native_require(native_env_f32("VIBE_SECTION_BENDING", 0.0f) == 0.0f,
+                 "VIBE_SECTION_BENDING needs a PhysX SDK with PxDestructionStressDesc::sectionBending (v25)");
+#endif
   // One trial evaluation plus one corrected rigid pass. Zero would leave the
   // stage in its diagnostic mode, where any membership-changing verdict is
   // rejected -- that is, a city that can never actually break.

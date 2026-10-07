@@ -153,12 +153,20 @@ struct NativeDestruction::State {
   std::uint32_t append_materials(std::uint32_t structure, const FfiDestructibleSettings &settings);
   void append_bonds(std::uint32_t structure, std::uint32_t base,
       rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings, bool vehicle);
+#if PX_DESTRUCTION_SCENE_VERSION >= 25
+  void append_sections(std::uint32_t structure, std::uint32_t base, std::size_t bond_base);
+#endif
 
   std::vector<Chunk> chunks;
   std::vector<physx::PxRigidDynamic *> parents;
   std::vector<physx::PxDestructionStressChunk> nodes;
   std::vector<physx::PxDestructionChunkMassProperties> properties;
   std::vector<physx::PxDestructionStressBond> bonds;
+#if PX_DESTRUCTION_SCENE_VERSION >= 25
+  /// Each bond's cross-section from its chunks' geometry (bond_section.h),
+  /// parallel to `bonds`; filled only under VIBE_SECTION_BENDING=1.
+  std::vector<physx::PxDestructionBondSection> sections;
+#endif
   /// (structure, authored bond index) per stage bond, in stage order.
   std::vector<std::pair<std::uint32_t, std::uint32_t>> bond_ids;
   std::vector<physx::PxDestructionStressCluster> clusters;
