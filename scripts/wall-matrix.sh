@@ -58,7 +58,7 @@ run=r$(date +%H%M%S)
 ids=$(node -e "
 const fs=require('fs');const m=require('$meta');const w='$trials'.split(',').filter(Boolean);
 const done=new Set(fs.readdirSync('$out').filter(f=>f.startsWith('wall-$profile-$label-r')&&f.endsWith('.json')).flatMap(f=>{try{return JSON.parse(fs.readFileSync('$out/'+f)).runs.map(r=>r.trial)}catch{return []}}));
-console.log(m.trials.map(t=>t.id).filter(id=>(!w.length||w.some(p=>id.startsWith(p)))&&!done.has(id)).join(' '))")
+console.log(m.trials.map(t=>t.id).filter(id=>(!w.length||w.some(p=>p.endsWith('\$')?id===p.slice(0,-1):id.startsWith(p)))&&!done.has(id)).join(' '))")
 parts=(); for i in $(seq 0 $((jobs - 1))); do parts+=(""); done
 k=0; for id in $ids; do parts[$((k % jobs))]+="${parts[$((k % jobs))]:+,}$id\$"; k=$((k + 1)); done
 pids=()
