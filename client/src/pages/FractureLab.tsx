@@ -45,6 +45,15 @@ const DEFAULT_STATE: LabState = {
   tiered: false,
   tierRadius: 12,
   tierBudgetMs: 3,
+  shadows: true,
+  shadowEvery: 1,
+  cull: true,
+  compact: true,
+  specialise: true,
+  scale: 1,
+  aa: true,
+  probe: '',
+  noise: 'texture',
   lookVersion: 0,
 };
 
@@ -67,13 +76,16 @@ function initialState(): LabState {
   if (compare === 'split' || compare === 'today' || compare === 'enhanced') state.compare = compare;
   // Layers and scale, so a link (or the stills tool) opens in a known state
   // without first building an expensive default.
-  for (const key of ['shading', 'rough', 'wear', 'rebar', 'debugKinds', 'wireframe', 'tiered'] as const) {
+  for (const key of ['shading', 'rough', 'wear', 'rebar', 'debugKinds', 'wireframe', 'tiered', 'shadows', 'cull', 'compact', 'specialise', 'aa'] as const) {
     if (params.has(key)) state[key] = params.get(key) !== '0';
   }
-  for (const key of ['spin', 'density', 'copies', 'seed', 'tierRadius', 'tierBudgetMs'] as const) {
+  for (const key of ['spin', 'density', 'copies', 'seed', 'tierRadius', 'tierBudgetMs', 'shadowEvery', 'scale'] as const) {
     const v = Number(params.get(key));
     if (params.has(key) && Number.isFinite(v)) state[key] = v;
   }
+  if (params.get('noise') === 'hash') state.noise = 'hash';
+  const probe = params.get('probe');
+  if (probe === 'unlit' || probe === 'lit') state.probe = probe;
   const skin = params.get('skin');
   if (skin === 'procedural' || skin === 'city') state.skin = skin;
   return state;
@@ -246,8 +258,18 @@ export function FractureLabPage() {
               <>
                 <Slider label="Radius" min={2} max={60} step={1} value={state.tierRadius} onChange={(v) => set({ tierRadius: v })} />
                 <Slider label="ms/frame" min={0.5} max={12} step={0.5} value={state.tierBudgetMs} onChange={(v) => set({ tierBudgetMs: v })} />
+                <Check label="Compact far geometry" value={state.compact} onChange={(v) => set({ compact: v })} />
+                <Check label="One shader per material" value={state.specialise} onChange={(v) => set({ specialise: v })} />
               </>
             )}
+          </Section>
+
+          <Section title="Rendering">
+            <Slider label="Resolution" min={0.5} max={1} step={0.05} value={state.scale} onChange={(v) => set({ scale: v })} />
+            <Check label="MSAA" value={state.aa} onChange={(v) => set({ aa: v })} />
+            <Check label="Noise from a 3D table" value={state.noise === 'texture'} onChange={(v) => set({ noise: v ? 'texture' : 'hash' })} />
+            <Check label="Sun shadows" value={state.shadows} onChange={(v) => set({ shadows: v })} />
+            <Slider label="Shadow every N frames" min={1} max={8} step={1} value={state.shadowEvery} onChange={(v) => set({ shadowEvery: v })} />
           </Section>
 
           {mainClass !== null && (
@@ -311,8 +333,8 @@ function StatsHud({ stats, state }: { stats: LabStats; state: LabState }) {
       <div>{stats.pieces} pieces · today {fmt(stats.todayTriangles)} tris · enhanced {fmt(stats.enhancedTriangles)} tris ({(stats.enhancedTriangles / Math.max(1, stats.todayTriangles)).toFixed(0)}×)</div>
       {stats.tier && (
         <div>
-          {fmt(stats.tier.chunks)} chunks · {fmt(stats.tier.skinned)} detailed near the camera · pool {fmt(stats.tier.poolVertices)} / {fmt(stats.tier.poolCapacity)} verts
-          {' '}· {stats.tier.queue} queued · building {stats.tier.buildMs.toFixed(1)} ms/frame · {fmt(stats.tier.builtTotal)} built
+          {fmt(stats.tier.chunks)} chunks ({fmt(stats.tier.baseVertices)} verts) · {fmt(stats.tier.skinned)} detailed near the camera · pool {fmt(stats.tier.poolVertices)} / {fmt(stats.tier.poolCapacity)} verts
+          {' '}· copies {stats.tier.viewCopies} drawn, {stats.tier.shadowCopies} cast · {stats.tier.queue} queued · building {stats.tier.buildMs.toFixed(1)} ms/frame · {fmt(stats.tier.builtTotal)} built
         </div>
       )}
       {b && (

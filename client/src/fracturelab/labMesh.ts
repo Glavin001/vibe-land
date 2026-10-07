@@ -16,10 +16,12 @@ import {
   Fn,
   If,
   attribute,
+  cross,
+  dFdx,
+  dFdy,
   dot,
   float,
   floor,
-  instanceIndex,
   fwidth,
   int,
   ivec2,
@@ -31,19 +33,23 @@ import {
   normalView,
   normalize,
   positionGeometry,
+  sampler,
   select,
   smoothstep,
   sqrt,
   struct,
   texture,
   textureSize,
+  texture3D,
   uniformArray,
   varyingProperty,
   vec3,
+  vec4,
 } from 'three/tsl';
-import { LineBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu';
+import { LineBasicNodeMaterial, MeshBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu';
 
 import type { FracturePiece } from '../city/fracture/contacts';
+import { canonicalSign } from '../city/fracture/canonical';
 import { FRACTURE_LOOKS } from '../city/fracture/looks';
 import { FRACTURE_CLASS_COUNT } from '../city/fracture/materialClass';
 import type { PieceMesh } from '../city/fracture/pieceSkin';
@@ -51,7 +57,8 @@ import type { RebarFamily } from '../city/fracture/rebar';
 import { cityTriplanarNodes, restToViewThrough } from '../scene/cityMaterialNodes';
 import type { CityTriplanarConfig } from '../scene/cityMaterialShader';
 import { quatRotate } from '../scene/quatNodes';
-import { fractureSurface, rebarSurface, skinSurface } from './fractureNodes';
+import { surfaceSet } from './fractureNodes';
+import { fractureNoiseTexture } from './noiseTexture';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
@@ -182,19 +189,31 @@ const texel = (tex: Node, index: Node): Node => {
  */
 export type LabTier = 'all' | 'base' | 'skin';
 
-function posedPosition(poses: LabPoses, pose: Node | null, tier: LabTier = 'all', instanceStride = 0): Node {
+function posedPosition(
+  poses: LabPoses, pose: Node | null, tier: LabTier = 'all', instanceStride = 0,
+  compact: { info: THREE.DataTexture; rest: Node } | null = null,
+): Node {
   const tex = texture(poses.texture);
   tex.updateMatrix = false;
+  const infoTex = compact ? texture(compact.info) : null;
+  if (infoTex) infoTex.updateMatrix = false;
   return Fn(() => {
     // Instanced copies of one specimen: copy c's piece p is global piece
     // p + c * stride in the pose texture.
     const local = int(attribute('labPiece', 'float'));
-    const p = instanceStride > 0 ? local.add(int(instanceIndex).mul(instanceStride)) : local;
+    // The copy comes from a per-instance attribute (the culler compacts the
+    // visible copies), not from the instance index.
+    const p = instanceStride > 0 ? local.add(int(attribute('labCopy', 'float')).mul(instanceStride)) : local;
     const t0 = texel(tex, p.mul(2));
     const q = texel(tex, p.mul(2).add(1));
     if (pose) {
       pose.assign(q);
-      normalLocal.assign(quatRotate(q, normalGeometry));
+      // Compact geometry carries no normals: flat shading derives them.
+      if (!compact) normalLocal.assign(quatRotate(q, normalGeometry));
+    }
+    if (compact && infoTex) {
+      // Rest position = the piece's rest centre (per-piece texel) + local.
+      compact.rest.assign(texel(infoTex, local).xyz.add(positionGeometry));
     }
     const shown = tier === 'base' ? select(t0.w.greaterThan(0.5).and(t0.w.lessThan(1.5)), float(1), float(0))
       : tier === 'skin' ? select(t0.w.greaterThan(1.5), float(1), float(0))
@@ -284,20 +303,55 @@ export interface LabMaterialOptions {
   tier?: LabTier;
   /** Pieces per instanced copy, when drawn as an InstancedMesh of copies. */
   instanceStride?: number;
+  /**
+   * Compact vertex layout (buildCompactGeometry): position, piece and one
+   * packed code per vertex; rest centres from `info` (PieceInfo), normals
+   * from screen derivatives. Procedural skins only.
+   */
+  compact?: PieceInfo;
+  /**
+   * Cost probes (bench only): 'unlit' draws the geometry in a constant
+   * colour (vertex + raster floor); 'lit' adds PBR lighting and shadows on a
+   * constant albedo. The difference to the full material is the surface's.
+   */
+  probe?: 'unlit' | 'lit';
+  /**
+   * Draw one class and one face kind only (skin, or cut/joint), with both
+   * fixed at compile time: see buildCompactGeometry's groups.
+   */
+  only?: LabGroup;
+  /** Value noise: the precomputed 3D table (default) or hashed per call. */
+  noise?: 'texture' | 'hash';
 }
 
 const LabOut = struct({ albedo: 'vec3', rough: 'float', metal: 'float', ao: 'float', normal: 'vec3' }, 'FractureLabOut');
 
 export function labMaterial(poses: LabPoses, looks: FractureLookUniforms, options: LabMaterialOptions): THREE.Material {
+  if (options.probe) {
+    const probe = options.probe === 'unlit'
+      ? new MeshBasicNodeMaterial({ color: 0x8a7f72 })
+      : new MeshStandardNodeMaterial({ color: 0x8a7f72, roughness: 0.9, metalness: 0 });
+    probe.positionNode = posedPosition(
+      poses, options.compact ? null : varyingProperty('vec4', 'vCityQuat'), options.tier ?? 'all', options.instanceStride ?? 0,
+    );
+    if (options.compact && probe instanceof MeshStandardNodeMaterial) probe.flatShading = true;
+    return probe;
+  }
   const material = new MeshStandardNodeMaterial({ color: 0xffffff, roughness: 1, metalness: 0 });
   material.wireframe = options.wireframe;
   const pose = varyingProperty('vec4', 'vCityQuat');
-  material.positionNode = posedPosition(poses, pose, options.tier ?? 'all', options.instanceStride ?? 0);
+  const compact = options.compact ?? null;
+  const restVarying = varyingProperty('vec3', 'vLabRest');
+  material.positionNode = posedPosition(
+    poses, pose, options.tier ?? 'all', options.instanceStride ?? 0,
+    compact ? { info: compact.texture, rest: restVarying } : null,
+  );
+  if (compact) material.flatShading = true;
   const restToView = restToViewThrough(pose, quatRotate);
   // Procedural skins replace the city's texture layers entirely, so they are
   // only sampled when the outer faces actually wear them.
   const procedural = options.fracture && options.skin === 'procedural';
-  const tri = procedural ? null : cityTriplanarNodes(options.triplanar, restToView);
+  const tri = procedural || compact ? null : cityTriplanarNodes(options.triplanar, restToView);
 
   const out = (Fn(() => {
     const albedo = vec3(tri ? tri.albedo : vec3(1)).toVar('labAlbedo');
@@ -305,88 +359,133 @@ export function labMaterial(poses: LabPoses, looks: FractureLookUniforms, option
     const ao = float(tri?.occlusion ?? 1).toVar('labAo');
     const nView = vec3(tri?.normal ?? normalView).toVar('labNormal');
     const metal = float(0).toVar('labMetal');
-    const face = attribute('labFace', 'vec4');
+    // Per-vertex face data: the full layout's vec4, or decoded from the
+    // compact layout's one packed code (kind + 8 grain + 64 class + 1024 side).
+    let face: Node;
+    let restPos: Node;
+    if (compact) {
+      // Rounded: interpolating three equal values need not return it exactly.
+      const code = floor(attribute('labCode', 'float').add(0.5));
+      const sideCode = floor(code.div(1024));
+      const clsCode = floor(code.sub(sideCode.mul(1024)).div(64));
+      const kindGrain = code.sub(sideCode.mul(1024)).sub(clsCode.mul(64));
+      face = vec4(kindGrain, clsCode, float(0), sideCode.sub(1));
+      restPos = restVarying;
+    } else {
+      face = attribute('labFace', 'vec4');
+      restPos = attribute('cityAnchor', 'vec4').xyz;
+    }
     const grainCode = floor(face.x.div(8));
     const kind = face.x.sub(grainCode.mul(8));
-    const anchor = attribute('cityAnchor', 'vec4');
-    const restPos = anchor.xyz;
-    // Footprint BEFORE any branch: derivatives inside one are undefined.
+    // Footprint and (compact) flat normal BEFORE any branch: derivatives
+    // inside one are undefined.
     const fp = max(length(fwidth(restPos)), float(1e-5)).toVar('labFootprint');
-    const restN = normalize(normalGeometry).toVar('labRestN');
+    const restN = (compact
+      ? normalize(cross(dFdx(restPos), dFdy(restPos)))
+      : normalize(normalGeometry)).toVar('labRestN');
 
-    const cls = int(face.y);
+    // A specialised draw fixes the class and the face kind at compile time.
+    const only = options.only ?? null;
+    const clsF = only ? float(only.cls) : face.y;
+    const cls = only ? int(only.cls) : int(face.y);
+    // Value noise from the precomputed table (two trailing arguments), or
+    // hashed per call.
+    const textured = options.noise !== 'hash';
+    const set = surfaceSet(only ? only.cls : null, textured);
+    const noiseArgs: Node[] = [];
+    if (textured) {
+      const table = texture3D(fractureNoiseTexture());
+      noiseArgs.push(table, sampler(table));
+    }
+    const skinFn = (...args: Node[]) => set.skin(...args, ...noiseArgs);
+    const fractureFn = (...args: Node[]) => set.fracture(...args, ...noiseArgs);
+    const rebarFn = (...args: Node[]) => set.rebar(...args, ...noiseArgs);
     const grain = select(grainCode.equal(0), vec3(1, 0, 0),
       select(grainCode.equal(1), vec3(0, 1, 0), select(grainCode.equal(2), vec3(0, 0, 1), vec3(0))));
-    if (options.fracture) {
-      // Outer faces: the skin, worn through to the interior at the arrises.
-      If(kind.lessThan(0.5), () => {
-        if (procedural) {
-          const sk = skinSurface(
-            restPos, restN, face.y, fp,
-            looks.classRow(cls, 4).xyz, looks.classRow(cls, 5).xyz,
-            looks.classRow(cls, 6), looks.classRow(cls, 7), grain,
-          ).toVar('labSkin');
-          albedo.assign(sk.element(0).xyz);
-          rough.assign(sk.element(0).w);
-          ao.assign(sk.element(1).w);
-          metal.assign(sk.element(2).x);
-          nView.assign(normalize(restToView(sk.element(1).xyz)));
-        } else {
-          // Worn geometry must SHADE round: the interpolated normal, not the
-          // triplanar's flat derivative one.
-          If(face.z.greaterThan(0.02), () => { nView.assign(normalize(restToView(restN))); });
-        }
-        const worn = smoothstep(0.3, 1.0, face.z).toVar('labWorn');
-        If(worn.greaterThan(0.001), () => {
-          const inner = fractureSurface(
-            restPos, restN, face.y, float(-0.2), fp,
-            looks.classRow(cls, 0).xyz, looks.classRow(cls, 1).xyz,
-            looks.classRow(cls, 2), looks.classRow(cls, 3), grain, face.w,
-          ).toVar('labWornInner');
-          albedo.assign(mix(albedo, inner.element(0).xyz, worn));
-          rough.assign(mix(rough, inner.element(0).w, worn));
-          ao.assign(mix(ao, inner.element(1).w, worn));
-          nView.assign(normalize(mix(nView, restToView(inner.element(1).xyz), worn)));
-        });
-      });
-      If(kind.greaterThan(0.5).and(kind.lessThan(2.5)), () => {
-        const res = fractureSurface(
-          restPos, restN, face.y, face.z, fp,
+
+    // Outer faces: the skin, worn through to the interior at the arrises.
+    const skinBranch = () => {
+      if (procedural) {
+        const sk = skinFn(
+          restPos, restN, clsF, fp,
+          looks.classRow(cls, 4).xyz, looks.classRow(cls, 5).xyz,
+          looks.classRow(cls, 6), looks.classRow(cls, 7), grain,
+        ).toVar('labSkin');
+        albedo.assign(sk.element(0).xyz);
+        rough.assign(sk.element(0).w);
+        ao.assign(sk.element(1).w);
+        metal.assign(sk.element(2).x);
+        nView.assign(normalize(restToView(sk.element(1).xyz)));
+      } else {
+        // Worn geometry must SHADE round: the interpolated normal, not the
+        // triplanar's flat derivative one.
+        If(face.z.greaterThan(0.02), () => { nView.assign(normalize(restToView(restN))); });
+      }
+      // Compact geometry is flat: nothing is worn.
+      if (compact) return;
+      const worn = smoothstep(0.3, 1.0, face.z).toVar('labWorn');
+      If(worn.greaterThan(0.001), () => {
+        const inner = fractureFn(
+          restPos, restN, clsF, float(-0.2), fp,
           looks.classRow(cls, 0).xyz, looks.classRow(cls, 1).xyz,
           looks.classRow(cls, 2), looks.classRow(cls, 3), grain, face.w,
-        ).toVar('labFracture');
-        albedo.assign(res.element(0).xyz);
-        rough.assign(res.element(0).w);
-        ao.assign(res.element(1).w);
-        metal.assign(res.element(2).x);
-        // Rebar where the bar grid pierces a reinforced break: steel discs in
-        // a halo of rust bled into the concrete.
-        If(cls.equal(1), () => {
-          for (let f = 0; f < 4; f += 1) {
-            const prm = looks.rebarRow(f, 3);
-            const active = select(float(f).lessThan(looks.rebarCount), float(1), float(0));
-            const s = dot(restPos, looks.rebarRow(f, 1).xyz).sub(prm.y);
-            const da = s.sub(floor(s.div(prm.x).add(0.5)).mul(prm.x));
-            const dd = dot(restPos, looks.rebarRow(f, 2).xyz).sub(prm.z);
-            const dist = sqrt(da.mul(da).add(dd.mul(dd)));
-            const steel = float(1).sub(smoothstep(prm.w.mul(0.82), prm.w, dist)).mul(active);
-            const stain = float(1).sub(smoothstep(prm.w, prm.w.mul(2.8), dist)).mul(active).mul(0.6);
-            albedo.assign(mix(albedo, albedo.mul(vec3(0.62, 0.42, 0.28)), stain));
-            albedo.assign(mix(albedo, vec3(0.11, 0.1, 0.095), steel));
-            metal.assign(mix(metal, float(0.55), steel));
-            rough.assign(mix(rough, float(0.55), steel));
-          }
-        });
-        nView.assign(normalize(restToView(res.element(1).xyz)));
+        ).toVar('labWornInner');
+        albedo.assign(mix(albedo, inner.element(0).xyz, worn));
+        rough.assign(mix(rough, inner.element(0).w, worn));
+        ao.assign(mix(ao, inner.element(1).w, worn));
+        nView.assign(normalize(mix(nView, restToView(inner.element(1).xyz), worn)));
       });
-      If(kind.greaterThan(2.5), () => {
-        const steel = rebarSurface(restPos, face.z);
-        albedo.assign(steel.xyz);
-        rough.assign(steel.w);
-        metal.assign(0.55);
-        ao.assign(1);
-        nView.assign(normalize(restToView(restN)));
-      });
+    };
+    // Cut and joint faces: the broken interior.
+    const cutBranch = () => {
+      const res = fractureFn(
+        restPos, restN, clsF, face.z, fp,
+        looks.classRow(cls, 0).xyz, looks.classRow(cls, 1).xyz,
+        looks.classRow(cls, 2), looks.classRow(cls, 3), grain, face.w,
+      ).toVar('labFracture');
+      albedo.assign(res.element(0).xyz);
+      rough.assign(res.element(0).w);
+      ao.assign(res.element(1).w);
+      metal.assign(res.element(2).x);
+      // Rebar where the bar grid pierces a reinforced break: steel discs in
+      // a halo of rust bled into the concrete.
+      const discs = () => {
+        for (let f = 0; f < 4; f += 1) {
+          const prm = looks.rebarRow(f, 3);
+          const active = select(float(f).lessThan(looks.rebarCount), float(1), float(0));
+          const s = dot(restPos, looks.rebarRow(f, 1).xyz).sub(prm.y);
+          const da = s.sub(floor(s.div(prm.x).add(0.5)).mul(prm.x));
+          const dd = dot(restPos, looks.rebarRow(f, 2).xyz).sub(prm.z);
+          const dist = sqrt(da.mul(da).add(dd.mul(dd)));
+          const steel = float(1).sub(smoothstep(prm.w.mul(0.82), prm.w, dist)).mul(active);
+          const stain = float(1).sub(smoothstep(prm.w, prm.w.mul(2.8), dist)).mul(active).mul(0.6);
+          albedo.assign(mix(albedo, albedo.mul(vec3(0.62, 0.42, 0.28)), stain));
+          albedo.assign(mix(albedo, vec3(0.11, 0.1, 0.095), steel));
+          metal.assign(mix(metal, float(0.55), steel));
+          rough.assign(mix(rough, float(0.55), steel));
+        }
+      };
+      if (!only) If(cls.equal(1), discs);
+      else if (only.cls === 1) discs();
+      nView.assign(normalize(restToView(res.element(1).xyz)));
+    };
+    const rebarBranch = () => {
+      const steel = rebarFn(restPos, face.z);
+      albedo.assign(steel.xyz);
+      rough.assign(steel.w);
+      metal.assign(0.55);
+      ao.assign(1);
+      nView.assign(normalize(restToView(restN)));
+    };
+    if (options.fracture) {
+      if (only) {
+        if (only.cut) cutBranch();
+        else skinBranch();
+      } else {
+        If(kind.lessThan(0.5), skinBranch);
+        If(kind.greaterThan(0.5).and(kind.lessThan(2.5)), cutBranch);
+        If(kind.greaterThan(2.5), rebarBranch);
+      }
     }
     if (options.debugKinds) {
       const palette = select(kind.lessThan(0.5), vec3(0.75, 0.75, 0.75),
@@ -406,6 +505,27 @@ export function labMaterial(poses: LabPoses, looks: FractureLookUniforms, option
   material.metalnessNode = out.get('metal');
   material.aoNode = out.get('ao');
   material.normalNode = out.get('normal');
+  return material;
+}
+
+/**
+ * Layer for shadow-only proxies: the sun's shadow camera sees it, the view
+ * camera does not.
+ */
+export const SHADOW_LAYER = 1;
+
+/**
+ * What casts the sun's shadows: every piece as its flat collider, in a bare
+ * material. three builds the shadow pass from the caster's own material and,
+ * given a colorNode, multiplies alpha by colorNode.a -- which drags a whole
+ * procedural surface into every shadow-map fragment. A proxy on its own
+ * layer casts instead (the drawn meshes do not), and detailed pieces cast
+ * their cheap flat shape: a few millimetres of relief do not show in a
+ * shadow.
+ */
+export function shadowProxyMaterial(poses: LabPoses, instanceStride = 0): THREE.Material {
+  const material = new MeshBasicNodeMaterial({ color: 0x000000 });
+  material.positionNode = posedPosition(poses, null, 'all', instanceStride);
   return material;
 }
 
@@ -448,3 +568,108 @@ export function ghostMaterial(poses: LabPoses): THREE.Material {
   return material;
 }
 
+
+/** One draw of the compact layout: a class, and outer skin or cut faces. */
+export interface LabGroup {
+  cls: number;
+  cut: boolean;
+}
+
+/** The groups buildCompactGeometry split its triangles into, by material index. */
+export function labGroups(geometry: THREE.BufferGeometry): LabGroup[] {
+  return (geometry.userData.labGroups as LabGroup[] | undefined) ?? [];
+}
+
+/**
+ * Per-piece rest data for the compact layout: one texel per piece,
+ * (rest centre xyz, city layer code). A copy of a specimen shares its rest
+ * frame, so instanced copies index it by their local piece.
+ */
+export class PieceInfo {
+  readonly texture: THREE.DataTexture;
+  constructor(pieces: readonly FracturePiece[], looks: readonly LabPieceLook[]) {
+    let side = 4;
+    while (side * side < pieces.length) side *= 2;
+    const data = new Float32Array(new ArrayBuffer(side * side * 16)) as Float32Array<ArrayBuffer>;
+    pieces.forEach((piece, p) => data.set([piece.centroid[0], piece.centroid[1], piece.centroid[2], looks[p].layerCode], p * 4));
+    this.texture = new THREE.DataTexture(data, side, side, THREE.RGBAFormat, THREE.FloatType);
+    this.texture.needsUpdate = true;
+  }
+  dispose(): void {
+    this.texture.dispose();
+  }
+}
+
+/**
+ * The shading-only tier's geometry in the compact layout: 20 bytes a vertex
+ * (position, piece, packed code) instead of 60, and outer faces SHARE their
+ * corners (normals come from screen derivatives, so nothing else differs
+ * between them) -- a box is 8 vertices, not 24. Cut and joint faces keep
+ * their own corners: they carry which side of the crack they are.
+ * At scene scale this tier is geometry-bound, so vertex count and fetch
+ * width are the cost.
+ */
+export function buildCompactGeometry(
+  pieces: readonly FracturePiece[], kinds: readonly Uint8Array[], include: (piece: FracturePiece) => boolean = () => true,
+): THREE.BufferGeometry {
+  const position: number[] = [];
+  const piece: number[] = [];
+  const code: number[] = [];
+  // Triangles bucketed by (class, cut): each bucket is one geometry group,
+  // drawn with a shader specialised to it.
+  const buckets = new Map<number, number[]>();
+  pieces.forEach((pc, p) => {
+    if (!include(pc)) return;
+    const poly = pc.poly;
+    const grain = pc.grainAxis ?? 3;
+    const shared = new Map<number, number>();
+    const vertex = (i: number, c: number): number => {
+      const v = position.length / 3;
+      const at = poly.verts[i];
+      position.push(at[0], at[1], at[2]);
+      piece.push(p);
+      code.push(c);
+      return v;
+    };
+    poly.faces.forEach((face, f) => {
+      const kind = kinds[p][f];
+      const ids: number[] = [];
+      if (kind === 0) {
+        // Outer faces share corners; side is irrelevant to the skin.
+        const c = 0 + 8 * grain + 64 * pc.cls + 1024 * 1;
+        for (const i of face.loop) {
+          let v = shared.get(i);
+          if (v === undefined) {
+            v = vertex(i, c);
+            shared.set(i, v);
+          }
+          ids.push(v);
+        }
+      } else {
+        const side = canonicalSign(face.normal);
+        const c = kind + 8 * grain + 64 * pc.cls + 1024 * (side + 1);
+        for (const i of face.loop) ids.push(vertex(i, c));
+      }
+      const key = pc.cls * 2 + (kind === 0 ? 0 : 1);
+      let index = buckets.get(key);
+      if (!index) buckets.set(key, index = []);
+      for (let k = 1; k + 1 < ids.length; k += 1) index.push(ids[0], ids[k], ids[k + 1]);
+    });
+  });
+  const index: number[] = [];
+  const groups: LabGroup[] = [];
+  const geometry = new THREE.BufferGeometry();
+  for (const key of [...buckets.keys()].sort((x, y) => x - y)) {
+    const tris = buckets.get(key)!;
+    geometry.addGroup(index.length, tris.length, groups.length);
+    groups.push({ cls: key >> 1, cut: (key & 1) === 1 });
+    for (const i of tris) index.push(i);
+  }
+  geometry.userData.labGroups = groups;
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
+  geometry.setAttribute('labPiece', new THREE.Float32BufferAttribute(piece, 1));
+  geometry.setAttribute('labCode', new THREE.Float32BufferAttribute(code, 1));
+  geometry.setIndex(index);
+  geometry.computeBoundingSphere();
+  return geometry;
+}

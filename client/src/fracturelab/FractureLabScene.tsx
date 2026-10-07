@@ -23,8 +23,8 @@ import { SunLight } from '../scene/SunLight';
 import { loadCityTextures } from '../scene/cityTextures';
 import { Blast, brokenInMode, explodedPose, type ExplodeMode } from './explode';
 import {
-  FractureLookUniforms, LabPoses, buildColliderGeometry, buildLabGeometry, colliderMaterial, ghostMaterial,
-  glassMaterial, labMaterial,
+  FractureLookUniforms, LabPoses, SHADOW_LAYER, buildColliderGeometry, buildLabGeometry, colliderMaterial, ghostMaterial,
+  glassMaterial, labMaterial, shadowProxyMaterial,
 } from './labMesh';
 import type { PackSpecimen } from './packSpecimen';
 import { TieredStage, type TierStats } from './TieredStage';
@@ -63,6 +63,26 @@ export interface LabState {
   tiered: boolean;
   tierRadius: number;
   tierBudgetMs: number;
+  /** Sun shadows at all; and re-rendered every Nth frame (1 = every frame). */
+  shadows: boolean;
+  shadowEvery: number;
+  /** Scene scale: skip copies outside the camera frustum (as /city culls cells). */
+  cull: boolean;
+  /**
+   * Scene scale: the shading-only tier in the compact vertex layout (shared
+   * corners, flat derivative normals, 20 bytes a vertex). Procedural skins.
+   */
+  compact: boolean;
+  /** Compact tier: one shader per (class, skin/cut) group, not one uber-shader. */
+  specialise: boolean;
+  /** Render resolution as a fraction of the display's (upscaled to fit). */
+  scale: number;
+  /** Multisample anti-aliasing (a new renderer when it changes). */
+  aa: boolean;
+  /** Value noise from the precomputed 3D table, or hashed per call. */
+  noise: 'texture' | 'hash';
+  /** Bench cost probe for the scene-scale materials (labMaterial `probe`). */
+  probe: '' | 'unlit' | 'lit';
   /** Bumped when a geometry look parameter changes. */
   lookVersion: number;
 }
@@ -99,29 +119,88 @@ interface SceneProps {
 export function FractureLabCanvas(props: SceneProps) {
   const fogColor = resolveFogColor(getFogSettings());
   useEffect(() => { loadCityTextures(); }, []);
+  const scale = props.state.scale;
+  const dpr: number | [number, number] = scale === 1 ? [1, maxDpr()] : Math.min(window.devicePixelRatio || 1, maxDpr()) * scale;
   return (
     <Canvas
+      key={props.state.aa ? 'msaa' : 'single'}
       {...withRenderBackend({
         shadows: true,
-        dpr: [1, maxDpr()],
-        gl: { antialias: true, powerPreference: 'high-performance', trackTimestamp: true } as never,
+        dpr,
+        gl: { antialias: props.state.aa, powerPreference: 'high-performance', trackTimestamp: true } as never,
         camera: { fov: 45, near: 0.03, far: 600, position: [0, 2, 9] },
         frameloop: 'always',
       })}
       style={{ position: 'absolute', inset: 0 }}
     >
       <SkyEnvironment fogColor={fogColor} />
-      <SunLight fogColor={fogColor} shadowHalfExtent={14} shadowMapSize={4096} />
+      <SunLight fogColor={fogColor} shadowHalfExtent={14} shadowMapSize={4096} castShadow={props.state.shadows} />
+      <ShadowCadence every={props.state.shadowEvery} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.001, 0]} receiveShadow>
         <planeGeometry args={[400, 400]} />
         <meshStandardMaterial color="#6b6e63" roughness={1} metalness={0} />
       </mesh>
       {props.state.tiered ? <TieredStage {...props} /> : <LabStage {...props} />}
+      <GpuSampler />
     </Canvas>
   );
 }
 
 const TRIPLANAR = labTriplanar;
+
+declare global {
+  interface Window {
+    /** Bench hook: the GPU time of each of the next `frames` frames, ms. */
+    __VIBE_FRACTURE_GPU__?: (frames: number) => Promise<number[]>;
+  }
+}
+
+/**
+ * Re-render the sun's shadow map only every Nth frame. Shadows move with
+ * debris, but a shadow a frame or three old is invisible at 120 Hz, and the
+ * shadow pass re-draws every piece's geometry: at scene scale it is the
+ * biggest single pass after the main one.
+ */
+function ShadowCadence({ every }: { every: number }) {
+  const scene = useThree((s) => s.scene);
+  const frame = useRef(0);
+  useFrame(() => {
+    frame.current += 1;
+    const due = every <= 1 || frame.current % Math.round(every) === 0;
+    scene.traverse((object) => {
+      const light = object as THREE.DirectionalLight;
+      if (!light.isDirectionalLight || !light.castShadow) return;
+      // The shadow camera sees the shadow proxies' layer (labMesh.ts).
+      light.shadow.camera.layers.enable(SHADOW_LAYER);
+      light.shadow.autoUpdate = every <= 1;
+      if (due) light.shadow.needsUpdate = true;
+    });
+  });
+  return null;
+}
+
+/**
+ * Per-frame GPU time for the bench (tools/fracture-bench.mjs): resolves the
+ * timestamp queries after every frame, so a sample is one frame's passes
+ * (main and shadow), not a reading every half second.
+ */
+function GpuSampler() {
+  const gl = useThree((s) => s.gl);
+  useEffect(() => {
+    const resolve = (gl as { resolveTimestampsAsync?: (type?: string) => Promise<number | undefined> }).resolveTimestampsAsync;
+    window.__VIBE_FRACTURE_GPU__ = async (frames: number) => {
+      const out: number[] = [];
+      for (let i = 0; i < frames; i += 1) {
+        await new Promise((r) => requestAnimationFrame(() => r(null)));
+        const ms = resolve ? await resolve.call(gl, 'render') : undefined;
+        if (typeof ms === 'number' && ms > 0) out.push(ms);
+      }
+      return out;
+    };
+    return () => { delete window.__VIBE_FRACTURE_GPU__; };
+  }, [gl]);
+  return null;
+}
 
 function LabStage({ specimen, state, onStats, onCamera }: SceneProps) {
   const gl = useThree((s) => s.gl);
@@ -183,15 +262,18 @@ function LabStage({ specimen, state, onStats, onCamera }: SceneProps) {
       }),
       enhanced: labMaterial(posesEnhanced, looks, {
         triplanar, fracture: state.shading, debugKinds: state.debugKinds, wireframe: state.wireframe, skin: state.skin,
+        noise: state.noise,
       }),
       todayLines: colliderMaterial(posesToday, '#40d0ff'),
       enhancedLines: colliderMaterial(posesEnhanced, '#40d0ff'),
       todayGhost: ghostMaterial(posesToday),
       enhancedGhost: ghostMaterial(posesEnhanced),
+      todayShadow: shadowProxyMaterial(posesToday),
+      enhancedShadow: shadowProxyMaterial(posesEnhanced),
       todayGlass: glassMaterial(posesToday, { fracture: false, wireframe: state.wireframe }),
       enhancedGlass: glassMaterial(posesEnhanced, { fracture: state.shading, wireframe: state.wireframe }),
     };
-  }, [posesToday, posesEnhanced, looks, state.shading, state.debugKinds, state.wireframe, state.skin]);
+  }, [posesToday, posesEnhanced, looks, state.shading, state.debugKinds, state.wireframe, state.skin, state.noise]);
 
   // Build the draw objects: variants x copies, visual and/or collider.
   const variants = useRef<Array<{ group: THREE.Group; side: -1 | 0 | 1 }>>([]);
@@ -208,10 +290,18 @@ function LabStage({ specimen, state, onStats, onCamera }: SceneProps) {
         if (state.bodies !== 'collider') {
           const mesh = new THREE.Mesh(which === 'today' ? todayGeometry : enhanced.geometry,
             which === 'today' ? materials.today : materials.enhanced);
-          mesh.castShadow = true;
-          mesh.receiveShadow = true;
+          mesh.castShadow = false;
+          mesh.receiveShadow = state.shadows;
           mesh.frustumCulled = false;
           group.add(mesh);
+          if (state.shadows) {
+            // Shadows from the flat collider shape, in a bare material (labMesh.ts).
+            const proxy = new THREE.Mesh(todayGeometry, which === 'today' ? materials.todayShadow : materials.enhancedShadow);
+            proxy.castShadow = true;
+            proxy.frustumCulled = false;
+            proxy.layers.set(SHADOW_LAYER);
+            group.add(proxy);
+          }
           const glass = which === 'today' ? today.glass : enhanced.glass;
           if (glass) {
             const pane = new THREE.Mesh(glass, which === 'today' ? materials.todayGlass : materials.enhancedGlass);
@@ -238,7 +328,7 @@ function LabStage({ specimen, state, onStats, onCamera }: SceneProps) {
     return () => {
       for (const object of created) root.remove(object);
     };
-  }, [root, state.compare, state.copies, state.bodies, today, enhanced, colliderGeometry, materials]);
+  }, [root, state.compare, state.copies, state.bodies, state.shadows, today, enhanced, colliderGeometry, materials]);
 
   useEffect(() => () => {
     today.geometry.dispose();

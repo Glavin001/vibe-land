@@ -28,7 +28,10 @@ import { FractureClass } from '../city/fracture/materialClass';
 import type { Specimen } from '../city/fracture/specimens';
 import { Blast, brokenInMode, explodedPose, type Pose } from './explode';
 import { copyOffset, labTriplanar, layerCodes } from './labShared';
-import { FractureLookUniforms, LabPoses, buildLabGeometry, glassMaterial, labMaterial } from './labMesh';
+import {
+  FractureLookUniforms, LabPoses, PieceInfo, SHADOW_LAYER, buildCompactGeometry, buildLabGeometry, glassMaterial, labGroups, labMaterial,
+  shadowProxyMaterial,
+} from './labMesh';
 import type { LabCameraApi, LabState, LabStats } from './FractureLabScene';
 import type { PackSpecimen } from './packSpecimen';
 import { SkinPool } from './skinPool';
@@ -44,6 +47,11 @@ export interface TierStats {
   queue: number;
   buildMs: number;
   builtTotal: number;
+  /** Shading-only tier vertices, all copies. */
+  baseVertices: number;
+  /** Copies drawn by the view, and into the sun's shadow map. */
+  viewCopies: number;
+  shadowCopies: number;
 }
 
 export function TieredStage({ specimen, state, onStats, onCamera }: {
@@ -77,14 +85,22 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
 
   // Shading-only base: built once for the specimen, drawn once per copy.
   const isGlass = (p: { cls: number }): boolean => p.cls === FractureClass.Glass;
+  // The compact layout needs the procedural skin (it has no texture
+  // anchors or normals for the city triplanar).
+  const compact = state.compact && state.shading && state.skin === 'procedural';
   const base = useMemo(() => {
     const meshes = pieces.map((_, p) => builder.flatMesh(p));
+    const opaque = compact
+      ? buildCompactGeometry(pieces, table.faceKind, (p) => !isGlass(p))
+      : buildLabGeometry(pieces, meshes, codes, (p) => !isGlass(p));
     return {
-      opaque: buildLabGeometry(pieces, meshes, codes, (p) => !isGlass(p)),
+      opaque,
       glass: pieces.some(isGlass) ? buildLabGeometry(pieces, meshes, codes, isGlass) : null,
+      info: compact ? new PieceInfo(pieces, codes) : null,
       triangles: meshes.reduce((s, m) => s + m.indices.length / 3, 0),
+      vertices: opaque.getAttribute('position').count,
     };
-  }, [pieces, builder, codes]);
+  }, [pieces, builder, codes, compact, table]);
 
   const poses = useMemo(() => new LabPoses(n * copies), [n, copies]);
   const pool = useMemo(() => new SkinPool(POOL_VERTICES, POOL_INDICES), []);
@@ -92,38 +108,93 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
 
   const materials = useMemo(() => {
     const triplanar = labTriplanar();
-    const common = { triplanar, fracture: state.shading, debugKinds: state.debugKinds, wireframe: state.wireframe, skin: state.skin };
+    const common = {
+      triplanar, fracture: state.shading, debugKinds: state.debugKinds, wireframe: state.wireframe, skin: state.skin,
+      probe: state.probe || undefined, noise: state.noise,
+    };
     return {
-      base: labMaterial(poses, looks, { ...common, tier: 'base', instanceStride: n }),
+      // Compact: one specialised material per (class, skin/cut) group --
+      // material sorting instead of an uber-shader's branches.
+      base: base.info && state.specialise && labGroups(base.opaque).length > 0
+        ? labGroups(base.opaque).map((only) => labMaterial(poses, looks, {
+          ...common, tier: 'base', instanceStride: n, compact: base.info ?? undefined, only,
+        }))
+        : labMaterial(poses, looks, { ...common, tier: 'base', instanceStride: n, compact: base.info ?? undefined }),
       pool: labMaterial(poses, looks, { ...common, tier: 'skin' }),
       glass: glassMaterial(poses, { fracture: state.shading, wireframe: state.wireframe, instanceStride: n }),
+      shadow: shadowProxyMaterial(poses, n),
     };
-  }, [poses, looks, n, state.shading, state.debugKinds, state.wireframe, state.skin]);
+  }, [poses, looks, n, state.shading, state.debugKinds, state.wireframe, state.skin, state.probe, state.specialise, state.noise, base]);
+
+  // Copy index per drawn instance (InstancedBufferAttribute, step mode instance).
+  const copyAttribute = useMemo(() => {
+    const a = new THREE.InstancedBufferAttribute(new Float32Array(copies), 1);
+    for (let c = 0; c < copies; c += 1) a.setX(c, c);
+    return a;
+  }, [copies]);
+  // The shadow proxy's own list: the sun's shadow camera follows the view
+  // and covers tens of metres, so it needs far fewer copies than the view.
+  const shadowCopyAttribute = useMemo(() => {
+    const a = new THREE.InstancedBufferAttribute(new Float32Array(copies), 1);
+    for (let c = 0; c < copies; c += 1) a.setX(c, c);
+    return a;
+  }, [copies]);
+  const instancedMeshes = useRef<THREE.InstancedMesh[]>([]);
+  const shadowMesh = useRef<THREE.InstancedMesh | null>(null);
+  const sun = useRef<THREE.DirectionalLight | null>(null);
+  const copyCount = useRef(-1);
+  const frustum = useMemo(() => new THREE.Frustum(), []);
+  const projScreen = useMemo(() => new THREE.Matrix4(), []);
+  const sphere = useMemo(() => new THREE.Sphere(), []);
 
   // Draw objects.
   useEffect(() => {
     const group = new THREE.Group();
-    const instanced = (geometry: THREE.BufferGeometry, material: THREE.Material): THREE.InstancedMesh => {
+    const instanced = (
+      geometry: THREE.BufferGeometry, material: THREE.Material | THREE.Material[], copiesOf = copyAttribute,
+    ): THREE.InstancedMesh => {
+      // Which copy each drawn instance is: the culler packs the visible
+      // copies to the front and draws only those.
+      geometry.setAttribute('labCopy', copiesOf);
       const mesh = new THREE.InstancedMesh(geometry, material, copies);
       for (let c = 0; c < copies; c += 1) mesh.setMatrixAt(c, new THREE.Matrix4());
       mesh.frustumCulled = false;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      mesh.receiveShadow = state.shadows;
       return mesh;
     };
-    group.add(instanced(base.opaque, materials.base));
-    if (base.glass) group.add(instanced(base.glass, materials.glass));
+    const meshes = [instanced(base.opaque, materials.base)];
+    if (base.glass) meshes.push(instanced(base.glass, materials.glass));
+    // Shadows: every piece's flat shape, bare material, its own layer.
+    shadowMesh.current = null;
+    if (state.shadows) {
+      // Same buffers, its own copy list.
+      const shape = new THREE.BufferGeometry();
+      shape.setIndex(base.opaque.index);
+      shape.setAttribute('position', base.opaque.getAttribute('position'));
+      shape.setAttribute('labPiece', base.opaque.getAttribute('labPiece'));
+      shape.boundingSphere = base.opaque.boundingSphere;
+      const proxy = instanced(shape, materials.shadow, shadowCopyAttribute);
+      proxy.castShadow = true;
+      proxy.receiveShadow = false;
+      proxy.layers.set(SHADOW_LAYER);
+      shadowMesh.current = proxy;
+      group.add(proxy);
+    }
+    instancedMeshes.current = meshes;
+    for (const m of meshes) group.add(m);
     const detail = new THREE.Mesh(pool.geometry, materials.pool);
     detail.frustumCulled = false;
-    detail.castShadow = true;
-    detail.receiveShadow = true;
+    detail.castShadow = false;
+    detail.receiveShadow = state.shadows;
     group.add(detail);
     scene.add(group);
     return () => { scene.remove(group); };
-  }, [scene, base, materials, pool, copies]);
+  }, [scene, base, materials, pool, copies, copyAttribute, shadowCopyAttribute, state.shadows]);
   useEffect(() => () => {
     base.opaque.dispose();
     base.glass?.dispose();
+    base.info?.dispose();
   }, [base]);
 
   // Whatever the pool holds was built for the old builder or copies: empty it.
@@ -148,7 +219,7 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
 
   const stats = useRef({
     count: 0, total: 0, last: performance.now(), emitted: 0, gpu: null as number | null,
-    buildMs: 0, builtTotal: 0, queue: 0, draws: 0, tris: 0,
+    buildMs: 0, builtTotal: 0, queue: 0, draws: 0, tris: 0, shadowCopies: 0,
   });
   // Draw calls and triangles right after the frame rendered (three resets
   // them at the start of each render).
@@ -172,6 +243,19 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
     const started = performance.now();
     const cam = camera.position;
     const radius = state.tierRadius;
+    // Detail by projected size: each level halves the tessellation, chosen
+    // so an edge segment stays ~7 px whatever the distance, display and
+    // field of view (a Retina display earns twice the detail at a range).
+    // Full detail's worn-edge segments are ~1.4 cm: 7 px at 2.5 m on a
+    // 1000 px tall 45-degree view.
+    const fov = (camera as THREE.PerspectiveCamera).fov ?? 45;
+    const pixelsTall = gl.domElement.height || 1000;
+    const metresPerPixelAt1m = (2 * Math.tan((fov * Math.PI) / 360)) / pixelsTall;
+    const fullDetailWithin = 0.014 / (7 * metresPerPixelAt1m);
+    const detailAt = (d: number): number => {
+      const level = Math.min(3, Math.max(0, Math.round(Math.log2(Math.max(d, 1e-3) / fullDetailWithin))));
+      return 1 / (1 << level);
+    };
     const evictBeyond = radius * 1.25;
     const reach = Math.hypot(size[0], size[1], size[2]) * (0.6 + state.amount);
     const centre = [(specimen.min[0] + specimen.max[0]) / 2, (specimen.min[1] + specimen.max[1]) / 2, (specimen.min[2] + specimen.max[2]) / 2];
@@ -211,7 +295,7 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
     wanted.sort((x, y) => x.d - y.d);
     let queue = 0;
     for (const { g, d } of wanted) {
-      const detail = d < radius * 0.4 ? 1 : 0.5;
+      const detail = detailAt(d);
       if (detailOf.current.get(g) === detail) continue;
       if (performance.now() - started > state.tierBudgetMs) {
         queue += 1;
@@ -250,6 +334,61 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
       stats.current.builtTotal += 1;
     }
     const buildMs = performance.now() - started;
+
+    // --- Culling: only copies the camera can see are drawn ------------------
+    {
+      let visible = 0;
+      const arr = copyAttribute.array as Float32Array;
+      if (state.cull) {
+        projScreen.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+        frustum.setFromProjectionMatrix(projScreen);
+        for (let c = 0; c < copies; c += 1) {
+          const o = offsets[c];
+          // Generous: exploded pieces spread, and shadows reach past the edge.
+          sphere.center.set(centre[0] + o[0], centre[1] + o[1], centre[2] + o[2]);
+          sphere.radius = reach + 2;
+          if (frustum.intersectsSphere(sphere)) arr[visible++] = c;
+        }
+      } else {
+        for (let c = 0; c < copies; c += 1) arr[visible++] = c;
+      }
+      if (visible !== copyCount.current || state.cull) {
+        copyAttribute.needsUpdate = true;
+        copyAttribute.addUpdateRange(0, visible);
+        for (const m of instancedMeshes.current) m.count = visible;
+        copyCount.current = visible;
+      }
+      // Shadow casters: the copies inside the sun's shadow box, whether or
+      // not the view sees them (an off-screen house still shades the street).
+      const proxy = shadowMesh.current;
+      if (proxy) {
+        if (!sun.current?.parent) {
+          sun.current = null;
+          scene.traverse((o) => { if (!sun.current && (o as THREE.DirectionalLight).isDirectionalLight && o.castShadow) sun.current = o as THREE.DirectionalLight; });
+        }
+        const light = sun.current;
+        const sarr = shadowCopyAttribute.array as Float32Array;
+        let cast = 0;
+        if (state.cull && light) {
+          light.updateMatrixWorld();
+          light.target.updateMatrixWorld();
+          light.shadow.updateMatrices(light);
+          const box = light.shadow.getFrustum();
+          for (let c = 0; c < copies; c += 1) {
+            const o = offsets[c];
+            sphere.center.set(centre[0] + o[0], centre[1] + o[1], centre[2] + o[2]);
+            sphere.radius = reach + 2;
+            if (box.intersectsSphere(sphere)) sarr[cast++] = c;
+          }
+        } else {
+          for (let c = 0; c < copies; c += 1) sarr[cast++] = c;
+        }
+        shadowCopyAttribute.needsUpdate = true;
+        shadowCopyAttribute.addUpdateRange(0, cast);
+        proxy.count = cast;
+        stats.current.shadowCopies = cast;
+      }
+    }
 
     // --- Poses (only when something moved or swapped) ----------------------
     if (posesDirty.current || changed) {
@@ -293,6 +432,9 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
           queue: f.queue,
           buildMs: f.buildMs,
           builtTotal: f.builtTotal,
+          baseVertices: base.vertices * copies,
+          viewCopies: Math.max(0, copyCount.current),
+          shadowCopies: f.shadowCopies,
         },
       });
       f.count = 0;

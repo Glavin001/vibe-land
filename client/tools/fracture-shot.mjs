@@ -50,6 +50,9 @@ const VIEWS = {
   'corner-today': { state: { compare: 'today', mode: 'intact' }, camera: 'corner' },
   face: { state: { compare: 'enhanced', mode: 'intact' }, camera: 'face' },
   'face-today': { state: { compare: 'today', mode: 'intact' }, camera: 'face' },
+  // The same, with value noise hashed per call instead of from the 3D table.
+  'face-hash': { state: { compare: 'enhanced', mode: 'intact', noise: 'hash' }, camera: 'face' },
+  'closeup-hash': { state: { compare: 'enhanced', mode: 'radial', amount: 0.75, spin: 0.25, noise: 'hash' }, camera: { piece: 'middle', offset: [-0.5, 0.18, 0.45] } },
 };
 
 const browser = await chromium.launch({
@@ -84,7 +87,7 @@ for (const specimen of specimens) {
   for (const viewName of views) {
     const view = VIEWS[viewName];
     if (!view) throw new Error(`unknown view ${viewName}`);
-    const state = { debugKinds: false, copies: view.scale ? copies : 1, rough: true, wear: true, ...view.state, blastToken: Date.now() };
+    const state = { debugKinds: false, copies: view.scale ? copies : 1, rough: true, wear: true, noise: 'texture', ...view.state, blastToken: Date.now() };
     await page.evaluate((s) => window.__VIBE_FRACTURE_LAB__.set(s), state);
     await page.evaluate(() => new Promise((r) => setTimeout(r, 600)));
     if (view.camera === 'frame') {

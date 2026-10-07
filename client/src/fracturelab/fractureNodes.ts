@@ -19,47 +19,11 @@ import { wgsl, wgslFn } from 'three/tsl';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
 
-const library: Node = wgsl(`
+const commonLibrary = `
 fn frHash(p: vec3f) -> f32 {
   var q = fract(p * vec3f(0.1031, 0.1030, 0.0973));
   q += dot(q, q.yzx + 33.33);
   return fract((q.x + q.y) * q.z);
-}
-// Value noise in [-1, 1] with its gradient: (v, dv/dx, dv/dy, dv/dz).
-fn frNoiseD(p: vec3f) -> vec4f {
-  let i = floor(p);
-  let f = p - i;
-  let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-  let du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
-  let a = frHash(i);
-  let b = frHash(i + vec3f(1.0, 0.0, 0.0));
-  let c = frHash(i + vec3f(0.0, 1.0, 0.0));
-  let d = frHash(i + vec3f(1.0, 1.0, 0.0));
-  let e = frHash(i + vec3f(0.0, 0.0, 1.0));
-  let g = frHash(i + vec3f(1.0, 0.0, 1.0));
-  let h = frHash(i + vec3f(0.0, 1.0, 1.0));
-  let k = frHash(i + vec3f(1.0, 1.0, 1.0));
-  let k1 = b - a; let k2 = c - a; let k3 = e - a;
-  let k4 = a - b - c + d; let k5 = a - c - e + h; let k6 = a - b - e + g;
-  let k7 = -a + b + c - d + e - g - h + k;
-  let v = a + k1 * u.x + k2 * u.y + k3 * u.z + k4 * u.x * u.y + k5 * u.y * u.z + k6 * u.z * u.x + k7 * u.x * u.y * u.z;
-  let gr = du * vec3f(
-    k1 + k4 * u.y + k6 * u.z + k7 * u.y * u.z,
-    k2 + k5 * u.z + k4 * u.x + k7 * u.z * u.x,
-    k3 + k6 * u.x + k5 * u.y + k7 * u.x * u.y);
-  return vec4f(v * 2.0 - 1.0, gr * 2.0);
-}
-fn frFbmD(p: vec3f, octaves: i32) -> vec4f {
-  var sum = vec4f(0.0);
-  var amp = 0.5;
-  var f = 1.0;
-  for (var o = 0; o < octaves; o++) {
-    let n = frNoiseD(p * f + vec3f(f32(o) * 17.13));
-    sum += vec4f(n.x * amp, n.yzw * amp * f);
-    amp *= 0.5;
-    f *= 2.03;
-  }
-  return sum;
 }
 // Sparse round dots, 1 per cell at most: a cheap stand-in for cellular noise
 // when the dots are small and isolated (pinholes, specks, iron spots). The
@@ -109,7 +73,69 @@ fn frCell(p: vec3f) -> mat2x4f {
   }
   return mat2x4f(vec4f(f1, f2, id, 0.0), vec4f(toNearest, 0.0));
 }
-`);
+`;
+const hashNoise = `
+// Value noise in [-1, 1] with its gradient: (v, dv/dx, dv/dy, dv/dz).
+fn frNoiseD(p: vec3f) -> vec4f {
+  let i = floor(p);
+  let f = p - i;
+  let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  let du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+  let a = frHash(i);
+  let b = frHash(i + vec3f(1.0, 0.0, 0.0));
+  let c = frHash(i + vec3f(0.0, 1.0, 0.0));
+  let d = frHash(i + vec3f(1.0, 1.0, 0.0));
+  let e = frHash(i + vec3f(0.0, 0.0, 1.0));
+  let g = frHash(i + vec3f(1.0, 0.0, 1.0));
+  let h = frHash(i + vec3f(0.0, 1.0, 1.0));
+  let k = frHash(i + vec3f(1.0, 1.0, 1.0));
+  let k1 = b - a; let k2 = c - a; let k3 = e - a;
+  let k4 = a - b - c + d; let k5 = a - c - e + h; let k6 = a - b - e + g;
+  let k7 = -a + b + c - d + e - g - h + k;
+  let v = a + k1 * u.x + k2 * u.y + k3 * u.z + k4 * u.x * u.y + k5 * u.y * u.z + k6 * u.z * u.x + k7 * u.x * u.y * u.z;
+  let gr = du * vec3f(
+    k1 + k4 * u.y + k6 * u.z + k7 * u.y * u.z,
+    k2 + k5 * u.z + k4 * u.x + k7 * u.z * u.x,
+    k3 + k6 * u.x + k5 * u.y + k7 * u.x * u.y);
+  return vec4f(v * 2.0 - 1.0, gr * 2.0);
+}
+fn frFbmD(p: vec3f, octaves: i32) -> vec4f {
+  var sum = vec4f(0.0);
+  var amp = 0.5;
+  var f = 1.0;
+  for (var o = 0; o < octaves; o++) {
+    let n = frNoiseD(p * f + vec3f(f32(o) * 17.13));
+    sum += vec4f(n.x * amp, n.yzw * amp * f);
+    amp *= 0.5;
+    f *= 2.03;
+  }
+  return sum;
+}
+`;
+const textureNoise = `
+// Value noise in [-1, 1] with its gradient, from the precomputed periodic
+// table (noiseTexture.ts: 128^3 texels over 32 lattice cells, 4 a cell;
+// r = value, gba = gradient / 4): one trilinear fetch instead of eight
+// hashes and a quintic blend.
+fn frNoiseD(nt: texture_3d<f32>, ns: sampler, p: vec3f) -> vec4f {
+  let s = textureSampleLevel(nt, ns, p * (1.0 / 32.0) + vec3f(0.5 / 128.0), 0.0);
+  return vec4f(s.x * 2.0 - 1.0, (s.yzw * 2.0 - 1.0) * 4.0);
+}
+fn frFbmD(nt: texture_3d<f32>, ns: sampler, p: vec3f, octaves: i32) -> vec4f {
+  var sum = vec4f(0.0);
+  var amp = 0.5;
+  var f = 1.0;
+  for (var o = 0; o < octaves; o++) {
+    let n = frNoiseD(nt, ns, p * f + vec3f(f32(o) * 17.13));
+    sum += vec4f(n.x * amp, n.yzw * amp * f);
+    amp *= 0.5;
+    f *= 2.03;
+  }
+  return sum;
+}
+`;
+const library: Node = wgsl(commonLibrary + hashNoise);
+const texturedLibrary: Node = wgsl(commonLibrary + textureNoise);
 
 /**
  * The broken surface. Inputs, all rest space:
@@ -124,10 +150,10 @@ fn frCell(p: vec3f) -> mat2x4f {
  *   side      +1 / -1: which piece of the crack this is (canonical.ts)
  * Returns mat4x4f: [0] = (albedo, roughness), [1] = (normal, ao), [2] = (metalness, height, 0, 0).
  */
-export const fractureSurface: Node = wgslFn(`
-fn fractureSurface(p: vec3f, n: vec3f, cls: f32, relief: f32, fp: f32, base: vec3f, accent: vec3f,
+const fractureSource = (name: string, ic: string): string => `
+fn ${name}(p: vec3f, n: vec3f, cls: f32, relief: f32, fp: f32, base: vec3f, accent: vec3f,
                    a: vec4f, b: vec4f, grain: vec3f, side: f32) -> mat4x4f {
-  let ic = i32(cls + 0.5);
+  let ic = ${ic};
   var color = base;
   var rough = b.y;
   var metal = b.z;
@@ -205,17 +231,26 @@ fn fractureSurface(p: vec3f, n: vec3f, cls: f32, relief: f32, fp: f32, base: vec
   } else if (ic == 2 || ic == 10) {
     // Brick body: fired clay with lighter grog speckle, crossed by the grey
     // mortar beds between courses (rest-space y, every a.y metres).
+    // Each layer only where the footprint resolves it (a Voronoi grog speck
+    // a few millimetres across is 27 cells of work, worthless past a metre or
+    // two); beyond, its mean.
     let cs = 0.006;
-    let cell = frCell(p / cs);
-    let speck = (1.0 - smoothstep(0.18, 0.3, cell[0].x)) * step(frHash(vec3f(cell[0].z * 13.0, 1.0, 1.0)), 0.3);
-    color = mix(color, color * vec3f(1.45, 1.3, 1.15), speck * 0.6 * fine);
-    let blotch = frFbmD(p / 0.04, 2);
-    color *= 0.85 + 0.3 * (blotch.x * 0.5 + 0.5);
+    if (fp < cs * 0.6) {
+      let cell = frCell(p / cs);
+      let speck = (1.0 - smoothstep(0.18, 0.3, cell[0].x)) * step(frHash(vec3f(cell[0].z * 13.0, 1.0, 1.0)), 0.3);
+      color = mix(color, color * vec3f(1.45, 1.3, 1.15), speck * 0.6 * fine);
+    }
+    var blotchV = 0.0;
+    if (fp < 0.02) { blotchV = frFbmD(p / 0.04, 2).x * (1.0 - smoothstep(0.01, 0.02, fp)); }
+    color *= 0.85 + 0.3 * (blotchV * 0.5 + 0.5);
     let course = max(a.y, 0.02);
     let inCourse = fract(p.y / course);
     let joint = 0.011 / course;
-    let wobble = frFbmD(p / 0.01, 2).x * 0.12;
-    let bedOnly = 1.0 - smoothstep(joint * 0.6, joint * (1.0 + wobble), min(inCourse, 1.0 - inCourse) * 2.0);
+    var wobble = 0.0;
+    if (fp < 0.005) { wobble = frFbmD(p / 0.01, 2).x * 0.12; }
+    // Joint edges blur to coverage once a joint is a pixel or less.
+    let blurC = fp / course;
+    let bedOnly = 1.0 - smoothstep(joint * 0.6 - blurC, joint * (1.0 + wobble) + blurC, min(inCourse, 1.0 - inCourse) * 2.0);
     // Head joints on the skin's bond grid (skinSurface): a crack that ran up
     // a head joint shows its broken mortar.
     let alongX = abs(n.x) >= abs(n.z);
@@ -224,9 +259,11 @@ fn fractureSurface(p: vec3f, n: vec3f, cls: f32, relief: f32, fp: f32, base: vec
     let kc = floor(p.y / course);
     let off = select(0.0, len * 0.5, (i32(kc) & 1) == 1);
     let fu = fract((uu + off) / len);
-    let head = 1.0 - smoothstep(0.004, 0.0065 * (1.0 + wobble), min(fu, 1.0 - fu) * len);
+    let head = 1.0 - smoothstep(0.004 - fp, 0.0065 * (1.0 + wobble) + fp, min(fu, 1.0 - fu) * len);
     let bed = max(bedOnly, head * step(0.35, max(abs(n.x), abs(n.z))));
-    let mortar = accent * (0.85 + 0.3 * frFbmD(p / 0.003, 2).x);
+    var mortarV = 0.0;
+    if (fp < 0.003) { mortarV = frFbmD(p / 0.003, 2).x * fine; }
+    let mortar = accent * (0.85 + 0.3 * mortarV);
     color = mix(color, mortar, bed);
     rough = mix(rough, 1.0, bed);
     h -= bed * 0.002;
@@ -236,16 +273,25 @@ fn fractureSurface(p: vec3f, n: vec3f, cls: f32, relief: f32, fp: f32, base: vec
     let along = dot(p, g);
     let across = p - g * along;
     let q = across / max(a.y, 0.0005) + g * along / max(a.y * 25.0, 0.001);
-    let fib = frFbmD(q, 3);
-    let band = smoothstep(-0.15, 0.25, fib.x);
-    color = mix(color, accent, band * a.x * 2.0);
-    let gq = (fib.yzw - g * dot(fib.yzw, g)) / max(a.y, 0.0005);
-    h += fib.x * bump * 1.5;
-    grad += gq * bump * 1.5;
+    // Fibres a fraction of a millimetre wide: past a few per pixel, their
+    // mean (latewood about two fifths of the face).
+    if (fp < a.y * 6.0) {
+      let fib = frFbmD(q, 3);
+      let band = smoothstep(-0.15, 0.25, fib.x);
+      let keep = 1.0 - smoothstep(a.y * 3.0, a.y * 6.0, fp);
+      color = mix(color, accent, mix(0.4, band, keep) * a.x * 2.0);
+      let gq = (fib.yzw - g * dot(fib.yzw, g)) / max(a.y, 0.0005);
+      h += fib.x * bump * 1.5 * keep;
+      grad += gq * bump * 1.5 * keep;
+    } else {
+      color = mix(color, accent, 0.4 * a.x * 2.0);
+    }
   } else if (ic == 5 || ic == 6) {
     // Gypsum: chalk, a little yellowed, crumbly.
-    let blot = frFbmD(p / 0.02, 2);
-    color *= 0.92 + 0.12 * blot.x;
+    if (fp < 0.01) {
+      let blot = frFbmD(p / 0.02, 2);
+      color *= 0.92 + 0.12 * blot.x * (1.0 - smoothstep(0.005, 0.01, fp));
+    }
   } else if (ic == 8) {
     metal = 1.0;
   }
@@ -268,15 +314,16 @@ fn fractureSurface(p: vec3f, n: vec3f, cls: f32, relief: f32, fp: f32, base: vec
     vec4f(metal, h * side, 0.0, 0.0),
     vec4f(0.0));
 }
-`, [library]);
+`;
+export const fractureSurface: Node = wgslFn(fractureSource('fractureSurface', 'i32(cls + 0.5)'), [library]);
 
 /**
  * Rebar steel: dark mill scale blotched with orange rust, and the rolled ribs
  * every ~11 mm along the bar (`along` = distance down the bar, metres).
  * Returns (albedo, roughness).
  */
-export const rebarSurface: Node = wgslFn(`
-fn rebarSurface(p: vec3f, along: f32) -> vec4f {
+const rebarSource = (name: string): string => `
+fn ${name}(p: vec3f, along: f32) -> vec4f {
   let rust = frFbmD(p / 0.015, 3).x * 0.5 + 0.5;
   let fleck = frFbmD(p / 0.003, 2).x * 0.5 + 0.5;
   let scale = vec3f(0.075, 0.07, 0.068);
@@ -286,7 +333,8 @@ fn rebarSurface(p: vec3f, along: f32) -> vec4f {
   color *= 0.7 + 0.3 * rib;
   return vec4f(color, 0.5 + 0.3 * rust - 0.15 * rib);
 }
-`, [library]);
+`;
+export const rebarSurface: Node = wgslFn(rebarSource('rebarSurface'), [library]);
 
 /**
  * The OUTER skin of a material, in the same rest space as its broken
@@ -302,10 +350,10 @@ fn rebarSurface(p: vec3f, along: f32) -> vec4f {
  * Returns mat4x4f like fractureSurface: [0] (albedo, roughness),
  * [1] (normal, ao), [2] (metalness, height, 0, 0).
  */
-export const skinSurface: Node = wgslFn(`
-fn skinSurface(p: vec3f, n: vec3f, cls: f32, fp: f32, color: vec3f, color2: vec3f,
+const skinSource = (name: string, ic: string): string => `
+fn ${name}(p: vec3f, n: vec3f, cls: f32, fp: f32, color: vec3f, color2: vec3f,
                a: vec4f, b: vec4f, grain: vec3f) -> mat4x4f {
-  let ic = i32(cls + 0.5);
+  let ic = ${ic};
   var albedo = color;
   var rough = a.z;
   var metal = 0.0;
@@ -517,4 +565,47 @@ fn skinSurface(p: vec3f, n: vec3f, cls: f32, fp: f32, color: vec3f, color2: vec3
     vec4f(metal, h, 0.0, 0.0),
     vec4f(0.0));
 }
-`, [library]);
+`;
+export const skinSurface: Node = wgslFn(skinSource('skinSurface', 'i32(cls + 0.5)'), [library]);
+
+/**
+ * The surfaces a material draws with:
+ *  - `cls` fixes the class at compile time (null: read it per fragment).
+ *    Every other class's branch folds away, so a draw of one class runs a
+ *    small shader with no divergence. (The uber-shader at scene scale runs
+ *    the union of every class in each SIMD group: tiny far triangles of
+ *    brick, timber and drywall share one group.)
+ *  - `textured` takes value noise from the precomputed table
+ *    (noiseTexture.ts), passed as two extra trailing arguments (the texture
+ *    and its sampler), instead of hashing it per call.
+ */
+export interface SurfaceSet {
+  fracture: Node;
+  skin: Node;
+  rebar: Node;
+}
+
+const NOISE_PARAMS = 'nt: texture_3d<f32>, ns: sampler';
+function withNoiseTexture(source: string): string {
+  const threaded = source.replace(/frNoiseD\(/g, 'frNoiseD(nt, ns, ').replace(/frFbmD\(/g, 'frFbmD(nt, ns, ');
+  // The function's own signature gains the two parameters.
+  return threaded.replace(/\)\s*->/, `, ${NOISE_PARAMS}) ->`);
+}
+
+const sets = new Map<string, SurfaceSet>();
+export function surfaceSet(cls: number | null, textured: boolean): SurfaceSet {
+  const key = `${cls ?? 'any'}:${textured ? 't' : 'h'}`;
+  let set = sets.get(key);
+  if (!set) {
+    const suffix = `${cls === null ? '' : `_c${cls}`}${textured ? '_t' : ''}`;
+    const ic = cls === null ? 'i32(cls + 0.5)' : String(cls);
+    const build = (source: string) => wgslFn(textured ? withNoiseTexture(source) : source, [textured ? texturedLibrary : library]);
+    set = {
+      fracture: build(fractureSource(`fractureSurface${suffix}`, ic)),
+      skin: build(skinSource(`skinSurface${suffix}`, ic)),
+      rebar: build(rebarSource(`rebarSurface${textured ? '_t' : ''}`)),
+    };
+    sets.set(key, set);
+  }
+  return set;
+}
