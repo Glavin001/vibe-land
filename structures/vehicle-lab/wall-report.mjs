@@ -19,6 +19,10 @@
 //             they all stayed on the anchored (kinematic) body: no static
 //             equilibrium exists, so a real wall would have broken there.
 //   PARTIAL   some were freed, but what stayed anchored took more than its bonds can.
+//   PULSE     the tick's average force (what the stage loads the bonds with) was
+//             within what they carry, but the hit's real peak -- an elastic
+//             sphere's Hertz pulse, a millisecond or so, not a tick -- was not:
+//             a real wall breaks locally (punches) where the stage held.
 //   held      the peak force was within what the touched chunks' bonds can carry:
 //             a real wall could have held it (a stop or bounce may be physical).
 // A bounce or stop that is INFINITE or PARTIAL fails (exit 1).
@@ -41,12 +45,12 @@ export function judge(run) {
   const reach = car ? 1.0 : 2 * p.radius;
   const through = p.pastMax > layer + reach;
   const outcome = through ? 'through' : p.vOut < -0.1 * p.vIn ? 'bounce' : Math.abs(p.vOut) < 0.1 * p.vIn ? 'stopped' : 'slowed';
-  const verdict = p.infiniteWall ? 'INFINITE' : p.partialHold ? 'PARTIAL' : p.touched ? 'held' : 'untouched';
-  const fail = (outcome === 'bounce' || outcome === 'stopped') && (verdict === 'INFINITE' || verdict === 'PARTIAL');
+  const verdict = p.infiniteWall ? 'INFINITE' : p.partialHold ? 'PARTIAL' : p.underloaded ? 'PULSE' : p.touched ? 'held' : 'untouched';
+  const fail = (outcome === 'bounce' || outcome === 'stopped') && (verdict === 'INFINITE' || verdict === 'PARTIAL' || verdict === 'PULSE');
   return {
     id, outcome, verdict, fail,
     vIn: p.vIn, vOut: p.vOut, keptPct: 100 * Math.max(p.vOut, 0) / p.vIn, pastMax: p.pastMax, layer,
-    peakMN: p.peakForceN / 1e6, capacityMN: p.touchedCapacityN / 1e6, heldCapacityMN: p.heldCapacityN / 1e6,
+    peakMN: p.peakForceN / 1e6, hertzMN: (p.hertzPeakN ?? 0) / 1e6, hertzMs: p.hertzPulseMs, capacityMN: p.touchedCapacityN / 1e6, heldCapacityMN: p.heldCapacityN / 1e6,
     touched: p.touched, held: p.touchedHeldAnchored, types: p.touchedTypes,
     peakTick: p.peak?.tick, peakBroken: p.peak?.broken, peakAfterCorrection: p.peak?.brokenAfterCorrection, peakCorrections: p.peak?.corrections, peakConverged: p.peak?.converged,
     stopTicks: p.stopTicks, sceneBroken: Object.values(run.sceneBroken ?? {}).reduce((a, b) => a + b, 0), failedSteps: run.failedSteps, converged: run.converged,
@@ -56,10 +60,10 @@ export function judge(run) {
 const rows = runs.map((r) => judge(r));
 const base = baselinePath ? Object.fromEntries(JSON.parse(readFileSync(baselinePath, 'utf8')).rows.map((r) => [r.id, r])) : {};
 const f = (v, d = 1) => (v == null || !Number.isFinite(v) ? '-' : v.toFixed(d));
-console.log(`${'case'.padEnd(40)} ${'outcome'.padEnd(8)} ${'verdict'.padEnd(9)} ${'vIn'.padStart(6)} ${'vOut'.padStart(6)} ${'past'.padStart(6)} ${'peakMN'.padStart(7)} ${'capMN'.padStart(7)} held/touched  peak tick: broken/after-corr/corr/conv  bonds${baselinePath ? '  baseline' : ''}`);
+console.log(`${'case'.padEnd(40)} ${'outcome'.padEnd(8)} ${'verdict'.padEnd(9)} ${'vIn'.padStart(6)} ${'vOut'.padStart(6)} ${'past'.padStart(6)} ${'peakMN'.padStart(7)} ${'capMN'.padStart(7)} ${'pulseMN'.padStart(7)} held/touched  peak tick: broken/after-corr/corr/conv  bonds${baselinePath ? '  baseline' : ''}`);
 for (const r of rows) {
   const b = base[r.id];
-  console.log(`${r.id.padEnd(40)} ${String(r.outcome).padEnd(8)} ${String(r.verdict ?? '').padEnd(9)} ${f(r.vIn).padStart(6)} ${f(r.vOut).padStart(6)} ${f(r.pastMax, 2).padStart(6)} ${f(r.peakMN, 2).padStart(7)} ${f(r.capacityMN, 2).padStart(7)} ${String(r.held ?? '-').padStart(4)}/${String(r.touched ?? '-').padEnd(7)}  ${[r.peakBroken, r.peakAfterCorrection, r.peakCorrections, r.peakConverged].map((v) => v ?? '-').join('/').padEnd(14)} ${String(r.sceneBroken ?? '-').padStart(5)}${r.fail ? '  FAIL' : ''}${b ? `  was ${b.outcome}/${b.verdict}` : ''}`);
+  console.log(`${r.id.padEnd(40)} ${String(r.outcome).padEnd(8)} ${String(r.verdict ?? '').padEnd(9)} ${f(r.vIn).padStart(6)} ${f(r.vOut).padStart(6)} ${f(r.pastMax, 2).padStart(6)} ${f(r.peakMN, 2).padStart(7)} ${f(r.capacityMN, 2).padStart(7)} ${f(r.hertzMN, 1).padStart(7)} ${String(r.held ?? '-').padStart(4)}/${String(r.touched ?? '-').padEnd(7)}  ${[r.peakBroken, r.peakAfterCorrection, r.peakCorrections, r.peakConverged].map((v) => v ?? '-').join('/').padEnd(14)} ${String(r.sceneBroken ?? '-').padStart(5)}${r.fail ? '  FAIL' : ''}${b ? `  was ${b.outcome}/${b.verdict}` : ''}`);
 }
 const count = (k) => rows.reduce((m, r) => ({ ...m, [r[k]]: (m[r[k]] ?? 0) + 1 }), {});
 console.log('outcomes', JSON.stringify(count('outcome')), 'verdicts', JSON.stringify(count('verdict')));
