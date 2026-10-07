@@ -19,6 +19,8 @@ mod city_bench;
 mod city_qa;
 #[cfg(all(test, feature = "native-destruction"))]
 mod perf_bench;
+#[cfg(all(test, feature = "native-destruction"))]
+mod perf_suite;
 mod demo_world;
 mod energy_stream;
 mod heartbeat;
