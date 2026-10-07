@@ -591,9 +591,9 @@ def main() -> None:
     ap.add_argument("--reps", type=int, default=None, help="repetitions (default 1; a baseline wants 3+)")
     ap.add_argument("--profiles", default=None, help="comma list (default runtime,high)")
     ap.add_argument("--label", default="run")
-    ap.add_argument("--compare", default=None, help="baseline report.json (default scripts/perf/suite-baseline.json if present)")
+    ap.add_argument("--compare", default=None, help="baseline report.json (default scripts/perf/suite-baseline.json, or suite-baseline-quick.json for --quick)")
     ap.add_argument("--no-compare", action="store_true")
-    ap.add_argument("--save-baseline", action="store_true", help="write this run as scripts/perf/suite-baseline.json")
+    ap.add_argument("--save-baseline", action="store_true", help="write this run as the tier's baseline (scripts/perf/suite-baseline[-quick].json)")
     ap.add_argument("--report", default=None, help="re-read a run directory (no GPU)")
     ap.add_argument("--capture", action="store_true", help="make the impact captures the high-fidelity replays use")
     ap.add_argument("--replay-runs", type=int, default=None, help="runs of each impact replay per rep (default 1: each is a whole impact tick's solve, 2-12 s)")
@@ -608,7 +608,9 @@ def main() -> None:
     if args.capture:
         capture(spec, args)
         return
-    baseline_default = ROOT / "scripts/perf/suite-baseline.json"
+    def baseline_for(tier: str) -> Path:
+        # One baseline per tier: a quick run compares with the quick baseline.
+        return ROOT / f"scripts/perf/suite-baseline{'-quick' if tier == 'quick' else ''}.json"
     if args.report:
         run_dir = Path(args.report)
     else:
@@ -668,6 +670,7 @@ def main() -> None:
         log(f"built and planned in {work['build_seconds']:.0f} s -> {run_dir}")
         execute(run_dir)
     report = summarise(run_dir)
+    baseline_default = baseline_for(report.get("tier") or "standard")
     base_path = None if args.no_compare else Path(args.compare) if args.compare else (baseline_default if baseline_default.exists() else None)
     base = json.loads(base_path.read_text()) if base_path else None
     if args.save_baseline:
