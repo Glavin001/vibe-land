@@ -10,7 +10,7 @@
 # verdict table; exit 1 when a case meets an infinite wall. A correctness run:
 # it takes a shared GPU slot (VIBE_GPU_SHARED=1, scripts/perf/gpu-run.sh), never
 # the exclusive lock. Keep --jobs at 1 (one GPU job per agent). Extra
-# environment passes through (what-ifs). The profile is scripts/fidelity/*.env;
+# environment passes through (what-ifs; WALL_PACK=path runs another pack). The profile is scripts/fidelity/*.env;
 # high runs on the integration SDK (HIGH_PHYSX_ROOT, default garage-hifi).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,7 +33,7 @@ case $profile in
   *) echo "profile runtime|high" >&2; exit 2 ;;
 esac
 "$ROOT/scripts/fidelity/check.sh"
-pack=$("$ROOT/scripts/fidelity/packs.sh" "$profile" | sed -n "s/^$scene=//p")
+pack=${WALL_PACK:-$("$ROOT/scripts/fidelity/packs.sh" "$profile" | sed -n "s/^$scene=//p")}
 if [ "$scene" = town ]; then export VIBE_TESTBED_SCENE=town; fi
 [ -f "$pack" ] || { echo "no $profile lab pack at $pack: scripts/fidelity/build-packs.sh $profile" >&2; exit 1; }
 export VIBE_CITY_SCENE="$pack"

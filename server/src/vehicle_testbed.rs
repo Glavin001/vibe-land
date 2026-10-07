@@ -18,6 +18,7 @@
 //! VIBE_TESTBED_TRIALS   trial ids or prefixes (default all); `id$` matches that id exactly
 //! VIBE_TESTBED_LABEL    report name: target/vehicle-testbed/<label>.json (default "report")
 //! VIBE_TESTBED_META     the lab meta (default structures/vehicle-lab/out/vehicle-lab.meta.json)
+//! VIBE_TESTBED_SERVER_POLICY=1  the plain server's stage policy (main.rs apply_stage_policy_defaults) first
 //! VIBE_TESTBED_TRACE=1  a per-tick trace of the car in each run (speed, z, height, jounce)
 //! VIBE_TESTBED_START_OFFSET=dx,dz  start the car off its slot (m): how much an outcome depends on the exact pose
 //! VIBE_VEHICLE_ROAD_LOG=1  per tick: the bridge's road hits, then the wheels' loads, the car's stress input by
@@ -51,6 +52,11 @@ fn repo() -> std::path::PathBuf { std::path::PathBuf::from(env!("CARGO_MANIFEST_
 /// The native app's settings (sim-native city.rs apply_app_defaults), for
 /// anything not already set.
 fn app_settings() {
+    // VIBE_TESTBED_SERVER_POLICY=1: the stage policy as the plain server sets
+    // it (main.rs apply_stage_policy_defaults), not the app's list below --
+    // run with PX_DESTRUCTION_ALLOW_UNCONVERGED unset to test that path.
+    let server_policy = std::env::var_os("VIBE_TESTBED_SERVER_POLICY").is_some();
+    if server_policy { crate::apply_stage_policy_defaults(); }
     for (name, value) in [
         ("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1"),
         ("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1"),
@@ -62,8 +68,10 @@ fn app_settings() {
         ("VIBE_CITY_GRID", "1"),
         ("VIBE_CITY_VARIED_HEIGHTS", "0"),
     ] {
+        if server_policy && name == "PX_DESTRUCTION_ALLOW_UNCONVERGED" { continue; }
         if std::env::var_os(name).is_none() { std::env::set_var(name, value); }
     }
+    if server_policy { eprintln!("[testbed] server stage policy: PX_DESTRUCTION_ALLOW_UNCONVERGED={:?}", std::env::var("PX_DESTRUCTION_ALLOW_UNCONVERGED").ok()); }
     if std::env::var_os("VIBE_CITY_SCENE").is_none() {
         let pack = if town() { "structures/vibe-town/out/vibe-town.json" } else { "structures/vehicle-lab/out/vehicle-lab.json" };
         std::env::set_var("VIBE_CITY_SCENE", repo().join(pack));
@@ -469,7 +477,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     let strength = (trial["probe"].as_bool() == Some(true)).then(|| wall_matrix::Strength::load(&std::env::var("VIBE_CITY_SCENE").unwrap()));
     let mut probe: Option<wall_matrix::Probe> = None;
     let (mut probe_last, mut probe_pid) = (None::<Vector3<f32>>, None::<u32>);
-    let (mut energy_nodes, mut energy_since): (Vec<u32>, Option<u32>) = (Vec::new(), None);
+    let (mut energy_nodes, mut energy_since, mut energy_v0): (Vec<u32>, Option<u32>, f32) = (Vec::new(), None, 0.);
     let probe_target = trial["target"].as_array().map(|t| Vector3::new(t[0].as_f64().unwrap() as f32, t[1].as_f64().unwrap() as f32, t[2].as_f64().unwrap() as f32));
     let heading_of = |f: Vector3<f32>| f.x.atan2(f.z);
     for k in 0..ticks {
@@ -791,7 +799,8 @@ fn run(r: &Run, meta: &Value) -> Value {
                 }
                 // The energy balance, every third tick for 1.5 s after first contact.
                 if energy_nodes.is_empty() { energy_nodes = strength.nodes_of(group); }
-                if pr.touched.contains_key(&(tick - 1)) { energy_since.get_or_insert(tick); }
+                // From first contact: the impactor's speed then is what it can lose.
+                if pr.touched.contains_key(&(tick - 1)) && energy_since.is_none() { energy_since = Some(tick); energy_v0 = pr.trace.iter().rev().nth(1).map_or(speed, |r| r[4]); }
                 if energy_since.is_some_and(|s| tick - s <= 90 && (tick - s) % 3 == 0) {
                     let world = arena.physx_world_mut().expect("physx");
                     let anchored = vibe_land_physx_bridge::native_entity_id(0, 0);
@@ -811,8 +820,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                         }
                     }
                     for (m, v) in bodies.values() { kinetic += 0.5 * m * v.norm_squared(); up = up.max(v.y); if v.norm() > 0.5 { moving += 1.; } }
-                    let v0 = pr.trace.first().map_or(0., |r| r[4]);
-                    let lost = 0.5 * pr.mass * (v0 * v0 - speed * speed);
+                    let lost = 0.5 * pr.mass * (energy_v0 * energy_v0 - speed * speed);
                     pr.energy.push([tick as f32 - 1., kinetic, released.max(0.), lost, up, moving]);
                 }
             }
@@ -939,6 +947,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         out["probe"] = pr.summary(strength, DT);
         out["layer"] = trial["layer"].clone();
         out["matrix"] = trial["matrix"].clone();
+        out["expect"] = trial["expect"].clone();
         if tracing { out["probeTrace"] = json!(pr.trace); }
     }
     out["stepMs"] = json!({"median": sorted.get(sorted.len() / 2), "p95": sorted.get(sorted.len() * 95 / 100), "max": sorted.last()});

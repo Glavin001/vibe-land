@@ -21,7 +21,7 @@
 //                   the case alone for a case take, every case for the overview):
 //                   case-scene.mjs keeps their nodes in spec order, so chunk k
 //                   is the k-th of their nodes; one case alone, and the scene's
-//                   broken bonds are that case's own
+//                   broken bonds are that case's own; `all`: the whole scenario
 //   CALIB_CONFIG    the engine configuration filmed, for captions and the
 //                   verdict fallback: section (default), default or rotation
 //                   (its env -- VIBE_SECTION_BENDING=1 for section -- is the caller's)
@@ -62,6 +62,7 @@ import { nodesBox, criticalBox, union, padded, size, fit, sideBearing } from './
 
 const SCENARIO = typeof CALIB_SCENARIO === 'string' && CALIB_SCENARIO ? CALIB_SCENARIO : 'bridge-piers';
 const CASE = typeof CALIB_CASE === 'string' && CALIB_CASE ? CALIB_CASE : 'overview';
+// `all`: the scenario's whole scene.
 const SCENE_CASES = typeof CALIB_SCENE_CASES === 'string' && CALIB_SCENE_CASES ? CALIB_SCENE_CASES.split(',').map((x) => x.trim()) : null;
 const CONFIG = typeof CALIB_CONFIG === 'string' && CALIB_CONFIG ? CALIB_CONFIG : 'section';
 const FREEZE = typeof CALIB_FREEZE === 'number' ? CALIB_FREEZE : 0;
@@ -133,7 +134,8 @@ function outcome({ broken, drop }, criteria) {
 }
 
 function engineLine(m) {
-  const bonds = `${m.broken} bond${m.broken === 1 ? '' : 's'} broken`;
+  // Bonds per case are only counted live in a scene of that case alone; else the GPU test's.
+  const bonds = `${m.broken} bond${m.broken === 1 ? '' : 's'} broken${m.brokenFrom === 'verdict' ? ' (GPU test)' : ''}`;
   switch (m.state) {
     case 'collapses': return `Engine: collapses -- ${bonds}, ${m.fallen} chunks down, fell ${metres(m.drop)}`;
     case 'fractured': return `Engine: ${bonds}, but nothing fell${m.drop >= 0.001 ? ` (largest drop ${metres(m.drop)})` : ''}`;
@@ -217,11 +219,20 @@ function caseTake({ spec, scenario, verdict, c, held }) {
   const sample = (ctx) => { const city = ctx.e2e.drawnWorld?.()?.city; if (city) meter.take(city); };
 
   const WIDE = 7, CLOSE = 6.5;
-  const wideA = fit(box, { bearing: side - 4, elevation: hints.elevation ?? 8, fov, margin: 0.92 });
-  const wideB = fit(box, { bearing: side + 6, elevation: (hints.elevation ?? 8) + 3, fov, margin: 0.86 });
+  // Among the other cases (a scene of more than this one), from high enough to
+  // see this one's foot over the top of the case in front of it (the nearest
+  // on the camera's side, the -z or -x side).
+  const crowded = !held || held.length > 1;
+  const across = along === 0 ? 2 : 0;
+  const inFront = crowded ? (held ?? spec.cases).filter((x) => x.id !== c.id).map((x) => nodesBox(scenario, x.nodes))
+    .filter((b) => b.max[across] <= box.min[across] + 0.01).sort((a, b) => b.max[across] - a.max[across])[0] : null;
+  const over = inFront ? Math.min(55, Math.max(24, (Math.atan2(Math.max(0, inFront.max[1]) + 1, Math.max(1, box.min[across] - inFront.max[across])) * 180) / Math.PI + 3)) : null;
+  const elevation = hints.elevation ?? over ?? 8, closeElevation = hints.closeElevation ?? (over != null ? over + 2 : 12);
+  const wideA = fit(box, { bearing: side - 4, elevation, fov, margin: 0.92 });
+  const wideB = fit(box, { bearing: side + 6, elevation: elevation + 3, fov, margin: 0.86 });
   const closeBearing = hints.closeBearing ?? sideBearing(box) - 40;
-  const closeA = fit(focus, { bearing: closeBearing + 6, elevation: hints.closeElevation ?? 12, fov: 45, margin: 1.15 });
-  const closeB = fit(focus, { bearing: closeBearing - 6, elevation: (hints.closeElevation ?? 12) + 3, fov: 45, margin: 1.05 });
+  const closeA = fit(focus, { bearing: closeBearing + 6, elevation: closeElevation, fov: 45, margin: 1.15 });
+  const closeB = fit(focus, { bearing: closeBearing - 6, elevation: closeElevation + 3, fov: 45, margin: 1.05 });
   const lines = [`${c.label}\n${predictionLine(c)}`];
   return [
     sampled(path([wideA, wideB], WIDE, {
@@ -305,7 +316,7 @@ try {
   // From tick 0: a case with its supports out starts to fail on its first tick.
   const film = await boot({ scene: 'calib', settle: 0 });
   const chunks = film.e2e.snapshot()?.city?.chunksTotal ?? 0;
-  const ids = SCENE_CASES ?? (c ? [c.id] : null);
+  const ids = SCENE_CASES?.[0] === 'all' ? null : SCENE_CASES ?? (c ? [c.id] : null);
   const held = ids ? ids.map((id) => spec.cases.find((x) => x.id === id) ?? (() => { throw new Error(`CALIB_SCENE_CASES: no case ${id}`); })()) : null;
   const expected = held ? held.reduce((n, x) => n + x.nodes[1] - x.nodes[0], 0) : scenario.nodes.length;
   film.log(`calib ${SCENARIO} ${CASE} (${CONFIG}; scene: ${ids ? ids.join(', ') : 'every case'}): ${chunks} chunks in the scene, ${expected} expected${chunks !== expected ? ' -- WARNING: the scene is not the one the spec describes' : ''}`);

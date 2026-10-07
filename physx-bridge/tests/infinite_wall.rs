@@ -39,7 +39,7 @@
 //!   --test infinite_wall -- --ignored --test-threads=1 --nocapture
 
 use vibe_land_physx_bridge::{
-    ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, LaunchedBallDesc, NativeConfig, Pose, Quat, StressMaterialDesc, Vec3,
+    ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, LaunchedBallDesc, NativeConfig, Pose, Quat, StaticBoxDesc, StressMaterialDesc, Vec3,
     World, WorldConfig,
 };
 
@@ -190,10 +190,118 @@ fn reported(text: &str, key: &str) -> f32 {
     text.lines().find_map(|l| l.strip_prefix(&format!("{key}="))).unwrap_or_else(|| panic!("no {key}:\n{text}")).trim().parse().unwrap()
 }
 
+/// The meteor (110 t of rock, r 2 m) at 140 m/s, descending at slope 0.3,
+/// into static ground (the city's floor is a static box): its velocity each
+/// tick [along, up].
+fn meteor_on_ground(gap: f32, paved: bool) -> Vec<[f32; 2]> {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let paved = paved || matches!(std::env::var(ARM).as_deref(), Ok("meteor_wall" | "meteor_footing"));
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.add_static_box(StaticBoxDesc { entity_id: 0x0100_0001, user_id: 1, pose: Pose { position: Vec3::new(0.0, -5.16, 0.0), rotation: identity() },
+        half_extents: Vec3::new(500.0, 5.0, 500.0), collision_group: GROUP_CHUNK, collision_mask: ALL }).unwrap();
+    if paved {
+        // The lab's paving (build-lab.mjs): 4 x 4 m slabs of asphalt 25 mm
+        // thick (955 kg) on a fixed subgrade 0.16 m deep, each bonded to it
+        // over its whole face with the footing's limits -- what the ground is
+        // wherever a lane is paved: part of an anchored, kinematic structure.
+        world.native_attach().unwrap();
+        let node = |i: u32, c: Vec3, h: Vec3, m: f32| ChunkNodeDesc { node_index: i, centroid: c, mass: m, volume: 8.0 * h.x * h.y * h.z,
+            geom_kind: 0, half_extents: h, convex_points: Vec::new(), material: 0 };
+        let mut nodes = vec![node(0, Vec3::new(0.0, -0.08, 8.0), Vec3::new(6.0, 0.08, 14.0), 0.0)];
+        let mut bonds = Vec::new();
+        for (k, z) in [-2.0f32, 2.0, 6.0, 10.0, 14.0, 18.0].iter().enumerate() {
+            for (j, x) in [-2.0f32, 2.0].iter().enumerate() {
+                let i = 1 + 2 * k as u32 + j as u32;
+                nodes.push(node(i, Vec3::new(*x, 0.0125, *z), Vec3::new(2.0, 0.0125, 2.0), 955.0));
+                bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: 0, node1: i, centroid: Vec3::new(*x, 0.0, *z), normal: Vec3::new(0.0, 1.0, 0.0), area: 15.9, material: 0 });
+            }
+        }
+        // "meteor_wall": a wall standing on the paving: a footing (mass 0,
+        // 0.3 m proud of the paving, as the veneer house's) carrying six
+        // 1 x 2 x 0.1 m brick panels (380 kg) on brittle bonds, across the
+        // meteor's path 20 m on, where it lands.
+        // "meteor_footing": the veneer house's strip footing alone (mass 0:
+        // a support, kinematic and unbreakable), 0.3 m proud of the paving,
+        // 0.6 m wide, across the meteor's path at z 19.7.
+        if std::env::var(ARM).as_deref() == Ok("meteor_footing") {
+            let f = nodes.len() as u32;
+            nodes.push(node(f, Vec3::new(0.0, 0.175, 20.0), Vec3::new(3.0, 0.15, 0.3), 0.0));
+        }
+        if std::env::var(ARM).as_deref() == Ok("meteor_wall") {
+            let f = nodes.len() as u32;
+            nodes.push(node(f, Vec3::new(0.0, 0.175, 20.0), Vec3::new(3.0, 0.15, 0.3), 0.0));
+            for j in 0..6u32 {
+                let i = f + 1 + j;
+                let x = -2.5 + j as f32;
+                nodes.push(node(i, Vec3::new(x, 1.325, 20.0), Vec3::new(0.5, 1.0, 0.05), 380.0));
+                bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: f, node1: i, centroid: Vec3::new(x, 0.325, 20.0), normal: Vec3::new(0.0, 1.0, 0.0), area: 0.1, material: 1 });
+                if j > 0 { bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: i - 1, node1: i, centroid: Vec3::new(x - 0.5, 1.325, 20.0), normal: Vec3::new(1.0, 0.0, 0.0), area: 0.2, material: 1 }); }
+            }
+        }
+        let footing = StressMaterialDesc { compression_elastic: 1e8, compression_fatal: 1e9, tension_elastic: 1.3e7, tension_fatal: 1.3e8,
+            shear_elastic: 5e7, shear_fatal: 5e8, elastic_modulus: 30e9, residual_area_fraction: 0.0 };
+        // Mortared brick: 0.5 MPa in tension, 1 MPa in shear, 10 MPa in compression.
+        let brick = StressMaterialDesc { compression_elastic: 5e6, compression_fatal: 1e7, tension_elastic: 2.5e5, tension_fatal: 5e5,
+            shear_elastic: 5e5, shear_fatal: 1e6, elastic_modulus: 10e9, residual_area_fraction: 0.0 };
+        let settings = DestructibleSettings { max_solver_iterations_per_frame: 64, materials: vec![footing, brick], maximum_bodies: 0, maximum_fractures_per_actor_per_tick: 0,
+            linear_damping: 0.0, angular_damping: 0.0, ..DestructibleSettings::default() };
+        world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: identity() }, &nodes, &bonds, settings, GROUP_CHUNK, ALL).unwrap();
+        world.step().unwrap();
+        world.native_configure(NativeConfig { max_iterations: 64, tolerance: 1e-3, force_tolerance: 0.0, warm_start: true, damage_rate: 2.0, bend_gain_max: 3.0,
+            fibre_bending: true, reserved_contact_pairs: 64, preserve_unchanged_contact_pairs: true, gpu_island_repair: true, verdict_sample_ticks: 1 }).unwrap();
+    }
+    for _ in 0..5 { world.step().unwrap(); if paved { world.native_tick().unwrap(); } }
+    let ground = if paved { 0.025 } else { 0.0 };
+    let (mass, radius, speed, slope) = (110_000.0f32, 2.0f32, 140.0f32, 0.3f32);
+    let n = (1.0 + slope * slope).sqrt();
+    let v = Vec3::new(0.0, -speed * slope / n, speed / n);
+    // Its surface `gap` over the ground at the end of the first tick: a gap
+    // under one tick's fall (0.67 m) puts it that far short of the ground into
+    // it on the next, as a discrete step does wherever the rock happens to be.
+    // meteor_wall: it lands against the wall's foot (its centre 2.2 m short of the wall face).
+    let z0 = if std::env::var(ARM).as_deref() == Ok("meteor_wall") { 19.95 - radius - 0.2 - v.z * DT } else { 0.0 };
+    // meteor_footing: one tick before its lower front meets the footing's top
+    // edge (z 19.7, y 0.325) at 45 degrees -- as the film's meteor met the
+    // veneer house's -- less `gap` along its path, so the step lands it from
+    // just touching to well into the edge.
+    let footing = std::env::var(ARM).as_deref() == Ok("meteor_footing");
+    let start = if footing {
+        let d = radius / 2f32.sqrt();
+        let along = (gap * 3.0 + 1.0) * DT;
+        Vec3::new(0.0, 0.325 + d - v.y * along, 19.7 - d - v.z * along)
+    } else { Vec3::new(0.0, ground + radius + gap - v.y * DT, z0) };
+    world.launch_dynamic_ball(LaunchedBallDesc { entity_id: BALL, user_id: 1, pose: Pose { position: start, rotation: identity() },
+        radius, mass, linear_velocity: v, collision_group: GROUP_BALL, collision_mask: ALL }).unwrap();
+    let mut out = Vec::new();
+    for _ in 0..30 {
+        world.step().unwrap();
+        if paved { let status = world.native_tick().unwrap(); if status.broken_bonds > 0 { println!("paving broke {} bonds", status.broken_bonds); } }
+        let ball = world.body_snapshots().unwrap().into_iter().find(|b| b.entity_id == BALL).expect("meteor");
+        println!("meteor y {:.2} along {:.2} up {:.2}", ball.pose.position.y, ball.linear_velocity.z, ball.linear_velocity.y);
+        out.push([ball.linear_velocity.z, ball.linear_velocity.y]);
+    }
+    out
+}
+
 #[test]
 #[ignore = "spawned by layered_wall"]
 fn arm() {
     let Ok(arm) = std::env::var(ARM) else { return };
+    if arm.starts_with("meteor_") {
+        // Wherever the last step before contact leaves it: 1 cm (inside the
+        // contact offset) to 0.6 m up.
+        let (mut up, mut along) = (f32::MIN, f32::MAX);
+        for gap in [0.01f32, 0.2, 0.4, 0.6] {
+            let track = meteor_on_ground(gap, arm == "meteor_paving");
+            let u = track.iter().map(|v| v[1]).fold(f32::MIN, f32::max);
+            println!("gap {gap}: up {u:.2} along {:.2}", track.last().unwrap()[0]);
+            up = up.max(u);
+            along = along.min(track.last().unwrap()[0]);
+        }
+        println!("up_max={up}");
+        println!("along_end={along}");
+        return;
+    }
     let plates = match arm.as_str() { "one_plate" | "unbreakable" | "light_ball" => 1, "grid" => 4, _ => 2 };
     let (vz, broken) = strike(plates);
     println!("v_end={}", vz.last().unwrap());
@@ -281,4 +389,55 @@ fn fragment_depenetration_cap() {
     let floor = BALL_MASS * V0 / (BALL_MASS + 2.0 * PLATE_MASS);
     println!("two plates, fragments capped at 2 m/s: v_end {end:.2} v_min {min:.2} (v >= {floor:.2})");
     assert!(min >= 0.9 * floor, "the depenetration cap made a wall: {min:.2} m/s\n{text}");
+}
+
+/// A meteor off static ground (the integration agent's film: the meteor
+/// "bounces off the ground behind the house"). It meets the ground at
+/// v_n = 140 sin(atan 0.3) = 40.2 m/s; the world's restitution is 0.1, so it
+/// may leave it at no more than e v_n = 4.0 m/s upward (Hibbeler, Dynamics,
+/// 15.4; a rigid floor -- soil would take more). Faster is energy the contact
+/// made, not the collision: discrete steps put the rock a metre into the
+/// ground before the contact sees it, and pushing it out at whatever speed
+/// that takes is a launch.
+#[test]
+#[ignore = "requires the GPU and the native-destruction SDK"]
+fn meteor_rebound_off_ground() {
+    let vn = 140.0 * (0.3f32).atan().sin();
+    let mut failures = Vec::new();
+    // Static ground (the city's floor), and paving: slabs on a fixed subgrade, an anchored structure.
+    for arm in ["meteor_ground", "meteor_paving", "meteor_wall"] {
+        let text = run_arm(arm, &[]);
+        let (up, along) = (reported(&text, "up_max"), reported(&text, "along_end"));
+        println!("{arm}: up to {up:.1} m/s (e v_n = {:.1}), along {along:.1}", 0.1 * vn);
+        if up > 0.1 * vn + 1.0 { failures.push(format!("{arm}: the meteor left at {up:.1} m/s up, restitution allows {:.1}\n{text}", 0.1 * vn)); }
+    }
+    assert!(failures.is_empty(), "energy from the contact:\n{}", failures.join("\n"));
+}
+
+/// The film's meteor (2026-10-07, vehicle-lab-*-071202-final.mp4: "bounces
+/// off the ground behind the house"): its track in the wall matrix
+/// (wm-veneer-meteor-film) goes from (134 along, -45 up) to (21.6, +40.3) in
+/// one tick -- an impulse of 141 m/s x 110 t along a normal 37 degrees up and
+/// back, a near-plastic stop on a ramp: the lower front of the rock on the
+/// house's strip footing's top edge, a support (mass 0) and so kinematic and
+/// unbreakable, 0.155 m proud of the paving. Not its depenetration
+/// (VIBE_CITY_BALL_MAX_DEPENETRATION=1 changes nothing) and not the fragment
+/// cap (lifted, the same).
+///
+/// What a concrete edge can do: it crushes. Concrete carries at most its
+/// crushing strength, ~30 MPa (EN 1992-1-1 C30), and the face the rock can
+/// press on is no taller than the footing stands proud (0.3 m here) and no
+/// wider than the rock (2 r = 4 m): at most sigma h 2 r = 36 MN, over a tick
+/// 0.6 MN s, which turns 110 t by 5.5 m/s. With its rebound (e v_n = 4.0) the
+/// rock leaves the edge no faster than 9.5 m/s upward. A kinematic edge -- a
+/// support never breaks or crushes -- throws it up at whatever the ramp gives.
+#[test]
+#[ignore = "requires the GPU and the native-destruction SDK"]
+fn meteor_on_a_foundation() {
+    let text = run_arm("meteor_footing", &[]);
+    let up = reported(&text, "up_max");
+    let (sigma, proud, r, m) = (30e6f32, 0.3f32, 2.0f32, 110_000.0f32);
+    let bound = 0.1 * 140.0 * (0.3f32).atan().sin() + sigma * proud * 2.0 * r * DT / m;
+    println!("meteor on the footing: up to {up:.1} m/s; a crushing concrete edge allows {bound:.1}");
+    assert!(up <= bound, "an infinite foundation: the footing edge threw the meteor up at {up:.1} m/s, concrete could not exceed {bound:.1}\n{text}");
 }

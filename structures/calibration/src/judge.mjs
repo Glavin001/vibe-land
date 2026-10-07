@@ -43,7 +43,10 @@ export function measure(spec, report, c) {
   const free = [...Array(n).keys()].filter((i) => anchored0.has(find0(i)) && !anchored.has(find(i)));
   // collapses: it fell. fractured: a piece is free of every anchor but has not fallen (it is jammed
   // or resting on the rest). damaged: bonds broke, everything still hangs from an anchor.
-  const state = maxDrop >= spec.criteria.collapseMinDrop ? 'collapses' : free.length ? 'fractured' : broken.length === 0 && maxMove <= spec.criteria.holdsMaxDrop ? 'holds' : 'damaged';
+  // holdsByDrop (masonry): a cracked joint is not a failure, a fallen arch is.
+  const state = maxDrop >= spec.criteria.collapseMinDrop ? 'collapses'
+    : spec.holdsByDrop ? (maxDrop <= spec.criteria.holdsMaxDrop ? 'holds' : 'damaged')
+    : free.length ? 'fractured' : broken.length === 0 && maxMove <= spec.criteria.holdsMaxDrop ? 'holds' : 'damaged';
   return { state, broken: broken.length, firstTick, freeChunks: free.length, freeExamples: free.slice(0, 6).map((i) => c.names[i]), firstBroken: broken.filter((b) => b.tick === firstTick), brokenList: broken.slice(0, 40),
     maxDrop: +maxDrop.toFixed(3), maxMove: +maxMove.toFixed(3), fallenChunks: drops.filter((d) => d > spec.criteria.collapseMinDrop).length, worstChunk: worstNode == null ? null : c.names[worstNode], sceneBonds };
 }
@@ -108,7 +111,7 @@ export function judge(spec, report, config, model) {
     // among the bonds over 1 + band (or, when none is, within 5% of the worst).
     const worstU = prediction.u, overBand = (prediction.over ?? []).filter((o) => o.u > 1 + (spec.band ?? 0)).map((o) => o.key);
     const critical = overBand.length ? overBand : (prediction.over ?? []).filter((o) => o.u >= 0.95 * worstU).map((o) => o.key);
-    const membersOk = prediction.state === 'holds' ? (m.broken === 0 || m.tolerated === m.broken) : prediction.state === 'collapses' ? critical.some((k) => firstSet.has(k)) : true;
+    const membersOk = spec.holdsByDrop || !critical.length ? true : prediction.state === 'holds' ? (m.broken === 0 || m.tolerated === m.broken) : prediction.state === 'collapses' ? critical.some((k) => firstSet.has(k)) : true;
     results.push({ case: c.id, label: c.label, predicted: { state: prediction.state, u: prediction.u, worst: prediction.worst },
       measured: { state: m.state, broken: m.broken, firstTick: m.firstTick, maxDrop: m.maxDrop, maxMove: m.maxMove, fallen: m.fallenChunks, free: m.freeChunks, firstBroken: firstKeys, mustBreak, missed: mustBreak.filter((k) => !firstSet.has(k)) },
       stress: { critical: stress.critical && { key: stress.critical.key, engine: +stress.critical.engine.toFixed(3), hand: stress.critical.hand }, engineWorst: stress.engineWorst && { key: stress.engineWorst.key, engine: +stress.engineWorst.engine.toFixed(3), hand: stress.engineWorst.hand }, ratio: stress.ratio },

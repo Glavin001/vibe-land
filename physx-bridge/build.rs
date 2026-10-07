@@ -397,6 +397,9 @@ fn add_native_destruction(
             "PX_DESTRUCTION_SECTION_ROTATIONAL_STIFFNESS",
             "VIBE_PHYSX_HAS_SECTION_ROTATION",
         ),
+        // A fastened bearing joint graded by its fasteners once the contact
+        // opens (PxDestructionBondSection::bearingDepth0/1).
+        ("PX_DESTRUCTION_BEARING_JOINTS", "VIBE_PHYSX_HAS_BEARING_JOINTS"),
         // A crushed chunk splits off as its own body and its step completes
         // under the correction; without it a crush freezes the scene, so the
         // bridge refuses to pass crush properties to an SDK that lacks it.

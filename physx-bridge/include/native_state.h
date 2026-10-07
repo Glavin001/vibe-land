@@ -172,6 +172,8 @@ struct NativeDestruction::State {
   // Per material (global index): a compressed bearing joint's pin in bending
   // (stiffness radius, and g^2 / reach for its grading), 0 none.
   std::vector<float> bend_gyration, bend_section;
+  // Per material (global index): 1 for a fastened bearing joint.
+  std::vector<float> bearing_joint;
 #endif
   /// (structure, authored bond index) per stage bond, in stage order.
   std::vector<std::pair<std::uint32_t, std::uint32_t>> bond_ids;

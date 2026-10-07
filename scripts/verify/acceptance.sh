@@ -27,6 +27,26 @@ export VIBE_GPU_SHARED=1
 sdk=$(basename "$PHYSX_ROOT")
 export CARGO_TARGET_DIR=$ROOT/target/verify-server-$sdk
 export QUALIFY_TARGET_DIR=$CARGO_TARGET_DIR
+# Stall guard: a harness whose log (or $WATCH) stops growing for VERIFY_STALL_S (default
+# 900) s is stuck (an impact solve that never returns, a GPU wait behind another
+# process's hung dispatch): kill it and say so in its log.
+watched() {
+  local log=$1; shift
+  "$@" > "$log" 2>&1 &
+  local pid=$! last=$(date +%s) size=-1
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 5
+    local now=$(date +%s) cur=$(stat -f %z "${WATCH:-$log}" 2>/dev/null || echo 0)
+    [ "$cur" != "$size" ] && { size=$cur; last=$now; }
+    if [ $(( now - last )) -ge "${VERIFY_STALL_S:-900}" ]; then
+      pkill -9 -f "VIBE_TESTBED_LABEL=$label" 2>/dev/null; pkill -9 -P "$pid" 2>/dev/null
+      kill -9 "$pid" 2>/dev/null
+      echo "STALLED: no output for ${VERIFY_STALL_S:-900} s; killed" >> "$log"
+      return 124
+    fi
+  done
+  wait "$pid"
+}
 want() { [[ ",$skip," != *",$1,"* ]]; }
 mark() { # name status
   echo "$2" > "$out/$1.status"; echo "[acceptance] $1: $2"
@@ -41,7 +61,7 @@ if want testbed; then
   trials=framed-house,house,cannonball-framed-house,meteor-framed-house,smallshots-framed-house,rest,near-miss,knock-mirror,coast,debris-wheel,drift
   label=verify-acceptance-$profile
   (cd "$ROOT" && VIBE_CITY_SCENE="$lab" VIBE_TESTBED_META="${lab%.json}.meta.json" \
-    scripts/vehicle-testbed.sh --build monster --trials "$trials" --label "$label" --report-only) > "$out/testbed.log" 2>&1
+    WATCH="$ROOT/target/vehicle-testbed/$label.log" watched "$out/testbed.log" scripts/vehicle-testbed.sh --build monster --trials "$trials" --label "$label" --report-only)
   cp "$ROOT/target/vehicle-testbed/$label.json" "$out/testbed.json" 2>/dev/null
   cp "$ROOT/target/vehicle-testbed/$label-verdict.json" "$out/testbed-verdict.json" 2>/dev/null
   mark testbed "$([ -f "$out/testbed.json" ] && echo ok || echo "failed (see testbed.log)")"

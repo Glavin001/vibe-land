@@ -136,6 +136,9 @@ struct Result {
   physx::PxDestructionBondSection section{}; // zero moduli: no patch found
   double geometric_area = 0;                 // the patch's own area (m^2)
   double depth = 0;                          // 6 S_min / A: the shallow depth (m)
+  // Half-depths across each bending axis at the authored area (m): for a
+  // moment about the section's axis (fibres along e1) and about n x axis.
+  double reach_about_axis = 0, reach_about_axis1 = 0;
   bool found = false;
 };
 
@@ -239,6 +242,11 @@ inline Result section(const std::vector<P3> &a, const std::vector<P3> &b, const 
   r.section.polarGyration = float(std::sqrt((lam0 + lam1) / A) * k05);
 #endif
   r.geometric_area = A;
+  {
+    const double k05r = std::sqrt(area / A);
+    r.reach_about_axis = reach1 * k05r;
+    r.reach_about_axis1 = reach0 * k05r;
+  }
   r.depth = 6 * std::min(s0, s1) / area;
   r.found = r.section.bendModulus0 > 0 && r.section.bendModulus1 > 0 && r.section.twistModulus > 0;
   if (!r.found) r.section = {};

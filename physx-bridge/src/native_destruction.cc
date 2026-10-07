@@ -429,6 +429,9 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
                    "bearing tables must be empty or parallel to the materials");
     s.bend_gyration.push_back(settings.bend_gyration.empty() ? 0.0f : std::max(0.0f, settings.bend_gyration[index]));
     s.bend_section.push_back(settings.bend_section.empty() ? 0.0f : std::max(0.0f, settings.bend_section[index]));
+    native_require(settings.bearing_joint.empty() || settings.bearing_joint.size() == settings.materials.size(),
+                   "bearing joint table must be empty or parallel to the materials");
+    s.bearing_joint.push_back(settings.bearing_joint.empty() ? 0.0f : settings.bearing_joint[index]);
     ++index;
     s.materials.push_back(out);
   }
@@ -456,7 +459,7 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
       for (const PxShape *shape : e->second) vibe_bond_section::append_vertices(*shape, v);
     return vertices.emplace(chunk, std::move(v)).first->second;
   };
-  std::size_t found = 0, fastened = 0;
+  std::size_t found = 0, fastened = 0, bearing = 0;
   std::vector<double> depths, ratios;
   for (std::size_t i = bond_base; i < s.bonds.size(); ++i) {
     const auto &b = s.bonds[i];
@@ -484,6 +487,16 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
       s.sections[i].bendModulus0 = s.sections[i].bendModulus1 = b.area * s.bend_section[b.material];
     }
 #endif
+#if defined(VIBE_PHYSX_HAS_BEARING_JOINTS)
+    // A fastened joint whose members bear on each other (town-kit
+    // bearingJoint): graded by its fasteners once the contact opens at the
+    // patch's half-depths, T = M0/d0 + M1/d1 - C (PX_DESTRUCTION_BEARING_JOINTS).
+    if (r.found && b.material < s.bearing_joint.size() && s.bearing_joint[b.material] > 0.0f) {
+      s.sections[i].bearingDepth0 = float(r.reach_about_axis);
+      s.sections[i].bearingDepth1 = float(r.reach_about_axis1);
+      ++bearing;
+    }
+#endif
     if (r.found) {
       ++found;
       depths.push_back(r.depth);
@@ -498,9 +511,10 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
   std::fprintf(stderr,
                "[destruction] sections: structure %u (base %u): %zu of %zu bonds from chunk geometry, "
                "the rest a square patch of their area; shallow depth p10 %.3f median %.3f m; "
-               "geometric/authored area p10 %.2f median %.2f p90 %.2f; %zu twist on their fasteners\n",
+               "geometric/authored area p10 %.2f median %.2f p90 %.2f; %zu twist on their fasteners, "
+               "%zu bearing joints\n",
                structure_id, base, found, s.bonds.size() - bond_base, pct(depths, 0.1), pct(depths, 0.5),
-               pct(ratios, 0.1), pct(ratios, 0.5), pct(ratios, 0.9), fastened);
+               pct(ratios, 0.1), pct(ratios, 0.5), pct(ratios, 0.9), fastened, bearing);
 }
 #endif
 

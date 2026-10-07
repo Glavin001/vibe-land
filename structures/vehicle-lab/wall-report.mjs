@@ -51,9 +51,11 @@ export function judge(run) {
   const through = p.pastMax > layer + reach;
   const outcome = through ? 'through' : p.vOut < -0.1 * p.vIn ? 'bounce' : Math.abs(p.vOut) < 0.1 * p.vIn ? 'stopped' : 'slowed';
   const verdict = p.infiniteWall ? 'INFINITE' : p.partialHold ? 'PARTIAL' : p.underloaded ? 'PULSE' : p.touched ? 'held' : 'untouched';
-  const fail = (outcome === 'bounce' || outcome === 'stopped') && (verdict === 'INFINITE' || verdict === 'PARTIAL' || verdict === 'PULSE');
+  // A case with an expected outcome (wall-matrix.mjs `expect`) fails on any other.
+  const missed = Array.isArray(run.expect) && !run.expect.includes(outcome);
+  const fail = missed || ((outcome === 'bounce' || outcome === 'stopped') && (verdict === 'INFINITE' || verdict === 'PARTIAL' || verdict === 'PULSE'));
   return {
-    id, outcome, verdict, fail,
+    id, outcome, verdict, fail, expected: run.expect,
     vIn: p.vIn, vOut: p.vOut, keptPct: 100 * Math.max(p.vOut, 0) / p.vIn, pastMax: p.pastMax, layer,
     peakMN: p.peakForceN / 1e6, hertzMN: (p.hertzPeakN ?? 0) / 1e6, hertzMs: p.hertzPulseMs, capacityMN: p.touchedCapacityN / 1e6, heldCapacityMN: p.heldCapacityN / 1e6,
     touched: p.touched, held: p.touchedHeldAnchored, types: p.touchedTypes,
