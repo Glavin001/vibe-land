@@ -111,12 +111,38 @@ fn propped_beam(arm: f64) -> (Vec<Chunk>, Vec<Joint>) {
     (chunks, joints)
 }
 
-/// The bridge's bond stiffness k = complianceScale^2 (append_bonds, non-vehicle):
-/// (E / E_ref) max(A, 1e-4) / max(L, 0.05), L between the chunks' centres. The
-/// structure's geometric-mean normalisation cancels in every ratio.
-fn stiffness(chunks: &[Chunk], j: &Joint) -> f64 {
-    let l = norm(sub(chunks[j.a].center, chunks[j.b].center)).max(0.05);
-    MODULUS / REFERENCE_MODULUS * (j.bu * j.bv).max(1e-4) / l
+/// The bridge's bond stiffness k = complianceScale^2 (append_bonds, non-vehicle).
+/// Today: (E / E_ref) max(A, 1e-4) / max(d, 0.05), d between the chunks'
+/// centres. With VIBE_SECTION_ROTATION=1 the stiffness the section is graded
+/// with: (E / E_ref) A / max(d, sqrt(A)), no floors (the contact length: a
+/// flat contact is E sqrt(A) stiff). The geometric-mean normalisation cancels.
+fn stiffness(chunks: &[Chunk], j: &Joint, model: Model) -> f64 {
+    let d = norm(sub(chunks[j.a].center, chunks[j.b].center));
+    let a = j.bu * j.bv;
+    match model {
+        Model::Section => MODULUS / REFERENCE_MODULUS * a / d.max(a.sqrt()),
+        Model::Uniform => MODULUS / REFERENCE_MODULUS * a.max(1e-4) / d.max(0.05),
+    }
+}
+
+/// A 1.0 x 0.04 x 0.4 m slab on three anchored pads 0.04 m thick, at
+/// x = -0.4, 0, 0.4: 100 x 100, 8 x 8 and 50 x 50 mm. Three supports make the
+/// vertical load sharing depend on each pad's stiffness; the pads' centres are
+/// 0.04 m from the slab's, under today's 0.05 m length floor and under the big
+/// pads' contact length sqrt(A), and the small pad's 64 mm^2 is under today's
+/// 1e-4 m^2 area floor.
+fn slab_on_pads() -> (Vec<Chunk>, Vec<Joint>) {
+    let rho = 2400.0;
+    let mut chunks = vec![Chunk { center: [0.0, 0.0, 0.0], half: [0.5, 0.02, 0.2], mass: rho * 1.0 * 0.04 * 0.4 }];
+    let mut joints = Vec::new();
+    for (x, side) in [(-0.4, 0.1), (0.0, 0.008), (0.4, 0.05)] {
+        chunks.push(Chunk { center: [x, -0.04, 0.0], half: [side / 2.0, 0.02, side / 2.0], mass: 0.0 });
+        joints.push(Joint {
+            a: 0, b: chunks.len() - 1, centroid: [x, -0.02, 0.0], normal: [0.0, -1.0, 0.0],
+            u: [0.0, 0.0, 1.0], v: [1.0, 0.0, 0.0], bu: side, bv: side,
+        });
+    }
+    (chunks, joints)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -196,7 +222,7 @@ fn frame_wrenches(chunks: &[Chunk], joints: &[Joint], g: f64, model: Model) -> V
     let springs: Vec<([f64; 3], [[f64; 3]; 3], f64)> = joints
         .iter()
         .map(|j| {
-            let k = stiffness(chunks, j);
+            let k = stiffness(chunks, j, model);
             let (pa, pb) = (chunks[j.a].center, chunks[j.b].center);
             let both = chunks[j.a].mass > 0.0 && chunks[j.b].mass > 0.0;
             let mut rot = [[0.0; 3]; 3];
@@ -317,7 +343,7 @@ fn graded(j: &Joint, force: [f64; 3], moment: [f64; 3]) -> (f64, f64, f64) {
     (fn_ / area, shear + t.abs() * rmax / ip, bend)
 }
 
-fn run(chunks: &[Chunk], joints: &[Joint]) -> Vec<(f64, f64, f64)> {
+fn run(chunks: &[Chunk], joints: &[Joint], bend_gain_max: f32) -> Vec<(f64, f64, f64)> {
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     world.native_attach().unwrap();
     let nodes: Vec<ChunkNodeDesc> = chunks
@@ -355,7 +381,7 @@ fn run(chunks: &[Chunk], joints: &[Joint]) -> Vec<(f64, f64, f64)> {
     };
     let settings = DestructibleSettings {
         max_solver_iterations_per_frame: 4096, graph_reduction_level: 0,
-        materials: vec![strong], crush: Vec::new(), ductile_slip: Vec::new(), maximum_bodies: 0,
+        materials: vec![strong], crush: Vec::new(), ductile_slip: Vec::new(), impact_modulus: Vec::new(), maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0, apply_excess_forces: true, apply_centrifugal: true,
         excess_force_scale: 0.012, linear_damping: 0.25, angular_damping: 0.35,
     };
@@ -367,7 +393,7 @@ fn run(chunks: &[Chunk], joints: &[Joint]) -> Vec<(f64, f64, f64)> {
     world
         .native_configure(NativeConfig {
             max_iterations: 4096, tolerance: 1e-6, force_tolerance: 1e-5, warm_start: true,
-            damage_rate: 2.0, bend_gain_max: 3.0, fibre_bending: true,
+            damage_rate: 2.0, bend_gain_max, fibre_bending: true,
             reserved_contact_pairs: 64, preserve_unchanged_contact_pairs: true,
             gpu_island_repair: true, verdict_sample_ticks: 1,
         })
@@ -419,7 +445,7 @@ fn case(label: &str, chunks: &[Chunk], joints: &[Joint], rotation: bool) -> (f64
             .collect::<Vec<_>>()
     };
     let (section, uniform) = (expect(Model::Section), expect(Model::Uniform));
-    let got = run(chunks, joints);
+    let got = run(chunks, joints, 3.0);
     println!("{label}: Ls {:.3} m", length_scale(chunks, joints));
     for (k, ((g, s), u)) in got.iter().zip(&section).zip(&uniform).enumerate() {
         println!(
@@ -451,7 +477,9 @@ fn bond_rotation_shares_load_by_section() {
     let planar = case("propped beam", &c, &j, rotation);
     let (c, j) = propped_beam(0.6);
     let arm = case("propped beam with a side arm", &c, &j, rotation);
-    for (label, (to_section, to_uniform)) in [("planar", planar), ("arm", arm)] {
+    let (c, j) = slab_on_pads();
+    let pads = case("slab on three pads", &c, &j, rotation);
+    for (label, (to_section, to_uniform)) in [("planar", planar), ("arm", arm), ("pads", pads)] {
         if default_path {
             continue;
         }
@@ -464,4 +492,21 @@ fn bond_rotation_shares_load_by_section() {
             assert!(to_section > 0.1, "{label}: the uniform length scale should misplace load ({to_section:.3})");
         }
     }
+}
+
+/// With real sections no bending gain is capped: the configured
+/// bend_gain_max (3 /m everywhere, the old cap) must change nothing.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn bend_gain_cap_unused_with_sections() {
+    std::env::set_var("VIBE_SECTION_BENDING", "1");
+    let (c, j) = propped_beam(0.6);
+    let capped = run(&c, &j, 3.0);
+    let tiny = run(&c, &j, 0.01);
+    let huge = run(&c, &j, 1e6);
+    for k in 0..j.len() {
+        println!("bond {k}: gain 3 {:?} | 0.01 {:?} | 1e6 {:?}", capped[k], tiny[k], huge[k]);
+    }
+    assert_eq!(capped, tiny, "bend_gain_max changed a section stress");
+    assert_eq!(capped, huge, "bend_gain_max changed a section stress");
 }
