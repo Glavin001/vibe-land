@@ -213,7 +213,9 @@ def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
         if angular == 'section':
             # The engine under VIBE_SECTION_ROTATION=1: E A / L at the bond's
             # own area, L the contact length max(distance, sqrt(A)), no floors.
-            L = max(np.linalg.norm(pos[i] - pos[j]), np.sqrt(bd['area']))
+            # the centres' separation along the bond normal (VIBE_SECTION_ROTATION)
+            nrm_b = np.array([bd['normal'][k] for k in 'xyz']); nrm_b = nrm_b / np.linalg.norm(nrm_b)
+            L = max(abs(nrm_b @ (pos[j] - pos[i])), np.sqrt(bd['area']))
             w[b] = np.sqrt(E / 30e9 * bd['area'] / L)
         else:
             L = max(np.linalg.norm(pos[i] - pos[j]), 0.05)

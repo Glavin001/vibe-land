@@ -114,15 +114,41 @@ fn propped_beam(arm: f64) -> (Vec<Chunk>, Vec<Joint>) {
 /// The bridge's bond stiffness k = complianceScale^2 (append_bonds, non-vehicle).
 /// Today: (E / E_ref) max(A, 1e-4) / max(d, 0.05), d between the chunks'
 /// centres. With VIBE_SECTION_ROTATION=1 the stiffness the section is graded
-/// with: (E / E_ref) A / max(d, sqrt(A)), no floors (the contact length: a
-/// flat contact is E sqrt(A) stiff). The geometric-mean normalisation cancels.
+/// with: (E / E_ref) A / max(d_n, sqrt(A)), no floors, d_n the centres'
+/// separation along the bond normal (the contact length: a flat contact is
+/// E sqrt(A) stiff). The geometric-mean normalisation cancels.
 fn stiffness(chunks: &[Chunk], j: &Joint, model: Model) -> f64 {
     let d = norm(sub(chunks[j.a].center, chunks[j.b].center));
     let a = j.bu * j.bv;
     match model {
-        Model::Section => MODULUS / REFERENCE_MODULUS * a / d.max(a.sqrt()),
+        Model::Section => MODULUS / REFERENCE_MODULUS * a / dot(j.normal, sub(chunks[j.b].center, chunks[j.a].center)).abs().max(a.sqrt()),
         Model::Uniform => MODULUS / REFERENCE_MODULUS * a.max(1e-4) / d.max(0.05),
     }
+}
+
+/// The fidelity audit's A4 case (docs/verification/FIDELITY_AUDIT.md): a 1 t
+/// block hung from three anchors by three dynamic, near-weightless 40 mm hangers, 0.5 m long,
+/// at x = -0.3, 0, 0.3; bonds of 2, 0.4 (a sliver) and 2 cm^2 at each end.
+/// Sprung at the midpoint of two dynamic chunks (today), the outer hangers'
+/// springs sit 0.15 m off their bond lines and gain a lever arm; sprung at the
+/// bond faces (VIBE_SECTION_ROTATION=1) they do not.
+fn hangers() -> (Vec<Chunk>, Vec<Joint>) {
+    let mut chunks = vec![Chunk { center: [0.0, 0.0, 0.0], half: [0.5, 0.05, 0.1], mass: 1000.0 }];
+    let mut joints = Vec::new();
+    for (k, area) in [2e-4, 4e-5, 2e-4].into_iter().enumerate() {
+        let x = 0.3 * (k as f64 - 1.0);
+        let side = (area as f64).sqrt();
+        // 10 g: the textbook's bars are weightless (a soft sliver hanger
+        // otherwise passes its own weight down into the block).
+        chunks.push(Chunk { center: [x, 0.30, 0.0], half: [0.02, 0.25, 0.02], mass: 0.01 });
+        let hanger = chunks.len() - 1;
+        chunks.push(Chunk { center: [x, 0.60, 0.0], half: [0.05, 0.05, 0.05], mass: 0.0 });
+        let anchor = chunks.len() - 1;
+        let (u, v) = ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+        joints.push(Joint { a: 0, b: hanger, centroid: [x, 0.05, 0.0], normal: [0.0, 1.0, 0.0], u, v, bu: side, bv: side });
+        joints.push(Joint { a: hanger, b: anchor, centroid: [x, 0.55, 0.0], normal: [0.0, 1.0, 0.0], u, v, bu: side, bv: side });
+    }
+    (chunks, joints)
 }
 
 /// A 1.0 x 0.04 x 0.4 m slab on three anchored pads 0.04 m thick, at
@@ -479,7 +505,21 @@ fn bond_rotation_shares_load_by_section() {
     let arm = case("propped beam with a side arm", &c, &j, rotation);
     let (c, j) = slab_on_pads();
     let pads = case("slab on three pads", &c, &j, rotation);
-    for (label, (to_section, to_uniform)) in [("planar", planar), ("arm", arm), ("pads", pads)] {
+    let (c, j) = hangers();
+    let hung = case("block on three dynamic hangers", &c, &j, rotation);
+    if rotation {
+        // Textbook (Gere & Goodno 2.4, parallel bars of one length): the block's
+        // hangers share its weight in proportion to area, one stress W / sum A.
+        let got = run(&c, &j, 3.0);
+        let w = 1000.0 * -(WorldConfig::default().gravity.y as f64);
+        let want = w / (2e-4 + 4e-5 + 2e-4);
+        for k in [0, 2, 4] {
+            let e = (got[k].0.abs() - want).abs() / want;
+            println!("  hanger {}: lower bond {:.4e} Pa, textbook {want:.4e} ({:.2}%)", k / 2, got[k].0.abs(), 100.0 * e);
+            assert!(e < 0.01, "hanger {} is {:.2}% from W / sum A", k / 2, 100.0 * e);
+        }
+    }
+    for (label, (to_section, to_uniform)) in [("planar", planar), ("arm", arm), ("pads", pads), ("hangers", hung)] {
         if default_path {
             continue;
         }
