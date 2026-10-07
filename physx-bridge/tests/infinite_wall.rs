@@ -39,7 +39,7 @@
 //!   --test infinite_wall -- --ignored --test-threads=1 --nocapture
 
 use vibe_land_physx_bridge::{
-    ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, LaunchedBallDesc, NativeConfig, Pose, Quat, StressMaterialDesc, Vec3,
+    ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, LaunchedBallDesc, NativeConfig, Pose, Quat, StaticBoxDesc, StressMaterialDesc, Vec3,
     World, WorldConfig,
 };
 
@@ -190,10 +190,41 @@ fn reported(text: &str, key: &str) -> f32 {
     text.lines().find_map(|l| l.strip_prefix(&format!("{key}="))).unwrap_or_else(|| panic!("no {key}:\n{text}")).trim().parse().unwrap()
 }
 
+/// The meteor (110 t of rock, r 2 m) at 140 m/s, descending at slope 0.3,
+/// into static ground (the city's floor is a static box): its velocity each
+/// tick [along, up].
+fn meteor_on_ground() -> Vec<[f32; 2]> {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.add_static_box(StaticBoxDesc { entity_id: 0x0100_0001, user_id: 1, pose: Pose { position: Vec3::new(0.0, -5.0, 0.0), rotation: identity() },
+        half_extents: Vec3::new(500.0, 5.0, 500.0), collision_group: GROUP_CHUNK, collision_mask: ALL }).unwrap();
+    world.step().unwrap();
+    let (mass, radius, speed, slope) = (110_000.0f32, 2.0f32, 140.0f32, 0.3f32);
+    let n = (1.0 + slope * slope).sqrt();
+    let v = Vec3::new(0.0, -speed * slope / n, speed / n);
+    // Its surface 1 cm over the ground, the tick before it would meet it.
+    world.launch_dynamic_ball(LaunchedBallDesc { entity_id: BALL, user_id: 1, pose: Pose { position: Vec3::new(0.0, radius + 0.01 - v.y * DT, 0.0), rotation: identity() },
+        radius, mass, linear_velocity: v, collision_group: GROUP_BALL, collision_mask: ALL }).unwrap();
+    let mut out = Vec::new();
+    for _ in 0..30 {
+        world.step().unwrap();
+        let ball = world.body_snapshots().unwrap().into_iter().find(|b| b.entity_id == BALL).expect("meteor");
+        println!("meteor y {:.2} along {:.2} up {:.2}", ball.pose.position.y, ball.linear_velocity.z, ball.linear_velocity.y);
+        out.push([ball.linear_velocity.z, ball.linear_velocity.y]);
+    }
+    out
+}
+
 #[test]
 #[ignore = "spawned by layered_wall"]
 fn arm() {
     let Ok(arm) = std::env::var(ARM) else { return };
+    if arm == "meteor_ground" {
+        let track = meteor_on_ground();
+        println!("up_max={}", track.iter().map(|v| v[1]).fold(f32::MIN, f32::max));
+        println!("along_end={}", track.last().unwrap()[0]);
+        return;
+    }
     let plates = match arm.as_str() { "one_plate" | "unbreakable" | "light_ball" => 1, "grid" => 4, _ => 2 };
     let (vz, broken) = strike(plates);
     println!("v_end={}", vz.last().unwrap());
@@ -281,4 +312,22 @@ fn fragment_depenetration_cap() {
     let floor = BALL_MASS * V0 / (BALL_MASS + 2.0 * PLATE_MASS);
     println!("two plates, fragments capped at 2 m/s: v_end {end:.2} v_min {min:.2} (v >= {floor:.2})");
     assert!(min >= 0.9 * floor, "the depenetration cap made a wall: {min:.2} m/s\n{text}");
+}
+
+/// A meteor off static ground (the integration agent's film: the meteor
+/// "bounces off the ground behind the house"). It meets the ground at
+/// v_n = 140 sin(atan 0.3) = 40.2 m/s; the world's restitution is 0.1, so it
+/// may leave it at no more than e v_n = 4.0 m/s upward (Hibbeler, Dynamics,
+/// 15.4; a rigid floor -- soil would take more). Faster is energy the contact
+/// made, not the collision: discrete steps put the rock a metre into the
+/// ground before the contact sees it, and pushing it out at whatever speed
+/// that takes is a launch.
+#[test]
+#[ignore = "requires the GPU and the native-destruction SDK"]
+fn meteor_rebound_off_ground() {
+    let text = run_arm("meteor_ground", &[]);
+    let (up, along) = (reported(&text, "up_max"), reported(&text, "along_end"));
+    let vn = 140.0 * (0.3f32).atan().sin();
+    println!("meteor off the ground: up to {up:.1} m/s (e v_n = {:.1}), along {along:.1}", 0.1 * vn);
+    assert!(up <= 0.1 * vn + 1.0, "energy from the contact: the meteor left the ground at {up:.1} m/s up, restitution allows {:.1}\n{text}", 0.1 * vn);
 }
