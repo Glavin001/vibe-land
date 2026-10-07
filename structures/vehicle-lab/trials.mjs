@@ -207,6 +207,18 @@ export const TRIALS = [
   { id: 'meteor-framed-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
     attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 2.0, 20.1], from: 180, slope: 0.3, distance: 140 },
     why: 'a meteor through a brick-veneer house: it goes through' },
+  // The study of how a hit fails the veneer house (structures/town-kit/scripts/
+  // impact-study.py): the truck into its front-left corner (centred on the
+  // corner line, x 119: half on the front wall's end and corner studs), and
+  // three 100 kg steel balls (r 0.146 m) at 60 m/s into the brick skin between
+  // the front wall's studs (studs at x 122.20, 122.76, 123.36, 123.96, 124.56,
+  // 125.16), 1.2 m up, one a second: cosmetic hits that miss the frame.
+  { id: 'framed-house-corner', at: 'lane/framed-house', dx: -5, start: -30, drive: { kind: 'floor' }, seconds: 8, impactZ: 20,
+    why: 'floored from 50 m out into the brick-veneer house\'s corner: a few posts and a lot of skin, and the house stands' },
+  { id: 'smallshots-framed-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
+    attack: { kind: 'shots', at: 0.5, from: 180, slope: 0.0, distance: 12, shots: [
+      { t: 0.5, target: [122.48, 1.2, 20.1], mass: 100 }, { t: 1.5, target: [123.66, 1.2, 20.1], mass: 100 }, { t: 2.5, target: [124.86, 1.2, 20.1], mass: 100 }] },
+    why: 'three 100 kg balls through the brick skin between studs: the skin breaks, the frame does not' },
   { id: 'cannonball', at: 'pad/cannonball', drive: { kind: 'park' }, seconds: 6, attack: { kind: 'cannonball', at: 1 }, driveAway: { seconds: 3 },
     why: "the city cannonball into the parked car's side at body height: partly destroyed, still drivable" },
   { id: 'meteor', at: 'pad/meteor', drive: { kind: 'park' }, seconds: 8, attack: { kind: 'meteor', at: 1 },
@@ -219,7 +231,7 @@ export const TRIALS = [
 export function slotOf(trial) {
   const [kind, id] = trial.at.split('/');
   if (kind === 'slot') return id.split(',').map(Number);
-  if (kind === 'lane') return [lane(id).x, trial.start ?? START_Z, 0];
+  if (kind === 'lane') return [lane(id).x + (trial.dx ?? 0), trial.start ?? START_Z, 0];
   const p = pad(id);
   return [p.x, p.z, 0];
 }

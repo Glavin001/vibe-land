@@ -16,6 +16,8 @@ import { placeResolver } from './film/places.mjs';
 
 const TRIALS = typeof VEHICLE_LAB_TRIALS === 'string' ? VEHICLE_LAB_TRIALS.split(',') : [];
 const BUILD = typeof VEHICLE_LAB_BUILD === 'string' ? VEHICLE_LAB_BUILD : 'monster';
+/** A line under every caption (VEHICLE_LAB_NOTE): which build of the engine or the lab this is. */
+const NOTE = typeof VEHICLE_LAB_NOTE === 'string' ? VEHICLE_LAB_NOTE : '';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Seconds a trial's result stays on screen before the next trial. */
 const RESULT_HOLD = 3;
@@ -31,6 +33,8 @@ const CAPTIONS = {
   cannonball: 'Hit by a cannonball', meteor: 'Hit by a meteor', drift: 'A handbrake turn at 54 km/h',
   'framed-house': 'Flat out into a brick-veneer timber-frame house',
   'cannonball-framed-house': 'A cannonball through a brick-veneer house', 'meteor-framed-house': 'A meteor through a brick-veneer house',
+  'framed-house-corner': 'Flat out into the corner of a brick-veneer house',
+  'smallshots-framed-house': 'Three 100 kg balls into the brick skin, between the studs',
 };
 
 /** The outcome of a trial in a line, from its measurements. */
@@ -129,7 +133,7 @@ function trialShot(trial, index, meta, ground) {
     ctx.edit({ type: 'title', style: 'lower', size: 'small', text: outcome(trial, m), from: ctx.t, to: ctx.t + (trial.driveAway ? 3.5 : RESULT_HOLD) });
   };
   // Cues: get in (driving trials), drive, attack, sample.
-  const cues = [[0, (ctx) => ctx.edit({ type: 'title', style: 'lower', size: 'small', text: `${BUILD} truck · ${CAPTIONS[trial.id] ?? trial.name ?? trial.id}`.replace(/^monster truck/, 'Monster truck'), from: ctx.t + 0.2, to: ctx.t + lead + 1.6 })]];
+  const cues = [[0, (ctx) => ctx.edit({ type: 'title', style: 'lower', size: 'small', text: `${BUILD} truck · ${CAPTIONS[trial.id] ?? trial.name ?? trial.id}${NOTE ? ` · ${NOTE}` : ''}`.replace(/^monster truck/, 'Monster truck'), from: ctx.t + 0.2, to: ctx.t + lead + 1.6 })]];
   const driving = trial.drive.kind !== 'park';
   if (driving) cues.push([0, enter(car)]);
   for (let k = 0; k * 0.1 <= lead + seconds; k += 1) {
@@ -160,6 +164,12 @@ function trialShot(trial, index, meta, ground) {
     // The player beside the parked car (the game streams what is near the
     // player): 25 m off for a meteor, 12 m to its right for the cannonball.
     cues.push([0, (ctx) => {
+      if (a?.kind === 'shot') {
+        // Near what is shot at (the game streams what is near the player): 25 m out, 8 m aside.
+        const b = (a.from * Math.PI) / 180;
+        ctx.e2e.dropAt({ position: [a.target[0] + Math.sin(b) * 25 + 8, 1.0, a.target[2] + Math.cos(b) * 25], yaw: b + Math.PI, pitch: 0 });
+        return;
+      }
       const s = readCar(ctx, index);
       if (!s) return;
       const right = [s.forward[2], 0, -s.forward[0]], d = a?.kind === 'meteor' ? 25 : 12;
@@ -183,6 +193,17 @@ function trialShot(trial, index, meta, ground) {
       if (!s) return;
       launchMeteor(ctx, [s.p[0], s.p[1], s.p[2]], 60, flight, 0.45);
       ctx.edit({ type: 'slowmo', rate: 0.5, from: ctx.t + flight - 0.4, to: ctx.t + flight + 2.4 });
+    }]);
+  } else if (a?.kind === 'shot') {
+    // A shot at the scene (the house trials): the game's cannonball from
+    // `distance` m out along bearing `from` (as the headless harness's
+    // `shot`, replayed as a player's shot), or the game's meteor on its arc.
+    const b = (a.from * Math.PI) / 180, out = [Math.sin(b), a.slope ?? 0, Math.cos(b)];
+    cues.push([lead + a.at, (ctx) => {
+      if (a.projectile === 'meteor') { launchMeteor(ctx, a.target, a.from, a.distance / 140, a.slope); return; }
+      const origin = a.target.map((v, k) => v + out[k] * a.distance);
+      const n = Math.hypot(...out);
+      ctx.session.replayEvent(JSON.stringify({ kind: 'shot', weapon: 3, origin, direction: out.map((v) => -v / n) }));
     }]);
   } else if (a?.kind === 'strikes') {
     // Launched when the car will be at carZ after the flight (shots.mjs launchMeteor's arc).
@@ -242,9 +263,10 @@ function trialShot(trial, index, meta, ground) {
   // meteor or the cannonball is coming (a thrown car is not chased into a
   // wall), and then further out: close in, a car the cannonball threw 30 m
   // was a speck on the horizon behind the camera's shoulder.
-  const follow = () => lastPosition(index, meta, trial);
+  // A shot at the scene: the camera on what it is aimed at, off to one side.
+  const follow = () => a?.kind === 'shot' ? a.target : lastPosition(index, meta, trial);
   const hit = a && ['meteor', 'cannonball'].includes(a.kind);
-  const offset = a?.kind === 'meteor' ? [-10, 4.5, -12] : hit ? [-13, 7, -17] : [-5, 3.2, -9];
+  const offset = a?.kind === 'shot' ? [-14, 6, -12] : a?.kind === 'meteor' ? [-10, 4.5, -12] : hit ? [-13, 7, -17] : [-5, 3.2, -9];
   return track(follow, offset, lead + seconds + tail + 0.4, { name: trial.id, lookOffset: [0, 1, hit ? 2 : 4], lag: 0.3, cues,
     ...(hit ? { release: lead + a.at } : {}) });
 }

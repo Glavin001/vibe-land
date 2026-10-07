@@ -25,7 +25,7 @@
  * is y 0.15; the veneer's outer faces are x +-5.0 and z +-3.9.
  */
 import {Builder,composeScene,round,v} from './geometry.mjs';
-import {M,MORTAR_JOINT,C24,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,WALL_TIE,LONG_TERM,BEARING} from './materials.mjs';
+import {M,MORTAR_JOINT,C24,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled} from './materials.mjs';
 import {cornerReferencedHulls} from './parts/hull-origins.mjs';
 
 /** Sizes, metres. Sawn sizes are the AS 1684 / EN 336 metric ones. */
@@ -57,12 +57,12 @@ export const STRUCTURAL_TYPES=['foundation',...STUDS,...HORIZONTAL,'ceiling-jois
 export const SKIN_TYPES=['brick-veneer','veneer-lintel-course','drywall','ceiling-lining'];
 export const COSMETIC_TYPES=[...SKIN_TYPES,'gable-cladding','roof-covering','window-frame','door-frame','glazing'];
 
-function materialsFor(b){
+function materialsFor(b,crush=false){
  const t=b.table,add=m=>t.push(m)-1,base=t[M.frame];
  const timber=add({...structuredClone(base),name:'stud-timber',color:'#b48a5c',textureKey:'aged-timber',...C24});
- const veneer=add({...structuredClone(t[M.brick]),name:'brick-veneer',color:'#9a5a46',textureKey:'brick'});
+ const veneer=add({...structuredClone(t[M.brick]),name:'brick-veneer',color:'#9a5a46',textureKey:'brick',...(crush&&{crush:CRUSH.brickVeneer})});
  const mortar=add({...structuredClone(t[M.brick]),name:'veneer-mortar-joint',...MORTAR_JOINT});
- const drywall=add({...structuredClone(t[M.plaster]),name:'drywall',color:'#ece6d8',textureKey:'white-concrete',...GYPSUM});
+ const drywall=add({...structuredClone(t[M.plaster]),name:'drywall',color:'#ece6d8',textureKey:'white-concrete',...GYPSUM,...(crush&&{crush:CRUSH.gypsum})});
  const tile=add({...structuredClone(t[M.roof]),name:'concrete-roof-tile',color:'#7b4a3c',textureKey:'roof-slate',...ROOF_TILE_LAYER});
  const gable=add({...structuredClone(base),name:'gable-weatherboard',color:'#e4dccb',textureKey:'white-concrete',density:WEATHERBOARD.density*.025/S.gable});
  // Gable-end framing as one panel: 90 x 45 studs at 600 (7.5% of the panel) and noggings.
@@ -137,10 +137,10 @@ function connection(ta,tb,wa,wb){
 }
 
 export function buildVeneerHouse(options={}){
- const C={storeys:1,palette:'ochre',key:null,...options};
+ const C={storeys:1,palette:'ochre',key:null,crush:crushEnabled(),...options};
  if(![1,2].includes(C.storeys))throw Error('storeys: 1 or 2');
  const key=C.key??(C.storeys===1?'veneer-bungalow':'veneer-house');
- const b=new Builder(key,{palette:C.palette,group:'building'}),MAT=materialsFor(b);
+ const b=new Builder(key,{palette:C.palette,group:'building'}),MAT=materialsFor(b,C.crush);
  const members=[],wallOf=[],walls={},veneer=[],ties=[];
  const X=5-S.veneer-S.cavity,Z=3.9-S.veneer-S.cavity,Xi=X-D,Zi=Z-D;   // frame outer / inner faces
  const tag=(first,wall)=>{for(let i=first;i<b.s.nodes.length;i++)wallOf[i]=wall;return range(first,b.s.nodes.length);};

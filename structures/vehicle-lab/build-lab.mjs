@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { composeScene, Builder } from '../town-kit/src/geometry.mjs';
 import { M, mortarJoints } from '../town-kit/src/materials.mjs';
 import { buildVeneerBungalow } from '../town-kit/src/veneer-houses.mjs';
+import { crushEnabled } from '../town-kit/src/materials.mjs';
 import { LANES, PADS, START_Z, LANE_LENGTH, DEBRIS, TRIALS, slotOf } from './trials.mjs';
 import { CONE, turningCones } from './turning.mjs';
 import { assertStrikesClear } from '../../client/native/film/shots.mjs';
@@ -206,9 +207,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { pack, places, trials, loose } = buildLab();
   const out = path.join(here, 'out');
   mkdirSync(out, { recursive: true });
-  writeFileSync(path.join(out, `${KEY}.json`), JSON.stringify(pack));
-  writeFileSync(path.join(out, `${KEY}.meta.json`), JSON.stringify({ lanes: LANES, pads: PADS, startZ: START_Z, debris: DEBRIS, trials, places }, null, 1));
-  writeFileSync(path.join(out, `${KEY}.slots`), trials.map((t) => t.slot.join(',')).join(';'));
+  // VIBE_CRUSH=1: the same lab with chunk crushing authored (the veneer house's
+  // brick and gypsum, materials.mjs CRUSH), as vehicle-lab-crush.*.
+  const key = KEY + (crushEnabled() ? '-crush' : '');
+  writeFileSync(path.join(out, `${key}.json`), JSON.stringify(pack));
+  writeFileSync(path.join(out, `${key}.meta.json`), JSON.stringify({ lanes: LANES, pads: PADS, startZ: START_Z, debris: DEBRIS, trials, places }, null, 1));
+  writeFileSync(path.join(out, `${key}.slots`), trials.map((t) => t.slot.join(',')).join(';'));
   const masses = loose.map((n) => n.mass).sort((a, b) => a - b);
-  console.log(`${KEY}: ${pack.scenario.nodes.length} nodes, ${pack.scenario.bonds.length} bonds; ${loose.length} loose pieces ${masses[0]?.toFixed(0)}-${masses.at(-1)?.toFixed(0)} kg; ${trials.length} trials`);
+  console.log(`${key}: ${pack.scenario.nodes.length} nodes, ${pack.scenario.bonds.length} bonds; ${loose.length} loose pieces ${masses[0]?.toFixed(0)}-${masses.at(-1)?.toFixed(0)} kg; ${trials.length} trials`);
 }

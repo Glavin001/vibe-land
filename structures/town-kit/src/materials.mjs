@@ -278,3 +278,36 @@ export const ROOF_TILE_LAYER = { density: 920 };
 
 /** Painted timber weatherboards (18 mm boards lapped to a 25 mm layer, ~11 kg/m^2). */
 export const WEATHERBOARD = { density: 450 };
+
+/**
+ * Chunk crushing (comminution), opt-in: a `crush` block on a material lets the
+ * native stage destroy a chunk of it whose mean stress (its contact and bond
+ * forces' virial over its volume) leaves a Drucker-Prager cone capped at
+ * `capPressure`, at the Perzyna rate overstress^2 dt / (crushViscosity
+ * crushEnergy) (PhysX NvBlastExtStressMaterialFormula.h extStressCrushStep).
+ * The cone is pinned to the material's unconfined compressive strength fc
+ * (cohesion fc (1 - k/3), k = 1.2: ~30 degrees of internal friction; cap at
+ * 2.5 fc, where confined pore collapse begins), as the PhysX reference
+ * building derives it (blast-stress-solver export-reference-building.mjs).
+ * crushEnergy: specific comminution energy, Bond's law W = 10 Wi (1/sqrt(P80)
+ * - 1/sqrt(F80)) kWh/t with Bond's (1961) work indices. crushViscosity: the
+ * overstress the CEB-FIP Model Code 1990 (2.1.6.4) dynamic increase factor
+ * gives at a 30/s strain rate, over that rate: (DIF - 1) fc / 30.
+ * Timber and steel members are not crushable (they snap or bend); nor are
+ * concrete tiles or glass, which fail in flexure (EN 490, EN 572).
+ */
+const crushOf = (fc, energy, viscosity, k = 1.2) => ({ capPressure: 2.5 * fc, cohesion: fc * (1 - k / 3), frictionSlope: k, crushEnergy: energy, crushViscosity: viscosity });
+export const CRUSH = {
+  // Clay-brick veneer panel: masonry f_k = 0.55 f_b^0.7 f_m^0.3 (EN 1996-1-1
+  // eq. 3.1, Group 1 clay units, general-purpose mortar) = 6.8 MPa for common
+  // facing brick (f_b 20 MPa, EN 771-1 / AS/NZS 4455) in M4 mortar. Brick to
+  // 20 mm rubble from 100 mm at Wi 13 kWh/t (fired clay; cement clinker 13.5):
+  // 0.51 kWh/t = 1.8 kJ/kg x 1900 kg/m^3 = 3.5 MJ/m^3. DIF 3.6 -> 5.9e5 Pa s.
+  brickVeneer: crushOf(6.8e6, 3.5e6, 5.9e5),
+  // Gypsum board: core crushes at ~3.5 MPa (GYPSUM above). To 5 mm from its
+  // 13 mm at Wi 8.2 (gypsum rock 8.16): 0.44 kWh/t = 1.6 kJ/kg x 700 kg/m^3 =
+  // 1.1 MJ/m^3. DIF 5.4 -> 5.1e5 Pa s.
+  gypsum: crushOf(3.5e6, 1.1e6, 5.1e5),
+};
+/** Crushing on, for builds that opt in (VIBE_CRUSH=1). */
+export const crushEnabled = () => (globalThis.process?.env?.VIBE_CRUSH ?? '0') === '1';

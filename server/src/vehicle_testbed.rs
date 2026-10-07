@@ -68,7 +68,7 @@ fn app_settings() {
 }
 
 /// Which lab-scene node groups each named structure owns (wall, house).
-struct SceneIndex { group_of_node: Vec<String>, nodes: Vec<Value>, materials: Vec<String> }
+struct SceneIndex { group_of_node: Vec<String>, nodes: Vec<Value>, materials: Vec<String>, types: Vec<String> }
 impl SceneIndex {
     fn load() -> Self {
         let path = std::env::var("VIBE_CITY_SCENE").unwrap();
@@ -76,7 +76,8 @@ impl SceneIndex {
         let group_of_node = pack["scenario"]["nodeGroups"].as_array().unwrap().iter().map(|g| g.as_str().unwrap_or("").to_string()).collect();
         let nodes = pack["scenario"]["nodes"].as_array().cloned().unwrap_or_default();
         let materials = pack["scenario"]["nodeMaterials"].as_array().map_or(Vec::new(), |m| m.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect());
-        Self { group_of_node, nodes, materials }
+        let types = pack["scenario"]["nodeTypes"].as_array().map_or(Vec::new(), |m| m.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect());
+        Self { group_of_node, nodes, materials, types }
     }
 }
 
@@ -245,6 +246,106 @@ fn ground_y(x: f32, z: f32, meta: &Value) -> f32 {
     0.0
 }
 
+/// The brick-veneer house's frame (veneer-houses.mjs STRUCTURAL_TYPES); every
+/// other member type is skin, trim or covering.
+const FRAME_TYPES: &[&str] = &["foundation", "stud", "king-stud", "jack-stud", "cripple-stud", "junction-stud", "bottom-plate", "top-plate",
+    "header", "sill-trimmer", "rim-joist", "ceiling-joist", "floor-joist", "subfloor", "rafter", "ridge-board", "gable-frame"];
+const ROOF_TYPES: &[&str] = &["rafter", "ridge-board", "ceiling-joist"];
+
+/// What a hit did to the framed house (lane framed-house): its bonds broken,
+/// frame against skin, by distance from the impact point, whether its roof and
+/// frame still stand, and -- for a car -- which pieces it freed were inside the
+/// car's hulls when they were freed (installed where they stood, overlapping it).
+struct HouseProbe {
+    is_house: Vec<bool>,
+    broken_before: BTreeSet<u32>,
+    roof_start: Vec<(u32, f32)>,
+    anchored: u32,
+    inside: BTreeSet<u32>,
+    crushed: u32,
+}
+fn node_centroid(scene: &SceneIndex, i: u32) -> Vector3<f32> {
+    let c = &scene.nodes[i as usize]["centroid"];
+    Vector3::new(c["x"].as_f64().unwrap_or(0.) as f32, c["y"].as_f64().unwrap_or(0.) as f32, c["z"].as_f64().unwrap_or(0.) as f32)
+}
+impl HouseProbe {
+    fn start(arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex) -> Option<Self> {
+        let is_house: Vec<bool> = scene.group_of_node.iter().map(|g| g.starts_with("framed-house")).collect();
+        if !is_house.iter().any(|&h| h) { return None; }
+        let world = arena.physx_world_mut()?;
+        let broken_before = world.native_bond_stress_rows(0).unwrap_or_default().into_iter()
+            .filter(|r| (r.remaining_area <= 0.0 || r.broken) && is_house[r.node0 as usize]).map(|r| r.bond_index).collect();
+        let mut roof_start = Vec::new();
+        for (i, t) in scene.types.iter().enumerate() {
+            if is_house[i] && ROOF_TYPES.contains(&t.as_str()) {
+                if let Ok(a) = world.native_chunk_aim(0, i as u32) { if a.found { roof_start.push((i as u32, a.center.y)); } }
+            }
+        }
+        Some(Self { is_house, broken_before, roof_start, anchored: vibe_land_physx_bridge::native_entity_id(0, 0), inside: BTreeSet::new(), crushed: 0 })
+    }
+    /// House pieces no longer on the anchored body whose centre is inside one
+    /// of the car's hulls (each hull's box in the car frame).
+    fn scan_car(&mut self, arena: &mut crate::movement::PhysicsArena, car: &CarState, hulls: &[([f32; 3], [f32; 3])]) {
+        let Some(world) = arena.physx_world_mut() else { return };
+        for i in 0..self.is_house.len() {
+            if !self.is_house[i] || self.inside.contains(&(i as u32)) { continue; }
+            let Ok(a) = world.native_chunk_aim(0, i as u32) else { continue };
+            if !a.found || a.entity_id == self.anchored { continue; }
+            let local = car.q.inverse() * (Vector3::new(a.center.x, a.center.y, a.center.z) - car.p);
+            if hulls.iter().any(|(lo, hi)| (0..3).all(|k| local[k] >= lo[k] && local[k] <= hi[k])) { self.inside.insert(i as u32); }
+        }
+    }
+    fn finish(&self, arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex, impact: Option<Vector3<f32>>) -> Value {
+        let world = arena.physx_world_mut().expect("physx");
+        let rows = world.native_bond_stress_rows(0).unwrap_or_default();
+        let frame = |i: u32| FRAME_TYPES.contains(&scene.types.get(i as usize).map_or("", |s| s.as_str()));
+        let (mut total, mut structural_total, mut broken, mut structural) = (0u32, 0u32, 0u32, 0u32);
+        let edges = [0f32, 1., 2., 4., 8., 1e9];
+        let mut by_distance = [0u32; 5];
+        let mut distances = Vec::new();
+        for r in &rows {
+            if !(self.is_house[r.node0 as usize] && self.is_house[r.node1 as usize]) { continue; }
+            total += 1;
+            let is_frame = frame(r.node0) && frame(r.node1);
+            if is_frame { structural_total += 1; }
+            if !(r.remaining_area <= 0.0 || r.broken) || self.broken_before.contains(&r.bond_index) { continue; }
+            broken += 1;
+            if is_frame { structural += 1; }
+            if let Some(p) = impact {
+                let d = ((node_centroid(scene, r.node0) + node_centroid(scene, r.node1)) * 0.5 - p).norm();
+                distances.push(d);
+                by_distance[(0..5).find(|&k| d < edges[k + 1]).unwrap_or(4)] += 1;
+            }
+        }
+        distances.sort_by(f32::total_cmp);
+        // Roof: how far its members came down; frame: how much is still on the anchored body.
+        let (mut drops, mut gone) = (Vec::new(), 0u32);
+        for &(i, y0) in &self.roof_start {
+            match world.native_chunk_aim(0, i) { Ok(a) if a.found => drops.push(y0 - a.center.y), _ => gone += 1 }
+        }
+        drops.sort_by(f32::total_cmp);
+        let (mut frame_nodes, mut frame_anchored) = (0u32, 0u32);
+        for i in 0..self.is_house.len() as u32 {
+            if !self.is_house[i as usize] || !frame(i) || scene.types[i as usize] == "foundation" { continue; }
+            frame_nodes += 1;
+            if world.native_chunk_aim(0, i).map_or(false, |a| a.found && a.entity_id == self.anchored) { frame_anchored += 1; }
+        }
+        let mean = |v: &[f32]| if v.is_empty() { 0. } else { v.iter().sum::<f32>() / v.len() as f32 };
+        json!({
+            "bonds": total, "broken": broken, "brokenFrac": broken as f32 / total.max(1) as f32,
+            "structuralBonds": structural_total, "structuralBroken": structural, "cosmeticBroken": broken - structural,
+            "byDistance": {"0-1m": by_distance[0], "1-2m": by_distance[1], "2-4m": by_distance[2], "4-8m": by_distance[3], "8m+": by_distance[4]},
+            "medianBreakDistance": distances.get(distances.len() / 2),
+            "impact": impact.map(|p| [p.x, p.y, p.z]),
+            "roofDropMean": mean(&drops), "roofDropMedian": drops.get(drops.len() / 2), "roofMembersDown": drops.iter().filter(|&&d| d > 0.5).count(),
+            "roofMembers": self.roof_start.len(), "roofMembersGone": gone,
+            "frameAnchoredFrac": frame_anchored as f32 / frame_nodes.max(1) as f32,
+            "crushedChunks": self.crushed,
+            "freedInsideCar": self.inside.len(),
+        })
+    }
+}
+
 fn run(r: &Run, meta: &Value) -> Value {
     let id = crate::city_fleet::FIRST_ID;
     let trial = r.trial;
@@ -270,6 +371,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     let mut tick = 0u32;
     let mut step_ms: Vec<f32> = Vec::new();
     let (mut converged, mut solves) = (0u32, 0u32);
+    // Per tick: [tick, bonds broken (all evaluations), chunks crushed, step ms].
+    let mut stage: Vec<[f32; 4]> = Vec::new();
     let mut step = |arena: &mut crate::movement::PhysicsArena, city: &mut crate::city::CityRuntime, tick: &mut u32, input: Option<&InputCmd>| {
         if let Some(input) = input { arena.simulate_player_tick(PLAYER, input, DT); }
         let t0 = std::time::Instant::now();
@@ -284,6 +387,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         step_ms.push(t0.elapsed().as_secs_f32() * 1000.);
         if let Some((status, counts, _)) = city.native_tick_view() {
             solves += 1; if status.converged { converged += 1; }
+            stage.push([*tick as f32, status.broken_bonds as f32, status.crushed_chunks as f32, *step_ms.last().unwrap_or(&0.)]);
             // VIBE_TESTBED_STAGE=1: each tick that breaks anything -- in the trial
             // evaluation, the corrected one, and after the motion is final.
             if std::env::var_os("VIBE_TESTBED_STAGE").is_some() && (status.broken_bonds > 0 || status.post_correction_broken_bonds > 0) {
@@ -298,6 +402,15 @@ fn run(r: &Run, meta: &Value) -> Value {
     read_damage(&mut arena, id, tick, &mut damage, geometry, 0.);
     let settled_broken = damage.broken.len();
     let scene_before = scene_broken(&mut arena, r.scene);
+    let mut house = if trial["id"].as_str().unwrap_or("").contains("framed-house") { HouseProbe::start(&mut arena, r.scene) } else { None };
+    // The car's hulls as boxes in its frame (for what the house frees inside it).
+    let hulls: Vec<([f32; 3], [f32; 3])> = geometry.parts.iter().flat_map(|p| p.shapes.iter().map(move |sh| {
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for v in &sh.vertices { for k in 0..3 { let x = p.position[k] + sh.position[k] + v[k]; lo[k] = lo[k].min(x); hi[k] = hi[k].max(x); } }
+        (lo, hi)
+    })).collect();
+    let mut house_impact: Option<Vector3<f32>> = None;
+    let mut peak_spin_after = 0f32;
     let drive = &trial["drive"];
     let kind = drive["kind"].as_str().unwrap();
     let driving = kind != "park" || trial.get("driveAway").is_some();
@@ -463,7 +576,28 @@ fn run(r: &Run, meta: &Value) -> Value {
                 launched += 1;
             }
         }
-        if let (Some(a), Some(at)) = (attack.filter(|a| !matches!(a["kind"].as_str(), Some("strikes" | "timeline" | "near"))), attack_tick) {
+        // `shots`: several balls (`mass` kg at the cannonball's speed), each at
+        // its `t` at its `target`, from `from` degrees, `distance` out, `slope`.
+        if let Some(a) = attack.filter(|a| a["kind"] == "shots") {
+            let list = a["shots"].as_array().unwrap();
+            while launched < list.len() && list[launched]["t"].as_f64().unwrap() as f32 <= t + 1e-4 {
+                let shot_def = &list[launched];
+                let f = |k: &str| a[k].as_f64().unwrap_or(0.) as f32;
+                let tv: Vec<f32> = shot_def["target"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
+                let target = Vector3::new(tv[0], tv[1], tv[2]);
+                let bearing = f("from").to_radians();
+                let origin = target + Vector3::new(bearing.sin(), f("slope"), bearing.cos()) * f("distance");
+                let speed = crate::city::city_ball_speed_ms();
+                let tt = (origin - target).norm() / speed;
+                let velocity = (target - origin) / tt + Vector3::new(0., 0.5 * 9.81 * tt, 0.);
+                let mass = shot_def["mass"].as_f64().unwrap_or(100.) as f32;
+                let radius = (mass / crate::city::city_ball_density_kg_m3() * 3. / (4. * std::f32::consts::PI)).cbrt();
+                projectile = arena.launch_ball_from_muzzle(origin, velocity, radius, mass, 600).or(projectile);
+                if shot.is_none() { shot = Some((target, Vector3::new(-bearing.sin(), 0., -bearing.cos()))); }
+                launched += 1;
+            }
+        }
+        if let (Some(a), Some(at)) = (attack.filter(|a| !matches!(a["kind"].as_str(), Some("strikes" | "timeline" | "near" | "shots"))), attack_tick) {
             if k == at {
                 match a["kind"].as_str().unwrap() {
                     "shot" => {
@@ -483,6 +617,10 @@ fn run(r: &Run, meta: &Value) -> Value {
                         projectile = if meteor {
                             let tuning = crate::meteor::MeteorTuning::from_env();
                             arena.launch_meteor(origin, velocity, tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks)
+                        } else if let Some(mass) = a["mass"].as_f64().map(|m| m as f32) {
+                            // A lighter ball of the cannonball's steel (`mass` kg).
+                            let radius = (mass / crate::city::city_ball_density_kg_m3() * 3. / (4. * std::f32::consts::PI)).cbrt();
+                            arena.launch_ball_from_muzzle(origin, velocity, radius, mass, 600)
                         } else {
                             arena.launch_ball_from_muzzle(origin, velocity, crate::city::city_ball_radius_m(), crate::city::city_ball_mass_kg(), 600)
                         };
@@ -580,6 +718,17 @@ fn run(r: &Run, meta: &Value) -> Value {
             eprintln!("[tick] {k} end w {:.2},{:.2},{:.2} z {:.2} y {:.2} v {:.2},{:.2},{:.2} jounce {:?} | {loads} | kN {sources}", a.w.x, a.w.y, a.w.z, a.p.z, a.p.y, a.v.x, a.v.y, a.v.z, a.jounce);
         }
         let after = car_state(&mut arena, id);
+        // The house: where it was hit; for a car, what it freed inside the car
+        // over the impact tick and the next five, and how the car spun for 3 s.
+        if let Some(h) = house.as_mut() {
+            if driving && impact_tick.is_some() {
+                let since = k - impact_tick.unwrap();
+                if house_impact.is_none() { house_impact = Some(after.p + after.forward * front + Vector3::new(0., 0.0, 0.)); }
+                if since <= 5 { h.scan_car(&mut arena, &after, &hulls); }
+                if since <= 180 { peak_spin_after = peak_spin_after.max(after.w.norm()); }
+            }
+        }
+        let after = car_state(&mut arena, id);
         let accel_g = prev_v.map_or(0., |pv| (after.v - pv).norm() / DT / 9.81);
         peak_decel = peak_decel.max(accel_g);
         prev_v = Some(after.v);
@@ -641,6 +790,8 @@ fn run(r: &Run, meta: &Value) -> Value {
         drive_away = json!({"metres": net, "path": path, "seconds": (reverse + forward) as f32 * DT, "settled": quiet >= 30});
     }
     let scene_after = scene_broken(&mut arena, r.scene);
+    if house.is_some() && house_impact.is_none() { house_impact = shot.map(|(t, _)| t); }
+    let house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact));
     let scene_broken_pairs: Vec<[u32; 2]> = if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() {
         arena.physx_world_mut().expect("physx").native_bond_stress_rows(0).unwrap_or_default().into_iter()
             .filter(|r| r.remaining_area <= 0.0 || r.broken).map(|r| [r.node0, r.node1]).collect()
@@ -692,6 +843,18 @@ fn run(r: &Run, meta: &Value) -> Value {
     out["converged"] = json!(if solves > 0 { converged as f32 / solves as f32 } else { 0. });
     // VIBE_TESTBED_SCENE_BONDS=1: the scene's broken bonds at the end, as node pairs.
     if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() { out["sceneBrokenPairs"] = json!(scene_broken_pairs); }
+    if let Some(mut h) = house_report {
+        // The impact tick: the first after the trial began that broke anything.
+        let begin = (SETTLE_TICKS) as f32;
+        let first = stage.iter().find(|s| s[0] >= begin && s[1] > 0.);
+        let window: Vec<&[f32; 4]> = first.map_or(Vec::new(), |f| stage.iter().filter(|s| s[0] >= f[0] && s[0] < f[0] + 3.).collect());
+        h["impactTick"] = json!(first.map(|f| f[0]));
+        h["impactStepMs"] = json!(first.map(|f| f[3]));
+        h["impactWindowMaxStepMs"] = json!(window.iter().map(|s| s[3]).fold(0f32, f32::max));
+        h["crushedChunks"] = json!(stage.iter().filter(|s| s[0] >= begin).map(|s| s[2]).sum::<f32>());
+        h["carPeakSpin3s"] = json!(peak_spin_after);
+        out["house"] = h;
+    }
     out["stepMs"] = json!({"median": sorted.get(sorted.len() / 2), "p95": sorted.get(sorted.len() * 95 / 100), "max": sorted.last()});
     out["trace"] = json!(trace);
     out

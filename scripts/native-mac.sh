@@ -111,7 +111,9 @@ case "$SCENE" in
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
       VITE_TOWN_KIT_SCENE=vibe-showcase ;;
   lab)
-    pack="$ROOT/structures/vehicle-lab/out/vehicle-lab"
+    # VEHICLE_LAB_PACK: another build of the lab (out/vehicle-lab-crush: chunk
+    # crushing authored, `VIBE_CRUSH=1 node structures/vehicle-lab/build-lab.mjs`).
+    pack="${VEHICLE_LAB_PACK:-$ROOT/structures/vehicle-lab/out/vehicle-lab}"
     stale=0
     for source in "$ROOT"/structures/vehicle-lab/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
     [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vehicle-lab/build-lab.mjs"
@@ -623,7 +625,7 @@ case "${1:-run}" in
     slots=$(node -e 'const m=require(process.argv[1]);process.stdout.write(process.argv[2].split(",").map(id=>{const t=m.trials.find(t=>t.id===id);if(!t)throw Error("no trial "+id);return t.slot.join(",")}).join(";"))' "$meta" "$trials")
     export VIBE_CITY_DESTRUCTIBLE_VEHICLES=$(node -e 'process.stdout.write(Array(process.argv[2].split(",").length).fill(process.argv[1]).join(","))' "$build" "$trials") \
       VIBE_CITY_FLEET_SLOTS="$slots" FILM_CHECK="${FILM_CHECK-1}" \
-      FILM_DEFINES="--define:VEHICLE_LAB_TRIALS=\"$trials\" --define:VEHICLE_LAB_BUILD=\"$build\""
+      FILM_DEFINES="--define:VEHICLE_LAB_TRIALS=\"$trials\" --define:VEHICLE_LAB_BUILD=\"$build\" --define:VEHICLE_LAB_NOTE=\"${VEHICLE_LAB_NOTE:-}\""
     runtime; sim; film_bundle; film vehicle-lab "$@"
     log=$(ls -t "$ROOT"/target/native-video/vehicle-lab-*.log | head -1)
     node "$ROOT/structures/vehicle-lab/native-report.mjs" "$log" ;;
