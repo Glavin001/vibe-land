@@ -13,7 +13,7 @@ index = {(min(b['node0'], b['node1']), max(b['node0'], b['node1'])): b for b in 
 lines = open(report).read().splitlines()
 start = next(i for i, l in enumerate(lines) if l.startswith('bond,material'))
 print(lines[start - 1])
-rows = list(csv.DictReader(io.StringIO('\n'.join(lines[start:]))))
+rows = [r for r in csv.DictReader(io.StringIO('\n'.join(l for l in lines[start:] if l[:1].isdigit() or l.startswith('bond,'))))]
 by = collections.Counter()
 for r in rows:
     a, b = int(r['chunk0']) - base, int(r['chunk1']) - base
