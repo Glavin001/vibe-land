@@ -177,6 +177,11 @@ export function judge(report, baseline = null, meta = null) {
           // are 0.23 m). It may stop inside, slowed by what it pushes.
           const face = 20.1, past = run.maxZ - face;
           row(t, 'gets through the front wall (m, middle past the brick face)', fmt(past), '>= 0', past >= 0, 'the monster truck flat out goes through a stud wall and its brick skin', b && fmt(b.maxZ - face));
+          // And on through the house (7.8 m deep: back brick face z 27.9),
+          // over several ticks, breaking what it meets: an anchored house
+          // must not stop it dead (the impact solve's coupled contact).
+          const back = run.maxZ - 27.9;
+          row(t, 'crosses the house (m, middle past the back brick face)', fmt(back), '>= 0', back >= 0, 'a 5 t truck at 78 km/h goes through a one-storey timber-frame house', b && fmt(b.maxZ - 27.9));
         }
         if (monster && t === 'house') {
           // A monster truck flat out goes through a one-storey house's front

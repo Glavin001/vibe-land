@@ -81,6 +81,7 @@ pub fn build(s: &Structure) -> World {
         linear_damping: s.linear_damping.map(|d| d as f32).unwrap_or(defaults.linear_damping),
         max_solver_iterations_per_frame: STRESS_ITERATIONS,
         materials,
+        crush: s.crush.clone(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         ..DestructibleSettings::default()
@@ -94,9 +95,9 @@ pub fn build(s: &Structure) -> World {
             &bonds,
             settings,
             GROUP_CHUNK,
-            // Chunks meet each other and plain bodies (the dynamics cases'
-            // balls, blocks and ground, group 1).
-            GROUP_CHUNK | GROUP_PLAIN,
+            // Chunks meet everything: each other, plain bodies (the dynamics
+            // cases' balls, blocks and ground) and the stage's rounds.
+            u32::MAX,
         )
         .unwrap();
     world.step().unwrap();

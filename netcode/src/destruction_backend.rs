@@ -82,6 +82,11 @@ pub struct StressSolverSettings {
     /// Empty, or parallel to `materials`: the impact solve's modulus (Pa) where
     /// a material's elastic modulus is a gravity-sharing concession; 0 none.
     pub impact_modulus: Vec<f32>,
+    /// Empty, or parallel to `materials`: a fastener group's radius of
+    /// gyration in twist and its farthest fastener (m), in place of the
+    /// contact patch's under section rotation; 0 keeps the patch.
+    pub twist_gyration: Vec<f32>,
+    pub twist_reach: Vec<f32>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -107,6 +112,8 @@ impl Default for StressSolverSettings {
             crush: Vec::new(),
             ductile_slip: Vec::new(),
             impact_modulus: Vec::new(),
+            twist_gyration: Vec::new(),
+            twist_reach: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,

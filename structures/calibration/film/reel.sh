@@ -15,14 +15,15 @@
 #
 #   CALIB_CONFIG   engine configuration (structures/calibration/src/configs.mjs):
 #                  section (default), default or rotation; its env is set here
-#   CALIB_CASES    the case takes, comma list (default: every case); CALIB_OVERVIEW=0 skips the overview
+#   CALIB_CASES    the cases, comma list (default: every case): a take each, and the
+#                  overview shows only them; CALIB_OVERVIEW=0 skips the overview
 #   CALIB_FREEZE   seconds the opening frame is held (default 4)
 #   FILM_SIZE, FILM_FPS, FILM_SEED   as for any film (default 1280x720, 30)
 #   VIBE_SIM_TARGET, NATIVE_SKIP_SIM  the simulation library (scripts/native-mac.sh sim())
 #
 # Correctness runs share the GPU (VIBE_GPU_SHARED=1: no lock). The shared
 # client/dist-native bundle: a take waits while target/native-bundle.lock is
-# held by someone else (it does not take it).
+# held by someone else (it does not take it), and while any other app film runs.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 SCENARIO="${1:?usage: reel.sh SCENARIO}"
@@ -55,18 +56,37 @@ takes=()
 IFS=, read -r -a list <<< "$cases"; takes+=("${list[@]}")
 echo "calibration reel $SCENARIO ($CONFIG): ${takes[*]}"
 
+# Another app run in this checkout's bundle dir: a mystral whose working
+# directory it is, or this checkout's native-mac.sh.
+busy() {
+  local pid
+  pgrep -f "$ROOT/scripts/native-mac.sh" >/dev/null && return 0
+  for pid in $(pgrep -f "mystral run" || true); do
+    lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -qx "n$ROOT/client/dist-native" && return 0
+  done
+  return 1
+}
+
 take() {
-  local id="$1" scene isolated=true
-  if [ "$id" = overview ]; then scene="$DIR/scene.json"; isolated=false
-  else scene="$ROOT/target/calib-film/$SCENARIO/$id.json"; node "$ROOT/structures/calibration/film/case-scene.mjs" "$DIR" "$id" "$scene" >&2; fi
-  while [ -d "$ROOT/target/native-bundle.lock" ]; do
-    echo "take $id: waiting for the bundle lock ($(cat "$ROOT/target/native-bundle.lock/owner" 2>/dev/null))" >&2; sleep 20
+  local id="$1" scene held
+  # The scene the take loads: the case alone, or for the overview every case filmed.
+  held="$id"; [ "$id" = overview ] && held="$cases"
+  if [ "$id" = overview ] && [ -z "${CALIB_CASES:-}" ]; then scene="$DIR/scene.json"; held=""
+  else scene="$ROOT/target/calib-film/$SCENARIO/$id.json"; node "$ROOT/structures/calibration/film/case-scene.mjs" "$DIR" "$held" "$scene" >&2; fi
+  # client/dist-native is one bundle for every film from this checkout (film.js,
+  # game.js, rebuilt when its inputs differ): no take while another app run
+  # works in it (worktrees have their own), or the bundle lock is held.
+  while [ -d "$ROOT/target/native-bundle.lock" ] || busy; do
+    echo "take $id: waiting for another app run in $ROOT/client/dist-native" >&2; sleep 20
   done
   local out="$ROOT/target/calib-film/$SCENARIO/take-$id.out"
-  CALIB_SCENE="$scene" FILM_DEFINES="--define:CALIB_SCENARIO=\"$SCENARIO\" --define:CALIB_CASE=\"$id\" --define:CALIB_CONFIG=\"$CONFIG\" --define:CALIB_FREEZE=$FREEZE --define:CALIB_ISOLATED=$isolated" \
-    "$ROOT/scripts/native-mac.sh" film calibration --scene calib > "$out" 2>&1 || { echo "take $id FAILED ($out)" >&2; exit 1; }
+  CALIB_SCENE="$scene" FILM_DEFINES="--define:CALIB_SCENARIO=\"$SCENARIO\" --define:CALIB_CASE=\"$id\" --define:CALIB_CONFIG=\"$CONFIG\" --define:CALIB_FREEZE=$FREEZE --define:CALIB_SCENE_CASES=\"$held\" --define:CALIB_ONLY=\"$cases\"" \
+    "$ROOT/scripts/native-mac.sh" film calibration --scene calib > "$out" 2>&1 || echo "take $id: native-mac.sh exited $? ($out); judged by the film's own log" >&2
+  # The film's own verdict (native-mac.sh is shared and edited by others: bash
+  # reading it mid-edit can fail after the film is done).
   local raw; raw=$(grep -oE '/[^ ]*/calibration-[0-9]+-[0-9]+\.mp4' "$out" | grep -v -- '-final\|-share' | head -1)
-  [ -f "$raw" ] || { echo "take $id: no recording ($out)" >&2; exit 1; }
+  [ -f "$raw" ] && grep -qE '\[film [0-9.]+s\] cut' "${raw%.mp4}.log" && ! grep -qE '\[film [0-9.]+s\] FAILED' "${raw%.mp4}.log" \
+    || { echo "take $id FAILED ($out)" >&2; exit 1; }
   grep -E '\] calib \{' "${raw%.mp4}.log" | sed 's/.*\] calib /  /' >&2 || true
   node "$ROOT/structures/calibration/film/freeze.mjs" "$raw" "${raw%.mp4}.log" "${raw%.mp4}-take.mp4" --fps "$FILM_FPS" >&2
   echo "${raw%.mp4}-take.mp4"
@@ -75,7 +95,15 @@ take() {
 parts=()
 for id in "${takes[@]}"; do
   echo "take $id ..."
-  parts+=("$(take "$id")")
+  # Up to three tries: on a busy shared GPU the city can take minutes to come
+  # up and the film times out waiting for it.
+  part=""
+  for attempt in 1 2 3; do
+    if part="$(take "$id")"; then break; fi
+    part=""; echo "take $id: try $attempt failed" >&2; sleep 30
+  done
+  [ -n "$part" ] || { echo "take $id: no take after three tries" >&2; exit 1; }
+  parts+=("$part")
   echo "  ${parts[${#parts[@]}-1]}"
 done
 

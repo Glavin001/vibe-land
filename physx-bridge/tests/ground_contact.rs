@@ -41,6 +41,8 @@
 //!
 //! Run with `--test-threads=1` on Metal, like the other GPU tests.
 
+#[path = "common/stage_env.rs"]
+mod stage_env;
 use vibe_land_physx_bridge::{
     CapsulePlayerDesc, ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, LaunchedBallDesc,
     NativeConfig, Pose, Quat, RoundDesc, StaticBoxDesc, StressMaterialDesc, Vec3, VehicleCommands,
@@ -151,7 +153,7 @@ fn settings() -> DestructibleSettings {
         }],
         crush: Vec::new(),
         ductile_slip: Vec::new(),
-        impact_modulus: Vec::new(),
+        impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: true,
@@ -260,6 +262,7 @@ fn run(preserve_unchanged_contact_pairs: bool, cars: bool, player: bool) -> Outc
 
 /// `driving` keeps the cars awake, circling in place, instead of parked.
 fn run_with(preserve_unchanged_contact_pairs: bool, cars: bool, player: bool, driving: bool) -> Outcome {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     city_ground(&mut world);
     // What the /city match has besides the buildings: two parked cars and a

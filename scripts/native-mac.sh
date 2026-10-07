@@ -160,13 +160,14 @@ case "$SCENE" in
     # The hero film's town (client/native/films/hero-run.mjs): Vibe Town with
     # an approach road and launch ramp west of Elm Park, the furnished corner
     # cafe, a furnished cafe and grocer in the Market Quarter, picket fences
-    # and garden walls -- and the film's cast of ten cars parked along its
+    # and garden walls, the glass office tower (VIBE_OFFICE_FURNISHED=0: its
+    # offices empty) -- and the film's cast of ten cars parked along its
     # route (the builder's .slots and .fleet: slot n is the n-th car). The
     # spawn is on the approach by the truck. Stress iterations: 64, which the
     # furnished buildings stand at (they do not at 16).
     pack="$ROOT/structures/vibe-town/out/vibe-town-hero"
     stale=0
-    for source in "$ROOT"/structures/vibe-town/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
+    for source in "$ROOT"/structures/vibe-town/*.mjs "$ROOT"/structures/town-kit/src/office-tower.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
     [ -f "$pack.json" ] && [ "$stale" = 0 ] || VIBE_TOWN_VARIANT=hero node "$ROOT/structures/vibe-town/build-town.mjs"
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_VISUALS="$pack.visuals.json" \
       VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \

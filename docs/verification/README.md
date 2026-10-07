@@ -55,22 +55,27 @@ scripts/fidelity/packs.sh high         # their paths
 | Players snap to ground within 0.2 m | `VIBE_PLAYER_SNAP_TO_GROUND=1` | |
 | No 100 rad/s spin clamp on native bodies | `VIBE_NATIVE_UNCAPPED_SPIN=1` | bridge |
 
-**No single SDK has every capability yet (2026-10-07).**
+**The combined SDK carries every capability.** `high.env` points at
+PhysX `integration/high-fidelity` (3913a3b38, install `garage-hifi`).
+Runtime stays on `garage-roof`.
 
-- The E SDK (`feat/impact-capacity`, `garage-impact`) has bending, crush
-  correction and impact capacity, but not rotational stiffness.
-- `garage-multihull` (`feat/section-rotational-stiffness`) has rotation, but
-  not crush or impact.
+The bridge refuses a flag its SDK lacks. Against another SDK, `check.sh
+--degrade` drops the missing flags and records them in
+`VIBE_FIDELITY_MISSING`, and the configuration name says what actually ran:
 
-The bridge refuses a flag its SDK lacks. `check.sh --degrade` drops the missing
-flags and records them in `VIBE_FIDELITY_MISSING`. The configuration name says
-what actually ran:
+- `high-fidelity(no-impact)`: run without impact capacity (for example, on the
+  rotation-only garage-multihull);
+- `high-fidelity(no-rotation)`: run without section rotation.
 
-- `high-fidelity(no-impact)`: the stress-solve suite, run on the rotation SDK.
-- `high-fidelity(no-rotation)`: run on the E SDK.
+### The product's stage environment in tests
 
-The E branch merged the rotation branch at 70876b143. Once an SDK built from
-it is installed, `high.env`'s `PHYSX_ROOT` will carry everything.
+The game always runs the stage with `PX_DESTRUCTION_ALLOW_UNCONVERGED=1`: an
+unconverged stress solve is published and carried into the next tick. GPU
+tests set it with `physx-bridge/tests/common/stage_env.rs` (`product()`), or
+`strict_converged()` for the one test of the strict mode.
+`scripts/verify/lint-gpu-test-env.sh` (regression `gpu-test-env`) fails any
+test that attaches the stage without either. `correctness.sh` also exports the
+variable as a backstop.
 
 ## How the textbook cases are built
 
@@ -188,6 +193,7 @@ Sources:
 | impact-sudden-load, impact-drop | a 1 t block released, or dropped 0.1 and 0.4 m, onto a cantilever: peak root stress over static | DAF = 1 + sqrt(1 + 2h/delta_st) (2 for h = 0) | [Gere] 2.8 |
 | rest-load-asleep | the block at rest keeps loading the beam after PhysX puts it to sleep | statics | |
 | tip-or-slide | blocks on a tilted plane: the tall one tips at atan(b/h), the squat one slides at atan(mu) | tan theta = b/h, tan theta = mu | [Hibbeler Statics] 8.2 |
+| crush-locality (high only) | a round into a crushable masonry wall: no crush at rest, a crush on the hit, every crushed chunk within 1.4 m of the point struck | contact footprint (0.4 m) plus one block, proposed | |
 
 The struck-rod spin (omega/v = m d/I, [Hibbeler Dyn] 19.2-19.4) is in
 `physx-bridge/tests/fidelity_audit.rs`.
@@ -277,22 +283,16 @@ By cause:
 
     These are known limits.
 
-The high-fidelity profile on the E SDK (impact capacity) currently cannot run
-anything. `native destruction configuration was rejected` for every structure
-with `VIBE_IMPACT_CAPACITY=1` on the 03:10 garage-impact install. That includes:
-
-- the textbook suite;
-- the existing `section_bending.rs`;
-- the vehicle test bed;
-- every veneer house in qualification (ERROR).
-
-Until that is fixed, `correctness.sh` runs high-fidelity:
-
-- for the stress solve, on garage-multihull (rotation; no impact, no crush);
-- for acceptance, with `HIGH_PHYSX_ROOT=garage-multihull`.
-
-`scripts/fidelity/check.sh` records what is missing. The E-SDK attempt's
-outputs are kept in `target/verify/acceptance-high-impact-sdk`.
+11. **High-fidelity on garage-hifi, impact capacity** (passes with
+    `VIBE_IMPACT_CAPACITY=0`):
+    - The stage fails a step (`PhysX fetchResults failed`, "Native GPU
+      destruction stage failed") in the redundancy and free-fall cases, when
+      bonds break under gravity. On other runs the simply supported beam stays
+      up after its hanger fails.
+    - Crush locality: a round breaks 33 bonds of a crushable masonry wall and
+      crushes nothing, because impact-pressure crush replaces the virial crush.
+      With impact capacity off it crushes 15 chunks, as far as 3.24 m from the
+      point struck. That is not local (the bound is 1.4 m, proposed).
 
 ## Regression tests (`scripts/verify/regressions.tsv`)
 

@@ -26,8 +26,10 @@
 // furnished Victorian corner cafe (three storeys, stairs, apartments, a picket
 // fenced garden) on Main Street's corner with Main Avenue in place of four
 // houses, the Market Quarter's Main Street cafe and MARKET grocer furnished,
-// picket fences and brick garden walls along Elm Park's Main Street, and the
-// film's cast parked along its route (.slots, and .fleet: which car where).
+// picket fences and brick garden walls along Elm Park's Main Street, the
+// glass office tower (town-kit office-tower.mjs: steel frame, concrete core
+// and stairs, curtain wall, furnished offices) as Main Street's first tower,
+// and the film's cast parked along its route (.slots, and .fleet: which car where).
 // The furnished buildings stand at the film's 64 stress iterations, not 16
 // (target/qualify-showcase-64c.json): qualify this pack at 64.
 //
@@ -40,7 +42,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildStripShop, buildCornerGrocery, buildNeighborhoodLibrary, buildArtDecoCinema, buildOutdoorProp, buildTree,
-  buildVictorianCorner, buildFence, composeScene,
+  buildVictorianCorner, buildFence, buildOfficeTower, composeScene,
 } from '../town-kit/src/index.mjs';
 import { Builder } from '../town-kit/src/geometry.mjs';
 import { M, mortarJoints, crushEnabled } from '../town-kit/src/materials.mjs';
@@ -201,6 +203,10 @@ const ASSETS = {
   shop: (sign, palette, furnished = false) => once(`shop-${sign}-${palette}${furnished ? '-furnished' : ''}`, () => buildStripShop({ furnished, signText: sign, palette })),
   grocery: (sign, palette, furnished = false) => once(`grocery-${sign}-${palette}${furnished ? '-furnished' : ''}`, () => buildCornerGrocery({ furnished, signText: sign, palette })),
   cafe: () => once('cafe', () => buildVictorianCorner({ storeys: 3, furnished: true, fence: true, palette: 'sage' })),
+  // The hero variant's glass office tower (town-kit office-tower.mjs). Its
+  // bare frame qualifies at 64 iterations; VIBE_OFFICE_FURNISHED=0 leaves its
+  // offices empty, to qualify the two apart.
+  office: () => once('office', () => buildOfficeTower({ storeys: 10, furnished: process.env.VIBE_OFFICE_FURNISHED !== '0' })),
   fence: () => once('fence', () => buildFence({ palette: 'cream' })),
   library: () => once('library', () => buildNeighborhoodLibrary({ furnished: false })),
   cinema: () => once('cinema', () => buildArtDecoCinema({ furnished: false })),
@@ -307,7 +313,8 @@ function layout(variant = null) {
   place(ASSETS.prop('street-sign'), 35, -7.4, 180, 'bus-sign');
   for (const x of [13, 21, 29]) place(ASSETS.prop('bench'), x, -14, 180, 'bench');
   frontage(ASSETS.grocery('MARKET', 'rose', hero), 52, 0, -1, 7.4, 'grocery');
-  for (const [k, x] of [90, 112, 134].entries()) frontage(ASSETS.tower(['limestone', 'glass', 'brick'][k]), x, 0, -1, 8, 'tower');
+  // Main Street's first tower is the hero variant's glass office tower: the one its film brings down.
+  for (const [k, x] of [90, 112, 134].entries()) frontage(hero && k === 0 ? ASSETS.office() : ASSETS.tower(['limestone', 'glass', 'brick'][k]), x, 0, -1, 8, 'tower');
   labels.push({ title: 'Bus station', position: [20, 0, -10] });
   // North Street: shops facing south; the market square behind Main Street's shops.
   shopRow(48, -1, 10, ['DELI', 'BOOKS', 'BAKERY', 'CAFE', 'TOYS', 'FLORIST', 'BARBER'], ['slate', 'blue', 'cream', 'sage', 'rose']);
@@ -409,7 +416,7 @@ function boxes(placements, pack) {
       // What stands at ground level: a crown above a pavement is no clash.
       if (c.y - h.y / 2 < 0.3) extent.forEach(([q, size], k) => { footLo[k] = Math.min(footLo[k], q - size / 2); footHi[k] = Math.max(footHi[k], q + size / 2); });
     }
-    out.push({ group: p.group, lo, hi, footLo, footHi, anchored });
+    out.push({ group: p.group, lo, hi, footLo, footHi, anchored, pieces: count });
     offset += count;
   }
   return out;
@@ -444,7 +451,7 @@ const round = (v) => Math.round(v * 100) / 100;
  * the districts. Building ids number each kind within its district in build
  * order: `elm-park/house-12`, `market-quarter/shop-3`, `market-quarter/tower-2`.
  */
-function namePlaces(placements, pack, slots, labels) {
+function namePlaces(placements, pack, slots, labels, { pieces = false } = {}) {
   const places = [], counts = {};
   const nearestStreet = (z) => STREETS.reduce((a, b) => (Math.abs(b - z) < Math.abs(a - z) ? b : a));
   for (const box of boxes(placements, pack)) {
@@ -464,6 +471,8 @@ function namePlaces(placements, pack, slots, labels) {
       position: [round(x), 0, round(z)],
       footprint: [round(box.hi[0] - box.lo[0]), round(box.hi[2] - box.lo[2])],
       min: box.lo.map(round), max: box.hi.map(round), top: round(box.hi[1]),
+      // How many pieces it is made of (the hero variant's places: a film's caption counts them).
+      ...(pieces ? { pieces: box.pieces } : {}),
       // The pavement in front of it, at eye height.
       pavement: [round(x), 1.6, z0 + side * (ROAD + 1)],
     });
@@ -508,7 +517,7 @@ export function buildTown(variant = process.env.VIBE_TOWN_VARIANT || null) {
   // per object in every pass, shadow cascades included; the GPU has room for
   // more instances per draw. The kit's 32 m cells made 514 leaf meshes.
   for (const attachment of visuals.attachments) attachment.cell = attachment.cell.map((c) => Math.floor(c / 4));
-  return { pack, visuals, slots, labels, fleet, problems, placements: all, places: namePlaces(all, pack, slots, labels), variant, approach: hero ? APPROACH : null };
+  return { pack, visuals, slots, labels, fleet, problems, placements: all, places: namePlaces(all, pack, slots, labels, { pieces: hero }), variant, approach: hero ? APPROACH : null };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

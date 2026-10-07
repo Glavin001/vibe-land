@@ -114,11 +114,13 @@ pub struct Structure {
     pub linear_damping: Option<f64>,
     /// World position of the structure's origin.
     pub origin: V3,
+    /// Chunk crushing per material (empty: none), parallel to `materials`.
+    pub crush: Vec<vibe_land_physx_bridge::CrushMaterialDesc>,
 }
 
 impl Structure {
     pub fn new() -> Self {
-        Self { chunks: Vec::new(), bonds: Vec::new(), materials: Vec::new(), rotation: [0.0, 0.0, 0.0, 1.0], linear_damping: None, origin: [0.0, 20.0, 0.0] }
+        Self { chunks: Vec::new(), bonds: Vec::new(), materials: Vec::new(), rotation: [0.0, 0.0, 0.0, 1.0], linear_damping: None, origin: [0.0, 20.0, 0.0], crush: Vec::new() }
     }
     pub fn material(&mut self, m: Material) -> usize {
         self.materials.push(m);

@@ -1,0 +1,7 @@
+{
+ "bridge-piers": {
+  "default": {
+   "step3": {"state": "holds", "note": "default bending gain reads the deck's M 3.65x low (u 0.57 in its own model): survives a 30 m span at real u 1.69"}
+  }
+ }
+}

@@ -9,6 +9,8 @@
 //! city leaves nothing behind -- rather than that particular functions were
 //! called.
 
+#[path = "common/stage_env.rs"]
+mod stage_env;
 use vibe_land_physx_bridge::{
     CapsulePlayerDesc, ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, NativeConfig, Pose,
     Quat, RoundDesc, StaticBoxDesc, StressMaterialDesc, Vec3, World, WorldConfig,
@@ -25,6 +27,7 @@ const ALL: u32 = GROUP_STATIC | GROUP_CHUNK;
 #[ignore = "requires real native GPU destruction SDK"]
 fn native_unconverged_stress_rejects_weak_material_damage() {
     for max_iterations in [1, 2048] {
+        stage_env::strict_converged(); // this test checks the strict mode
         let mut world = World::new(WorldConfig::default()).unwrap();
         world.native_attach().unwrap();
         let (mut nodes, bonds) = wall(4, 1);
@@ -110,6 +113,7 @@ fn native_unconverged_stress_rejects_weak_material_damage() {
 #[ignore = "requires real native GPU destruction SDK"]
 fn native_bond_observation_includes_bending_and_material_verdict() {
     for fibres in [false, true] {
+        stage_env::product();
         let mut world = World::new(WorldConfig::default()).unwrap();
         world.native_attach().unwrap();
         let (mut nodes, mut bonds) = wall(2, 1);
@@ -161,6 +165,7 @@ fn native_bond_observation_includes_bending_and_material_verdict() {
 #[ignore = "requires real native GPU destruction SDK"]
 fn native_bond_stress_respects_unequal_authored_masses() {
     for masses in [[1.,100.], [100.,1.]] {
+        stage_env::product();
         let mut world = World::new(WorldConfig::default()).unwrap();
         world.native_attach().unwrap();
         let (mut nodes, bonds) = wall(3, 1);
@@ -177,7 +182,8 @@ fn native_bond_stress_respects_unequal_authored_masses() {
             &nodes, &bonds, material, GROUP_CHUNK, ALL).unwrap();
         world.step().unwrap();
         world.native_configure(native_config(3)).unwrap();
-        assert!(step_and_observe(&mut world).converged);
+        // As the game runs it: an unconverged solve carries into the next tick.
+        assert!((0..30).any(|_| step_and_observe(&mut world).converged), "never converged in 30 ticks");
         let rows = world.native_bond_stress_rows(0).unwrap();
         assert_eq!(rows.len(), 2);
         for row in rows {
@@ -291,7 +297,7 @@ fn settings() -> DestructibleSettings {
         }],
         crush: Vec::new(),
         ductile_slip: Vec::new(),
-        impact_modulus: Vec::new(),
+        impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: true,
@@ -396,6 +402,7 @@ fn step_and_observe(world: &mut World) -> vibe_land_physx_bridge::NativeStatus {
 
 #[test]
 fn the_wall_stands_until_it_is_hit_and_then_comes_apart() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     install(&mut world, 6, 6);
@@ -463,6 +470,7 @@ fn crushable(debris: f32, pieces: u32) -> vibe_land_physx_bridge::CrushMaterialD
 /// 90 ticks more: every step must complete. Returns the world, the crush
 /// events and how many islands were retired on the wire.
 fn crush_wall(crush: Vec<vibe_land_physx_bridge::CrushMaterialDesc>) -> (World, Vec<vibe_land_physx_bridge::FfiChunkCrushEvent>, usize) {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     let (nodes, bonds) = wall_of(6, 6, false);
@@ -552,6 +560,7 @@ fn vibe_native_crush_off_crushes_nothing() {
 #[test]
 #[ignore = "requires real native GPU destruction SDK"]
 fn authored_crush_reaches_the_stage_unchanged() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     let (nodes, bonds) = wall_of(2, 2, false);
@@ -576,6 +585,7 @@ fn authored_crush_reaches_the_stage_unchanged() {
 /// hull the GPU narrowphase rejects, surfaces there first.
 #[test]
 fn a_wall_of_convex_hulls_stands_until_it_is_hit_and_then_comes_apart() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     let errors_before = world.stats().expect("stats").gpu_warning_count;
     ground(&mut world);
@@ -628,6 +638,7 @@ fn a_wall_of_convex_hulls_stands_until_it_is_hit_and_then_comes_apart() {
 
 #[test]
 fn every_body_is_announced_once_and_keeps_its_identity() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     install(&mut world, 5, 5);
@@ -683,6 +694,7 @@ fn every_body_is_announced_once_and_keeps_its_identity() {
 
 #[test]
 fn a_rebuilt_city_leaves_nothing_of_the_old_one() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
 
@@ -730,6 +742,7 @@ fn a_rebuilt_city_leaves_nothing_of_the_old_one() {
 fn a_raycast_finds_the_chunks_the_stage_owns() {
     use vibe_land_physx_bridge::RaycastRequest;
 
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     install(&mut world, 6, 6);
@@ -774,6 +787,7 @@ fn a_raycast_finds_the_chunks_the_stage_owns() {
 /// is exactly the sequence a player produces with one trigger pull.
 #[test]
 fn a_production_weight_round_does_not_destabilise_the_scene() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     install(&mut world, 8, 8);
@@ -842,6 +856,7 @@ fn a_production_weight_round_does_not_destabilise_the_scene() {
 
 #[test]
 fn observing_the_same_frame_twice_reports_nothing_the_second_time() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     install(&mut world, 4, 4);
@@ -890,6 +905,7 @@ fn observing_the_same_frame_twice_reports_nothing_the_second_time() {
 /// because it is correct, and the bridge refuses to author without it.
 #[test]
 fn a_reset_rebuilds_a_city_that_still_breaks() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     install(&mut world, 4, 4);
@@ -951,6 +967,7 @@ fn a_reset_rebuilds_a_city_that_still_breaks() {
 /// destruction with clients connected.
 #[test]
 fn a_reset_during_a_collapse_does_not_kill_the_stage() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
 
@@ -1028,6 +1045,7 @@ fn a_reset_during_a_collapse_does_not_kill_the_stage() {
 /// even be reset. Production did exactly this and lost matches to it.
 #[test]
 fn authoring_before_the_scene_has_stepped_is_refused() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     install(&mut world, 4, 4);

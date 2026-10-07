@@ -29,16 +29,43 @@ out=${VERIFY_OUT_DIR:-$ROOT/target/verify/$stamp}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)  # absolute: cargo runs tests from the package directory
 export VIBE_GPU_SHARED=1
+# The product's stage environment, as a backstop for any GPU test that does not
+# set it itself (physx-bridge/tests/common/stage_env.rs; lint-gpu-test-env.sh).
+export PX_DESTRUCTION_ALLOW_UNCONVERGED=1
 I=/Users/glavin/Development/PhysX/out/install
 export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
 # High-fidelity runs on high.env's SDK (integration/high-fidelity, garage-hifi: every
 # capability). These remain for the single-feature regression tests.
 export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-$I/garage-multihull}
-export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/install/garage-impact}
+export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/install/garage-hifi}
 export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/out/build/garage-multihull/package}
 export IMPACT_BUILD=${VERIFY_IMPACT_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/build/impact-e-tests}
 t_start=$(date +%s)
 failed=0
+
+# A GPU environment failure, not a test failure: another process's long GPU work
+# timed this one's command buffers out (Metal), which PhysX reports as CUDA error 2.
+env_failure() { grep -qE 'kIOGPUCommandBufferCallbackErrorTimeout|CUDA error 2\b|cudaErrorMemoryAllocation|CUDA_ERROR_LAUNCH_TIMEOUT|^STALLED' "$1"; }
+
+# watched LOG CMD...: run CMD with its output in LOG; if LOG stops growing for
+# VERIFY_STALL_S (default 600) s -- a process stuck in an uninterruptible GPU wait
+# behind another process's hung dispatch -- kill it and mark the log STALLED.
+watched() {
+  local log=$1; shift
+  "$@" > "$log" 2>&1 &
+  local pid=$! last=$(date +%s) size=-1
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 5
+    local now=$(date +%s) cur=$(stat -f %z "$log" 2>/dev/null || echo 0)
+    if [ "$cur" != "$size" ]; then size=$cur; last=$now; fi
+    if [ $(( now - last )) -ge "${VERIFY_STALL_S:-600}" ]; then
+      pkill -9 -P "$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null
+      echo "STALLED: no output for ${VERIFY_STALL_S:-600} s (a GPU wait that never returned); killed" >> "$log"
+      return 124
+    fi
+  done
+  wait "$pid"
+}
 
 has() { grep -q "#define $2 1" "$1/include/physx/PxDestructionScene.h" 2>/dev/null; }
 
@@ -55,8 +82,14 @@ textbook() {
     source "$ROOT/scripts/fidelity/check.sh" --degrade > "$out/textbook-$label.fidelity" 2>&1
     export CARGO_TARGET_DIR=$ROOT/target/verify-$(basename "$PHYSX_ROOT")
     export VERIFY_TIER=$tier VERIFY_OUT=$out/textbook-$label.jsonl
-    cd "$ROOT" && cargo test -p vibe-land-physx-bridge --features native-destruction --test textbook \
-      -- --ignored --test-threads=1 --nocapture > "$out/textbook-$label.log" 2>&1
+    cd "$ROOT"
+    for attempt in 1 2; do
+      rm -f "$VERIFY_OUT"
+      watched "$out/textbook-$label.log" cargo test -p vibe-land-physx-bridge --features native-destruction --test textbook \
+        -- --ignored --test-threads=1 --nocapture && break
+      env_failure "$out/textbook-$label.log" || break
+      echo "[verify] textbook $label: GPU environment failure, rerunning"
+    done
   )
   local rc=$?
   echo "[verify] textbook $label: $(grep -hE '^[a-z+()-]+: [0-9]+ checks' "$out/textbook-$label.log" || echo "did not finish (see textbook-$label.log)")"
@@ -83,7 +116,18 @@ if want regressions; then
       continue
     fi
     t0=$(date +%s)
-    if (cd "$ROOT" && bash -c "$cmd") > "$out/regression-$id.log" 2>&1; then st=PASS; else st=FAIL; failed=1; fi
+    # PhysX's own ctests set the stage's convergence mode per test (strict tests
+    # pin it to 0): never hand them the product backstop.
+    [[ "$cmd" == *ctest* ]] && cmd="unset PX_DESTRUCTION_ALLOW_UNCONVERGED; $cmd"
+    st=FAIL
+    for attempt in 1 2; do
+      if (cd "$ROOT" && watched "$out/regression-$id.log" bash -c "$cmd"); then st=PASS; break; fi
+      # Another process's long GPU dispatch can time out this one's command
+      # buffers: an environment failure, rerun once, then reported as ENV.
+      if env_failure "$out/regression-$id.log"; then st=ENV; echo "[verify] regression $id: GPU environment failure, rerunning"; continue; fi
+      st=FAIL; break
+    done
+    [ "$st" = FAIL ] && failed=1
     dt=$(( $(date +%s) - t0 ))
     echo "[verify] regression $id: $st (${dt}s)"
     echo "{\"id\":\"$id\",\"what\":$(printf '%s' "$what" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),\"status\":\"$st\",\"seconds\":$dt}" >> "$out/regressions.jsonl"

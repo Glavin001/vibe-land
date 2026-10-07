@@ -100,7 +100,9 @@ function jointMaterial(b,kind,area,length,table=CONNECTIONS){
  // Fasteners in timber: ductile (materials.mjs ULTIMATE_SLIP).
  return b.table.push({...structuredClone(b.table[M.frame]),name:`${kind}-joint`,color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:elastic,ductileSlip:ULTIMATE_SLIP,
   compressionElastic:LONG_TERM*f.compression,compressionFatal:f.compression,tensionElastic:LONG_TERM*f.tension,tensionFatal:f.tension,
-  shearElastic:LONG_TERM*f.shear,shearFatal:f.shear})-1;
+  shearElastic:LONG_TERM*f.shear,shearFatal:f.shear,
+  // A few discrete fasteners twist on their own group (materials.mjs fastenerRow); read under VIBE_SECTION_ROTATION.
+  ...(c.twist?{twistGyration:c.twist.gyration,twistReach:c.twist.reach}:{})})-1;
 }
 
 /** The connection kind joining two node types (different pieces). */

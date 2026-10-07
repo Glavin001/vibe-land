@@ -51,14 +51,18 @@ export function writeScenario(scenario) {
     const out = {
       id: c.id, label: c.label, offset: [0, 0, k * scenario.spacing], nodes: [node, node + n], bonds: [bond, bond + b],
       names: c.names, bondKeys: c.bonds, bondNodes: c.pack.scenario.bonds.map((x) => [x.node0, x.node1]), anchors: c.pack.scenario.nodes.map((x, i) => (x.mass === 0 ? i : -1)).filter((i) => i >= 0),
-      types: c.pack.scenario.nodeTypes, removed: c.removed ?? [], predictions: c.predictions, notes: c.notes ?? null,
+      types: c.pack.scenario.nodeTypes, removed: c.removed ?? [], charges: c.charges ?? null, expect: c.expect ?? null, masses: c.masses ?? null, predictions: c.predictions, notes: c.notes ?? null,
     };
     node += n; bond += b;
     return out;
   });
   const scenePath = path.join(dir, 'scene.json');
   writeFileSync(scenePath, JSON.stringify(scene));
-  const spec = { scenario: scenario.id, title: scenario.title, scene: scenePath, ticks: scenario.ticks ?? 600, criteria: { ...CRITERIA, ...(scenario.criteria ?? {}) },
+  // Charges (demolition): each case's firings, moved by its offset, into one file for the run.
+  let charges = null;
+  const firings = list.flatMap((c, k) => (c.charges ?? []).map((f) => ({ tick: f.tick, case: c.id, boxes: f.boxes.map(([lo, hi]) => [lo.map((v, i) => v + (i === 2 ? k * scenario.spacing : 0)), hi.map((v, i) => v + (i === 2 ? k * scenario.spacing : 0))]) })));
+  if (firings.length) { charges = path.join(dir, 'charges.json'); writeFileSync(charges, JSON.stringify(firings)); }
+  const spec = { scenario: scenario.id, charges, title: scenario.title, scene: scenePath, ticks: scenario.ticks ?? 600, criteria: { ...CRITERIA, ...(scenario.criteria ?? {}) },
     band: scenario.band, models: scenario.models, cases: specCases, hand: scenario.hand ?? null };
   writeFileSync(path.join(dir, 'spec.json'), JSON.stringify(spec, null, 1));
   return { dir, spec, scene };

@@ -40,8 +40,9 @@ export function planar({ width, z0 = -width / 2, key = 'planar', title = key } =
     member(a, b, { depth, material, ends = [material, material], chunks = 1, type = 'member', id = `${joints[a].id}-${joints[b].id}` }) {
       members.push({ a, b, depth, material, ends, chunks, type, id }); return members.length - 1;
     },
-    build({ jointMaterial, extra = null } = {}) {
-      const pk = new Pack(key, title), z1 = z0 + width;
+    /** pk: build into this Pack (another plane of the same structure); prefix: names. */
+    build({ jointMaterial, extra = null, pk = new Pack(key, title), prefix = '' } = {}) {
+      const z1 = z0 + width;
       // Each joint's radius: far enough out that neighbouring members clear each other.
       const dir = (j, m) => { const o = members[m], p = joints[o.a === j ? o.b : o.a], q = joints[j], L = Math.hypot(p.x - q.x, p.y - q.y); return [(p.x - q.x) / L, (p.y - q.y) / L]; };
       const radius = joints.map((q, j) => {
@@ -62,25 +63,25 @@ export function planar({ width, z0 = -width / 2, key = 'planar', title = key } =
         for (const [x, y] of q.extra) pts.push([x, y]);
         const poly = hull2(pts);
         polygons[j] = poly;
-        nodeOf[j] = pk.prism({ poly, z0, z1, material: q.material ?? jointMaterial, type: q.type, name: q.id, fixed: q.fixed });
+        nodeOf[j] = pk.prism({ poly, z0, z1, material: q.material ?? jointMaterial, type: q.type, name: `${prefix}${q.id}`, fixed: q.fixed });
       });
       const pieces = members.map((m) => {
         const A = joints[m.a], B = joints[m.b], L = Math.hypot(B.x - A.x, B.y - A.y), d = [(B.x - A.x) / L, (B.y - A.y) / L], nrm = [-d[1], d[0]];
         const s0 = radius[m.a].r, s1 = L - radius[m.b].r, h = m.depth / 2, ids = [];
         for (let k = 0; k < m.chunks; k++) {
           const u0 = s0 + (s1 - s0) * k / m.chunks, u1 = s0 + (s1 - s0) * (k + 1) / m.chunks, at = (u, v) => [A.x + d[0] * u + nrm[0] * v, A.y + d[1] * u + nrm[1] * v];
-          ids.push(pk.prism({ poly: [at(u0, -h), at(u1, -h), at(u1, h), at(u0, h)], z0, z1, material: m.material, type: m.type, name: `${m.id}#${k}` }));
+          ids.push(pk.prism({ poly: [at(u0, -h), at(u1, -h), at(u1, h), at(u0, h)], z0, z1, material: m.material, type: m.type, name: `${prefix}${m.id}#${k}` }));
         }
         const face = (u) => [A.x + d[0] * u, A.y + d[1] * u];
         const area = m.depth * width;
-        const add = (n0, n1, at, normal, material, key) => { pk.rawBond(n0, n1, { centroid: [...at, (z0 + z1) / 2], normal: [...normal, 0], area, material }); bonds.push(key); };
+        const add = (n0, n1, at, normal, material, key) => { pk.rawBond(n0, n1, { centroid: [...at, (z0 + z1) / 2], normal: [...normal, 0], area, material }); bonds.push(prefix ? { ...key, member: `${prefix}${key.member}` } : key); };
         add(nodeOf[m.a], ids[0], face(s0), d, m.ends[0], { member: m.id, end: 0, type: m.type });
         for (let k = 0; k < m.chunks - 1; k++) add(ids[k], ids[k + 1], face(s0 + (s1 - s0) * (k + 1) / m.chunks), d, m.material, { member: m.id, at: (k + 1) / m.chunks, type: m.type });
         add(ids.at(-1), nodeOf[m.b], face(s1), d, m.ends[1], { member: m.id, end: 1, type: m.type });
         return { ids, L, s0, s1, d };
       });
       if (extra) extra({ pk, nodeOf, pieces, radius, bonds, polygons });
-      return { pack: pk.build(), names: pk.names, bonds, nodeOf, pieces, radius, polygons };
+      return { pk, pack: pk.build(), names: pk.names, bonds, nodeOf, pieces, radius, polygons };
     },
   };
 }

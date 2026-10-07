@@ -1,0 +1,68 @@
+# Performance backlog (high-fidelity profile)
+
+Measured costs of the high-fidelity capabilities, collected while correctness
+comes first. Nothing here is optimised yet. Optimisation starts once the
+correctness suites (`docs/verification`, `docs/calibration`) pass on the
+combined branch (`integration/high-fidelity`), and every change is gated by
+them. Timing runs take the GPU lock (`scripts/perf/gpu-run.sh`). Correctness
+runs share the GPU.
+
+Fixed constraints, not levers:
+- FP32.
+- Stress cap 64; 16 for town qualification.
+- `internalCorrectionLimit` 1.
+- `PX_DESTRUCTION_ALLOW_UNCONVERGED=1`.
+- No looser tolerance, no extra iterations, no double precision.
+
+## Items
+
+**1. Impact solve, per impact tick** (`VIBE_IMPACT_CAPACITY`, PhysX `feat/impact-capacity`)
+- Cost: 0.4-1.3 s per impact tick in the first projected-gradient version, one block per island. Since 91d5b2aa2 it is ADMM with 6×6 per-chunk block preconditioning.
+- At rest: zero extra.
+- To measure: impact-tick step time against the runtime profile, for the truck, cannonball, meteor and small balls. Re-measure after the coupled impactor contact lands.
+
+**2. Rotational stiffness convergence** (`VIBE_SECTION_ROTATION`, PhysX `feat/section-rotational-stiffness`)
+- Cost: about 3× the iterations to the same force error on the two-storey veneer house (319 vs 114, native polynomial, from cold to 1e-3).
+- Where the slow error sits: in the roof's soft near-mechanisms (rafters, ridge, gables). That is real physics.
+- Tried, none reaching 114:
+  - higher-degree Chebyshev: fewer iterations, about 630 operator passes;
+  - rigid-group deflation and unsmoothed or smoothed aggregation: 150-200 iterations.
+- Parallel-axis block-Jacobi diagonal: landed in 231644fb4.
+- Parked work: PhysX `wip/matched-hierarchy`.
+- At the cap, 82-100% of solves are unconverged at 16 iterations. Warm starts settle them over about 2 s.
+
+**3. High-fidelity scene configuration**
+- Cost: +14.5 s. Vehicle lab, five monster trucks, shared GPU, 04:39 run:
+  - native configure: 15.0 s against 0.5 s for runtime;
+  - pack load and fleet preparation: 2.8 s against 1.9 s.
+- The window covers:
+  - per-bond sections from chunk geometry: 7,930 of 8,057 bonds, plus 857 per truck;
+  - configureStress with the rotation rows;
+  - the impact solve's buffers.
+- The split needs timers.
+- The in-process Welcome timeout was raised to 180 s (vibe-land 0de65c08, integration branch).
+- Logs: `.claude/worktrees/hifi/target/native-video/vehicle-lab-20261007-043932.log` (high fidelity) and `-041150.log` (runtime).
+- Under GPU and CPU contention, pack load alone took 97 s (`-040828.log`).
+
+**4. Correction loop with chunk loads** (opt-in, PhysX `feat/chunk-loads-correction-loop`)
+- Cost: about 2× on fracturing ticks. Worst tick 32 → 44 ms median; monster truck into a house 35 → 61 ms.
+- The limit stays 1. Report a deeper loop only as a measured what-if.
+
+**5. Contact crush and chunk crush**
+- Measured: within run-to-run noise (1-2 ms) on impact steps with crushing on (vehicle lab, 2026-10-07).
+- Re-measure with contact crush inside the impact solve.
+
+## The performance suite (to build)
+- 60-120 s, one answer.
+- Draws on the same data-driven scenarios as the correctness suites:
+  - Vibe Town idle and under bombardment;
+  - the vehicle fleet;
+  - house impacts: truck, cannonball, meteor;
+  - the calibration structures.
+- Reports:
+  - step time: median, p95, worst tick;
+  - GPU time;
+  - stress iterations;
+  - impact-solve iterations;
+  - unconverged count.
+- Paired A/B method from the `perf-ab-measure` and `perf-measure` skills.

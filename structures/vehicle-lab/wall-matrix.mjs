@@ -101,10 +101,10 @@ function trial(pack, target, impactorId, angle, point = 'centre', extra = {}) {
     distance: target.town ? (imp.attack === 'meteor' ? 40 : 12) : imp.attack === 'meteor' ? 70 : 30, ...(imp.mass ? { mass: imp.mass } : {}) };
   if (extra.repeat) {
     // A previously damaged wall: the same shot twice, a second apart; the probe reads the second.
-    return { ...base, at: 'pad/rest', slot: [110, -120, 0], drive: { kind: 'park' }, seconds: 3.5,
+    return { ...base, at: 'pad/rest', slot: [110, -120, 0], drive: { kind: 'park' }, seconds: 2.8,
       attack: { kind: 'shots', at: 0.5, from, slope: attack.slope, distance: attack.distance, mass: imp.mass ?? 10650, shots: [{ t: 0.5, target: aim, mass: imp.mass ?? 10650 }, { t: 1.5, target: aim, mass: imp.mass ?? 10650 }] } };
   }
-  return { ...base, at: 'pad/rest', slot: [110, -120, 0], drive: { kind: 'park' }, seconds: 2.5, attack };
+  return { ...base, at: 'pad/rest', slot: [110, -120, 0], drive: { kind: 'park' }, seconds: 1.8, attack };
 }
 
 /**
@@ -160,6 +160,21 @@ export function townMatrix(pack) {
 export function matrix(pack, set = 'all') {
   const T = Object.fromEntries(TARGETS.map((t) => [t.id, t]));
   const out = [];
+  // `hunt`: the cases most likely to meet an infinite wall first -- light
+  // impactors a wall may stop, hits beside anchors, layered targets, the
+  // truck, glancing meteors -- for a shared GPU on which the full matrix
+  // takes hours.
+  if (set === 'hunt') {
+    const c = [];
+    for (const t of ['masonry', 'veneer', 'brick-house', 'stone-house']) c.push(trial(pack, T[t], 'ball100', '0'), trial(pack, T[t], 'ball1000', '0'));
+    for (const t of ['veneer-base', 'masonry-base', 'veneer-stud', 'veneer-corner', 'veneer-roof', 'pile']) c.push(trial(pack, T[t], 'cannonball', '0'));
+    for (const t of ['veneer-base', 'masonry-base', 'stone-house', 'pile']) c.push(trial(pack, T[t], 'meteor', '0'));
+    for (const t of ['veneer', 'masonry', 'brick-house', 'veneer-corner']) c.push(trial(pack, T[t], 'truck20', '0'));
+    c.push(trial(pack, T.veneer, 'truck10', '0'), trial(pack, T.masonry, 'truck10', '0'));
+    for (const t of ['brick-house', 'masonry']) c.push(trial(pack, T[t], 'meteor', 'glancing'), trial(pack, T[t], 'meteor', '60'));
+    for (const t of ['veneer', 'masonry']) c.push(trial(pack, T[t], 'ball1000', '0', 'centre', { repeat: true, suffix: '-again' }));
+    return c;
+  }
   const want = (s) => set === 'all' || set === s || (set === 'core' && s !== 'truck');
   // Angles: the weapons square on, 30, 60 and glancing, into the veneer house,
   // the masonry wall and the brick house.

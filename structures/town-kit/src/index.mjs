@@ -25,6 +25,7 @@ export {buildBaylineSmallTown} from './bayline-small-town.mjs';
 
 export {buildNeighborhoodLibrary} from './neighborhood-library.mjs';
 export {buildArtDecoCinema} from './art-deco-cinema.mjs';
+export {buildOfficeTower} from './office-tower.mjs';
 export {buildFireStation} from './fire-station.mjs';
 export {buildBookStack} from './book-stack.mjs';
 export {buildCinemaSeat} from './cinema-seat.mjs';

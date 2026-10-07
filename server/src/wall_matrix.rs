@@ -110,6 +110,8 @@ impl Strength {
 pub struct Probe {
     pub mass: f32,
     pub radius: f32,
+    /// Depth of the struck layer behind the aim point (m).
+    pub layer: f32,
     pub trace: Vec<[f32; 9]>,
     /// The set touched at each tick's end, kept for the hardest tick.
     pub touched: HashMap<u32, Vec<u32>>,
@@ -118,7 +120,7 @@ pub struct Probe {
 }
 
 impl Probe {
-    pub fn new(mass: f32, radius: f32) -> Self { Self { mass, radius, trace: Vec::new(), touched: HashMap::new(), anchored_after: HashMap::new() } }
+    pub fn new(mass: f32, radius: f32, layer: f32) -> Self { Self { mass, radius, layer, trace: Vec::new(), touched: HashMap::new(), anchored_after: HashMap::new() } }
 
     pub fn summary(&self, strength: &Strength, dt: f32) -> Value {
         let t = &self.trace;
@@ -130,11 +132,17 @@ impl Probe {
             return json!({"contact": false, "vIn": t.iter().map(|r| r[2]).fold(0f32, f32::max), "pastMax": t.iter().map(|r| r[1]).fold(f32::MIN, f32::max)});
         };
         let v_in = t[first - 1][2];
-        // The hardest tick: the largest drop in approach speed, within 1 s of first contact.
+        // The hardest tick at the struck layer: the largest drop in approach
+        // speed while the impactor's centre (a car's front) is between one
+        // reach in front of the face and one reach behind the layer, within
+        // 1 s of first contact (what it hits after -- the ground, the next
+        // house -- is another case).
+        let reach = if self.radius > 0. { 2. * self.radius } else { 1. } + 0.5;
+        let at_layer = |k: usize| t[k][1] > -reach - t[k - 1][2] * dt && t[k - 1][1] < self.layer + reach;
         let (mut peak, mut drop) = (first, 0f32);
         for k in first..t.len().min(first + 60) {
             let d = t[k - 1][2] - t[k][2];
-            if d > drop { drop = d; peak = k; }
+            if at_layer(k) && d > drop { drop = d; peak = k; }
         }
         let after = &t[first..];
         let v_min = after.iter().map(|r| r[2]).fold(f32::MAX, f32::min);

@@ -5,7 +5,8 @@
 // (structures/vibe-town/build-town.mjs VIBE_TOWN_VARIANT=hero): off the
 // launch ramp west of Elm Park, between the houses, past the furnished corner
 // cafe, through the Market Quarter's shops and bus station, and up to the
-// towers, where one comes down. The truck is driven on the player's controls
+// towers, where the glass office tower (steel frame, concrete core, furnished
+// floors) comes down. The truck is driven on the player's controls
 // alone by the closed-loop driver (film/driver.mjs) following the avoidance
 // planner (film/planner.mjs), re-planned ten times a second inside the road's
 // width, around every other car on the street and every meteor lying in it,
@@ -37,8 +38,14 @@ const FPS = typeof FILM_FPS === 'number' ? FILM_FPS : 30;
 /** The parked cast: car-1 to car-9 (the scene's slots after the truck's). */
 const CAST_SIZE = 10;
 const r2 = (v) => +v.toFixed(2);
-/** The tower that comes down: Main Street's first (structures/vibe-town/build-town.mjs), and its pieces. */
-const TOWER_X = 90, TOWER_PIECES = 1096;
+/**
+ * The tower that comes down: Main Street's first, the hero variant's glass
+ * office tower (structures/town-kit/src/office-tower.mjs): its street face at
+ * z -8, its columns at x TOWER_X + -6.6, -2.2, 2.2, 6.6, 37 m to the parapet.
+ */
+const TOWER_X = 90, TOWER_FACE_Z = -8;
+/** The scene's own count of its pieces (the hero meta's `pieces`), for the caption. */
+const towerPieces = (ctx) => ctx.place('tower', { nearest: [TOWER_X, -15] })?.pieces ?? null;
 const fmt = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 // ------------------------------------------------------------- the route
@@ -119,16 +126,19 @@ const EVENTS = [
   { zone: 'gauntlet', x: -6, run: (ctx) => meteorOn(ctx, [20, 2.2, -10.5], { from: 0, flight: 1.4, slope: 0.28 }) },
   { zone: 'gauntlet', x: 0, run: (ctx) => meteorOn(ctx, [16.5, 4, 12], { from: 180, flight: 1.4, slope: 0.28 }) },
   { zone: 'gauntlet', x: 10, run: (ctx) => meteorOn(ctx, [29.5, 4, 12], { from: 180, flight: 1.3, slope: 0.28 }) },
-  // The car on the far shoulder: a cannonball into it from across the road, down
-  // onto its roof -- bodywork and glass off, not the whole car gone.
-  { zone: 'gauntlet', x: 34, run: (ctx) => cannon(ctx, [60, 7, 13], [0, -0.35, -1], 0.27) },
+  // The car on the far shoulder: a cannonball low into its front corner from
+  // across the road (the vehicle lab's trial: bodywork off, wheels kept) --
+  // not the whole car gone.
+  { zone: 'gauntlet', x: 34, run: (ctx) => cannon(ctx, [66, 0.9, 13], [-5.2, 0, -15], 0.27) },
   { zone: 'gauntlet', x: 40, run: (ctx) => carCaption(ctx, 8, 1.4) },
   // The tower beside the road (Main Street's first, x 90): its north face's
   // base taken out from across the street, so it goes over towards the road.
-  { zone: 'tower', x: 62, run: (ctx) => sub(ctx, `Ten storeys. ${fmt(TOWER_PIECES)} pieces.`, 2.2, 0.1) },
+  { zone: 'tower', x: 62, run: (ctx) => { const n = towerPieces(ctx); sub(ctx, n ? `Ten storeys. ${fmt(n)} pieces.` : 'Ten storeys.', 2.2, 0.1); } },
   { zone: 'tower', x: 68, run: (ctx) => {
-    // Three rocks low across the street into the columns, landing a third of a second apart.
-    [-5, 0, 5].forEach((dx, k) => meteorOn(ctx, [TOWER_X + dx, 2.2, -8.6], { from: 345 + k * 15, flight: 1.2 + k * 0.35, slope: 0.22 }));
+    // Three rocks low across the street into its ground-floor columns (the west
+    // three of four: lopsided, so it goes over rather than straight down),
+    // landing a third of a second apart.
+    [-6.6, -2.2, 2.2].forEach((dx, k) => meteorOn(ctx, [TOWER_X + dx, 2.2, TOWER_FACE_Z - 0.6], { from: 345 + k * 15, flight: 1.2 + k * 0.35, slope: 0.22 }));
     slow(ctx, 1.5, 4.5);
   } },
 ];
@@ -319,8 +329,8 @@ function segmentsFor(zone) {
         { x: -114, shot: mount('driven', 12, { name: 'cockpit', at: 'driver', horizon: 0.6, fov: 82,
           look: [[0, { yaw: 0, pitch: -5 }], [1.0, { yaw: -28, pitch: -3 }], [2.3, { yaw: -10, pitch: -4 }], [3.0, { yaw: 0, pitch: -5 }]] }) },
         // Low beside the front wheel through the slalom: the cars and rubble it weaves round.
-        { x: -74, shot: mount('driven', 12, { name: 'wheel', at: 'wheel-left', horizon: 'level', headingLag: 0.08, fov: 76,
-          look: { yaw: -4, pitch: -1 } }) },
+        { x: -74, shot: mount('driven', 12, { name: 'wheel', at: 'wheel-left', offset: [0.45, 0.2, 0.7], horizon: 'level', headingLag: 0.08, fov: 76,
+          look: { yaw: 9, pitch: -2 } }) },
       ];
     case 'cafe':
       // Inside the cafe's first-floor flat, by the front window in its
@@ -338,13 +348,14 @@ function segmentsFor(zone) {
       // Wide from behind and to the left of the truck: the whole tower, ground to roof.
       return [
         { x: 58, shot: path([
-          { position: [52, 8.5, 15], lookAt: [TOWER_X, 13, -13] },
-          { position: [57, 9.5, 17], lookAt: [TOWER_X, 12, -11] },
+          { position: [52, 9, 15], lookAt: [TOWER_X, 16.5, -13] },
+          { position: [57, 10, 17], lookAt: [TOWER_X, 15, -11] },
         ], 9.5, { name: 'tower', ease: 'none', fov: 68 }) },
         { after: 9.5, onCut: (ctx, t) => {
           // The last words over the rise, then black.
           ctx.edit({ type: 'title', style: 'caption', text: 'Now it needs a game.\n@glavinw', from: t + 0.9, to: t + 4.6 });
           ctx.edit({ type: 'fade', dir: 'out', at: t + 4.4, seconds: 0.8 });
+          ctx.edit({ type: 'trim', to: t + 5.2 });
         }, shot: path([
           { position: [62, 8, 16], lookAt: [TOWER_X + 2, 3, -4] },
           { position: [44, 38, 50], lookAt: [TOWER_X + 6, 2, -2] },

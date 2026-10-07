@@ -41,7 +41,10 @@ export const TRUSS = {
   panels: 6, panel: 4.0, height: 3.0, width: 0.2,
   chord: 0.28, web: 0.2, post: 0.28,            // in-plane depths (m), GL28h, all 200 wide
   deck: 1.5e3, crowd: null, deckWidth: 3.0,      // kPa loads (crowd from EN 1991-2 5.1)
-  support: 'pinned',
+  // Both bearings fixed against sliding (pinned): the stage cannot give a bearing freedom to
+  // slide (a bond to an anchor holds every direction), so the calibration bridge has two fixed
+  // bearings, as some short footbridges do; an expansion bearing is an engine gap (see the write-up).
+  support: 'pinned-pinned',
   dowel: { d: 0.012, fu: 360e6 },                // S235 dowels (EN 10025), f_u 360 MPa
 };
 export const crowd = (L) => (2.0 + 120 / (L + 30)) * 1e3;
@@ -75,7 +78,8 @@ export function model(P = TRUSS, removed = [], { pinned = false, loadFactor = 1,
   const kept = members.filter((m) => !removed.includes(m.id));
   const ms = kept.map((m) => ({ ...m, k: f.member(node[m.a], node[m.b], { E, A: b * m.depth, I: b * m.depth ** 3 / 12, w: gFactor * b * m.depth * rho * G, release: pinned ? [true, true] : [false, false] }) }));
   // Supports: B0 pinned, B6 on a roller (as built); `fixed`: both bonded (the engine's anchors).
-  f.fix(node[J('B0')], P.support === 'fixed' ? 'xyz' : 'xy'); f.fix(node[J(`B${P.panels}`)], P.support === 'fixed' ? 'xyz' : 'y');
+  const far = P.support === 'fixed' ? 'xyz' : P.support === 'pinned-pinned' ? 'xy' : 'y';
+  f.fix(node[J('B0')], P.support === 'fixed' ? 'xyz' : 'xy'); f.fix(node[J(`B${P.panels}`)], far);
   const Pn = loadFactor * panelLoad(P, { crowdFactor });
   for (let i = 1; i < P.panels; i++) f.load(node[J(`B${i}`)], 0, -Pn, 0);
   return { f, ms, joints, node };
@@ -140,55 +144,63 @@ export function design(P = TRUSS) {
   return { F_Ed: out, deckOnly };
 }
 
-/** Build the truss with members `removed` (ids). */
+/**
+ * Build the bridge with members `removed` (ids, cut in both trusses): two
+ * trusses (S at z -1.5, N at +1.5), each on two bearing pads, joined at every
+ * bottom panel point by a cross beam that carries the deck and the crowd
+ * between them (its mass is that load: 2 x the panel load inside, 1 x at the
+ * ends) and makes the U-frames that hold the trusses upright.
+ */
 export function build(P = TRUSS, removed = []) {
   const { joints, members } = geometry(P), D = design(P), M = materials(P);
-  const t = planar({ width: P.width, key: `${P.key}${removed.length ? `-no-${removed.join('-')}` : ''}` });
   const steel = packMaterial('steel-joint', { density: 1200, E: 210e9, compression: 355e6, tension: 355e6, shear: 205e6, color: '#6f7a80', textureKey: 'metal', metalness: 0.6 });
-  // A joint: the members' ends with their steel plates, as one chunk (glulam ends + plates, ~1200 kg/m^3 smeared).
-  // Bottom joints get a flat underside (a bearing plate, a kentledge hanger) 0.3 m either side of the node.
-  const jointIds = joints.map((j) => t.joint(j.id, j.x, j.y, { material: steel, type: j.id.startsWith('T') ? 'top-joint' : 'bottom-joint', minRadius: 0.2,
-    extra: j.id.startsWith('B') ? [[j.x - 0.3, j.y - P.chord / 2], [j.x + 0.3, j.y - P.chord / 2]] : [] }));
-  const conn = {};
-  for (const m of members) {
-    if (removed.includes(m.id)) continue;
-    let ends = [M.member, M.member];
-    if (m.type !== 'bottom-chord' && m.type !== 'top-chord') {
-      const c = connection(D.F_Ed[m.id], m.depth, P); conn[m.id] = c;
-      const L = 0.5; // the joint bond's spring length: plate to member centroid scale (see write-up)
-      const mat = packMaterial(`dowels-${c.n}x${(P.dowel.d * 1e3).toFixed(0)}-${m.depth}`, { density: GL28H.density, E: c.k * L / c.A, compression: GL28H.fc0, tension: c.Rk / c.A, shear: c.Rk / c.A, sustained: { compression: KMOD, tension: KMOD, shear: KMOD }, color: '#c49a6c', textureKey: 'aged-timber' });
-      ends = [mat, mat];
-    }
-    t.member(jointIds[m.a], jointIds[m.b], { depth: m.depth, material: M.member, ends, chunks: 2, type: m.type, id: m.id });
-  }
   const anchor = packMaterial('foundation', { density: 2400, E: 30e9, compression: 1e9, tension: 1e9, shear: 1e9, color: '#8d8a86', textureKey: 'concrete-wall' });
-  const kentledge = packMaterial('kentledge', { density: 2400, E: 30e9, compression: 1e9, tension: 1e9, shear: 1e9, color: '#9a968c', textureKey: 'concrete-wall' });
-  const out = t.build({ jointMaterial: steel, extra: ({ pk, nodeOf, bonds, polygons }) => {
-    // A bottom joint's flat underside: its polygon's edge at the lowest y.
-    const underside = (j) => { const poly = polygons[j], y = Math.min(...poly.map((q) => q[1])), xs = poly.filter((q) => Math.abs(q[1] - y) < 1e-9).map((q) => q[0]); return { y, x0: Math.min(...xs), x1: Math.max(...xs) }; };
-    // Bearings: a thin anchor pad under each end joint, bonded across the joint's bottom face.
-    for (const [k, j] of [[0, 'B0'], [P.panels, `B${P.panels}`]]) {
-      const ji = joints.findIndex((q) => q.id === j), n = nodeOf[ji], { y, x0, x1 } = underside(ji);
-      // The joint polygon's bottom edge is its chord face's lower corner line: bond over the joint's width at y.
-      const pad = pk.box({ min: [x0, y - 0.1, -P.width / 2], max: [x1, y, P.width / 2], material: anchor, type: 'bearing', name: `bearing-${j}`, fixed: true });
-      pk.rawBond(pad, n, { centroid: [(x0 + x1) / 2, y, 0], normal: [0, 1, 0], area: (x1 - x0) * P.width, material: steel });
-      bonds.push({ member: `bearing-${j}`, end: 0, type: 'bearing' });
-      pk.box({ min: [x0 - 0.3, y - 1.1, -0.6], max: [x1 + 0.3, y - 0.1, 0.6], material: anchor, type: 'abutment', name: `abutment-${j}`, fixed: true });
+  const deckBeam = packMaterial('cross-beam-and-deck', { density: 2400, E: 12.6e9, compression: 1e9, tension: 1e9, shear: 1e9, color: '#b08a5c', textureKey: 'aged-timber' });
+  const conn = {}, key = `${P.key}${removed.length ? `-no-${removed.join('-')}` : ''}`;
+  const plane = (zc, prefix, pk) => {
+    const t = planar({ width: P.width, z0: zc - P.width / 2, key });
+    // Bottom joints get a flat underside 0.3 m either side of the node (a bearing plate, a cross-beam seat).
+    const ids = joints.map((j) => t.joint(j.id, j.x, j.y, { material: steel, type: j.id.startsWith('T') ? 'top-joint' : 'bottom-joint', minRadius: 0.2,
+      extra: j.id.startsWith('B') ? [[j.x - 0.3, j.y - P.chord / 2], [j.x + 0.3, j.y - P.chord / 2]] : [] }));
+    for (const m of members) {
+      if (removed.includes(m.id)) continue;
+      let ends = [M.member, M.member];
+      if (m.type !== 'bottom-chord' && m.type !== 'top-chord') {
+        const c = connection(D.F_Ed[m.id], m.depth, P); conn[m.id] = c;
+        // The dowel group's slip stiffness k as a bond E A / L over a 0.5 m spring.
+        const L = 0.5;
+        const mat = packMaterial(`dowels-${c.n}x${(P.dowel.d * 1e3).toFixed(0)}-${m.depth}`, { density: GL28H.density, E: c.k * L / c.A, compression: GL28H.fc0, tension: c.Rk / c.A, shear: c.Rk / c.A, sustained: { compression: KMOD, tension: KMOD, shear: KMOD }, color: '#c49a6c', textureKey: 'aged-timber' });
+        ends = [mat, mat];
+      }
+      t.member(ids[m.a], ids[m.b], { depth: m.depth, material: M.member, ends, chunks: 2, type: m.type, id: m.id });
     }
-    // Kentledge: each interior bottom joint's panel load as a concrete block hung under it.
-    const Pn = panelLoad(P), vol = Pn / G / 2400, side = Math.cbrt(vol / 0.5);
-    for (let i = 1; i < P.panels; i++) {
-      const ji = joints.findIndex((q) => q.id === `B${i}`), n = nodeOf[ji], { y, x0, x1 } = underside(ji), x = (x0 + x1) / 2;
-      // The block hangs from a hanger plate: bonded over the joint's underside (its width), the block below it.
-      const h = vol / (side * side);
-      const kb = pk.box({ min: [x0, y - h, -side / 2], max: [x1, y, side / 2], material: kentledge, type: 'kentledge', name: `kentledge-B${i}` });
-      pk.s.nodes[kb].mass = Math.round(Pn / G * 1e3) / 1e3;
-      const area = (x1 - x0) * P.width;
-      pk.rawBond(n, kb, { centroid: [x, y, 0], normal: [0, -1, 0], area, material: steel });
-      bonds.push({ member: `kentledge-B${i}`, end: 0, type: 'kentledge' });
+    return t.build({ jointMaterial: steel, pk, prefix });
+  };
+  const S = plane(-1.5, 'S:'), N = plane(1.5, 'N:', S.pk), pk = S.pk, bonds = [...S.bonds, ...N.bonds];
+  const underside = (side, j) => { const poly = side.polygons[j], y = Math.min(...poly.map((q) => q[1])), xs = poly.filter((q) => Math.abs(q[1] - y) < 1e-9).map((q) => q[0]); return { y, x0: Math.min(...xs), x1: Math.max(...xs) }; };
+  const zi = 1.5 - P.width / 2;
+  for (let i = 0; i <= P.panels; i++) {
+    const ji = joints.findIndex((q) => q.id === `B${i}`), { y, x0, x1 } = underside(S, ji), x = (x0 + x1) / 2;
+    // Bearings: a thin anchor pad under each end joint of each truss, bonded across its underside.
+    if (i === 0 || i === P.panels) {
+      for (const [side, zc] of [[S, -1.5], [N, 1.5]]) {
+        const n = side.nodeOf[ji];
+        const pad = pk.box({ min: [x0, y - 0.1, zc - P.width / 2], max: [x1, y, zc + P.width / 2], material: anchor, type: 'bearing', name: `bearing-${side === S ? 'S' : 'N'}-B${i}`, fixed: true });
+        pk.rawBond(pad, n, { centroid: [x, y, zc], normal: [0, 1, 0], area: (x1 - x0) * P.width, material: steel });
+        bonds.push({ member: `bearing-${side === S ? 'S' : 'N'}-B${i}`, end: 0, type: 'bearing' });
+        pk.box({ min: [x0 - 0.3, y - 1.1, zc - 0.6], max: [x1 + 0.3, y - 0.1, zc + 0.6], material: anchor, type: 'abutment', name: `abutment-${side === S ? 'S' : 'N'}-B${i}`, fixed: true });
+      }
     }
-  } });
-  return { ...out, conn, D };
+    // The cross beam between the two bottom joints, its section within each joint's inner face.
+    const load = (i === 0 || i === P.panels ? 1 : 2) * panelLoad(P), b = 0.24, h = Math.min(0.3, P.chord);
+    const cb = pk.box({ min: [x - b / 2, -h / 2, -zi], max: [x + b / 2, h / 2, zi], material: deckBeam, type: 'cross-beam', name: `cross-beam-B${i}` });
+    pk.s.nodes[cb].mass = Math.round(load / G * 1e3) / 1e3;
+    for (const [side, zf, sgn] of [[S, -zi, 1], [N, zi, -1]]) {
+      pk.rawBond(side.nodeOf[ji], cb, { centroid: [x, 0, zf], normal: [0, 0, sgn], area: b * h, material: steel });
+      bonds.push({ member: `cross-beam-${side === S ? 'S' : 'N'}-B${i}`, end: 0, type: 'cross-beam' });
+    }
+  }
+  return { pack: pk.build(), names: pk.names, bonds, radius: S.radius, conn, D };
 }
 
 /**

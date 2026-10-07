@@ -19,6 +19,8 @@
 //!   --test section_bending -- --ignored --test-threads=1 --nocapture
 //! SECTION_TEST_LEGACY=1 runs the capped formula, to show it fail.
 
+#[path = "common/stage_env.rs"]
+mod stage_env;
 use vibe_land_physx_bridge::{
     ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, NativeConfig, Pose, Quat,
     StressMaterialDesc, Vec3, World, WorldConfig,
@@ -165,6 +167,7 @@ fn expected(chunks: &[Chunk], joints: &[Joint], k: usize, g: f64) -> (f64, f64, 
 }
 
 fn run(chunks: &[Chunk], joints: &[Joint]) -> Vec<(f64, f64, f64)> {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     world.native_attach().unwrap();
     let nodes: Vec<ChunkNodeDesc> = chunks
@@ -202,7 +205,7 @@ fn run(chunks: &[Chunk], joints: &[Joint]) -> Vec<(f64, f64, f64)> {
     };
     let settings = DestructibleSettings {
         max_solver_iterations_per_frame: 4096, graph_reduction_level: 0,
-        materials: vec![strong], crush: Vec::new(), ductile_slip: Vec::new(), impact_modulus: Vec::new(), maximum_bodies: 0,
+        materials: vec![strong], crush: Vec::new(), ductile_slip: Vec::new(), impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(), maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0, apply_excess_forces: true, apply_centrifugal: true,
         excess_force_scale: 0.012, linear_damping: 0.25, angular_damping: 0.35,
     };

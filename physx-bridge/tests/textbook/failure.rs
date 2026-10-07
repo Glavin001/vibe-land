@@ -220,7 +220,8 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
         return;
     }
     for c in breaking_cases() {
-        if !wanted(c.name, Tier::Quick) {
+        // Quick: the cantilever (each bisection is ~12 fresh worlds); full: all.
+        if !wanted(c.name, if c.name == "break-cantilever-root" { Tier::Quick } else { Tier::Full }) {
             continue;
         }
         println!("\n{} -- {}\n  {}", c.name, c.title, c.source);

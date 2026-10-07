@@ -96,7 +96,9 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
  world.native_create_destructible(0,Pose::default(),&nodes,&bonds,DestructibleSettings {
   max_solver_iterations_per_frame:2048,graph_reduction_level:0,materials,crush,
   ductile_slip:mats.iter().map(|m|m["ductileSlip"].as_f64().unwrap_or(0.0) as f32).collect(),
-  impact_modulus:mats.iter().map(|m|m["impactElasticModulus"].as_f64().unwrap_or(0.0) as f32).collect(),maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
+  impact_modulus:mats.iter().map(|m|m["impactElasticModulus"].as_f64().unwrap_or(0.0) as f32).collect(),
+  twist_gyration:mats.iter().map(|m|m["twistGyration"].as_f64().unwrap_or(0.0) as f32).collect(),
+  twist_reach:mats.iter().map(|m|m["twistReach"].as_f64().unwrap_or(0.0) as f32).collect(),maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
   apply_excess_forces:true,apply_centrifugal:true,excess_force_scale:0.012,linear_damping:0.25,angular_damping:0.35,
  },1<<5,mask)?;
  let mut contact=ContactSettings::default();

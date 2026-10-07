@@ -67,10 +67,11 @@ export function packMaterial(name, { density, E, compression, tension, shear, su
  * Characteristic capacities (gamma = 1), EN 1992-1-1:
  *   M_Rk  rectangular stress block (3.1.7(3): lambda 0.8, eta 1), compression bars neglected
  *   M_yk  first yield of the tension bars, cracked elastic section, n = E_s / E_cm
- *   V_Rk  6.2.2(1) without shear reinforcement, C_Rk,c = 0.18 (0.12 x gamma_c 1.5), v_min floor
+ *   V_Rk  6.2.2(1) without shear reinforcement, C_Rk,c = 0.18 (0.12 x gamma_c 1.5), v_min floor;
+ *         with `links` {Asw, s} the larger of that and 6.2.3(3) V_Rk,s (cot theta 2.5)
  *   N_Rk  squash load f_ck A_c + A_s,tot f_yk (alpha_cc 1)
  */
-export function rcRect({ b, h, cover, As, concrete = CONCRETE.C35, fyk = REBAR.fyk }) {
+export function rcRect({ b, h, cover, As, concrete = CONCRETE.C35, fyk = REBAR.fyk, links = null }) {
   const { fck, Ecm } = concrete, A = b * h, S = b * h * h / 6, I = b * h ** 3 / 12, d = h - cover;
   const x = As * fyk / (0.8 * fck * b);
   const M_Rk = As * fyk * (d - 0.4 * x);
@@ -78,7 +79,8 @@ export function rcRect({ b, h, cover, As, concrete = CONCRETE.C35, fyk = REBAR.f
   const M_yk = As * fyk * (d - k * d / 3);
   const ks = Math.min(2, 1 + Math.sqrt(0.2 / d)), rhoL = Math.min(0.02, rho);
   const vRk = Math.max(0.18 * ks * Math.cbrt(100 * rhoL * fck / 1e6), 0.035 * ks ** 1.5 * Math.sqrt(fck / 1e6)) * 1e6;
-  const V_Rk = vRk * b * d;
+  // With links (EN 1992-1-1 6.2.3(3), cot theta 2.5): V_Rk,s = A_sw / s z f_ywk cot theta, z = 0.9 d.
+  const V_Rk = Math.max(vRk * b * d, links ? links.Asw / links.s * 0.9 * d * fyk * 2.5 : 0);
   const N_Rk = fck * (A - 2 * As) + 2 * As * fyk;
   return { b, h, A, S, I, d, As, rho, xOverD: x / d, M_Rk, M_yk, V_Rk, N_Rk, E: Ecm };
 }

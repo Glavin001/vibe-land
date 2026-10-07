@@ -22,6 +22,8 @@
 //!
 //! `#[ignore]`: needs the GPU. Run with `--test-threads=1` on Metal.
 
+#[path = "common/stage_env.rs"]
+mod stage_env;
 use vibe_land_physx_bridge::{
     ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, NativeConfig, Pose, Quat, StaticBoxDesc,
     StressMaterialDesc, Vec3, World, WorldConfig,
@@ -108,7 +110,7 @@ fn settings() -> DestructibleSettings {
         }],
         crush: Vec::new(),
         ductile_slip: Vec::new(),
-        impact_modulus: Vec::new(),
+        impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: false,
@@ -143,6 +145,7 @@ struct Outcome {
 }
 
 fn run(fixture: &Fixture, ticks: u32) -> Outcome {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     // The /city floor: a slab with its top at y = 0.
     world

@@ -847,6 +847,21 @@ pub fn ductile_slip_table(json: &[u8]) -> Vec<f32> {
     materials.iter().map(|m| m["ductileSlip"].as_f64().unwrap_or(0.0).max(0.0) as f32).collect()
 }
 
+/// Each material's fastener-group twist, `materials[].twistGyration` and
+/// `twistReach` (m; town-kit materials.mjs fastenerRow): a joint of a few
+/// discrete fasteners twists on them, not on its contact patch. Read by the
+/// native stage under VIBE_SECTION_ROTATION. Empty when the pack authors none;
+/// (0, 0) for a material twisting on its patch.
+pub fn twist_table(json: &[u8]) -> (Vec<f32>, Vec<f32>) {
+    let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Default::default() };
+    let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Default::default() };
+    if !materials.iter().any(|m| m["twistGyration"].as_f64().unwrap_or(0.0) > 0.0) {
+        return Default::default();
+    }
+    let get = |k: &str| materials.iter().map(|m| m[k].as_f64().unwrap_or(0.0).max(0.0) as f32).collect();
+    (get("twistGyration"), get("twistReach"))
+}
+
 /// Each material's impact-solve modulus (Pa), `materials[].impactElasticModulus`
 /// (town-kit: a wall tie's axial stiffness), where its `elasticModulus` is a
 /// concession for gravity load sharing. Empty when the pack authors none.

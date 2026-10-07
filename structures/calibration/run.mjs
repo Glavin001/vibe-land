@@ -26,7 +26,8 @@ import { writeScenario, REPO, OUT } from './src/scenario.mjs';
 import { CONFIGS, sdkFor } from './src/configs.mjs';
 import { judge } from './src/judge.mjs';
 
-export const SCENARIOS = ['bridge-piers', 'truss-members', 'house-studs'];
+const KNOWN = existsSync(new URL('./known-gaps.json', import.meta.url)) ? JSON.parse(readFileSync(new URL('./known-gaps.json', import.meta.url), 'utf8')) : {};
+export const SCENARIOS = ['bridge-piers', 'truss-members', 'house-studs', 'frame-column', 'demolition'];
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : fallback; };
@@ -42,10 +43,19 @@ const flag = (name) => argv.includes(name);
 export function source() {
   const dir = path.resolve(REPO, process.env.CALIB_SRC ?? 'target/calib-src');
   if (dir === REPO || !existsSync(path.join(dir, 'server/src/main.rs'))) return REPO;
-  const harness = readFileSync(path.join(REPO, 'server/src/calibration.rs'), 'utf8'), target = path.join(dir, 'server/src/calibration.rs');
-  if (!existsSync(target) || readFileSync(target, 'utf8') !== harness) writeFileSync(target, harness);
-  const main = path.join(dir, 'server/src/main.rs'), text = readFileSync(main, 'utf8');
-  if (!/^mod calibration;$/m.test(text)) writeFileSync(main, text.replace(/^mod structure_qualification;$/m, 'mod structure_qualification;\nmod calibration;'));
+  for (const f of ['calibration.rs', 'calibration_charges.rs']) {
+    const want = readFileSync(path.join(REPO, 'server/src', f), 'utf8'), target = path.join(dir, 'server/src', f);
+    if (!existsSync(target) || readFileSync(target, 'utf8') !== want) writeFileSync(target, want);
+  }
+  const main = path.join(dir, 'server/src/main.rs');
+  let text = readFileSync(main, 'utf8');
+  const before = text;
+  if (!/^mod calibration;$/m.test(text)) text = text.replace(/^mod structure_qualification;$/m, 'mod structure_qualification;\nmod calibration;');
+  if (!/^mod calibration_charges;$/m.test(text)) text = text.replace(/^mod calibration;$/m, 'mod calibration;\nmod calibration_charges;');
+  // The match loop's charge hook (main.rs, before the city step), for films of a demolition.
+  const hook = '        crate::calibration_charges::apply_in_match(self.server_tick, self.arena.physx_world_mut());\n';
+  if (!text.includes(hook)) text = text.replace('        #[cfg(feature = \"physx-city\")]\n        let world = self.arena.physx_world_mut();', `        #[cfg(feature = "physx-city")]\n${hook}        #[cfg(feature = "physx-city")]\n        let world = self.arena.physx_world_mut();`);
+  if (text !== before) writeFileSync(main, text);
   return dir;
 }
 
@@ -80,7 +90,8 @@ export function runScene({ scene, out, config, ticks, extraEnv = {} }) {
   };
   const log = out.replace(/\.json$/, '.log');
   const r = spawnSync(path.join(REPO, 'scripts/perf/gpu-run.sh'), [`calib-${config}`, exe, 'calibration_run', '--ignored', '--nocapture', '--test-threads=1'],
-    { cwd: path.join(REPO, 'server'), env, encoding: 'utf8', maxBuffer: 1 << 28 });
+    // A run whose GPU work stalls (a shared, saturated GPU) is cut off: CALIB_TIMEOUT_S (default 1800).
+    { cwd: path.join(REPO, 'server'), env, encoding: 'utf8', maxBuffer: 1 << 28, timeout: 1000 * Number(process.env.CALIB_TIMEOUT_S ?? 1800), killSignal: 'SIGKILL' });
   writeFileSync(log, `${r.stdout}\n${r.stderr}`);
   if (r.status !== 0 || !existsSync(out)) throw Error(`calibration run (${config}) failed: see ${log}\n${(r.stderr ?? '').split('\n').filter((l) => /panicked|error|Error/.test(l)).slice(0, 8).join('\n')}`);
   const line = (r.stderr ?? '').split('\n').find((l) => l.startsWith('[calibration]') && l.includes('ticks in'));
@@ -90,10 +101,10 @@ export function runScene({ scene, out, config, ticks, extraEnv = {} }) {
 
 function table(v) {
   const pad = (s, n) => String(s ?? '-').padEnd(n);
-  console.log(`\n${v.config} (held to: ${v.model}) -- first collapse: engineering prediction ${v.firstCollapse.real}, this model ${v.firstCollapse.predicted}; engine failed ${v.firstCollapse.failed}, fell ${v.firstCollapse.fell}; unconverged ticks ${v.unconvergedTicks}`);
+  console.log(`\n${v.config} (held to: ${v.model}${v.own ? `; its own model ${v.own.model}: ${v.own.passed ? 'consistent' : 'inconsistent'}, first collapse ${v.own.firstCollapse.predicted}` : ''}) -- first collapse: engineering prediction ${v.firstCollapse.real}, this model ${v.firstCollapse.predicted}; engine failed ${v.firstCollapse.failed}, fell ${v.firstCollapse.fell}; unconverged ticks ${v.unconvergedTicks}`);
   for (const r of v.cases) {
     const crit = r.stress.critical ? `${r.stress.critical.key} engine ${r.stress.critical.engine} hand ${r.stress.critical.hand}` : '';
-    console.log(`  ${r.ok.state && r.ok.members ? 'ok  ' : 'MISS'} ${pad(r.case, 7)} predicted ${pad(r.predicted.state, 9)} u ${pad(r.predicted.u, 6)} measured ${pad(r.measured.state, 9)} broken ${pad(r.measured.broken, 4)} free ${pad(r.measured.free, 4)} drop ${pad(r.measured.maxDrop, 6)} | ${crit} | ratio ${r.stress.ratio ? `${r.stress.ratio.median} (${r.stress.ratio.p10}-${r.stress.ratio.p90})` : '-'}${r.measured.firstBroken.length ? ` | first: ${r.measured.firstBroken.slice(0, 4).join(', ')}` : ''}`);
+    console.log(`  ${r.ok.state && r.ok.members ? (r.known ? 'FIXD' : 'ok  ') : r.known?.holds ? 'GAP ' : 'MISS'} ${pad(r.case, 7)} predicted ${pad(r.predicted.state, 9)} u ${pad(r.predicted.u, 6)} measured ${pad(r.measured.state, 9)} broken ${pad(r.measured.broken, 4)} free ${pad(r.measured.free, 4)} drop ${pad(r.measured.maxDrop, 6)} | ${crit} | ratio ${r.stress.ratio ? `${r.stress.ratio.median} (${r.stress.ratio.p10}-${r.stress.ratio.p90})` : '-'}${r.measured.firstBroken.length ? ` | first: ${r.measured.firstBroken.slice(0, 4).join(', ')}` : ''}${r.scenario ? ` | ${JSON.stringify(r.scenario)}` : ''}`);
   }
 }
 
@@ -106,8 +117,25 @@ export async function run(id, { configs, ticks, judgeOnly = false, specOnly = fa
   for (const config of configs) {
     const out = path.join(dir, `report-${config}.json`);
     const iterations = process.env.VIBE_CITY_NATIVE_STRESS_ITERATIONS ?? (scenario.iterations ? String(scenario.iterations) : undefined);
-    const report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks, extraEnv: iterations ? { VIBE_CITY_NATIVE_STRESS_ITERATIONS: iterations } : {} });
-    const v = judge(spec, report, config, scenario.configModel?.[config] ?? CONFIGS[config].model);
+    const extraEnv = { ...(iterations ? { VIBE_CITY_NATIVE_STRESS_ITERATIONS: iterations } : {}), ...(spec.charges ? { VIBE_CALIB_CHARGES: spec.charges } : {}) };
+    const report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks, extraEnv });
+    // Held to the engineering prediction (`real`); the configuration's own model (the stage's
+    // failure law with its bending and limits) is judged too, as a diagnostic of why it differs.
+    const own = scenario.configModel?.[config] ?? CONFIGS[config].model;
+    const v = judge(spec, report, config, 'real');
+    if (own !== 'real') { const o = judge(spec, report, config, own); v.own = { model: own, passed: o.passed, firstCollapse: o.firstCollapse, cases: o.cases.map((r) => ({ case: r.case, predicted: r.predicted, ok: r.ok, stress: r.stress })) }; }
+    // Known gaps (known-gaps.json): a case the engine is recorded to get wrong, with the state it
+    // does reach. It still prints as a miss; the suite fails only on a miss that is not recorded,
+    // or a recorded gap whose state changed (fixed, or worse: update the record either way).
+    // A scenario's own checks per case (demolition: where the debris went), part of passing.
+    if (scenario.judgeCase) for (const r of v.cases) { const extra = scenario.judgeCase(spec, report, spec.cases.find((c) => c.id === r.case)); if (extra) { r.scenario = extra; r.ok.scenario = extra.ok; r.ok.state = r.ok.state && extra.ok; } }
+    const gaps = (KNOWN[id] ?? {})[config] ?? {};
+    for (const r of v.cases) {
+      const g = gaps[r.case];
+      r.known = g ? { state: g.state, note: g.note, holds: g.state === r.measured.state } : null;
+      r.pass = (r.ok.state && r.ok.members && !g) || (g != null && g.state === r.measured.state);
+    }
+    v.passed = v.cases.every((r) => r.pass);
     v.sdk = report.physxRoot; v.wallSeconds = report.wallSeconds;
     verdicts.push(v);
     table(v);

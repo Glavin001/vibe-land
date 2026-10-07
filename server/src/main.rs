@@ -6,6 +6,7 @@ mod city_fleet_tests;
 mod vehicle_testbed;
 mod structure_qualification;
 mod calibration;
+mod calibration_charges;
 mod wire_chunk_poses;
 mod vehicle_tuning;
 mod grass_layout;
@@ -5813,6 +5814,9 @@ impl MatchState {
                 }
             }
         }
+        // Calibration demolition charges (opt-in, VIBE_CALIB_CHARGES): supports cut on their tick.
+        #[cfg(feature = "physx-city")]
+        crate::calibration_charges::apply_in_match(self.server_tick, self.arena.physx_world_mut());
         #[cfg(feature = "physx-city")]
         let world = self.arena.physx_world_mut();
         #[cfg(not(feature = "physx-city"))]

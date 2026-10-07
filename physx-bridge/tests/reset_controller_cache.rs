@@ -20,6 +20,8 @@
 //! Run it with and without `VIBE_CITY_NATIVE_REST_SLEEP=1`; the flag is read
 //! once per process.
 
+#[path = "common/stage_env.rs"]
+mod stage_env;
 use vibe_land_physx_bridge::{
     CapsulePlayerDesc, ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, NativeConfig, Pose,
     Quat, RoundDesc, StaticBoxDesc, StressMaterialDesc, Vec3, World, WorldConfig,
@@ -104,7 +106,7 @@ fn settings() -> DestructibleSettings {
         }],
         crush: Vec::new(),
         ductile_slip: Vec::new(),
-        impact_modulus: Vec::new(),
+        impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: true,
@@ -255,6 +257,7 @@ fn stand_on_rubble(world: &mut World) -> u32 {
 /// Reset the city under a player who is standing on a fragment, then move.
 #[test]
 fn a_player_standing_on_rubble_survives_a_reset() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     rubble(&mut world);
@@ -295,6 +298,7 @@ fn a_player_standing_on_rubble_survives_a_reset() {
 /// fragment, but it stands on the static ground.
 #[test]
 fn a_player_beside_rubble_survives_a_reset() {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     ground(&mut world);
     rubble(&mut world);

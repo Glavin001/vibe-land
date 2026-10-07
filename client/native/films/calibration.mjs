@@ -17,9 +17,11 @@
 // Defines (FILM_DEFINES):
 //   CALIB_SCENARIO  the scenario id (default bridge-piers)
 //   CALIB_CASE      `overview` (default) or a case id
-//   CALIB_ISOLATED  true when the scene holds only that case (default: true for
-//                   a case): node n of the case is the scene's chunk n - nodes[0],
-//                   and the scene's broken bonds are the case's own
+//   CALIB_SCENE_CASES  the cases the loaded scene holds, a comma list (default:
+//                   the case alone for a case take, every case for the overview):
+//                   case-scene.mjs keeps their nodes in spec order, so chunk k
+//                   is the k-th of their nodes; one case alone, and the scene's
+//                   broken bonds are that case's own
 //   CALIB_CONFIG    the engine configuration filmed, for captions and the
 //                   verdict fallback: section (default), default or rotation
 //                   (its env -- VIBE_SECTION_BENDING=1 for section -- is the caller's)
@@ -27,6 +29,7 @@
 //                   structure moves (reel.sh pads the recording): the intro
 //                   captions are logged as `freeze {json}`; 0 puts them over
 //                   the moving picture
+//   CALIB_ONLY      the overview's cases, a comma list (default: every case)
 //   CALIB_DIR       the scenario's directory relative to client/dist-native
 //                   (default ../../structures/calibration/out/<scenario>)
 //
@@ -53,15 +56,16 @@
 // how far the case's chunks came down (each chunk's drawn height against its
 // authored centroid, from the drawn-world sample; the anchors give the
 // offset). The log has a `calib {json}` line per measurement for the report.
-/* global CALIB_SCENARIO, CALIB_CASE, CALIB_ISOLATED, CALIB_CONFIG, CALIB_FREEZE, CALIB_DIR */
+/* global CALIB_SCENARIO, CALIB_CASE, CALIB_SCENE_CASES, CALIB_CONFIG, CALIB_FREEZE, CALIB_ONLY, CALIB_DIR */
 import { boot, hold, path } from '../film/film.mjs';
 import { nodesBox, criticalBox, union, padded, size, fit, sideBearing } from './calibration-frame.mjs';
 
 const SCENARIO = typeof CALIB_SCENARIO === 'string' && CALIB_SCENARIO ? CALIB_SCENARIO : 'bridge-piers';
 const CASE = typeof CALIB_CASE === 'string' && CALIB_CASE ? CALIB_CASE : 'overview';
-const ISOLATED = typeof CALIB_ISOLATED === 'boolean' ? CALIB_ISOLATED : CASE !== 'overview';
+const SCENE_CASES = typeof CALIB_SCENE_CASES === 'string' && CALIB_SCENE_CASES ? CALIB_SCENE_CASES.split(',').map((x) => x.trim()) : null;
 const CONFIG = typeof CALIB_CONFIG === 'string' && CALIB_CONFIG ? CALIB_CONFIG : 'section';
 const FREEZE = typeof CALIB_FREEZE === 'number' ? CALIB_FREEZE : 0;
+const ONLY = typeof CALIB_ONLY === 'string' && CALIB_ONLY ? CALIB_ONLY.split(',').map((x) => x.trim()) : null;
 const DIR = typeof CALIB_DIR === 'string' && CALIB_DIR ? CALIB_DIR : `../../structures/calibration/out/${SCENARIO}`;
 
 const ENGINE = {
@@ -86,14 +90,25 @@ const readJson = async (file, optional = false) => {
  * so each chunk keeps the height it was last drawn at). The anchors (mass 0)
  * never move: their drawn height less their centroid's is the scene's offset.
  */
-function dropMeter(scenario, c) {
-  const [from, to] = c.nodes, base = ISOLATED ? from : 0;
+/**
+ * The scene's chunk -> the spec's node: the scene holds `held` (case objects,
+ * or null for the whole scenario), their nodes in spec order.
+ */
+function slotMap(held) {
+  if (!held) return null;
+  const map = [];
+  for (const c of [...held].sort((a, b) => a.nodes[0] - b.nodes[0])) for (let n = c.nodes[0]; n < c.nodes[1]; n += 1) map.push(n);
+  return map;
+}
+
+function dropMeter(scenario, c, slots) {
+  const [from, to] = c.nodes;
   const last = new Map(), anchorOffsets = new Map();
   return {
     take(city) {
       city.slots.forEach((slot, i) => {
-        const node = slot + base;
-        if (node < from || node >= to) return;
+        const node = slots ? slots[slot] : slot;
+        if (node == null || node < from || node >= to) return;
         const y = city.positions[3 * i + 1], ref = scenario.nodes[node].centroid.y;
         if (scenario.nodes[node].mass === 0) anchorOffsets.set(node, y - ref);
         else last.set(node, y - ref);
@@ -171,7 +186,7 @@ function sampled(shot, fn) {
   return { ...shot, build: (ctx) => { const pose = build(ctx); return (t) => { fn(ctx); return pose(t); }; } };
 }
 
-function caseTake({ spec, scenario, verdict, c }) {
+function caseTake({ spec, scenario, verdict, c, held }) {
   const criteria = spec.criteria ?? { holdsMaxDrop: 0.02, collapseMinDrop: 1 };
   const hints = { ...(spec.camera ?? {}), ...(c.camera ?? {}) };
   const box = nodesBox(scenario, c.nodes);
@@ -187,11 +202,11 @@ function caseTake({ spec, scenario, verdict, c }) {
     focus.min[along] = Math.max(box.min[along], crit.min[along] - reach);
     focus.max[along] = Math.min(box.max[along], crit.max[along] + reach);
   }
-  const meter = dropMeter(scenario, c);
+  const meter = dropMeter(scenario, c, slotMap(held));
   const fromVerdict = verdict?.configs?.[CONFIG]?.cases?.find((r) => r.case === c.id)?.measured ?? null;
   const measure = (ctx, when) => {
     const d = meter.read(criteria.collapseMinDrop);
-    const live = ISOLATED;
+    const live = held?.length === 1;
     const broken = live ? (ctx.e2e.snapshot()?.city?.brokenBonds ?? 0) : (fromVerdict?.broken ?? 0);
     const m = { ...d, broken, brokenFrom: live ? 'live' : 'verdict' };
     if (!d.seen && fromVerdict) Object.assign(m, { drop: fromVerdict.maxDrop, fallen: fromVerdict.fallen ?? 0, dropFrom: 'verdict' });
@@ -230,7 +245,9 @@ function caseTake({ spec, scenario, verdict, c }) {
   ];
 }
 
-function overviewTake({ spec, scenario, verdict }) {
+function overviewTake({ spec: full, scenario, verdict, held }) {
+  const spec = ONLY ? { ...full, cases: full.cases.filter((c) => ONLY.includes(c.id)) } : full;
+  if (!spec.cases.length) throw new Error(`CALIB_ONLY ${ONLY}: no such cases`);
   const criteria = spec.criteria ?? { holdsMaxDrop: 0.02, collapseMinDrop: 1 };
   const boxes = spec.cases.map((c) => nodesBox(scenario, c.nodes));
   const all = union(boxes);
@@ -239,7 +256,8 @@ function overviewTake({ spec, scenario, verdict }) {
   // The opening: every case at once, low and from the corner (the app's far
   // plane is 200 m, and a high camera sees past it into a black lower sky).
   const oside = hints.overviewBearing ?? sideBearing(boxes[0]) + 65;
-  const meters = spec.cases.map((c) => dropMeter(scenario, c));
+  const slots = slotMap(held);
+  const meters = spec.cases.map((c) => dropMeter(scenario, c, slots));
   const sample = (ctx) => { const city = ctx.e2e.drawnWorld?.()?.city; if (city) for (const m of meters) m.take(city); };
   const OPEN = 7, MOVE = 1.3, STAY = 3.4;
   const wideA = fit(all, { bearing: oside - 4, elevation: 12, fov: 45 });
@@ -287,9 +305,11 @@ try {
   // From tick 0: a case with its supports out starts to fail on its first tick.
   const film = await boot({ scene: 'calib', settle: 0 });
   const chunks = film.e2e.snapshot()?.city?.chunksTotal ?? 0;
-  const expected = c && ISOLATED ? c.nodes[1] - c.nodes[0] : scenario.nodes.length;
-  film.log(`calib ${SCENARIO} ${CASE} (${CONFIG}${ISOLATED ? ', alone' : ''}): ${chunks} chunks in the scene, ${expected} expected${chunks !== expected ? ' -- WARNING: the scene is not the one the spec describes' : ''}`);
-  await film.play(c ? caseTake({ spec, scenario, verdict, c }) : overviewTake({ spec, scenario, verdict }), { settle: 0 });
+  const ids = SCENE_CASES ?? (c ? [c.id] : null);
+  const held = ids ? ids.map((id) => spec.cases.find((x) => x.id === id) ?? (() => { throw new Error(`CALIB_SCENE_CASES: no case ${id}`); })()) : null;
+  const expected = held ? held.reduce((n, x) => n + x.nodes[1] - x.nodes[0], 0) : scenario.nodes.length;
+  film.log(`calib ${SCENARIO} ${CASE} (${CONFIG}; scene: ${ids ? ids.join(', ') : 'every case'}): ${chunks} chunks in the scene, ${expected} expected${chunks !== expected ? ' -- WARNING: the scene is not the one the spec describes' : ''}`);
+  await film.play(c ? caseTake({ spec, scenario, verdict, c, held }) : overviewTake({ spec, scenario, verdict, held }), { settle: 0 });
 } catch (error) {
   console.log(`[film] FAILED: ${error?.stack ?? error}`);
   setTimeout(() => process.exit(1), 300);
