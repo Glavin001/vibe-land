@@ -220,3 +220,31 @@ high-fidelity(no-impact)	impact-drop	dynamic amplification, h = 0.1 m	0.1603	MOD
 high-fidelity(no-impact)	impact-drop	dynamic amplification, h = 0.4 m	0.4176	MODEL LIMIT: rigid chunks stop the block in one tick, F = m sqrt(2gh)/dt: the peak follows the tick, not the structure's stiffness
 high-fidelity(no-impact)	tip-or-slide	tall block b/h = 0.4: angle at which it tips	0.0156	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
 high-fidelity(no-impact)	tip-or-slide	squat block b/h = 2: angle at which it slides	0.0430	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
+# high-fidelity on the combined SDK (garage-hifi, 3913a3b38: rotation, impact capacity, crush), 2026-10-07
+high-fidelity	propped-cantilever-udl	prop reaction	0.0126	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity	propped-cantilever-udl	fixed-end bending stress	0.0226	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity	propped-cantilever-udl	span bending stress near 5L/8	0.0155	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity	fixed-fixed-udl	left end bending stress	0.0177	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity	fixed-fixed-udl	right end bending stress	0.0177	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity	fixed-fixed-udl	midspan bending stress	0.0354	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity	two-span-continuous	end reaction (pin)	0.0107	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity	two-span-continuous	end reaction (roller)	0.0109	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity	two-span-continuous	hogging stress beside the centre support	0.0292	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity	portal-frame-lateral	leeward column axial	0.0142	DISCRETISATION: 0.5 m chunks, rigid knees; contact-length fixed ends
+high-fidelity	pratt-truss	bottom chord B1-B2	0.0237	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+high-fidelity	torsion-square-shaft	root torsional shear	0.1175	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
+high-fidelity	torsion-square-shaft	mid torsional shear	0.1175	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
+high-fidelity	redundancy	the stage completed every step	1.0000	STAGE (impact capacity): PhysX fetchResults failed ("Native GPU destruction stage failed") when bonds break under gravity; passes with VIBE_IMPACT_CAPACITY=0
+high-fidelity	free-fall	the stage completed every step	1.0000	STAGE (impact capacity): PhysX fetchResults failed ("Native GPU destruction stage failed") when bonds break under gravity; passes with VIBE_IMPACT_CAPACITY=0
+high-fidelity	impact-plate-punch	ball exit speed	1.4076	STAGE: a fragment split from a sleeping anchored cluster is born asleep and takes no momentum: all 4 joints break, the plug never moves (not even under gravity) and the ball rebounds (-1.10 m/s)
+high-fidelity	impact-plate-punch	exit speed within the joints' capacity bound (no bounce, not free)	1.0000	STAGE: a fragment split from a sleeping anchored cluster is born asleep and takes no momentum: all 4 joints break, the plug never moves (not even under gravity) and the ball rebounds (-1.10 m/s)
+high-fidelity	impact-restitution	rebound / impact speed on an unbreakable slab	0.0263	PHYSX CONTACT: rebound/impact 0.1026 against the authored 0.1
+high-fidelity	impact-restitution	breaks through a weak slab instead of bouncing	1.0000	STAGE: the slab joint breaks but the freed slab is born asleep: the ball rebounds (+0.46 m/s) instead of breaking through
+high-fidelity	impact-glancing	tangential velocity change	0.8835	PHYSX CONTACT: friction impulse overshoots the rolling limit (dv_t 3.77 vs 2.0) though within mu J_n
+high-fidelity	rest-load-asleep	a resting block still loads the beam after it sleeps (root stress rise, 4 s)	0.9995	STAGE: a body resting on a structure stops loading it once PhysX puts it to sleep (~0.5 s): root stress falls back to self-weight
+high-fidelity	impact-sudden-load	dynamic amplification, h = 0 m	0.3135	MODEL LIMIT: rigid chunks, no elastic deflection: a sudden load peaks at the contact solve, not 2x
+high-fidelity	impact-drop	dynamic amplification, h = 0.1 m	0.1603	MODEL LIMIT: rigid chunks stop the block in one tick, F = m sqrt(2gh)/dt: the peak follows the tick, not the structure's stiffness
+high-fidelity	impact-drop	dynamic amplification, h = 0.4 m	0.4176	MODEL LIMIT: rigid chunks stop the block in one tick, F = m sqrt(2gh)/dt: the peak follows the tick, not the structure's stiffness
+high-fidelity	tip-or-slide	tall block b/h = 0.4: angle at which it tips	0.0156	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
+high-fidelity	tip-or-slide	squat block b/h = 2: angle at which it slides	0.0430	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
+high-fidelity	redundancy-simple	beam falls after losing a support	1.0000	STAGE (impact capacity): on some runs the simply supported beam stays up after its hanger fails (and on others the step fails); passes with VIBE_IMPACT_CAPACITY=0

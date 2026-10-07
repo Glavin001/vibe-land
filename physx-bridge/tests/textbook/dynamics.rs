@@ -103,22 +103,22 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
         return;
     }
     if wanted("impact-momentum") {
-        momentum(config, expected, out);
+        super::guard(config, "momentum", expected, out, |out| momentum(config, expected, out));
     }
     if wanted("impact-plate-punch") {
-        plate_punch(config, expected, out);
+        super::guard(config, "plate-punch", expected, out, |out| plate_punch(config, expected, out));
     }
     if wanted("impact-restitution") {
-        restitution_cases(config, expected, out);
+        super::guard(config, "restitution-cases", expected, out, |out| restitution_cases(config, expected, out));
     }
     if wanted("impact-glancing") {
-        glancing(config, expected, out);
+        super::guard(config, "glancing", expected, out, |out| glancing(config, expected, out));
     }
     if wanted("impact-sudden-load") || wanted("impact-drop") || wanted("rest-load-asleep") {
-        sudden_and_drop(config, expected, out);
+        super::guard(config, "sudden-and-drop", expected, out, |out| sudden_and_drop(config, expected, out));
     }
     if wanted("tip-or-slide") {
-        tip_or_slide(config, expected, out);
+        super::guard(config, "tip-or-slide", expected, out, |out| tip_or_slide(config, expected, out));
     }
 }
 

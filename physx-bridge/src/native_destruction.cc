@@ -140,6 +140,11 @@ static bool native_uncapped_spin() {
   return value;
 }
 static constexpr float kUncappedAngularVelocity = 1.0e16f; // add_dynamic's value
+/// VIBE_STRENGTH_SHORT_TERM=1: see append_materials.
+static bool native_short_term_strength() {
+  static const bool value = native_env_f32("VIBE_STRENGTH_SHORT_TERM", 0.0f) != 0.0f;
+  return value;
+}
 static float native_depenetration_velocity() {
   static const float value = native_env_f32("VIBE_CITY_NATIVE_DEPEN_VELOCITY", 0.0f);
   return value;
@@ -341,6 +346,24 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
     out.shearElasticLimit = m.shear_elastic < 0 ? -1.0f : m.shear_elastic;
     out.shearFatalLimit = m.shear_fatal < 0 ? -1.0f : m.shear_fatal;
     out.residualAreaFraction = m.residual_area_fraction;
+    // VIBE_STRENGTH_SHORT_TERM=1 (high-fidelity profile; docs/verification/
+    // FIDELITY_AUDIT.md C1, C2): no sub-fatal section loss and no residual-area
+    // arrest. A bond holds, undamaged, whatever it carries below its fatal
+    // (short-term) limit and breaks there. Duration of load (Gerhards 1979,
+    // Wood Handbook FPL-GTR-282 sec. 5: time to failure exp(43.17 - 49.75 r)
+    // minutes at a load ratio r) puts sub-fatal failure past 29 min below
+    // 0.8 f, so within a session that is the law; brittle materials have no
+    // rate damage at these timescales, and ductile joints yield through
+    // ductileSlip (E). The runtime damages at damageRate (2 /s) above the
+    // elastic limit and arrests at residualAreaFraction, where a loaded joint
+    // can sit just under fatal forever (tests/fidelity_audit.rs
+    // sub_fatal_damage_law).
+    if (native_short_term_strength()) {
+      out.compressionElasticLimit = out.compressionFatalLimit;
+      out.tensionElasticLimit = out.tensionFatalLimit;
+      out.shearElasticLimit = out.shearFatalLimit;
+      out.residualAreaFraction = 0.0f;
+    }
     if (crush) {
       const FfiCrushMaterial &c = settings.crush[index];
       out.crush.capPressure = c.cap_pressure;

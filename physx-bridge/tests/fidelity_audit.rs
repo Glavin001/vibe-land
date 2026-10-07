@@ -690,3 +690,222 @@ fn stabilization_at_rest_and_slow() {
     assert!((on.1 - off.1).abs() <= 1e-4, "stabilization changes a hold on an incline");
     assert!(on.2 <= off.2 + 1e-4 && on.3 >= off.3 - 1e-4, "stabilization leaves the stack further from rest");
 }
+
+/// A 3 x 3 wall of 0.5 m masonry blocks bonded to an anchored footing, made
+/// crushable at a tenth of brick's strength with instant comminution (as
+/// native_gameplay's crush wall), struck by a round. Reports the crush count
+/// and, 90 ticks on, the chunks still held by some simulated body and the
+/// lowest crushed-chunk height.
+fn crush_column() -> (usize, u32, f32) {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    // No ground: a static box beside native chunks fails fetchResults on
+    // today's CuMetal SDKs (native_gameplay's walls and rubble_rest too); the
+    // footing is anchored, and crushed debris must fall under its weight.
+    world.native_attach().unwrap();
+    let mut nodes = vec![ChunkNodeDesc {
+        node_index: 0, centroid: Vec3::new(0.0, 0.05, 0.0), mass: 0.0, volume: 0.15, geom_kind: 0,
+        half_extents: Vec3::new(0.75, 0.05, 0.25), convex_points: Vec::new(), material: 0,
+    }];
+    let mut bonds = Vec::new();
+    for row in 0..3u32 {
+        for col in 0..3u32 {
+            let i = nodes.len() as u32;
+            let (x, y) = (-0.5 + 0.5 * col as f32, 0.35 + 0.5 * row as f32);
+            nodes.push(ChunkNodeDesc {
+                node_index: i, centroid: Vec3::new(x, y, 0.0), mass: 237.5, volume: 0.125, geom_kind: 0,
+                half_extents: Vec3::new(0.25, 0.25, 0.25), convex_points: Vec::new(), material: 0,
+            });
+            let below = if row == 0 { 0 } else { i - 3 };
+            bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: below, node1: i, centroid: Vec3::new(x, y - 0.25, 0.0), normal: Vec3::new(0.0, 1.0, 0.0), area: 0.25, material: 0 });
+            if col > 0 {
+                bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: i - 1, node1: i, centroid: Vec3::new(x - 0.25, y, 0.0), normal: Vec3::new(1.0, 0.0, 0.0), area: 0.25, material: 0 });
+            }
+        }
+    }
+    let fc = 0.68e6f32;
+    let settings = DestructibleSettings {
+        materials: vec![StressMaterialDesc {
+            compression_elastic: 6.8e6, compression_fatal: 6.8e6, tension_elastic: 0.6e6, tension_fatal: 0.6e6,
+            shear_elastic: 1.0e6, shear_fatal: 1.0e6, elastic_modulus: 5e9, residual_area_fraction: 0.0,
+        }],
+        crush: vec![vibe_land_physx_bridge::CrushMaterialDesc {
+            cap_pressure: 2.5 * fc, cohesion: fc * 0.6, friction_slope: 1.2, crush_energy: 1.0, crush_viscosity: 1.0,
+            strain_rate_exponent: 0.0, reference_strain_rate: 1.0, debris_mass_fraction: 0.0, debris_fragment_count: 0, impedance: 0.0,
+        }],
+        maximum_bodies: 0,
+        maximum_fractures_per_actor_per_tick: 0,
+        ..DestructibleSettings::default()
+    };
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }, &nodes, &bonds, settings, GROUP_CHUNK, u32::MAX).unwrap();
+    world.step().unwrap();
+    configure(&mut world);
+    for _ in 0..30 {
+        world.step().unwrap();
+        world.native_tick().unwrap();
+    }
+    let before: u32 = world.native_chunk_body_snapshots().unwrap().iter().map(|b| b.node_count).sum();
+    world
+        .native_fire_round(RoundDesc { position: Vec3::new(0.0, 0.85, 0.25), direction: Vec3::new(0.0, 0.0, -1.0), momentum_ns: 3.0e5, radius: 0.4, speed: 20.0, ttl_ticks: 20 })
+        .unwrap();
+    let mut crushed = Vec::new();
+    for _ in 0..90 {
+        world.step().unwrap();
+        let status = world.native_tick().unwrap();
+        assert_eq!(status.error, 0, "stage rejected the step: {status:?}");
+        crushed.extend(world.native_take_crush_events().unwrap());
+        world.native_take_broken_bonds().unwrap();
+        world.native_take_island_events().unwrap();
+    }
+    let held: u32 = world.native_chunk_body_snapshots().unwrap().iter().filter(|b| !b.sleeping || b.node_count > 0).map(|b| b.node_count).sum();
+    let lowest = crushed
+        .iter()
+        .filter_map(|c| world.native_chunk_aim(0, c.chunk_id & 0xffff).ok().filter(|a| a.found).map(|a| a.center.y))
+        .fold(f32::INFINITY, f32::min);
+    println!("  chunks held before the strike {before}, after {held}; crushed {}", crushed.len());
+    (crushed.len(), before - held, lowest)
+}
+
+/// Crushed mass is conserved (VIBE_CRUSH_CONSERVE_MASS=1, FIDELITY_AUDIT C4):
+/// a crushed chunk is comminuted, not annihilated. Its mass, momentum and
+/// weight stay in the world as debris with a body of its own (the chunk's
+/// hull: the right mass and centre, not the shape of a pile of fines). The
+/// runtime retires "dust" (debrisMassFraction 0) from the world.
+#[test]
+#[ignore = "requires a native GPU destruction SDK with PX_DESTRUCTION_CRUSH_CORRECTION"]
+fn crushed_mass_is_conserved() {
+    if std::env::var(ARM).as_deref() == Ok("crush") {
+        let (crushed, lost, lowest) = crush_column();
+        println!("crushed={crushed}\nlost={lost}\nlowest={lowest}");
+        return;
+    }
+    let arm = |env: &[(&str, &str)]| {
+        let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+        c.args(["--exact", "crushed_mass_is_conserved", "--nocapture", "--ignored"]).env(ARM, "crush").env_remove("VIBE_CRUSH_CONSERVE_MASS");
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let o = c.output().unwrap();
+        let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        assert!(o.status.success(), "{text}");
+        let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}="))).unwrap_or_else(|| panic!("{k}:\n{text}")).trim().parse::<f32>().unwrap();
+        (get("crushed"), get("lost"), get("lowest"))
+    };
+    let runtime = arm(&[]);
+    let conserve = arm(&[("VIBE_CRUSH_CONSERVE_MASS", "1")]);
+    println!("runtime: {} crushed, {} chunks' mass gone from the world", runtime.0, runtime.1);
+    println!("conserve: {} crushed, {} chunks' mass gone; lowest crushed chunk at {:.2} m", conserve.0, conserve.1, conserve.2);
+    assert!(runtime.0 > 0.0 && conserve.0 > 0.0, "the round crushed nothing");
+    assert_eq!(runtime.1, runtime.0, "the runtime no longer retires dust: update the audit");
+    assert_eq!(conserve.1, 0.0, "crushed mass left the world");
+    assert!(conserve.2 < 0.0, "crushed debris did not fall under its weight (lowest at {} m)", conserve.2);
+}
+
+/// A block hung from an anchor by one 100 cm^2 bond in tension at `ratio` of
+/// the bond's short-term strength f (1 MPa), elastic limit 0.6 f (EN 1995-1-1
+/// k_mod, the town kit's LONG_TERM) and `residual` area arrest, for `ticks`.
+/// Returns (tick it broke or 0, remaining area / area, bond commands on the
+/// last tick).
+fn hung_block(ratio: f32, residual: f32, ticks: u32) -> (u32, f32, u32) {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.native_attach().unwrap();
+    let (f, area) = (1.0e6f32, 0.01f32);
+    let mass = ratio * f * area / DEFAULT_WORLD_GRAVITY;
+    let nodes = [
+        ChunkNodeDesc { node_index: 0, centroid: Vec3::new(0.0, 0.3, 0.0), mass: 0.0, volume: 0.02, geom_kind: 0,
+            half_extents: Vec3::new(0.1, 0.05, 0.1), convex_points: Vec::new(), material: 0 },
+        ChunkNodeDesc { node_index: 1, centroid: Vec3::new(0.0, 0.0, 0.0), mass, volume: 0.04, geom_kind: 0,
+            half_extents: Vec3::new(0.1, 0.25, 0.1), convex_points: Vec::new(), material: 0 },
+    ];
+    let bonds = [ChunkBondDesc { bond_index: 0, node0: 0, node1: 1, centroid: Vec3::new(0.0, 0.25, 0.0), normal: Vec3::new(0.0, 1.0, 0.0), area, material: 0 }];
+    let settings = DestructibleSettings {
+        materials: vec![StressMaterialDesc {
+            compression_elastic: 0.6 * 30e6, compression_fatal: 30e6, tension_elastic: 0.6 * f, tension_fatal: f,
+            shear_elastic: 0.6 * 4e6, shear_fatal: 4e6, elastic_modulus: 11e9, residual_area_fraction: residual,
+        }],
+        maximum_bodies: 0,
+        maximum_fractures_per_actor_per_tick: 0,
+        ..DestructibleSettings::default()
+    };
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 20.0, 0.0), rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }, &nodes, &bonds, settings, GROUP_CHUNK, GROUP_CHUNK).unwrap();
+    world.step().unwrap();
+    configure(&mut world);
+    let (mut broke, mut commands, mut remaining) = (0, 0, 1.0);
+    for t in 1..=ticks {
+        world.step().unwrap();
+        let status = world.native_tick().unwrap();
+        assert_eq!(status.error, 0, "stage rejected the step: {status:?}");
+        commands = status.bond_commands;
+        if !world.native_take_broken_bonds().unwrap().is_empty() {
+            broke = t;
+            remaining = 0.0;
+            break;
+        }
+        if let Some(r) = world.native_bond_stress_rows(0).unwrap().first() {
+            remaining = r.remaining_area / area;
+        }
+    }
+    (broke, remaining, commands)
+}
+
+/// Sub-fatal damage (FIDELITY_AUDIT C1, C2). The runtime loses section at
+/// damageRate x (sigma - elastic)/(fatal - elastic) per second (2 /s), and
+/// arrests it at residualAreaFraction x A0, where a loaded joint can sit just
+/// under fatal forever with a damage command every tick.
+///
+/// The physical law for the timescale a game runs at, VIBE_STRENGTH_SHORT_TERM=1:
+/// duration-of-load (Gerhards 1979, the exponential damage rate model, as in
+/// the Wood Handbook FPL-GTR-282 sec. 5): d(alpha)/dt = exp(-a + b sigma/f),
+/// a = 43.17, b = 49.75, t in minutes, f the short-term (ramp) strength. Under
+/// a constant ratio r the time to failure is exp(a - b r) minutes: r 1.0 ->
+/// 0.08 s, 0.9 -> 12 s, 0.85 -> 2.4 min, 0.8 -> 29 min, 0.7 -> 3 days. Brittle
+/// materials (masonry, plain concrete, glass) show no rate damage at all on
+/// these timescales. So within a session a bond holds whatever it carries
+/// below f, undamaged, and breaks at f; the only error is a load held at
+/// 0.85-1.0 f for minutes, which the real member would lose. Ductile joints
+/// yield through E's ductile slip, not through lost area.
+#[test]
+#[ignore = "requires the native GPU destruction SDK"]
+fn sub_fatal_damage_law() {
+    if std::env::var(ARM).as_deref() == Ok("damage") {
+        for (k, (r, rho)) in [(0.8f32, 0.0f32), (1.02, 0.0), (0.7, 0.85)].iter().enumerate() {
+            let (b, a, c) = hung_block(*r, *rho, 600);
+            println!("case{k}={b},{a},{c}");
+        }
+        return;
+    }
+    let arm = |env: &[(&str, &str)]| {
+        let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+        c.args(["--exact", "sub_fatal_damage_law", "--nocapture", "--ignored"]).env(ARM, "damage").env_remove("VIBE_STRENGTH_SHORT_TERM");
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        let o = c.output().unwrap();
+        let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+        assert!(o.status.success(), "{text}");
+        (0..3).map(|k| reported(&text, &format!("case{k}"))).collect::<Vec<_>>()
+    };
+    let runtime = arm(&[]);
+    let short = arm(&[("VIBE_STRENGTH_SHORT_TERM", "1")]);
+    let show = |name: &str, r: &[Vec<f32>]| {
+        for (k, what) in ["0.80 f, 10 s (Gerhards: holds 29 min)", "1.02 f (breaks at once)", "0.70 f, residual 0.85 (Gerhards: holds 3 days)"].iter().enumerate() {
+            let c = &r[k];
+            println!("  {name:<10} {what:<48} broke at tick {:>3}  area left {:.3}  commands last tick {}", c[0], c[1], c[2]);
+        }
+    };
+    println!("hung block, one bond in tension (Gerhards 1979; Wood Handbook 5):");
+    show("runtime", &runtime);
+    show("short-term", &short);
+    // The runtime's law, documented (the default is unchanged).
+    assert!(runtime[0][0] > 0.0 && runtime[0][0] < 60.0, "runtime no longer breaks 0.8 f within a second");
+    assert!(runtime[2][0] == 0.0 && runtime[2][1] < 0.9 && runtime[2][2] > 0.0, "runtime no longer pins under arrest");
+    // The physical law.
+    assert_eq!(short[0][0], 0.0, "0.8 f broke within 10 s");
+    assert_eq!(short[0][1], 1.0, "0.8 f lost section");
+    assert!(short[1][0] >= 1.0 && short[1][0] <= 2.0, "1.02 f did not break at once");
+    assert_eq!(short[2][0], 0.0, "0.7 f broke");
+    assert_eq!(short[2][1], 1.0, "0.7 f lost section");
+    assert_eq!(short[2][2], 0.0, "a bond below its strength still commands damage");
+    assert!(runtime[1][0] >= 1.0 && runtime[1][0] <= 2.0, "1.02 f did not break at once");
+}

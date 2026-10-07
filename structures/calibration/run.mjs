@@ -26,7 +26,7 @@ import { writeScenario, REPO, OUT } from './src/scenario.mjs';
 import { CONFIGS, sdkFor } from './src/configs.mjs';
 import { judge } from './src/judge.mjs';
 
-export const SCENARIOS = ['bridge-piers', 'house-studs'];
+export const SCENARIOS = ['bridge-piers', 'truss-members', 'house-studs'];
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : fallback; };

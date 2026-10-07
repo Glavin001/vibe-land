@@ -34,6 +34,31 @@ export class Pack {
     this.boxes.push({ min: [...min], max: [...max] }); this.names.push(name);
     return s.nodes.length - 1;
   }
+  /**
+   * A prism: the convex polygon `poly` ([[x, y], ...] in the xy plane, either
+   * winding) extruded from z0 to z1, as a convex-hull chunk referenced at its
+   * volume centroid.
+   */
+  prism({ poly, z0, z1, material, type, name = type, fixed = false, piece = this.pieceId++ }) {
+    let A = 0, cx = 0, cy = 0;
+    for (let i = 0; i < poly.length; i++) { const [x0, y0] = poly[i], [x1, y1] = poly[(i + 1) % poly.length], w = x0 * y1 - x1 * y0; A += w; cx += (x0 + x1) * w; cy += (y0 + y1) * w; }
+    cx /= 3 * A; cy /= 3 * A; A = Math.abs(A) / 2;
+    if (!(A > 1e-9)) throw Error(`degenerate prism ${name}`);
+    const m = this.material(material), c = [cx, cy, (z0 + z1) / 2], volume = A * (z1 - z0), s = this.s;
+    const pts = poly.flatMap(([x, y]) => [[x, y, z0], [x, y, z1]]);
+    const lo = [0, 1, 2].map((k) => Math.min(...pts.map((q) => q[k]))), hi = [0, 1, 2].map((k) => Math.max(...pts.map((q) => q[k])));
+    s.nodes.push({ centroid: vec(c), mass: fixed ? 0 : r6(volume * this.materials[m].density), volume: r6(volume), m });
+    s.nodeSizes.push(vec(hi.map((x, k) => x - lo[k])));
+    s.nodeColliders.push({ kind: 'convex_hull', points: pts.flatMap((q) => q.map((x, k) => r6(x - c[k]))) });
+    s.nodeTypes.push(type); s.nodeMaterials.push(this.materials[m].name); s.nodePieces.push(piece); s.nodeGroups.push('structure');
+    this.boxes.push({ min: lo, max: hi }); this.names.push(name);
+    return s.nodes.length - 1;
+  }
+  /** A bond given outright (centroid, unit normal from i to j, area). */
+  rawBond(i, j, { centroid, normal, area, material }) {
+    this.s.bonds.push({ node0: i, node1: j, centroid: vec(centroid), normal: vec(normal), area: r6(area), m: this.material(material) });
+    return this.s.bonds.length - 1;
+  }
   /** The bond across the face boxes i and j share, of material `material`. */
   bond(i, j, material, { area = null } = {}) {
     const a = this.boxes[i], b = this.boxes[j], lo = [0, 1, 2].map((k) => Math.max(a.min[k], b.min[k])), hi = [0, 1, 2].map((k) => Math.min(a.max[k], b.max[k]));
