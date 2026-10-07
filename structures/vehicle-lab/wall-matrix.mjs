@@ -178,6 +178,16 @@ export function matrix(pack, set = 'all') {
     for (const t of ['veneer', 'masonry']) c.push(trial(pack, T[t], 'ball1000', '0', 'centre', { repeat: true, suffix: '-again' }));
     return c;
   }
+  // `energy`: the films' hits (the integration agent's runtime films of
+  // 2026-10-07: the cannonball climbing away over the roof, the meteor off
+  // the ground behind the house, roof sheets thrown to twice the house's
+  // height) for the energy balance: the film's meteor comes in at slope 0.3
+  // from 140 m.
+  if (set === 'energy') {
+    const steep = { ...T.veneer, slope: 0.3, distance: { meteor: 140 } };
+    return [trial(pack, T.veneer, 'cannonball', '0'), { ...trial(pack, steep, 'meteor', '0'), id: 'wm-veneer-meteor-film' }, trial(pack, T.veneer, 'truck20', '0'),
+      trial(pack, T['brick-house'], 'cannonball', '0'), trial(pack, T.masonry, 'cannonball', '0')].map((t) => ({ ...t, seconds: Math.max(t.seconds, 3.5) }));
+  }
   const want = (s) => set === 'all' || set === s || (set === 'core' && s !== 'truck');
   // Angles: the weapons square on, 30, 60 and glancing, into the veneer house,
   // the masonry wall and the brick house.
