@@ -96,7 +96,11 @@ export function pumpInProcessClients(): void {
   for (const client of liveClients) client.pumpNow();
 }
 
-const WELCOME_TIMEOUT_MS = 30_000;
+// The in-process match sends Welcome once its city is built. With every
+// high-fidelity capability on (each bond's section from chunk geometry, the
+// impact solve's buffers) and the GPU shared with other runs, the vehicle lab
+// took over 30 s; there is no network here to lose, only a slow start.
+const WELCOME_TIMEOUT_MS = 180_000;
 /**
  * How often the downlink is pumped. The server's reliable queue is bounded,
  * so draining only once per rendered frame would let a stalled frame (a
