@@ -36,6 +36,7 @@ export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
 export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-$I/garage-multihull}
 export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/install/garage-impact}
 export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/out/build/garage-multihull/package}
+export IMPACT_BUILD=${VERIFY_IMPACT_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/build/impact-e-tests}
 t_start=$(date +%s)
 failed=0
 
@@ -78,8 +79,8 @@ if want regressions; then
   while IFS=$'\t' read -r id rtier profile what cmd; do
     [[ -z "$id" || "$id" == \#* ]] && continue
     [ "$tier" = quick ] && [ "$rtier" = full ] && continue
-    if [[ "$cmd" == \(textbook* ]]; then
-      echo "{\"id\":\"$id\",\"what\":$(printf '%s' "$what" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),\"status\":\"in textbook\",\"seconds\":0}" >> "$out/regressions.jsonl"
+    if [[ "$cmd" == \(* ]]; then  # covered elsewhere (textbook, acceptance) or not runnable here
+      echo "{\"id\":\"$id\",\"what\":$(printf '%s' "$what" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),\"status\":\"$(echo "$cmd" | tr -d '()"' | cut -c1-60)\",\"seconds\":0}" >> "$out/regressions.jsonl"
       continue
     fi
     t0=$(date +%s)

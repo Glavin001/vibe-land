@@ -61,7 +61,7 @@ if want wire; then
   for t in a_studless_house_collapsing_is_drawn_where_the_server_has_it a_cannonball_hit_is_drawn_where_the_server_has_it; do
     extra=()
     [ "$profile" = high ] && [ "$t" = a_studless_house_collapsing_is_drawn_where_the_server_has_it ] && extra=(VIBE_WIRE_POSE_PACK="$veneer/veneer-house--no-front-studs.json")
-    if (cd "$ROOT" && env "${extra[@]}" cargo test -q --release -p web-fps-server --features native-destruction --lib "wire_chunk_poses::$t" -- --ignored --exact --nocapture --test-threads=1) > "$out/wire-$t.log" 2>&1
+    if (cd "$ROOT" && env ${extra[@]+"${extra[@]}"} cargo test -q --release -p web-fps-server --features native-destruction --lib "wire_chunk_poses::$t" -- --ignored --exact --nocapture --test-threads=1) > "$out/wire-$t.log" 2>&1
     then mark "wire-$t" "ok: $(grep -m1 -iE 'worst' "$out/wire-$t.log" | cut -c1-120)"
     else mark "wire-$t" "fails: $(grep -m1 -E 'panicked|worst' -A1 "$out/wire-$t.log" | tr '\n' ' ' | cut -c1-200)"; fi
   done
