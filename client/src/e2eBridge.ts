@@ -462,6 +462,8 @@ export interface VibeE2EBridge {
     dustPhaseG?: number;
     dustSunBoost?: number;
     dustBudgetM?: number;
+    /** 1: balls draw as cast iron (a film's cannonballs), 0: toy colours. */
+    ironBalls?: number;
     dustFluidBricks?: number;
   }): void;
   /**

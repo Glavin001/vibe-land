@@ -152,6 +152,7 @@ function lookOver(look) {
  *             up: a stabilised one) or 0..1 between; default 'vehicle'
  *   headingLag seconds the camera's frame trails the vehicle's heading (0: rigid)
  *   fov       the lens, vertical degrees
+ *   fallback  { position, lookAt }: the camera until the vehicle is there
  */
 export const mount = (target, seconds, opts = {}) => shot('mount', seconds, opts, (ctx) => {
   const at = opts.at ?? 'driver', off = opts.offset ?? [0, 0, 0], lookAt = lookOver(opts.look);
@@ -173,7 +174,8 @@ export const mount = (target, seconds, opts = {}) => shot('mount', seconds, opts
   let lastPose = null;
   const pose = (t) => {
     const v = vehicleOf(target, ctx);
-    if (!v) return lastPose ?? { position: point(typeof target === 'string' && target !== 'driven' ? target : [0, 2, 0], ctx.place), lookAt: [0, 2, 10] };
+    if (!v) return lastPose ?? (opts.fallback ? resolvePose(opts.fallback, ctx)
+      : { position: point(typeof target === 'string' && target !== 'driven' ? target : [0, 2, 0], ctx.place), lookAt: [0, 2, 10] });
     const q = v.quaternion ?? [0, Math.sin((v.heading ?? 0) / 2), 0, Math.cos((v.heading ?? 0) / 2)];
     const eye = Array.isArray(at) ? at : ROUGH_EYES[at] ?? ROUGH_EYES.driver;
     const position = add(v.position, rotate(q, add(eye, off)));

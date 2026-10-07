@@ -194,6 +194,12 @@ runtime() {
 }
 
 sim() {
+  # NATIVE_SKIP_SIM=1: use the simulation library already built (for client-
+  # or scene-only work while the working tree's Rust or C++ is mid-change).
+  if [ "${NATIVE_SKIP_SIM:-0}" = 1 ] && [ -f "$SIM_LIB" ]; then
+    echo "sim: NATIVE_SKIP_SIM=1, using $SIM_LIB ($(date -r "$SIM_LIB" "+%Y-%m-%d %H:%M"))"
+    return 0
+  fi
   CARGO_TARGET_DIR="$SIM_TARGET" cargo build --release -p vibe-sim-native --features city \
     --manifest-path "$ROOT/Cargo.toml"
 }
@@ -480,6 +486,8 @@ record() {
 #   FILM_POSTER   the poster frame's time in seconds (default 40% in)
 #   FILM_REBUILD=1  rebuild the bundle even when its inputs are unchanged
 #   FILM_CUT_FPS  the final cut's frame rate (default 30)
+#   FILM_POST_ARGS  more scripts/film/post.py flags for the cut (e.g. --sfx)
+#   NATIVE_SKIP_SIM=1  use the simulation library already built (see sim())
 # Writes target/native-video/NAME-<stamp>.mp4, -share.mp4 (under 25 MB),
 # -sheet.jpg (ten frames), -poster.jpg and .log; a preview, NAME-<stamp>-preview/
 # and -preview.jpg. When the log holds an edit list (`edit {json}` lines from
@@ -584,7 +592,9 @@ film() {
   # Post-production: the edit list, if the film logged one, cut to -final.mp4.
   local cut="$out"
   if grep -qE '(^|[] ])edit \{' "$log"; then
-    python3 "$ROOT/scripts/film/post.py" "$out" "$log" --out "$base-final.mp4" --fps "${FILM_CUT_FPS:-30}" \
+    # FILM_POST_ARGS: more post.py flags, e.g. "--sfx" for impact sounds.
+    # shellcheck disable=SC2086
+    python3 "$ROOT/scripts/film/post.py" "$out" "$log" --out "$base-final.mp4" --fps "${FILM_CUT_FPS:-30}" ${FILM_POST_ARGS:-} \
       || { echo "film: post-production FAILED (log: $log)" >&2; exit 1; }
     cut="$base-final.mp4"
   fi

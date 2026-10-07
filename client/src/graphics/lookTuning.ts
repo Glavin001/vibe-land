@@ -33,6 +33,8 @@ type LookTuning = {
   dustBudgetM: number;
   /** Fluid bricks the near field may run at once, 1–4. */
   dustFluidBricks: number;
+  /** 1: balls draw as the cast iron they are (films' cannonballs); 0: the playground's toy colours. */
+  ironBalls: number;
 };
 
 /**
@@ -56,6 +58,7 @@ const state: LookTuning = {
   dustSunBoost: 1,
   dustBudgetM: 12,
   dustFluidBricks: 2,
+  ironBalls: 0,
 };
 
 const listeners = new Set<(next: LookTuning) => void>();

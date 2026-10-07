@@ -106,6 +106,7 @@ function shaker({ strength = 1, radius = 110, decay = 0.45 } = {}) {
       if (amp < 1e-3) return pose;
       const n = [0, 1, 2].map((k) => wave(t, phase + k * 1.3));
       return {
+        ...pose,
         position: pose.position.map((v, k) => v + n[k] * amp * 0.22),
         lookAt: pose.lookAt.map((v, k) => v + n[(k + 1) % 3] * amp * 0.9),
       };
@@ -273,7 +274,14 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
   async function runPreview(tl) {
     const dir = OUT.replace(/\.mp4$/, '-preview');
     for (const cue of tl.cues.filter((c) => c.first)) log(`  cue ${cue.time.toFixed(1)}s: ${cue.label}`);
-    for (const [i, s] of tl.shots.entries()) {
+    // A shot made of parts (a director cutting between cameras): each part's middle.
+    let at = 0;
+    const shots = tl.shots.flatMap((s) => (s.parts ? s.parts.map((part) => {
+      const shot = { ...part, start: at, pose: part.build(ctx) };
+      at += part.duration;
+      return shot;
+    }) : [s]));
+    for (const [i, s] of shots.entries()) {
       trackVehicles(s.start + s.duration / 2);
       const pose = s.pose(s.duration / 2);
       aim(s, s.start + s.duration / 2, pose, null);
@@ -281,7 +289,7 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
       await sleep(400);
       const file = `${dir}/${String(i + 1).padStart(2, '0')}-${s.name.replace(/[^a-z0-9-]+/gi, '-')}.png`;
       const saved = __mystralSaveScreenshot(file);
-      log(`shot ${i + 1}/${tl.shots.length} ${s.name} ${s.start.toFixed(1)}-${(s.start + s.duration).toFixed(1)}s, mid ${fmt(pose.position)} -> ${fmt(pose.lookAt)}: ${saved ? file : 'FAILED to save'}`);
+      log(`shot ${i + 1}/${shots.length} ${s.name} ${s.start.toFixed(1)}-${(s.start + s.duration).toFixed(1)}s, mid ${fmt(pose.position)} -> ${fmt(pose.lookAt)}: ${saved ? file : 'FAILED to save'}`);
     }
   }
 
