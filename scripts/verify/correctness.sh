@@ -79,7 +79,12 @@ watched() {
 }
 
 # bug_signals LOG: the impact solve's diverged solves and over-100-ms dispatches.
-bug_signals() { grep -hE '\[impact\] DIVERGED|\[impact\] warning: a dispatch took' "$@" 2>/dev/null | sort | uniq -c | head -5; }
+# Older SDKs print no warning, only "(longest N ms)" per evaluation: read that too.
+bug_signals() {
+  { grep -hE '\[impact\] DIVERGED|\[impact\] warning: a dispatch took' "$@" 2>/dev/null
+    grep -hoE '\(longest [0-9.]+ ms\)' "$@" 2>/dev/null | awk '{ if ($2 + 0 > 100) print "[impact] a dispatch took " $2 " ms (over 100 ms)" }'
+  } | sort | uniq -c | sort -rn | head -5
+}
 
 has() { grep -q "#define $2 1" "$1/include/physx/PxDestructionScene.h" 2>/dev/null; }
 
