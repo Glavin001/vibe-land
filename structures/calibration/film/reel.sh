@@ -56,17 +56,28 @@ takes=()
 IFS=, read -r -a list <<< "$cases"; takes+=("${list[@]}")
 echo "calibration reel $SCENARIO ($CONFIG): ${takes[*]}"
 
+# Another app run in this checkout's bundle dir: a mystral whose working
+# directory it is, or this checkout's native-mac.sh.
+busy() {
+  local pid
+  pgrep -f "$ROOT/scripts/native-mac.sh" >/dev/null && return 0
+  for pid in $(pgrep -f "mystral run" || true); do
+    lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -qx "n$ROOT/client/dist-native" && return 0
+  done
+  return 1
+}
+
 take() {
   local id="$1" scene held
   # The scene the take loads: the case alone, or for the overview every case filmed.
   held="$id"; [ "$id" = overview ] && held="$cases"
   if [ "$id" = overview ] && [ -z "${CALIB_CASES:-}" ]; then scene="$DIR/scene.json"; held=""
   else scene="$ROOT/target/calib-film/$SCENARIO/$id.json"; node "$ROOT/structures/calibration/film/case-scene.mjs" "$DIR" "$held" "$scene" >&2; fi
-  # client/dist-native is one bundle for every film on this machine (film.js,
-  # game.js, rebuilt when its inputs differ): no take while another app film
-  # runs, or the bundle lock is held.
-  while [ -d "$ROOT/target/native-bundle.lock" ] || pgrep -f "mystral run" >/dev/null || pgrep -f "scripts/native-mac.sh" >/dev/null; do
-    echo "take $id: waiting for another app run to finish ($(pgrep -fl 'mystral run|native-mac.sh' | head -2 | tr '\n' ' '))" >&2; sleep 20
+  # client/dist-native is one bundle for every film from this checkout (film.js,
+  # game.js, rebuilt when its inputs differ): no take while another app run
+  # works in it (worktrees have their own), or the bundle lock is held.
+  while [ -d "$ROOT/target/native-bundle.lock" ] || busy; do
+    echo "take $id: waiting for another app run in $ROOT/client/dist-native" >&2; sleep 20
   done
   local out="$ROOT/target/calib-film/$SCENARIO/take-$id.out"
   CALIB_SCENE="$scene" FILM_DEFINES="--define:CALIB_SCENARIO=\"$SCENARIO\" --define:CALIB_CASE=\"$id\" --define:CALIB_CONFIG=\"$CONFIG\" --define:CALIB_FREEZE=$FREEZE --define:CALIB_SCENE_CASES=\"$held\" --define:CALIB_ONLY=\"$cases\"" \
