@@ -104,6 +104,7 @@ fn hull_wall(w: u32, h: u32) -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {
                 geom_kind: 1,
                 half_extents: Vec3::new(0.48, 0.48, 0.48),
                 convex_points: hull_block(index(x, y)),
+                material: 0,
             });
         }
     }
@@ -148,6 +149,7 @@ fn settings() -> DestructibleSettings {
             elastic_modulus: 30.0e9,
             residual_area_fraction: 0.0,
         }],
+        crush: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: true,

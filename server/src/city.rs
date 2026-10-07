@@ -1382,7 +1382,18 @@ impl CityRuntime {
             manifest_asset().context("city scene asset unavailable (destruction/assets/scenes)")?;
         let manifest = manifest.clone();
         let pack_materials = scene_stress_materials();
-        let settings = vibe_land_destruction::city_config::stress_settings(&pack_materials);
+        let mut settings = vibe_land_destruction::city_config::stress_settings(&pack_materials);
+        // Chunk crushing, when the pack authors it (opt-in per material).
+        if let Ok(payload) = scene_payload() {
+            if !payload.starts_with(b"VLSP") && !payload.starts_with(b"VLSW") {
+                settings.crush = vibe_land_destruction::scene_pack::crush_table(payload);
+                if !settings.crush.is_empty() {
+                    let crushable = settings.crush.iter().filter(|c| c.cap_pressure > 0.0).count();
+                    tracing::info!(crushable, "scene authors chunk crushing");
+                    eprintln!("[city] chunk crushing authored for {crushable} of {} materials", settings.crush.len());
+                }
+            }
+        }
         tracing::info!(
             scene = %scene_file(),
             from_pack = !pack_materials.is_empty(),

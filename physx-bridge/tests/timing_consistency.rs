@@ -24,6 +24,7 @@ fn cuboid_node(index: u32, y: f32, mass: f32) -> ChunkNodeDesc {
         geom_kind: 0,
         half_extents: Vec3::new(0.5, 0.5, 0.5),
         convex_points: Vec::new(),
+        material: 0,
     }
 }
 

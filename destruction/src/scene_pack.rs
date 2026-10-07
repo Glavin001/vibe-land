@@ -799,3 +799,56 @@ mod tests {
         ));
     }
 }
+
+/// Opt-in chunk crushing per material, from a JSON pack's
+/// `defaults.solver.materials[].crush` blocks (scene pack v3 keys:
+/// `capPressure`, `cohesion`, `frictionSlope` Pa / -, `crushEnergy` J/m^3,
+/// `crushViscosity` Pa s). Parallel to the material table, or empty when no
+/// material authors one -- which is every pack until one opts in. A binary
+/// (VLSP) scene carries no crush table.
+pub fn crush_table(json: &[u8]) -> Vec<vibe_netcode::destruction_backend::CrushMaterial> {
+    let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Vec::new() };
+    let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Vec::new() };
+    if !materials.iter().any(|m| m["crush"].is_object()) {
+        return Vec::new();
+    }
+    let f = |c: &serde_json::Value, k: &str| c[k].as_f64().unwrap_or(0.0) as f32;
+    materials
+        .iter()
+        .map(|m| {
+            let c = &m["crush"];
+            vibe_netcode::destruction_backend::CrushMaterial {
+                cap_pressure: f(c, "capPressure"),
+                cohesion: f(c, "cohesion"),
+                friction_slope: f(c, "frictionSlope"),
+                crush_energy: f(c, "crushEnergy"),
+                crush_viscosity: f(c, "crushViscosity"),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod crush_table_tests {
+    use super::crush_table;
+
+    #[test]
+    fn crush_table_is_empty_unless_a_material_authors_crush() {
+        let none = br#"{"defaults":{"solver":{"materials":[{"name":"a"},{"name":"b"}]}}}"#;
+        assert!(crush_table(none).is_empty());
+        let some = br#"{"defaults":{"solver":{"materials":[{"name":"a"},{"name":"b","crush":{"capPressure":17e6,"cohesion":4.08e6,"frictionSlope":1.2,"crushEnergy":3.5e6,"crushViscosity":5.9e5}}]}}}"#;
+        let table = crush_table(some);
+        assert_eq!(table.len(), 2, "parallel to the materials");
+        assert_eq!(table[0].cap_pressure, 0.0);
+        assert_eq!(table[1].cap_pressure, 17e6);
+        assert_eq!(table[1].crush_viscosity, 5.9e5);
+    }
+
+    #[test]
+    #[ignore = "reads structures/vehicle-lab/out/vehicle-lab-crush.json (VIBE_CRUSH=1 node structures/vehicle-lab/build-lab.mjs)"]
+    fn the_crush_lab_authors_crush() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../structures/vehicle-lab/out/vehicle-lab-crush.json");
+        let table = crush_table(&std::fs::read(path).unwrap());
+        assert_eq!(table.iter().filter(|c| c.cap_pressure > 0.0).count(), 2);
+    }
+}

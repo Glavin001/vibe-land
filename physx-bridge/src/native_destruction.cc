@@ -238,6 +238,13 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
   State &s = *this;
   const PxU32 material_base = static_cast<PxU32>(s.materials.size());
   s.material_base[structure_id] = material_base;
+  // Chunk crushing is opt-in per material: an empty table crushes nothing.
+  // VIBE_NATIVE_CRUSH=0 ignores an authored one (A/B against the same pack).
+  const char *crush_env = std::getenv("VIBE_NATIVE_CRUSH");
+  const bool crush = !settings.crush.empty() && !(crush_env && crush_env[0] == '0');
+  native_require(settings.crush.empty() || settings.crush.size() == settings.materials.size(),
+                 "crush table must be empty or parallel to the materials");
+  std::size_t index = 0;
   for (const FfiStressMaterial &m : settings.materials) {
     PxDestructionMaterial out;
     // Authored limits are already resolved to Pa by the caller, and the stage
@@ -250,6 +257,17 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
     out.shearElasticLimit = m.shear_elastic < 0 ? -1.0f : m.shear_elastic;
     out.shearFatalLimit = m.shear_fatal < 0 ? -1.0f : m.shear_fatal;
     out.residualAreaFraction = m.residual_area_fraction;
+    if (crush) {
+      const FfiCrushMaterial &c = settings.crush[index];
+      out.crush.capPressure = c.cap_pressure;
+      out.crush.cohesion = c.cohesion;
+      out.crush.frictionSlope = c.friction_slope;
+      out.crush.crushEnergy = c.crush_energy > 0.0f ? c.crush_energy : 1.0f;
+      out.crush.crushViscosity = c.crush_viscosity > 0.0f ? c.crush_viscosity : 1.0f;
+      out.crush.strainRateExponent = c.strain_rate_exponent;
+      out.crush.referenceStrainRate = c.reference_strain_rate > 0.0f ? c.reference_strain_rate : 1.0f;
+    }
+    ++index;
     s.materials.push_back(out);
   }
   return material_base;
@@ -504,7 +522,9 @@ void NativeDestruction::create_destructible(
       node.cluster = cluster;
       node.contactIndex = PX_INVALID_U32; // bound in configure().
       node.volume = n.volume;
-      node.material = material_base;
+      // The chunk's own material: what it crushes as (bonds carry their own).
+      native_require(n.material < settings.materials.size(), "chunk material out of range");
+      node.material = material_base + n.material;
       s.nodes[base + i] = node;
     }
 

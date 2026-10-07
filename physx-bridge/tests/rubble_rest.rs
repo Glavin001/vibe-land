@@ -106,6 +106,7 @@ fn settings() -> DestructibleSettings {
             elastic_modulus: 30.0e9,
             residual_area_fraction: 0.0,
         }],
+        crush: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: false,
@@ -183,6 +184,7 @@ fn run(fixture: &Fixture, ticks: u32) -> Outcome {
                 geom_kind: 0,
                 half_extents: Vec3::new(c.half[0], c.half[1], c.half[2]),
                 convex_points: Vec::new(),
+                material: 0,
             })
             .collect();
         // A chain holds a multi-chunk body together; its layout is irrelevant

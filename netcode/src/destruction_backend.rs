@@ -44,6 +44,17 @@ impl Default for StressMaterial {
     }
 }
 
+/// One material's chunk crushing (comminution), native GPU stage only: see
+/// physx-bridge `CrushMaterialDesc`. `cap_pressure` 0 is none, the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CrushMaterial {
+    pub cap_pressure: f32,
+    pub cohesion: f32,
+    pub friction_slope: f32,
+    pub crush_energy: f32,
+    pub crush_viscosity: f32,
+}
+
 // Not Copy: the material table is a Vec. Settings are built once per match,
 // so the clone cost is irrelevant next to being able to carry a real table.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +64,8 @@ pub struct StressSolverSettings {
     /// Stress materials, indexed by `ChunkBondDesc::material`. Always at least
     /// one entry: a structure with no material has no strength to solve for.
     pub materials: Vec<StressMaterial>,
+    /// Opt-in chunk crushing: empty (the default) or parallel to `materials`.
+    pub crush: Vec<CrushMaterial>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -75,6 +88,7 @@ impl Default for StressSolverSettings {
             max_solver_iterations_per_frame: 25,
             graph_reduction_level: 0,
             materials: vec![StressMaterial::default()],
+            crush: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,

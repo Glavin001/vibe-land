@@ -84,6 +84,7 @@ pub(crate) fn authored_structure(
                 geom_kind,
                 half_extents,
                 convex_points,
+                material: chunk.material,
             }
         })
         .collect();
@@ -137,6 +138,19 @@ pub(crate) fn ffi_settings(settings: &StressSolverSettings) -> DestructibleSetti
                 shear_fatal: material.shear_fatal_mpa,
                 elastic_modulus: material.elastic_modulus_pa,
                 residual_area_fraction: material.residual_area_fraction,
+            })
+            .collect(),
+        crush: settings
+            .crush
+            .iter()
+            .map(|c| vibe_land_physx_bridge::CrushMaterialDesc {
+                cap_pressure: c.cap_pressure,
+                cohesion: c.cohesion,
+                friction_slope: c.friction_slope,
+                crush_energy: c.crush_energy,
+                crush_viscosity: c.crush_viscosity,
+                strain_rate_exponent: 0.0,
+                reference_strain_rate: 1.0,
             })
             .collect(),
         maximum_bodies: settings.maximum_bodies,

@@ -232,6 +232,7 @@ fn wall_of(w: u32, h: u32, hulls: bool) -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDes
                 geom_kind: if hulls { 1 } else { 0 },
                 half_extents: Vec3::new(0.48, 0.48, 0.48),
                 convex_points: if hulls { hull_block(index(x, y)) } else { Vec::new() },
+                material: 0,
             });
         }
     }
@@ -288,6 +289,7 @@ fn settings() -> DestructibleSettings {
             elastic_modulus: 30.0e9,
             residual_area_fraction: 0.0,
         }],
+        crush: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: true,

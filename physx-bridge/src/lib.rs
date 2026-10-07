@@ -554,11 +554,33 @@ pub struct StressMaterialDesc {
     pub residual_area_fraction: f32,
 }
 
+/// A material's chunk crushing (comminution), read by the native GPU stage
+/// only (`PxDestructionCrushProperties`, NvBlastExtStressMaterialFormula.h
+/// extStressCrushStep): the chunk's Love-Weber mean stress against a
+/// Drucker-Prager cone (`cohesion` + `friction_slope` p) capped at
+/// `cap_pressure`, with Perzyna damage overstress^2 dt / (`crush_viscosity`
+/// `crush_energy`). A chunk whose damage reaches 1 is destroyed with its bonds.
+/// `cap_pressure` 0 turns it off, which is the default. Units: Pa, Pa s, J/m^3.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CrushMaterialDesc {
+    pub cap_pressure: f32,
+    pub cohesion: f32,
+    pub friction_slope: f32,
+    pub crush_energy: f32,
+    pub crush_viscosity: f32,
+    pub strain_rate_exponent: f32,
+    pub reference_strain_rate: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct DestructibleSettings {
     pub max_solver_iterations_per_frame: u32,
     pub graph_reduction_level: u32,
     pub materials: Vec<StressMaterialDesc>,
+    /// Opt-in chunk crushing: empty (the default) crushes nothing; otherwise
+    /// parallel to `materials`, and a chunk crushes by its node's material
+    /// (`ChunkNodeDesc::material`). Native GPU stage only.
+    pub crush: Vec<CrushMaterialDesc>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -586,6 +608,7 @@ impl Default for DestructibleSettings {
                 elastic_modulus: 0.0,
                 residual_area_fraction: 0.0,
             }],
+            crush: Vec::new(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -606,6 +629,9 @@ pub struct ChunkNodeDesc {
     pub geom_kind: u32,
     pub half_extents: Vec3,
     pub convex_points: Vec<Vec3>,
+    /// The chunk's own material (index into `DestructibleSettings::materials`):
+    /// what it crushes as, when crushing is authored. 0 for packs without one.
+    pub material: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2364,11 +2390,24 @@ mod ffi {
         residual_area_fraction: f32,
     }
 
+    /// One material's chunk crushing (zeros: none).
+    struct FfiCrushMaterial {
+        cap_pressure: f32,
+        cohesion: f32,
+        friction_slope: f32,
+        crush_energy: f32,
+        crush_viscosity: f32,
+        strain_rate_exponent: f32,
+        reference_strain_rate: f32,
+    }
+
     struct FfiDestructibleSettings {
         max_solver_iterations_per_frame: u32,
         graph_reduction_level: u32,
         /// Indexed by `FfiChunkBondDesc::material`; must have >= 1 entry.
         materials: Vec<FfiStressMaterial>,
+        /// Empty, or parallel to `materials`: opt-in chunk crushing.
+        crush: Vec<FfiCrushMaterial>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -2387,6 +2426,8 @@ mod ffi {
         geom_kind: u32,
         half_extents: FfiVec3,
         convex_points: Vec<FfiVec3>,
+        /// The chunk's own material (crushing), index into the materials.
+        material: u32,
     }
 
     struct FfiChunkBondDesc {
@@ -3254,6 +3295,19 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
                     residual_area_fraction: material.residual_area_fraction,
                 })
                 .collect(),
+            crush: value
+                .crush
+                .into_iter()
+                .map(|c| ffi::FfiCrushMaterial {
+                    cap_pressure: c.cap_pressure,
+                    cohesion: c.cohesion,
+                    friction_slope: c.friction_slope,
+                    crush_energy: c.crush_energy,
+                    crush_viscosity: c.crush_viscosity,
+                    strain_rate_exponent: c.strain_rate_exponent,
+                    reference_strain_rate: c.reference_strain_rate,
+                })
+                .collect(),
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,
@@ -3280,6 +3334,7 @@ impl From<ChunkNodeDesc> for ffi::FfiChunkNodeDesc {
                 .into_iter()
                 .map(Into::into)
                 .collect(),
+            material: value.material,
         }
     }
 }

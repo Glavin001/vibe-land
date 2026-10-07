@@ -65,9 +65,13 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
   let raw=&s["nodeColliders"][i];let c=if raw["kind"]=="shape" { &s["shapeLibrary"][raw["shape"].as_u64().unwrap() as usize] } else { raw };
   let hull=c["kind"]=="convex_hull";
   nodes.push(ChunkNodeDesc { node_index:i as u32,centroid:vec(&n["centroid"]),mass:f(n,"mass"),volume:f(n,"volume"),geom_kind:if hull {1}else{0},
-   half_extents:if hull {Vec3::ZERO}else{vec(&c["halfExtents"])},convex_points:if hull {c["points"].as_array().unwrap().chunks(3).map(|p|Vec3::new(p[0].as_f64().unwrap() as f32,p[1].as_f64().unwrap() as f32,p[2].as_f64().unwrap() as f32)).collect()}else{vec![]} });
+   half_extents:if hull {Vec3::ZERO}else{vec(&c["halfExtents"])},convex_points:if hull {c["points"].as_array().unwrap().chunks(3).map(|p|Vec3::new(p[0].as_f64().unwrap() as f32,p[1].as_f64().unwrap() as f32,p[2].as_f64().unwrap() as f32)).collect()}else{vec![]},material:n["m"].as_u64().unwrap_or(0) as u32 });
  }
  let bonds:Vec<_>=bs.iter().enumerate().map(|(i,b)|ChunkBondDesc {bond_index:i as u32,node0:b["node0"].as_u64().unwrap() as u32,node1:b["node1"].as_u64().unwrap() as u32,centroid:vec(&b["centroid"]),normal:vec(&b["normal"]),area:f(b,"area"),material:b["m"].as_u64().unwrap_or(0) as u32}).collect();
+ // Chunk crushing, opt-in per material (`crush` blocks, scene pack v3 keys): none authored, none run.
+ let mats=pack["defaults"]["solver"]["materials"].as_array().ok_or("materials missing")?;
+ let crush:Vec<CrushMaterialDesc>=if mats.iter().any(|m|m["crush"].is_object()) { mats.iter().map(|m|{let c=&m["crush"];CrushMaterialDesc{cap_pressure:f(c,"capPressure"),cohesion:f(c,"cohesion"),friction_slope:f(c,"frictionSlope"),
+  crush_energy:f(c,"crushEnergy"),crush_viscosity:f(c,"crushViscosity"),strain_rate_exponent:0.,reference_strain_rate:1.}}).collect() } else { vec![] };
  let materials=pack["defaults"]["solver"]["materials"].as_array().ok_or("materials missing")?.iter().map(|m|StressMaterialDesc {
   compression_elastic:f(m,"compressionElastic"),compression_fatal:f(m,"compressionFatal"),tension_elastic:f(m,"tensionElastic"),tension_fatal:f(m,"tensionFatal"),shear_elastic:f(m,"shearElastic"),shear_fatal:f(m,"shearFatal"),elastic_modulus:f(m,"elasticModulus"),residual_area_fraction:f(m,"residualAreaFraction") }).collect();
  let mut wc=WorldConfig::default();wc.gravity=Vec3::new(0.,-9.81,0.);wc.cpu_threads=2;
@@ -89,7 +93,7 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
  }}}else{world.add_static_box(StaticBoxDesc { entity_id:0x10000001,user_id:0,pose:Pose{position:Vec3::new(0.,-0.75,0.),rotation:Quat::IDENTITY},half_extents:Vec3::new(5000.,0.75,5000.),collision_group:1,collision_mask:mask })?;}
  world.native_attach()?;
  world.native_create_destructible(0,Pose::default(),&nodes,&bonds,DestructibleSettings {
-  max_solver_iterations_per_frame:2048,graph_reduction_level:0,materials,maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
+  max_solver_iterations_per_frame:2048,graph_reduction_level:0,materials,crush,maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
   apply_excess_forces:true,apply_centrifugal:true,excess_force_scale:0.012,linear_damping:0.25,angular_damping:0.35,
  },1<<5,mask)?;
  let mut contact=ContactSettings::default();
