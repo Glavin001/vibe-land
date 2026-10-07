@@ -195,7 +195,7 @@ fn reported(text: &str, key: &str) -> f32 {
 /// tick [along, up].
 fn meteor_on_ground(gap: f32, paved: bool) -> Vec<[f32; 2]> {
     std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
-    let paved = paved || matches!(std::env::var(ARM).as_deref(), Ok("meteor_wall" | "meteor_footing"));
+    let paved = paved || matches!(std::env::var(ARM).as_deref(), Ok("meteor_wall" | "meteor_footing" | "meteor_member_footing"));
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     world.add_static_box(StaticBoxDesc { entity_id: 0x0100_0001, user_id: 1, pose: Pose { position: Vec3::new(0.0, -5.16, 0.0), rotation: identity() },
         half_extents: Vec3::new(500.0, 5.0, 500.0), collision_group: GROUP_CHUNK, collision_mask: ALL }).unwrap();
@@ -227,6 +227,16 @@ fn meteor_on_ground(gap: f32, paved: bool) -> Vec<[f32; 2]> {
             let f = nodes.len() as u32;
             nodes.push(node(f, Vec3::new(0.0, 0.175, 20.0), Vec3::new(3.0, 0.15, 0.3), 0.0));
         }
+        // "meteor_member_footing": the same footing as the town kit now builds
+        // it (TOWN_KIT_BURIED_ANCHORS=1, Builder.buryAnchor): a C30 concrete
+        // member with its mass (2.6 t) on a buried anchor, bonded across its
+        // whole footprint (3.6 m^2).
+        if std::env::var(ARM).as_deref() == Ok("meteor_member_footing") {
+            let f = nodes.len() as u32;
+            nodes.push(node(f, Vec3::new(0.0, -0.05, 20.0), Vec3::new(3.0, 0.05, 0.3), 0.0));
+            nodes.push(node(f + 1, Vec3::new(0.0, 0.175, 20.0), Vec3::new(3.0, 0.15, 0.3), 6.0 * 0.3 * 0.6 * 2400.0));
+            bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: f, node1: f + 1, centroid: Vec3::new(0.0, 0.025, 20.0), normal: Vec3::new(0.0, 1.0, 0.0), area: 3.6, material: 2 });
+        }
         if std::env::var(ARM).as_deref() == Ok("meteor_wall") {
             let f = nodes.len() as u32;
             nodes.push(node(f, Vec3::new(0.0, 0.175, 20.0), Vec3::new(3.0, 0.15, 0.3), 0.0));
@@ -243,7 +253,10 @@ fn meteor_on_ground(gap: f32, paved: bool) -> Vec<[f32; 2]> {
         // Mortared brick: 0.5 MPa in tension, 1 MPa in shear, 10 MPa in compression.
         let brick = StressMaterialDesc { compression_elastic: 5e6, compression_fatal: 1e7, tension_elastic: 2.5e5, tension_fatal: 5e5,
             shear_elastic: 5e5, shear_fatal: 1e6, elastic_modulus: 10e9, residual_area_fraction: 0.0 };
-        let settings = DestructibleSettings { max_solver_iterations_per_frame: 64, materials: vec![footing, brick], maximum_bodies: 0, maximum_fractures_per_actor_per_tick: 0,
+        // C30 plain concrete (materials.mjs concreteFooting): fck 30, fctm 2.9 MPa.
+        let concrete = StressMaterialDesc { compression_elastic: 12e6, compression_fatal: 30e6, tension_elastic: 1.16e6, tension_fatal: 2.9e6,
+            shear_elastic: 1.16e6, shear_fatal: 2.9e6, elastic_modulus: 33e9, residual_area_fraction: 0.0 };
+        let settings = DestructibleSettings { max_solver_iterations_per_frame: 64, materials: vec![footing, brick, concrete], maximum_bodies: 0, maximum_fractures_per_actor_per_tick: 0,
             linear_damping: 0.0, angular_damping: 0.0, ..DestructibleSettings::default() };
         world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: identity() }, &nodes, &bonds, settings, GROUP_CHUNK, ALL).unwrap();
         world.step().unwrap();
@@ -264,7 +277,7 @@ fn meteor_on_ground(gap: f32, paved: bool) -> Vec<[f32; 2]> {
     // edge (z 19.7, y 0.325) at 45 degrees -- as the film's meteor met the
     // veneer house's -- less `gap` along its path, so the step lands it from
     // just touching to well into the edge.
-    let footing = std::env::var(ARM).as_deref() == Ok("meteor_footing");
+    let footing = matches!(std::env::var(ARM).as_deref(), Ok("meteor_footing" | "meteor_member_footing"));
     let start = if footing {
         let d = radius / 2f32.sqrt();
         let along = (gap * 3.0 + 1.0) * DT;
@@ -434,10 +447,14 @@ fn meteor_rebound_off_ground() {
 #[test]
 #[ignore = "requires the GPU and the native-destruction SDK"]
 fn meteor_on_a_foundation() {
-    let text = run_arm("meteor_footing", &[]);
-    let up = reported(&text, "up_max");
     let (sigma, proud, r, m) = (30e6f32, 0.3f32, 2.0f32, 110_000.0f32);
     let bound = 0.1 * 140.0 * (0.3f32).atan().sin() + sigma * proud * 2.0 * r * DT / m;
-    println!("meteor on the footing: up to {up:.1} m/s; a crushing concrete edge allows {bound:.1}");
+    // The footing as a support (mass 0): the gap, reported.
+    let gap = run_arm("meteor_footing", &[]);
+    println!("meteor on a mass-0 footing: up to {:.1} m/s (a crushing concrete edge allows {bound:.1})", reported(&gap, "up_max"));
+    // The footing as the town kit builds it now: a concrete member on a buried anchor.
+    let text = run_arm("meteor_member_footing", &[]);
+    let up = reported(&text, "up_max");
+    println!("meteor on a concrete member footing: up to {up:.1} m/s; allowed {bound:.1}");
     assert!(up <= bound, "an infinite foundation: the footing edge threw the meteor up at {up:.1} m/s, concrete could not exceed {bound:.1}\n{text}");
 }
