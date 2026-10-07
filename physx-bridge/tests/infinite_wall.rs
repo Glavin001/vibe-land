@@ -107,7 +107,9 @@ fn strike(plates: u32) -> (Vec<f32>, usize) {
     }
     if plates == 4 { (nodes, bonds) = grid(); }
     // The control: one plate that cannot break, a wall that must stop the ball.
-    if std::env::var(ARM).as_deref() == Ok("unbreakable") { bonds[0].material = 2; }
+    // Its bond is the plate's whole base (0.1 m^2) at 1e13 Pa, so no bending
+    // or shear the ball can apply reaches its limit in either profile.
+    if std::env::var(ARM).as_deref() == Ok("unbreakable") { bonds[0].material = 2; bonds[0].area = 0.1; }
     let material = |fatal: f32| StressMaterialDesc {
         compression_elastic: 0.5 * fatal, compression_fatal: fatal, tension_elastic: 0.5 * fatal, tension_fatal: fatal,
         shear_elastic: 0.5 * fatal, shear_fatal: fatal, elastic_modulus: 10e9, residual_area_fraction: 0.0,
@@ -174,6 +176,10 @@ fn arm() {
     println!("v_end={}", vz.last().unwrap());
     println!("v_min={}", vz.iter().copied().fold(f32::MAX, f32::min));
     println!("broken={broken}");
+    // After the ball first loses half its speed, the fastest it goes again:
+    // nothing in the scene can give it back what it lost.
+    let after = vz.iter().position(|&v| v < 0.5 * V0).map_or(f32::MIN, |k| vz[k..].iter().copied().fold(f32::MIN, f32::max));
+    println!("v_regained={after}");
 }
 
 /// The ball keeps what momentum and the plates' strength leave it.
@@ -192,6 +198,9 @@ fn layered_wall() {
         if arm == "unbreakable" {
             // The control: a plate that cannot break is a wall, and the test must see it.
             assert!(wall, "the unbreakable plate should stop the ball, and the test would not see a wall:\n{text}");
+            // Stopped, it stays stopped: a rebound at the restitution, never its speed back.
+            let regained = reported(&text, "v_regained");
+            if regained > 0.5 * V0 { failures.push(format!("{arm}: after the stop the ball was back at {regained:.2} m/s: momentum from nowhere\n{text}")); }
         } else if wall {
             failures.push(format!("{arm}: the ball fell to {min:.2} m/s (ended {end:.2}); momentum and the bonds' strength allow no less than {floor:.2}\n{text}"));
         }
