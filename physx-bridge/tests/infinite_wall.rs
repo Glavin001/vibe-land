@@ -193,7 +193,7 @@ fn reported(text: &str, key: &str) -> f32 {
 /// The meteor (110 t of rock, r 2 m) at 140 m/s, descending at slope 0.3,
 /// into static ground (the city's floor is a static box): its velocity each
 /// tick [along, up].
-fn meteor_on_ground() -> Vec<[f32; 2]> {
+fn meteor_on_ground(gap: f32) -> Vec<[f32; 2]> {
     std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     world.add_static_box(StaticBoxDesc { entity_id: 0x0100_0001, user_id: 1, pose: Pose { position: Vec3::new(0.0, -5.0, 0.0), rotation: identity() },
@@ -202,8 +202,10 @@ fn meteor_on_ground() -> Vec<[f32; 2]> {
     let (mass, radius, speed, slope) = (110_000.0f32, 2.0f32, 140.0f32, 0.3f32);
     let n = (1.0 + slope * slope).sqrt();
     let v = Vec3::new(0.0, -speed * slope / n, speed / n);
-    // Its surface 1 cm over the ground, the tick before it would meet it.
-    world.launch_dynamic_ball(LaunchedBallDesc { entity_id: BALL, user_id: 1, pose: Pose { position: Vec3::new(0.0, radius + 0.01 - v.y * DT, 0.0), rotation: identity() },
+    // Its surface `gap` over the ground at the end of the first tick: a gap
+    // under one tick's fall (0.67 m) puts it that far short of the ground into
+    // it on the next, as a discrete step does wherever the rock happens to be.
+    world.launch_dynamic_ball(LaunchedBallDesc { entity_id: BALL, user_id: 1, pose: Pose { position: Vec3::new(0.0, radius + gap - v.y * DT, 0.0), rotation: identity() },
         radius, mass, linear_velocity: v, collision_group: GROUP_BALL, collision_mask: ALL }).unwrap();
     let mut out = Vec::new();
     for _ in 0..30 {
@@ -220,9 +222,18 @@ fn meteor_on_ground() -> Vec<[f32; 2]> {
 fn arm() {
     let Ok(arm) = std::env::var(ARM) else { return };
     if arm == "meteor_ground" {
-        let track = meteor_on_ground();
-        println!("up_max={}", track.iter().map(|v| v[1]).fold(f32::MIN, f32::max));
-        println!("along_end={}", track.last().unwrap()[0]);
+        // Wherever the last step before contact leaves it: 1 cm (inside the
+        // contact offset) to 0.6 m up.
+        let (mut up, mut along) = (f32::MIN, f32::MAX);
+        for gap in [0.01f32, 0.2, 0.4, 0.6] {
+            let track = meteor_on_ground(gap);
+            let u = track.iter().map(|v| v[1]).fold(f32::MIN, f32::max);
+            println!("gap {gap}: up {u:.2} along {:.2}", track.last().unwrap()[0]);
+            up = up.max(u);
+            along = along.min(track.last().unwrap()[0]);
+        }
+        println!("up_max={up}");
+        println!("along_end={along}");
         return;
     }
     let plates = match arm.as_str() { "one_plate" | "unbreakable" | "light_ball" => 1, "grid" => 4, _ => 2 };
