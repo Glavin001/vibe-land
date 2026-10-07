@@ -15,7 +15,7 @@
 //!     --bin web-fps-server vehicle_testbed -- --ignored --nocapture --test-threads=1
 //!
 //! VIBE_TESTBED_CARS     garage build ids (default the city fleet)
-//! VIBE_TESTBED_TRIALS   trial ids or prefixes (default all)
+//! VIBE_TESTBED_TRIALS   trial ids or prefixes (default all); `id$` matches that id exactly
 //! VIBE_TESTBED_LABEL    report name: target/vehicle-testbed/<label>.json (default "report")
 //! VIBE_TESTBED_META     the lab meta (default structures/vehicle-lab/out/vehicle-lab.meta.json)
 //! VIBE_TESTBED_TRACE=1  a per-tick trace of the car in each run (speed, z, height, jounce)
@@ -31,6 +31,9 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use vibe_land_shared::constants::BTN_JUMP;
 use vibe_land_shared::protocol::InputCmd;
+
+#[path = "wall_matrix.rs"]
+mod wall_matrix;
 
 const DT: f32 = 1.0 / 60.0;
 const PLAYER: u32 = 42;
@@ -462,6 +465,11 @@ fn run(r: &Run, meta: &Value) -> Value {
     let (mut shot_past, mut shot_speed_end) = (f32::NEG_INFINITY, 0f32);
     let mut trace = Vec::new();
     let tracing = std::env::var_os("VIBE_TESTBED_TRACE").is_some();
+    // `probe`: the infinite-wall probe (wall_matrix.rs; structures/vehicle-lab/wall-matrix.mjs).
+    let strength = (trial["probe"].as_bool() == Some(true)).then(|| wall_matrix::Strength::load(&std::env::var("VIBE_CITY_SCENE").unwrap()));
+    let mut probe: Option<wall_matrix::Probe> = None;
+    let (mut probe_last, mut probe_pid) = (None::<Vector3<f32>>, None::<u32>);
+    let probe_target = trial["target"].as_array().map(|t| Vector3::new(t[0].as_f64().unwrap() as f32, t[1].as_f64().unwrap() as f32, t[2].as_f64().unwrap() as f32));
     let heading_of = |f: Vector3<f32>| f.x.atan2(f.z);
     for k in 0..ticks {
         let s = car_state(&mut arena, id);
@@ -743,6 +751,43 @@ fn run(r: &Run, meta: &Value) -> Value {
                 if let Some((target, dir)) = shot { shot_past = shot_past.max((p - target).dot(&dir)); }
             }
         }
+        if let Some(strength) = strength.as_ref() {
+            // The impactor: the car (its front, along its starting heading) or the shot.
+            let state = if driving {
+                probe.get_or_insert_with(|| wall_matrix::Probe::new(geometry.mass as f32, 0.));
+                Some((after.p, after.v, heading0, (after.p + after.forward * front - probe_target.unwrap_or(start.p)).dot(&heading0)))
+            } else if let (Some(pid), Some((target, dir))) = (projectile, shot) {
+                if probe_pid != Some(pid) { probe = None; probe_last = None; probe_pid = Some(pid); }
+                arena.snapshot_dynamic_bodies().into_iter().find(|b| b.0 == pid).map(|b| {
+                    let p = Vector3::new(b.1[0], b.1[1], b.1[2]);
+                    if probe.is_none() {
+                        let a = attack.unwrap();
+                        let (mass, radius) = if a["projectile"] == "meteor" { let t = crate::meteor::MeteorTuning::from_env(); (t.mass_kg, t.radius_m) }
+                            else if let Some(m) = a["mass"].as_f64().map(|m| m as f32) { (m, (m / crate::city::city_ball_density_kg_m3() * 3. / (4. * std::f32::consts::PI)).cbrt()) }
+                            else { (crate::city::city_ball_mass_kg(), crate::city::city_ball_radius_m()) };
+                        probe = Some(wall_matrix::Probe::new(mass, radius));
+                    }
+                    (p, Vector3::new(b.4[0], b.4[1], b.4[2]), dir, (p - target).dot(&dir))
+                })
+            } else { None };
+            if let (Some((p, v, dir, past)), Some(pr)) = (state, probe.as_mut()) {
+                let status = city.native_tick_view().map(|(s, _, _)| s).unwrap_or_default();
+                let speed = v.norm();
+                pr.trace.push([tick as f32 - 1., past, v.dot(&dir), v.y, speed, status.broken_bonds as f32, status.post_correction_broken_bonds as f32, status.correction_passes as f32, status.converged as u8 as f32]);
+                let group = trial["matrix"]["group"].as_str().unwrap_or("");
+                let touched = if driving {
+                    strength.touching_box(p, &after.q, geometry.bounds.min, geometry.bounds.max, 0.1, group)
+                } else { strength.touching_sphere(probe_last.unwrap_or(p), p, pr.radius, 0.1, group) };
+                probe_last = Some(p);
+                if !touched.is_empty() {
+                    let anchored = vibe_land_physx_bridge::native_entity_id(0, 0);
+                    let world = arena.physx_world_mut().expect("physx");
+                    let held: Vec<bool> = touched.iter().map(|&n| world.native_chunk_aim(0, n).map_or(false, |a| a.found && a.entity_id == anchored)).collect();
+                    pr.anchored_after.insert(tick - 1, held);
+                    pr.touched.insert(tick - 1, touched);
+                }
+            }
+        }
         if k % SAMPLE_EVERY == 0 || auditing() { read_damage(&mut arena, id, tick, &mut damage, geometry, accel_g); }
         if tracing && (k % 6 == 0 || auditing()) {
             let spin = [after.w.x, after.w.y, after.w.z].map(|w| (w * 100.).round() / 100.);
@@ -861,6 +906,12 @@ fn run(r: &Run, meta: &Value) -> Value {
         h["carPeakSpin3s"] = json!(peak_spin_after);
         out["house"] = h;
     }
+    if let (Some(strength), Some(pr)) = (strength.as_ref(), probe.as_ref()) {
+        out["probe"] = pr.summary(strength, DT);
+        out["layer"] = trial["layer"].clone();
+        out["matrix"] = trial["matrix"].clone();
+        if tracing { out["probeTrace"] = json!(pr.trace); }
+    }
     out["stepMs"] = json!({"median": sorted.get(sorted.len() / 2), "p95": sorted.get(sorted.len() * 95 / 100), "max": sorted.last()});
     out["trace"] = json!(trace);
     out
@@ -912,7 +963,7 @@ fn vehicle_testbed() {
     let meta: Value = serde_json::from_slice(&std::fs::read(&meta_path).expect("lab meta: node structures/vehicle-lab/build-lab.mjs")).unwrap();
     let wanted = std::env::var("VIBE_TESTBED_TRIALS").unwrap_or_default();
     let trials: Vec<&Value> = meta["trials"].as_array().unwrap().iter()
-        .filter(|t| wanted.is_empty() || wanted.split(',').any(|w| t["id"].as_str().unwrap().starts_with(w.trim())))
+        .filter(|t| wanted.is_empty() || wanted.split(',').any(|w| { let id = t["id"].as_str().unwrap(); w.trim().strip_suffix('$').map_or(id.starts_with(w.trim()), |exact| id == exact) }))
         .filter(|t| (t["scene"].as_str() == Some("town")) == town()).collect();
     let scene = SceneIndex::load();
     let fleet = tokio::runtime::Runtime::new().unwrap().block_on(crate::city_fleet::prepare(&cars));
