@@ -985,8 +985,14 @@ fn vehicle_testbed() {
                 eprintln!("{:>20} first breaks: {}", "", f.iter().take(4).map(|s| s.as_str().unwrap()).collect::<Vec<_>>().join("; "));
             }
             runs.push(result);
+            // Written after every run: a long matrix interrupted keeps what it measured.
+            write_report(&runs);
         }
     }
+    eprintln!("report: {}", write_report(&runs).display());
+}
+
+fn write_report(runs: &[Value]) -> std::path::PathBuf {
     let label = std::env::var("VIBE_TESTBED_LABEL").unwrap_or_else(|_| "report".into());
     let dir = repo().join("target/vehicle-testbed");
     std::fs::create_dir_all(&dir).unwrap();
@@ -994,5 +1000,5 @@ fn vehicle_testbed() {
     let report = json!({"label": label, "harness": "headless", "scene": std::env::var("VIBE_CITY_SCENE").unwrap(), "env": env, "runs": runs});
     let path = dir.join(format!("{label}.json"));
     std::fs::write(&path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
-    eprintln!("report: {}", path.display());
+    path
 }
