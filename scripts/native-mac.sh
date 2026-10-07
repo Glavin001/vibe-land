@@ -41,6 +41,7 @@
 #                   a launch ramp on an approach road, the furnished corner cafe,
 #                   fences and garden walls, and the film's cast of ten cars
 #   veneer          the town kit's brick-veneer houses (VENEER_REEL picks the reel)
+#   calib           a calibration scenario's scene (CALIB_SCENE: structures/calibration)
 #
 # MYSTRAL_ROOT: the mystralnative checkout (default ../mystralnative), built
 # from its `vibe-land` integration branch. Extra `run` args go to `mystral run`
@@ -179,7 +180,15 @@ case "$SCENE" in
     [ -f "$pack.json" ] || node "$ROOT/structures/town-kit/scripts/build-veneer-reel.mjs"
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_VEHICLES=0 \
       VIBE_CITY_DESTRUCTIBLE_VEHICLES=0 VIBE_CITY_SPAWN_X=0 VIBE_CITY_SPAWN_Z=-60 ;;
-  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, lab, town, hero, veneer)" >&2; exit 2 ;;
+  calib)
+    # A calibration scenario (structures/calibration) on open ground, for its
+    # film (client/native/films/calibration.mjs, structures/calibration/film/reel.sh):
+    # CALIB_SCENE is the scene pack (a scenario's scene.json, or one case of
+    # it). No cars; the player at CALIB_SPAWN_X/Z, clear of the structures.
+    [ -f "${CALIB_SCENE:-}" ] || { echo "--scene calib needs CALIB_SCENE (a calibration scene.json)" >&2; exit 2; }
+    export VIBE_CITY_SCENE="$CALIB_SCENE" VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_VEHICLES=0 \
+      VIBE_CITY_DESTRUCTIBLE_VEHICLES=0 VIBE_CITY_SPAWN_X="${CALIB_SPAWN_X:--60}" VIBE_CITY_SPAWN_Z="${CALIB_SPAWN_Z:--60}" ;;
+  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, lab, town, hero, veneer, calib)" >&2; exit 2 ;;
 esac
 [ "$SCENE" = city ] || echo "scene: $SCENE (${VIBE_CITY_SCENE})"
 
