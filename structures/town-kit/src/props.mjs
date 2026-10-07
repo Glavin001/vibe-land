@@ -1,3 +1,4 @@
+import {realCapacitiesEnabled} from './real-capacities.mjs';
 import { Builder, nativeColliders } from './geometry.mjs';
 import { M } from './materials.mjs';
 export const PROP_TYPES=['table','chair','counter','sink','hob','cabinet','shelf','refrigerator','bed','sofa','toilet','bathtub','fence','gate'];
@@ -6,7 +7,7 @@ export function buildPropRaw(type,{palette='sage',seed=20260920,omitLeftPost=fal
  const b=new Builder(`town-${type}`,{palette,seed,group:`prop-${type}`});
  // A chair's narrower mortise uses half the effective glue/dowel area of
  // the general furniture connection. Solid wood fracture seams are unchanged.
- if(type==='chair'){
+ if(type==='chair' && !realCapacitiesEnabled()){   // real capacities: the glued joint as it is
   const joint=b.table[M.furnitureJoint];joint.name='chair-mortise-joint';
   for(const key of ['compressionElastic','compressionFatal','tensionElastic','tensionFatal','shearElastic','shearFatal'])joint[key]*=.5;
  }

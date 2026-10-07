@@ -1,3 +1,4 @@
+import {realCapacitiesEnabled,characteristicLegacy,GLUED_JOINT} from './real-capacities.mjs';
 import { geometry, prismContact, prismVertices } from './dependencies.mjs';
 import { materials, M, crushFor, crushEnabled } from './materials.mjs';
 export const round=n=>Math.round(n*1e6)/1e6||0;
@@ -19,7 +20,10 @@ export function candidates(bounds,cell=2) {
  }});return [...pairs].map(p=>p.split(',').map(Number));
 }
 export class Builder {
- constructor(key,{palette='sage',seed=20260920,group='building'}={}) {this.key=key;this.table=materials(palette);this.s=empty();this.prisms=[];this.bounds=[];this.pieceId=0;this.group=group;this.rng=geometry.mulberry32(seed);}
+ constructor(key,{palette='sage',seed=20260920,group='building'}={}) {this.key=key;this.table=materials(palette);
+  // VIBE_REAL_CAPACITIES=1: the legacy doubled timber/masonry limits as
+  // characteristic values, and furniture joints as glued joints (real-capacities.mjs).
+  if(realCapacitiesEnabled()){characteristicLegacy(this.table);Object.assign(this.table[M.furnitureJoint],GLUED_JOINT);}this.s=empty();this.prisms=[];this.bounds=[];this.pieceId=0;this.group=group;this.rng=geometry.mulberry32(seed);}
  box({min,max,material=M.frame,type='frame',fixed=false,split=[1,1,1],pieceId=this.pieceId++}) {
   for(let i=0;i<3;i++) if(!(max[i]>min[i])) throw Error(`Empty ${type}: ${min} / ${max}`);
   for(let x=0;x<split[0];x++)for(let y=0;y<split[1];y++)for(let z=0;z<split[2];z++){
