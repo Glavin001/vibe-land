@@ -219,10 +219,15 @@ function caseTake({ spec, scenario, verdict, c, held }) {
   const sample = (ctx) => { const city = ctx.e2e.drawnWorld?.()?.city; if (city) meter.take(city); };
 
   const WIDE = 7, CLOSE = 6.5;
-  // Among the other cases (a scene of more than this one), from higher: over
-  // the case in front of it.
+  // Among the other cases (a scene of more than this one), from high enough to
+  // see this one's foot over the top of the case in front of it (the nearest
+  // on the camera's side, the -z or -x side).
   const crowded = !held || held.length > 1;
-  const elevation = hints.elevation ?? (crowded ? 24 : 8), closeElevation = hints.closeElevation ?? (crowded ? 26 : 12);
+  const across = along === 0 ? 2 : 0;
+  const inFront = crowded ? (held ?? spec.cases).filter((x) => x.id !== c.id).map((x) => nodesBox(scenario, x.nodes))
+    .filter((b) => b.max[across] <= box.min[across] + 0.01).sort((a, b) => b.max[across] - a.max[across])[0] : null;
+  const over = inFront ? Math.min(55, Math.max(24, (Math.atan2(Math.max(0, inFront.max[1]) + 1, Math.max(1, box.min[across] - inFront.max[across])) * 180) / Math.PI + 3)) : null;
+  const elevation = hints.elevation ?? over ?? 8, closeElevation = hints.closeElevation ?? (over != null ? over + 2 : 12);
   const wideA = fit(box, { bearing: side - 4, elevation, fov, margin: 0.92 });
   const wideB = fit(box, { bearing: side + 6, elevation: elevation + 3, fov, margin: 0.86 });
   const closeBearing = hints.closeBearing ?? sideBearing(box) - 40;
