@@ -86,6 +86,27 @@ fn grid() -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {
     (nodes, bonds)
 }
 
+/// The light ball (arm `light_ball`): the impact study's 100 kg of steel
+/// (r 0.146 m) at 60 m/s, against one plate whose bond carries LIGHT_CAP.
+const LIGHT_MASS: f32 = 100.0;
+const LIGHT_V0: f32 = 60.0;
+/// 1 MN: well above the tick's average force (m v (1 + e) / dt = 0.4 MN), far
+/// below the hit's Hertz peak (about 19 MN on a 10 GPa plate, over ~1.2 ms).
+const LIGHT_CAP: f32 = 1e6;
+
+fn ball() -> (f32, f32) {
+    if std::env::var(ARM).as_deref() == Ok("light_ball") { (LIGHT_MASS, LIGHT_V0) } else { (BALL_MASS, V0) }
+}
+
+/// Hertz (Johnson, Contact Mechanics, 11.1): an elastic sphere (mass m,
+/// radius r, modulus e1) striking a flat of modulus e2 at v: the peak force
+/// and the pulse's duration.
+fn hertz(m: f32, r: f32, v: f32, e1: f32, e2: f32) -> (f32, f32) {
+    let star = 1.0 / ((1.0 - 0.04) / e1 + (1.0 - 0.04) / e2);
+    let delta = (15.0 * m * v * v / (16.0 * star * r.sqrt())).powf(0.4);
+    (4.0 / 3.0 * star * r.sqrt() * delta.powf(1.5), 2.94 * delta / v)
+}
+
 /// The ball's velocity along +z each tick, and bonds broken.
 fn strike(plates: u32) -> (Vec<f32>, usize) {
     std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
@@ -110,6 +131,7 @@ fn strike(plates: u32) -> (Vec<f32>, usize) {
     // Its bond is the plate's whole base (0.1 m^2) at 1e13 Pa, so no bending
     // or shear the ball can apply reaches its limit in either profile.
     if std::env::var(ARM).as_deref() == Ok("unbreakable") { bonds[0].material = 2; bonds[0].area = 0.1; }
+    if std::env::var(ARM).as_deref() == Ok("light_ball") { bonds[0].material = 3; }
     let material = |fatal: f32| StressMaterialDesc {
         compression_elastic: 0.5 * fatal, compression_fatal: fatal, tension_elastic: 0.5 * fatal, tension_fatal: fatal,
         shear_elastic: 0.5 * fatal, shear_fatal: fatal, elastic_modulus: 10e9, residual_area_fraction: 0.0,
@@ -117,8 +139,8 @@ fn strike(plates: u32) -> (Vec<f32>, usize) {
     let settings = DestructibleSettings {
         max_solver_iterations_per_frame: 64,
         // Weak (10 N over 1 cm^2), and the grid's strong plates (STRONG over 1 cm^2).
-        materials: vec![material(1e5), material(STRONG / 1e-4), material(1e13)],
-        ductile_slip: if std::env::var("VIBE_IMPACT_CAPACITY").as_deref() == Ok("1") { vec![0.0; 3] } else { Vec::new() },
+        materials: vec![material(1e5), material(STRONG / 1e-4), material(1e13), material(LIGHT_CAP / 1e-4)],
+        ductile_slip: if std::env::var("VIBE_IMPACT_CAPACITY").as_deref() == Ok("1") { vec![0.0; 4] } else { Vec::new() },
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         linear_damping: 0.0,
@@ -133,10 +155,11 @@ fn strike(plates: u32) -> (Vec<f32>, usize) {
     }).unwrap();
     for _ in 0..10 { world.step().unwrap(); world.native_tick().unwrap(); }
     // 1 t of steel (7850 kg/m^3): r 0.31 m, its surface 2 cm short of the front plate's face.
-    let radius = (BALL_MASS / 7850.0 * 3.0 / (4.0 * std::f32::consts::PI)).cbrt();
+    let (mass, v0) = ball();
+    let radius = (mass / 7850.0 * 3.0 / (4.0 * std::f32::consts::PI)).cbrt();
     world.launch_dynamic_ball(LaunchedBallDesc {
         entity_id: BALL, user_id: 1, pose: Pose { position: Vec3::new(0.0, Y, -0.05 - radius - 0.02), rotation: identity() },
-        radius, mass: BALL_MASS, linear_velocity: Vec3::new(0.0, 0.0, V0), collision_group: GROUP_BALL, collision_mask: ALL,
+        radius, mass, linear_velocity: Vec3::new(0.0, 0.0, v0), collision_group: GROUP_BALL, collision_mask: ALL,
     }).unwrap();
     world.native_set_impactor_impedance(BALL, (7850.0f32 * 200e9).sqrt()).unwrap();
     let (mut vz, mut broken) = (Vec::new(), 0usize);
@@ -171,14 +194,14 @@ fn reported(text: &str, key: &str) -> f32 {
 #[ignore = "spawned by layered_wall"]
 fn arm() {
     let Ok(arm) = std::env::var(ARM) else { return };
-    let plates = match arm.as_str() { "one_plate" | "unbreakable" => 1, "grid" => 4, _ => 2 };
+    let plates = match arm.as_str() { "one_plate" | "unbreakable" | "light_ball" => 1, "grid" => 4, _ => 2 };
     let (vz, broken) = strike(plates);
     println!("v_end={}", vz.last().unwrap());
     println!("v_min={}", vz.iter().copied().fold(f32::MAX, f32::min));
     println!("broken={broken}");
     // After the ball first loses half its speed, the fastest it goes again:
     // nothing in the scene can give it back what it lost.
-    let after = vz.iter().position(|&v| v < 0.5 * V0).map_or(f32::MIN, |k| vz[k..].iter().copied().fold(f32::MIN, f32::max));
+    let after = vz.iter().position(|&v| v < 0.5 * ball().1).map_or(f32::MIN, |k| vz[k..].iter().copied().fold(f32::MIN, f32::max));
     println!("v_regained={after}");
 }
 
@@ -224,4 +247,38 @@ fn load_moves_in_the_corrected_pass() {
     let (end, min, broken) = (reported(&text, "v_end"), reported(&text, "v_min"), reported(&text, "broken"));
     println!("grid: v_end {end:.2} v_min {min:.2} bonds broken {broken}; closed form v >= {floor:.2} m/s");
     assert!(min >= 0.9 * floor, "an infinite wall: the ball fell to {min:.2} m/s (ended {end:.2}); the strong plates can take it no lower than {floor:.2}\n{text}");
+}
+
+/// The tick-averaged load. The stage loads a struck chunk's bonds with the
+/// tick's contact impulse spread over the tick, J / dt; a hard impactor
+/// delivers it in a pulse a fraction of that long. The 100 kg ball's 6.6 kN s
+/// is 0.4 MN averaged over 16.7 ms -- under the bond's 1 MN, so the stage
+/// holds -- but about 19 MN over 1.2 ms (Hertz), far over it. The bond can
+/// have taken at most LIGHT_CAP over the pulse before it broke, so the ball
+/// keeps at least (m v0 - LIGHT_CAP t) / (m + m_plate).
+#[test]
+#[ignore = "requires the GPU and the native-destruction SDK"]
+fn impact_pulse() {
+    let r = (LIGHT_MASS / 7850.0 * 3.0 / (4.0 * std::f32::consts::PI)).cbrt();
+    let (peak, pulse) = hertz(LIGHT_MASS, r, LIGHT_V0, 210e9, 10e9);
+    let floor = (LIGHT_MASS * LIGHT_V0 - LIGHT_CAP * pulse) / (LIGHT_MASS + PLATE_MASS);
+    let text = run_arm("light_ball", &[]);
+    let (end, min) = (reported(&text, "v_end"), reported(&text, "v_min"));
+    println!("light ball: v_end {end:.2} v_min {min:.2}; Hertz peak {:.1} MN over {:.2} ms against a {:.1} MN bond: v >= {floor:.2} m/s", peak / 1e6, pulse * 1e3, LIGHT_CAP / 1e6);
+    assert!(peak > LIGHT_CAP && LIGHT_MASS * LIGHT_V0 * 1.1 / DT < LIGHT_CAP, "the case no longer separates the pulse from the tick average");
+    assert!(min >= 0.9 * floor, "an infinite wall (tick-averaged load): the ball fell to {min:.2} m/s (ended {end:.2}); a bond of {:.1} MN can take it no lower than {floor:.2}\n{text}", LIGHT_CAP / 1e6);
+}
+
+/// The fragment depenetration cap (2 m/s whenever vehicles are registered,
+/// native_destruction.cc; FIDELITY_AUDIT F3) on the layered wall and the
+/// grid: it must change neither bound.
+#[test]
+#[ignore = "requires the GPU and the native-destruction SDK"]
+fn fragment_depenetration_cap() {
+    let cap = [("VIBE_CITY_NATIVE_FRAGMENT_DEPEN_VELOCITY", "2")];
+    let text = run_arm("two_plates", &cap);
+    let (end, min) = (reported(&text, "v_end"), reported(&text, "v_min"));
+    let floor = BALL_MASS * V0 / (BALL_MASS + 2.0 * PLATE_MASS);
+    println!("two plates, fragments capped at 2 m/s: v_end {end:.2} v_min {min:.2} (v >= {floor:.2})");
+    assert!(min >= 0.9 * floor, "the depenetration cap made a wall: {min:.2} m/s\n{text}");
 }
