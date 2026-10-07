@@ -99,8 +99,24 @@ within 0.1 m. But that is the at-rest collapse, not the sequence.
    - with that, the building stays anchored on its ground columns, and a
      charge breaks the column's bonds at its tick.
 
+   A cheaper route needs no PhysX change. An explosive's gas pushes the two
+   faces of a cut apart: it is an equal and opposite pair of forces on the
+   chunks either side of the cut, along the line joining their centres. The
+   pair has no net force or torque on the body, so its sum matches the body's
+   command, as `enableChunkLoads` requires. One tick of such a pair, in
+   `PxDestructionScene::setChunkLoads`, at well past the bond's tension
+   capacity, breaks the bond in the trial, and the corrected pass resolves the
+   split. That is the charge, physically.
+
+   The bridge already submits chunk loads for destructible vehicles
+   (`native_destruction.cc` `submit_vehicle_loads`). It would need
+   `enableChunkLoads` for a structure with charges, plus a
+   `native_queue_chunk_impulses(structure, [(chunk, impulse)])` that is added
+   into the next tick's loads. `native_destruction.cc` is another agent's file
+   in this round, so it is not done here.
+
    The scenario, its debris checks and the film need no change beyond the
-   firings' format.
+   firings' format: bonds or chunk pairs instead of boxes.
 
 ## Reproduce
 
