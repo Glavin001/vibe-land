@@ -170,6 +170,28 @@ with a fresh world for each trial.
 The full tier also runs a **refinement study**: the indeterminate cases at 2x
 and 4x the chunk count (`case/nN`).
 
+Dynamics and impact (`dynamics.rs`). Projectiles and loose blocks are plain
+PhysX bodies; targets are stage structures.
+
+Sources:
+
+- [Hibbeler Dyn] Hibbeler, *Engineering Mechanics: Dynamics*
+- [Goldsmith] Goldsmith, *Impact*
+- [Hibbeler Statics] Hibbeler, *Engineering Mechanics: Statics*
+
+| Case | What is checked | Formula | Source |
+|---|---|---|---|
+| impact-momentum | a ball strikes a free stage body: momentum, and the block's speed | m v = m v' + M V; V = m v (1+e)/(m+M) | [Hibbeler Dyn] 15.2-15.4 |
+| impact-plate-punch | a ball punches a plug out of a framed plate: the joints break; the exit speed stays within the joints' capacity impulse (no bounce, not free) | v' = v (m - e m_p)/(m+m_p) - at most F dt/(m+m_p) | [Hibbeler Dyn] 15.4 |
+| impact-restitution | the rebound off an unbreakable slab; a weak slab is broken through, not bounced off | e = v_out/v_in | [Hibbeler Dyn] 15.4 |
+| impact-glancing | 45 degree impact: the friction bound, the rolling limit, and the friction impulse reaching the slab's bond | \|J_t\| <= mu J_n; dv_t = min(mu (1+e) v_n, 2 v_t/7); bond shear = m dv_t/dt | [Goldsmith] ch. 3 |
+| impact-sudden-load, impact-drop | a 1 t block released, or dropped 0.1 and 0.4 m, onto a cantilever: peak root stress over static | DAF = 1 + sqrt(1 + 2h/delta_st) (2 for h = 0) | [Gere] 2.8 |
+| rest-load-asleep | the block at rest keeps loading the beam after PhysX puts it to sleep | statics | |
+| tip-or-slide | blocks on a tilted plane: the tall one tips at atan(b/h), the squat one slides at atan(mu) | tan theta = b/h, tan theta = mu | [Hibbeler Statics] 8.2 |
+
+The struck-rod spin (omega/v = m d/I, [Hibbeler Dyn] 19.2-19.4) is in
+`physx-bridge/tests/fidelity_audit.rs`.
+
 ### What rigid chunks and bonds cannot represent (known limits, not faked)
 
 - **Deflection within a chunk, and elastic dynamics.** Chunks are rigid. There
@@ -229,11 +251,48 @@ By cause:
 5. **Square torsion** (12%, every configuration): Saint-Venant, see the limits
    above.
 6. **Truss gussets** (2.4%): rigid 0.3 m gussets on 2 m panels.
+7. **Stage: a freed fragment of a sleeping structure is born asleep and takes
+   no momentum.** Both profiles show it.
+   - impact-plate-punch: all four of the plug's joints break, but the plug
+     never moves (not even under gravity) and the ball rebounds at -1.1 m/s.
+   - impact-restitution: the weak slab's joint breaks, and the ball still
+     bounces off it.
+
+   This is the "wall that will not break" seen from the projectile's side.
+8. **Stage: a resting load disappears when its body sleeps.** A 1 t block on
+   the cantilever's tip adds the textbook stress, exactly (high-fidelity: 6.896
+   against 6.898 MPa). About 0.5 s later PhysX sleeps the block, and the root
+   stress falls back to self-weight. Rubble and parked cars resting on a floor
+   stop loading it. Both profiles show it.
+9. **PhysX contact** (1.6-4.3%):
+   - restitution reads 0.1026 against the authored 0.1;
+   - friction overshoots the rolling limit (dv_t 3.77 against 2.0 m/s), but
+     stays within mu J_n;
+   - the tall block tips at 22.1 degrees against 21.8;
+   - the squat block slides at 27.7 degrees against 26.6.
+10. **Rigid chunks: no elastic dynamic amplification.**
+    - A sudden load peaks at 1.37x static, not 2x.
+    - A drop's peak is set by the tick, F = m sqrt(2gh)/dt: 8.3x and 18.7x
+      against the energy method's 7.2x and 13.2x for 0.1 and 0.4 m.
+
+    These are known limits.
 
 The high-fidelity profile on the E SDK (impact capacity) currently cannot run
-the suite: `native destruction configuration was rejected` for every
-structure, including the existing `section_bending.rs`, with
-`VIBE_IMPACT_CAPACITY=1` on the 03:10 garage-impact install.
+anything. `native destruction configuration was rejected` for every structure
+with `VIBE_IMPACT_CAPACITY=1` on the 03:10 garage-impact install. That includes:
+
+- the textbook suite;
+- the existing `section_bending.rs`;
+- the vehicle test bed;
+- every veneer house in qualification (ERROR).
+
+Until that is fixed, `correctness.sh` runs high-fidelity:
+
+- for the stress solve, on garage-multihull (rotation; no impact, no crush);
+- for acceptance, with `HIGH_PHYSX_ROOT=garage-multihull`.
+
+`scripts/fidelity/check.sh` records what is missing. The E-SDK attempt's
+outputs are kept in `target/verify/acceptance-high-impact-sdk`.
 
 ## Regression tests (`scripts/verify/regressions.tsv`)
 

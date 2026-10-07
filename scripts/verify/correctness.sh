@@ -93,7 +93,10 @@ fi
 
 if want acceptance; then
   for p in runtime high; do
-    "$ROOT/scripts/verify/acceptance.sh" "$p" "$out/acceptance-$p" > "$out/acceptance-$p.log" 2>&1 || failed=1
+    # High-fidelity on the rotation SDK until an SDK carrying every capability
+    # configures (the E SDK rejects every structure with impact capacity on as of
+    # 2026-10-07): VERIFY_HIGH_PHYSX_ROOT picks another.
+    HIGH_PHYSX_ROOT=${VERIFY_HIGH_PHYSX_ROOT:-$ROTATION_SDK} "$ROOT/scripts/verify/acceptance.sh" "$p" "$out/acceptance-$p" > "$out/acceptance-$p.log" 2>&1 || failed=1
     echo "[verify] acceptance $p: $(grep -c '"status":"PASS"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) pass, $(grep -c '"status":"KNOWN-GAP"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) known gaps, $(grep -c '"status":"FAIL"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) failing"
   done
 fi
