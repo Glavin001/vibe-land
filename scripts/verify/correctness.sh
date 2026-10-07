@@ -29,6 +29,9 @@ out=${VERIFY_OUT_DIR:-$ROOT/target/verify/$stamp}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)  # absolute: cargo runs tests from the package directory
 export VIBE_GPU_SHARED=1
+# The product's stage environment, as a backstop for any GPU test that does not
+# set it itself (physx-bridge/tests/common/stage_env.rs; lint-gpu-test-env.sh).
+export PX_DESTRUCTION_ALLOW_UNCONVERGED=1
 I=/Users/glavin/Development/PhysX/out/install
 export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
 # High-fidelity runs on high.env's SDK (integration/high-fidelity, garage-hifi: every

@@ -34,6 +34,8 @@
 //!   --test section_rotation -- --ignored --test-threads=1 --nocapture
 //! VIBE_SECTION_ROTATION=1 cargo test ... (same)
 
+#[path = "common/stage_env.rs"]
+mod stage_env;
 use vibe_land_physx_bridge::{
     ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, NativeConfig, Pose, Quat,
     StressMaterialDesc, Vec3, World, WorldConfig,
@@ -370,6 +372,7 @@ fn graded(j: &Joint, force: [f64; 3], moment: [f64; 3]) -> (f64, f64, f64) {
 }
 
 fn run(chunks: &[Chunk], joints: &[Joint], bend_gain_max: f32) -> Vec<(f64, f64, f64)> {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     world.native_attach().unwrap();
     let nodes: Vec<ChunkNodeDesc> = chunks

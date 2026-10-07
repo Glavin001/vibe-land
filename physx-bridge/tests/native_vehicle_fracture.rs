@@ -1,6 +1,8 @@
 #![cfg(feature = "native-destruction")]
 //! Real Vehicle2 + native GPU stress + physical projectile. The small authored
 //! fixture isolates gameplay coupling; it is not a qualification of garage assets.
+#[path = "common/stage_env.rs"]
+mod stage_env;
 use vibe_land_physx_bridge::*;
 const CAR: u32 = 0x50000001;
 const STRUCTURE: u32 = 200;
@@ -27,6 +29,7 @@ fn setup_with_engine_offset(wheel_strength: f32, engine_x: f32) -> World {
     setup_scene(wheel_strength, engine_x, false, false)
 }
 fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) -> World {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("required real GPU world");
     if !free_fall { world
         .add_static_box(StaticBoxDesc {

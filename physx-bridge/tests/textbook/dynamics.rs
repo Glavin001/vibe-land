@@ -117,6 +117,10 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
     if wanted("impact-sudden-load") || wanted("impact-drop") || wanted("rest-load-asleep") {
         super::guard(config, "sudden-and-drop", expected, out, |out| sudden_and_drop(config, expected, out));
     }
+    // Crushing is a high-fidelity capability (an SDK with crush correction).
+    if wanted("crush-locality") && std::env::var("VIBE_NATIVE_CRUSH").is_ok_and(|v| v == "1") {
+        super::guard(config, "crush-locality", expected, out, |out| crush_locality(config, expected, out));
+    }
     if wanted("tip-or-slide") {
         super::guard(config, "tip-or-slide", expected, out, |out| tip_or_slide(config, expected, out));
     }
@@ -458,4 +462,72 @@ fn tip_or_slide(config: Config, expected: &[Expectation], out: &mut Output) {
         row(config, "tip-or-slide", &format!("{label}: angle at which it {want_mode}"), if want_mode == "tips" { "atan(b/h)" } else { "atan(mu)" }, source, "deg", want_angle.to_degrees(), f64::NAN, got, want_angle.to_degrees(), expected, out);
         row(config, "tip-or-slide", &format!("{label}: it {want_mode} (not the other)"), want_mode, source, "1=yes", 1.0, f64::NAN, yes(mode == want_mode), 1.0, expected, out);
     }
+}
+
+/// A 6 x 6 wall of 1 m masonry blocks (crushable: Drucker-Prager cone, the
+/// town kit's masonry, native_gameplay.rs `crushable`) stands 1 s, then takes
+/// a round (0.4 m radius, 3e5 N s) at mid-height between two columns. Crushing
+/// happens only where the projectile hits: nothing crushes at rest, something
+/// crushes on the hit, and every crushed chunk's centre is within the round's
+/// radius plus one block (1.4 m, proposed) of the point it struck.
+fn crush_locality(config: Config, expected: &[Expectation], out: &mut Output) {
+    let source = "comminution under the projectile: crushed chunks within the contact footprint plus one chunk (proposed bound)";
+    println!("\ncrush-locality -- a round into a crushable masonry wall\n  {source}");
+    let mut s = Structure::new();
+    let m = s.material(Material { modulus: E_CONCRETE, compression: 500e3, tension: 60e3, shear: 160e3 });
+    let fc = 0.68e6f32;
+    s.crush = vec![vibe_land_physx_bridge::CrushMaterialDesc {
+        cap_pressure: 2.5 * fc, cohesion: fc * 0.6, friction_slope: 1.2, crush_energy: 1.0, crush_viscosity: 1.0,
+        strain_rate_exponent: 0.0, reference_strain_rate: 1.0, ..Default::default()
+    }];
+    s.origin = [0.0, 0.0, 0.0];
+    let (w, h) = (6usize, 6usize);
+    let mut id = vec![vec![0usize; w]; h];
+    for y in 0..h {
+        for x in 0..w {
+            let c = [x as f64 - 2.5, y as f64 + 0.5, 0.0];
+            id[y][x] = s.chunk(&format!("b{x}{y}"), c, [0.48, 0.48, 0.48], if y == 0 { 0.0 } else { 400.0 });
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            if x + 1 < w {
+                s.rect_bond(id[y][x], id[y][x + 1], [x as f64 - 2.0, y as f64 + 0.5, 0.0], X, Y, 0.96, Z, 0.96, m);
+            }
+            if y + 1 < h {
+                s.rect_bond(id[y][x], id[y + 1][x], [x as f64 - 2.5, y as f64 + 1.0, 0.0], Y, X, 0.96, Z, 0.96, m);
+            }
+        }
+    }
+    let mut world = stage::build(&s);
+    let mut broken = 0usize;
+    let mut tick = |world: &mut World| {
+        world.step().unwrap();
+        let status = world.native_tick().unwrap();
+        assert_eq!(status.error, 0, "stage rejected the step: {status:?}");
+        broken += world.native_take_broken_bonds().unwrap().len();
+        world.native_take_crush_events().unwrap()
+    };
+    let mut at_rest = 0usize;
+    for _ in 0..60 {
+        at_rest += tick(&mut world).len();
+    }
+    let hit = [0.0, 3.5, 0.48];
+    world
+        .native_fire_round(vibe_land_physx_bridge::RoundDesc {
+            position: Vec3::new(0.0, 3.5, 1.2), direction: Vec3::new(0.0, 0.0, -1.0),
+            momentum_ns: 3.0e5, radius: 0.4, speed: 20.0, ttl_ticks: 20,
+        })
+        .unwrap();
+    let mut crushed: Vec<V3> = Vec::new();
+    for _ in 0..90 {
+        crushed.extend(tick(&mut world).iter().map(|e| s.chunks[e.chunk_id as usize].center));
+    }
+    drop(tick);
+    println!("  bonds broken by the hit {broken}");
+    let far = crushed.iter().map(|c| super::model::norm(super::model::sub(*c, hit))).fold(0.0, f64::max);
+    println!("  at rest {at_rest} crushed; after the hit {} crushed, farthest {far:.2} m from the point struck", crushed.len());
+    row(config, "crush-locality", "chunks crushed at rest", "0", source, "chunks", 0.0, f64::NAN, at_rest as f64, 1.0, expected, out);
+    row(config, "crush-locality", "the hit crushes something", ">= 1", source, "1=yes", 1.0, f64::NAN, yes(!crushed.is_empty()), 1.0, expected, out);
+    row(config, "crush-locality", "every crushed chunk within 1.4 m of the point struck (proposed)", "<= 0.4 m + 1 block", source, "1=yes", 1.0, f64::NAN, yes(!crushed.is_empty() && far <= 1.4), 1.0, expected, out);
 }

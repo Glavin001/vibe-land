@@ -19,6 +19,8 @@
 //!   --test section_bending -- --ignored --test-threads=1 --nocapture
 //! SECTION_TEST_LEGACY=1 runs the capped formula, to show it fail.
 
+#[path = "common/stage_env.rs"]
+mod stage_env;
 use vibe_land_physx_bridge::{
     ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, NativeConfig, Pose, Quat,
     StressMaterialDesc, Vec3, World, WorldConfig,
@@ -165,6 +167,7 @@ fn expected(chunks: &[Chunk], joints: &[Joint], k: usize, g: f64) -> (f64, f64, 
 }
 
 fn run(chunks: &[Chunk], joints: &[Joint]) -> Vec<(f64, f64, f64)> {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     world.native_attach().unwrap();
     let nodes: Vec<ChunkNodeDesc> = chunks

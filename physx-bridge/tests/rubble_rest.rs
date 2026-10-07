@@ -22,6 +22,8 @@
 //!
 //! `#[ignore]`: needs the GPU. Run with `--test-threads=1` on Metal.
 
+#[path = "common/stage_env.rs"]
+mod stage_env;
 use vibe_land_physx_bridge::{
     ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, NativeConfig, Pose, Quat, StaticBoxDesc,
     StressMaterialDesc, Vec3, World, WorldConfig,
@@ -143,6 +145,7 @@ struct Outcome {
 }
 
 fn run(fixture: &Fixture, ticks: u32) -> Outcome {
+    stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     // The /city floor: a slab with its top at y = 0.
     world

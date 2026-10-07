@@ -248,3 +248,36 @@ high-fidelity	impact-drop	dynamic amplification, h = 0.4 m	0.4176	MODEL LIMIT: r
 high-fidelity	tip-or-slide	tall block b/h = 0.4: angle at which it tips	0.0156	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
 high-fidelity	tip-or-slide	squat block b/h = 2: angle at which it slides	0.0430	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
 high-fidelity	redundancy-simple	beam falls after losing a support	1.0000	STAGE (impact capacity): on some runs the simply supported beam stays up after its hanger fails (and on others the step fails); passes with VIBE_IMPACT_CAPACITY=0
+high-fidelity	crush-locality	the hit crushes something	1.0000	STAGE (impact capacity): a 3e5 N s round breaks 33 bonds of a crushable masonry wall and crushes nothing (impact-pressure crush replaces the virial crush); with VIBE_IMPACT_CAPACITY=0 it crushes 15 chunks
+high-fidelity	crush-locality	every crushed chunk within 1.4 m of the point struck (proposed)	1.0000	STAGE: nothing crushed with impact capacity; with VIBE_IMPACT_CAPACITY=0 the 15 crushed chunks reach 3.24 m from the point struck (not local)
+# high-fidelity (garage-hifi), full tier, 2026-10-07
+high-fidelity	fixed-fixed-point	end bending stress	0.0123	DISCRETISATION: 0.67 m chunks, contact-length fixed ends
+high-fidelity	fixed-fixed-point	bending stress beside the load	0.0159	DISCRETISATION: 0.67 m chunks, contact-length fixed ends
+high-fidelity	simply-supported-point/n37	left reaction (pin)	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+high-fidelity	simply-supported-point/n37	right reaction (roller)	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+high-fidelity	simply-supported-point/n37	bending stress beside the load	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+high-fidelity	propped-cantilever-udl/n24	prop reaction	0.0246	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	propped-cantilever-udl/n24	fixed-end shear	0.0119	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	propped-cantilever-udl/n24	fixed-end bending stress	0.0585	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	propped-cantilever-udl/n24	span bending stress near 5L/8	0.0371	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	propped-cantilever-udl/n48	fixed-end shear	0.0140	STAGE: differs from its own model by 0.0071
+high-fidelity	propped-cantilever-udl/n48	fixed-end bending stress	0.0403	STAGE: differs from its own model by 0.0091
+high-fidelity	fixed-fixed-udl/n24	left end bending stress	0.0417	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	fixed-fixed-udl/n24	right end bending stress	0.0417	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	fixed-fixed-udl/n24	midspan bending stress	0.0834	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	fixed-fixed-udl/n48	left end bending stress	0.0208	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	fixed-fixed-udl/n48	right end bending stress	0.0208	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	fixed-fixed-udl/n48	midspan bending stress	0.0420	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	two-span-continuous/n41	end reaction (roller)	0.0154	STAGE: differs from its own model by 0.0039
+high-fidelity	two-span-continuous/n41	hogging stress beside the centre support	0.0306	STAGE: differs from its own model by 0.0028
+high-fidelity	two-span-continuous/n81	centre reaction	0.0117	STAGE: differs from its own model by 0.0061
+high-fidelity	two-span-continuous/n81	end reaction (roller)	0.0110	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106): refinement diverges from the textbook
+high-fidelity	two-span-continuous/n81	hogging stress beside the centre support	0.0246	STAGE: differs from its own model by 0.0066
+high-fidelity	portal-frame-lateral/n24	left base bending stress	0.0519	STAGE: differs from its own model by 0.024
+high-fidelity	portal-frame-lateral/n24	right base bending stress	0.0570	STAGE: differs from its own model by 0.02
+high-fidelity	portal-frame-lateral/n24	left column-top bending stress	0.0364	STAGE: differs from its own model by 0.027
+high-fidelity	portal-frame-lateral/n24	left base shear	0.0241	STAGE: differs from its own model by 0.028
+high-fidelity	portal-frame-lateral/n24	right base shear	0.0239	STAGE: differs from its own model by 0.02
+high-fidelity	portal-frame-lateral/n24	windward column axial (uplift)	0.0188	STAGE: differs from its own model by 0.033
+high-fidelity	portal-frame-lateral/n24	leeward column axial	0.0504	STAGE: differs from its own model by 0.0035
+high-fidelity	portal-frame-lateral/n24	right column-top bending stress	0.0426	STAGE: differs from its own model by 0.016
