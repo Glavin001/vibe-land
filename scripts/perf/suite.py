@@ -152,11 +152,43 @@ def shot_from_place(meta: dict, event: dict) -> dict:
             "from": 180 if from_south else 0, "slope": 0.3 if meteor else 0.02, "distance": 140 if meteor else 30}
 
 
-def make_jobs(spec: dict, profile: str, tier: str, run_dir: Path) -> list[dict]:
+# Frozen packs: the scene packs the baselines were recorded on, kept
+# machine-wide so every checkout times the same workload (an engine change is
+# measured on the same structures; an authoring change is not mixed in).
+PACKS = Path(os.environ.get("PERF_SUITE_PACKS", "/Users/glavin/Development/vibe-land/target/perf-suite/packs"))
+SIDE_FILES = (".meta.json", ".slots")
+
+
+def frozen_pack(profile: str, scene: str) -> Path | None:
+    d = PACKS / profile / scene
+    found = sorted(p for p in d.glob("*.json") if not p.name.endswith((".meta.json", "charges.json"))) if d.exists() else []
+    return found[0] if found else None
+
+
+def freeze_packs(jobs: list[dict]) -> None:
+    import shutil
+    for job in jobs:
+        pack = Path(job["pack"])
+        d = PACKS / job["profile"] / job["scene"]
+        if d.exists() and frozen_pack(job["profile"], job["scene"]) == d / pack.name and sha(d / pack.name) == job["pack_sha"]:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        d.mkdir(parents=True)
+        for f in [pack, *(pack.with_suffix(x) for x in SIDE_FILES), *([pack.parent / "charges.json"] if "charges" in json.loads(Path(job["plan"]).read_text()) else [])]:
+            if f.exists():
+                shutil.copy2(f, d / f.name)
+        log(f"froze {job['profile']} {job['scene']} pack -> {d}")
+
+
+def make_jobs(spec: dict, profile: str, tier: str, run_dir: Path, frozen: bool = False) -> list[dict]:
     jobs = []
     for proc in spec["processes"]:
         scene = spec["scenes"][proc["scene"]]
-        pack, meta_path = scene_pack(profile, scene)
+        fp = frozen_pack(profile, proc["scene"]) if frozen else None
+        if fp:
+            pack, meta_path = fp, fp.with_suffix(".meta.json")
+        else:
+            pack, meta_path = scene_pack(profile, scene)
         meta = json.loads(meta_path.read_text()) if meta_path and meta_path.exists() else None
         env = {"VIBE_CITY_SCENE": str(pack)}
         for k, v in scene.get("env", {}).items():
@@ -183,7 +215,7 @@ def make_jobs(spec: dict, profile: str, tier: str, run_dir: Path) -> list[dict]:
         plan_path = pdir / f"{profile}-{proc['scene']}.json"
         plan_path.write_text(json.dumps(plan, indent=1))
         jobs.append({"profile": profile, "scene": proc["scene"], "plan": str(plan_path), "env": env,
-                     "pack": str(pack), "pack_sha": sha(pack),
+                     "pack": str(pack), "pack_sha": sha(pack), "pack_frozen": bool(fp),
                      "scenarios": [p.get("scenario") for p in proc["phases"] if p.get("scenario")],
                      "replays": {p["scenario"]: p["replay"] for p in proc["phases"] if p.get("replay")}})
     return jobs
@@ -257,10 +289,13 @@ def execute(run_dir: Path) -> None:
         timing["jobs"].append({"job": name, "rc": rc, "seconds": held, "waited": waited})
         log(f"{name}: {held:.1f} s on the GPU (waited {waited:.0f} s for it; rc {rc})")
 
-    # Warm-up: one short process per binary, untimed (first-use costs, GPU clocks).
+    # Warm-up: one short process per binary, untimed, on a shared slot: a new
+    # build compiles its Metal pipelines here (minutes), which must not hold
+    # the exclusive lock. Each timed process warms its own clocks in its
+    # unrecorded settle phase.
     for profile, w in work["warmups"].items():
         record(f"warmup-{profile}", *run_job(work["binaries"][profile], job_env(w, work["profile_env"], work["extra_env"][profile]),
-                                              logs / f"warmup-{profile}.log", 600, shared, f"warmup-{profile}"))
+                                              logs / f"warmup-{profile}.log", 1800, True, f"warmup-{profile}"))
     for rep in range(work["reps"]):
         order = work["profiles"] if rep % 2 == 0 else list(reversed(work["profiles"]))
         for profile in order:
@@ -600,6 +635,8 @@ def main() -> None:
     ap.add_argument("--capture", action="store_true", help="make the impact captures the high-fidelity replays use")
     ap.add_argument("--replay-runs", type=int, default=None, help="runs of each impact replay per rep (default 1: each is a whole impact tick's solve, 2-12 s)")
     ap.add_argument("--timeout", type=float, default=900)
+    ap.add_argument("--checkout-packs", action="store_true", help="this checkout's packs instead of the frozen ones "
+                    "(an authoring change; --save-baseline then freezes them)")
     ap.add_argument("--shared", action="store_true", help="share the GPU (VIBE_GPU_SHARED=1): for developing the suite; timings only indicative")
     ap.add_argument("--exec", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
@@ -624,11 +661,12 @@ def main() -> None:
         t_build = time.monotonic()
         penv = {p: profile_env(p) for p in profiles}
         binaries = {p: str(build(penv[p])) for p in profiles}
-        jobs, replays = {}, {}
+        jobs, replays, all_by_profile = {}, {}, {}
         manifest = json.loads((CAPTURES / "manifest.json").read_text()) if (CAPTURES / "manifest.json").exists() else {}
         for p in profiles:
-            all_jobs = make_jobs(spec, p, tier, run_dir)
+            all_jobs = make_jobs(spec, p, tier, run_dir, frozen=not args.checkout_packs)
             live = [proc for proc in spec["processes"] if p in proc.get("live", spec["profiles"])]
+            all_by_profile[p] = all_jobs
             jobs[p] = [j for j in all_jobs if any(proc["scene"] == j["scene"] for proc in live)]
             # Scenarios not run live in this profile are timed as replays of their capture.
             replays[p] = {}
@@ -660,14 +698,15 @@ def main() -> None:
                        "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
                        "sdk": {p: sdk_fingerprint(Path(penv[p]["PHYSX_ROOT"])) for p in profiles},
                        "binary": {p: {"path": b, "mtime": os.stat(b).st_mtime} for p, b in binaries.items()},
-                       "packs": {p: {j["scene"]: j["pack_sha"] for j in make_jobs(spec, p, tier, run_dir)} for p in profiles},
+                       "packs": {p: {j["scene"]: j["pack_sha"] for j in all_by_profile[p]} for p in profiles},
+                       "packs_frozen": all(j["pack_frozen"] for p in profiles for j in all_by_profile[p]),
                        "captures": {n: c.get("sha") for n, c in manifest.items()},
                        "replay_binary": str(rbin) if rbin else None,
                        "host": os.uname().nodename}
         work = {"label": args.label, "tier": tier, "reps": reps, "profiles": profiles, "binaries": binaries,
                 "profile_env": penv, "headline": spec.get("headline", "high"), "created": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "extra_env": {p: ({"PX_DESTRUCTION_IMPACT_LOG": "1"} if p == "high" else {}) for p in profiles},
-                "warmups": warmups, "jobs": jobs, "replays": replays, "replay_binary": str(rbin) if rbin else None,
+                "warmups": warmups, "jobs": jobs, "all_jobs": all_by_profile, "replays": replays, "replay_binary": str(rbin) if rbin else None,
                 "replay_runs": args.replay_runs or 1, "timeout": args.timeout, "fingerprint": fingerprint,
                 "build_seconds": time.monotonic() - t_build, "shared": args.shared}
         (run_dir / "work.json").write_text(json.dumps(work, indent=1))
@@ -688,6 +727,8 @@ def main() -> None:
     print(text)
     print(f"\n{run_dir}/report.json")
     if args.save_baseline:
+        work = json.loads((run_dir / "work.json").read_text())
+        freeze_packs([j for p in work["profiles"] for j in work.get("all_jobs", {}).get(p, work["jobs"][p])])
         baseline_default.write_text(json.dumps(report, indent=1))
         print(f"baseline saved: {baseline_default}")
 

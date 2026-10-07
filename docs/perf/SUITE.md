@@ -38,8 +38,13 @@ inputs at fixed ticks; one scene per process (the city reads its pack once).
 | meteor-house | vehicle lab | the game's meteor into the same house (trial meteor-framed-house) |
 | calib-collapse | calibration demolition | two RC frames blown down by their charge sequences, one standing |
 
-Both profiles run every scenario on their own SDK and packs
-(`scripts/fidelity/packs.sh`). **In the high profile the three lab house
+Both profiles run every scenario on their own SDK and packs. The packs are
+**frozen**: the ones the baselines were recorded on, kept machine-wide in the
+main checkout's `target/perf-suite/packs/<profile>/<scene>/`
+(`PERF_SUITE_PACKS`), so every checkout times the same structures and an
+engine change is not mixed with an authoring one. `--checkout-packs` runs the
+checkout's own (`scripts/fidelity/packs.sh`); `--save-baseline` freezes what it
+ran. **In the high profile the three lab house
 impacts are replays**: the impact solve costs 2-12 s per impact tick there, so
 the suite times PhysX `destruction_impact_capture_replay` on the slowest
 captured evaluation of each trial (`$PERF_SUITE_CAPTURES`, default the main
@@ -122,8 +127,10 @@ baseline: packs (sha), captures, tier, a shared GPU.
   (runtime 17 s, high 76 s, of which the town bombardment's live impact
   solves ~45 s and the replays ~16 s); a quick rep ~75 s; plus ~20 s of
   warm-up, builds and lock waits.
-- An untimed warm-up process per profile binary first (first-use costs; the
-  CuMetal pipeline cache is `target/cumetal-cache` of the main checkout).
+- An untimed warm-up process per profile binary first, on a shared slot: a
+  new build compiles its Metal pipelines there (minutes; the CuMetal cache is
+  the main checkout's `target/cumetal-cache`). Each timed process warms its
+  clocks in its own unrecorded settle phase.
 - Builds are excluded (cargo, `target/perf-suite/cargo-<sdk>`).
 - The fingerprint in `report.json`: git head and dirtiness, both SDKs'
   `sdk-artifacts.json` revision and library hashes, the binaries, every
