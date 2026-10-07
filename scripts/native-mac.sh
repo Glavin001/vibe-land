@@ -118,7 +118,8 @@ case "$SCENE" in
     pack="${VEHICLE_LAB_PACK:-$ROOT/structures/vehicle-lab/out/vehicle-lab}"
     stale=0
     for source in "$ROOT"/structures/vehicle-lab/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
-    [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vehicle-lab/build-lab.mjs"
+    crush=0; case "$pack" in *-crush) crush=1 ;; esac
+    [ -f "$pack.json" ] && [ "$stale" = 0 ] || VIBE_CRUSH=$crush node "$ROOT/structures/vehicle-lab/build-lab.mjs"
     # One car per trial (vehicle-lab picks the trials and sets these); the
     # fleet's 64 stress iterations; the spawn at the flat lane's start.
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \

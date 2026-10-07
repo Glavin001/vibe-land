@@ -224,6 +224,8 @@ export interface CityClientStats {
   dustQueueDropped: number;
   /// By kind: shot entries, velocity-stream impacts, collapse waves.
   dustEntries: number;
+  /** Chunks crushed to dust (an island promoted and retired in one batch), cumulative. */
+  dustCrushes: number;
   dustImpacts: number;
   dustWaves: number;
 }
@@ -3521,6 +3523,7 @@ export class CityClient {
       dustSourcesDroppedByCap: dustExtractStats().droppedByCap,
       dustQueueDropped: this.dustQueue.dropped,
       dustEntries: dustExtractStats().entries,
+      dustCrushes: dustExtractStats().crushes,
       dustImpacts: this.dustImpacts.impacts,
       dustWaves: this.dustImpacts.wavesRaised,
       hashChecks: this.hashChecks,

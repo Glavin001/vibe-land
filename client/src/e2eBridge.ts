@@ -238,6 +238,8 @@ export interface CityE2EStats {
     parcelsDrawn: number;
     dropped: number;
     entries: number;
+    /** Chunks crushed to dust (an island promoted and retired in one batch), cumulative. */
+    crushes: number;
     impacts: number;
     waves: number;
   };

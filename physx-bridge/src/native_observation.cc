@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 using namespace physx;
 
@@ -787,6 +789,11 @@ void NativeDestruction::State::crush_chunk(std::uint32_t id) {
       topology_changes += 1;
     }
     break;
+  }
+  static const bool log = [] { const char *v = std::getenv("VIBE_CRUSH_LOG"); return v && v[0] == '1'; }();
+  if (log) {
+    std::fprintf(stderr, "[crush] chunk %u structure %u alone %d kinematic %d\n", id, structure, int(alone),
+                 int(actor->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)));
   }
   if (alone && !actor->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC)) {
     actor->setActorFlag(PxActorFlag::eDISABLE_GRAVITY, true);

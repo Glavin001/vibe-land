@@ -945,6 +945,7 @@ export function CityChunksLayer({
           parcelsDrawn: renderStats.dustDrawn + renderStats.dustDrawnHalf,
           dropped: renderStats.dustDropped + stats.dustQueueDropped,
           entries: stats.dustEntries,
+          crushes: stats.dustCrushes,
           impacts: stats.dustImpacts,
           waves: stats.dustWaves,
         },

@@ -77,7 +77,7 @@ function trialShot(trial, index, meta, ground) {
   const lead = 1.4; // getting in
   const seconds = trial.seconds;
   const m = { car: BUILD, trial: trial.id, seconds, harness: 'native' };
-  let start = null, last = null, prevT = null, cityBefore = 0;
+  let start = null, last = null, prevT = null, cityBefore = 0, crushedBefore = 0;
   let launched = false, driftStart = null, driftHeading0 = 0;
   const speedOf = (s) => Math.hypot(s.v[0], s.v[2]);
   const headingOf = (s) => Math.atan2(s.forward[0], s.forward[2]);
@@ -87,7 +87,7 @@ function trialShot(trial, index, meta, ground) {
     if (!s) return;
     positions.set(index, s.p);
     if (!start) {
-      start = s; cityBefore = ctx.e2e.snapshot()?.city?.brokenBonds ?? 0;
+      start = s; cityBefore = ctx.e2e.snapshot()?.city?.brokenBonds ?? 0; crushedBefore = ctx.e2e.snapshot()?.city?.dust?.crushes ?? 0;
       Object.assign(m, { bonds: s.bonds, parts: s.parts, mass: s.mass, brokenAtSettle: s.broken.length, topSpeed: 0, maxZ: s.p[2],
         startZ: s.p[2], rideHeightStart: s.p[1] - groundAt(), stalledSeconds: 0, goal: trial.goal ?? null, goalSeconds: null, peakDecelG: 0, minUpY: 1 });
     }
@@ -128,10 +128,14 @@ function trialShot(trial, index, meta, ground) {
       rideHeightEnd: s.p[1] - groundAt(), bodyMass: [start.mass, s.mass],
       sceneBroken: { [['house', 'framed-house', 'wall'].includes(trial.at.split('/')[1]) ? trial.at.split('/')[1] : 'scene']: (ctx.e2e.snapshot()?.city?.brokenBonds ?? 0) - cityBefore },
       endPosition: s.p, brokenIndices: [...broken].slice(0, 50),
+      crushedToDust: (ctx.e2e.snapshot()?.city?.dust?.crushes ?? 0) - crushedBefore,
     });
     ctx.log(`measure ${JSON.stringify(m)}`);
     // Read until the next caption: the drive-away's, or the next trial's.
-    ctx.edit({ type: 'title', style: 'lower', size: 'small', text: outcome(trial, m), from: ctx.t, to: ctx.t + (trial.driveAway ? 3.5 : RESULT_HOLD) });
+    // A shot at the scene: what it did to what it hit, not to the parked car.
+    const shotAt = trial.attack?.kind === 'shot';
+    const text = shotAt ? `${Object.values(m.sceneBroken)[0]} joints broken${m.crushedToDust ? ` · ${m.crushedToDust} chunks crushed to dust` : ''}` : outcome(trial, m);
+    ctx.edit({ type: 'title', style: 'lower', size: 'small', text, from: ctx.t, to: ctx.t + (trial.driveAway ? 3.5 : RESULT_HOLD) });
   };
   // Cues: get in (driving trials), drive, attack, sample.
   const cues = [[0, (ctx) => ctx.edit({ type: 'title', style: 'lower', size: 'small', text: `${BUILD} truck · ${CAPTIONS[trial.id] ?? trial.name ?? trial.id}${NOTE ? ` · ${NOTE}` : ''}`.replace(/^monster truck/, 'Monster truck'), from: ctx.t + 0.2, to: ctx.t + lead + 1.6 })]];
@@ -205,6 +209,9 @@ function trialShot(trial, index, meta, ground) {
       const origin = a.target.map((v, k) => v + out[k] * a.distance);
       const n = Math.hypot(...out);
       ctx.session.replayEvent(JSON.stringify({ kind: 'shot', weapon: 3, origin, direction: out.map((v) => -v / n) }));
+      // The hit at a third of real speed: the ball arrives distance / 60 m/s after the shot.
+      const arrive = a.distance / 60;
+      ctx.edit({ type: 'slowmo', rate: 0.33, from: ctx.t + arrive - 0.15, to: ctx.t + arrive + 1.5 });
     }]);
   } else if (a?.kind === 'strikes') {
     // Launched when the car will be at carZ after the flight (shots.mjs launchMeteor's arc).
@@ -267,7 +274,7 @@ function trialShot(trial, index, meta, ground) {
   // A shot at the scene: the camera on what it is aimed at, off to one side.
   const follow = () => a?.kind === 'shot' ? a.target : lastPosition(index, meta, trial);
   const hit = a && ['meteor', 'cannonball'].includes(a.kind);
-  const offset = a?.kind === 'shot' ? [-14, 6, -12] : a?.kind === 'meteor' ? [-10, 4.5, -12] : hit ? [-13, 7, -17] : [-5, 3.2, -9];
+  const offset = a?.kind === 'shot' ? [-9, 4, -10] : a?.kind === 'meteor' ? [-10, 4.5, -12] : hit ? [-13, 7, -17] : [-5, 3.2, -9];
   return track(follow, offset, lead + seconds + tail + 0.4, { name: trial.id, lookOffset: [0, 1, hit ? 2 : 4], lag: 0.3, cues,
     ...(hit ? { release: lead + a.at } : {}) });
 }
