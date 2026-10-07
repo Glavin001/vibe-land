@@ -7,6 +7,14 @@ import os, subprocess, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../perf'))
 import qualify_structures as q
 
+_run = q.subprocess.run
+_last = {}
+def _stash(*a, **k):
+    r = _run(*a, **k)
+    _last['text'] = (r.stdout or '') + (r.stderr or '') if k.get('capture_output') else ''
+    return r
+q.subprocess.run = _stash
+
 out = sys.argv[1]
 os.makedirs(out, exist_ok=True)
 binary = q.build()
@@ -35,6 +43,8 @@ with tempfile.TemporaryDirectory(prefix='oracle-gate-') as tmp:
             os.environ['VIBE_QUALIFY_BOND_ROWS'] = rows
             pct, broken, awake, detail = q.qualify(binary, gpu_part, int(os.environ.get('GATE_TICKS', '30')), os.environ.get('GATE_SOLVER_ENV', 'default'))
             print(f'== {label}: GPU broken {broken}% at rest, {detail}', flush=True)
+            if 'no verdict' in detail:
+                print('\n'.join(l for l in _last.get('text', '').splitlines()[-15:] if 'warning' not in l), flush=True)
             if os.path.exists(rows):
                 for snap in os.environ.get('GATE_SNAPSHOTS', '0').split(','):
                     subprocess.run(['uv', 'run', os.path.join(here, 'oracle_compare.py'), part, rows, '--snapshot', snap], check=False)

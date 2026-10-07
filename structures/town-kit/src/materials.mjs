@@ -204,7 +204,16 @@ export const CONNECTIONS = {
   // (R602.3(1) "2-16d end nail"), lateral in end grain at NDS 12.5.2's 0.67;
   // end-grain withdrawal is not relied on, so tension is that of the 4-8d
   // toe-nail alternative, as 2 toe nails.
-  'stud-plate': { per: 'joint', ...toe(2), shear: 2 * NAIL.lateral * 0.67, compression: BEARING.compression, slip: 2 * SLIP.nail, twist: fastenerRow(2, NAIL_ROW) },
+  // Real capacities (VIBE_REAL_CAPACITIES packs, read under VIBE_SECTION_ROTATION):
+  // a stud end stands on its plate, so at rest the joint is a compressed
+  // contact, as stiff as the cross-grain wood under it (E90 A / t, t the 45 mm
+  // plate) in every direction until it slips or opens -- not the nails' slip,
+  // which left the studs 23x softer than they are and hung the walls' load on
+  // the drywall's screw rows (1.9x their capacity at rest). In rotation it is
+  // the pin a stud is designed as (EN 1995-1-1 6.3.2, buckling length the
+  // stud's height; AS 1684.2 stud tables): its nails' K_ser sum r^2, graded
+  // at the most loaded nail.
+  'stud-plate': { per: 'joint', ...toe(2), shear: 2 * NAIL.lateral * 0.67, compression: BEARING.compression, slip: 2 * SLIP.nail, twist: fastenerRow(2, NAIL_ROW), restBearing: 0.045 },
   // Ceiling joist to top plate: 3 toe nails (R602.3(1) "3-8d toe nails") and a tie-down.
   'joist-plate': { per: 'joint', ...tied(3), compression: BEARING.compression, slip: 3 * SLIP.nail, twist: fastenerRow(3, NAIL_ROW) },
   // Rafter seat (birdsmouth) to top plate: 3 toe nails (R602.3(1) "3-16d toe nails") and a tie-down.
@@ -270,6 +279,8 @@ export const CONNECTIONS = {
   // way, over a 90 mm deep frame.
   'window-fixing': { per: 'area', tension: 1e3 / (0.45 * 0.09), shear: 1e3 / (0.45 * 0.09), compression: BEARING.compression, slip: SLIP.screw / (0.45 * 0.09) },
 };
+// A stud beside a plate's end or side, not standing on it (real-capacity packs): the same nails, no bearing.
+CONNECTIONS['stud-plate-side'] = (({ restBearing, ...c }) => c)(CONNECTIONS['stud-plate']);
 
 /**
  * A brick wall tie (veneer to stud): a corrugated or twisted steel strip

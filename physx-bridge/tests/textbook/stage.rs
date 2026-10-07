@@ -82,6 +82,8 @@ pub fn build(s: &Structure) -> World {
         max_solver_iterations_per_frame: STRESS_ITERATIONS,
         materials,
         crush: s.crush.clone(),
+        twist_gyration: s.twist.iter().map(|t| t.0 as f32).collect(),
+        twist_reach: s.twist.iter().map(|t| t.1 as f32).collect(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         ..DestructibleSettings::default()

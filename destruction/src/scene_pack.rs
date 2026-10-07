@@ -862,6 +862,22 @@ pub fn twist_table(json: &[u8]) -> (Vec<f32>, Vec<f32>) {
     (get("twistGyration"), get("twistReach"))
 }
 
+/// Each material's compressed-bearing joint (town-kit materials.mjs
+/// restBearing; real-capacity packs): its stiffness at rest
+/// `bearingElasticModulus` (Pa), and in bending the pin its fasteners make,
+/// `bendGyration` (m, the stiffness radius) and `bendSection` (m, g^2 / reach:
+/// S = A bendSection). Read by the native stage under VIBE_SECTION_ROTATION.
+/// Empty when the pack authors none; 0 where a material has none.
+pub fn bearing_tables(json: &[u8]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Default::default() };
+    let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Default::default() };
+    if !materials.iter().any(|m| m["bearingElasticModulus"].as_f64().unwrap_or(0.0) > 0.0) {
+        return Default::default();
+    }
+    let get = |k: &str| materials.iter().map(|m| m[k].as_f64().unwrap_or(0.0).max(0.0) as f32).collect();
+    (get("bearingElasticModulus"), get("bendGyration"), get("bendSection"))
+}
+
 /// Each material's impact-solve modulus (Pa), `materials[].impactElasticModulus`
 /// (town-kit: a wall tie's axial stiffness), where its `elasticModulus` is a
 /// concession for gravity load sharing. Empty when the pack authors none.

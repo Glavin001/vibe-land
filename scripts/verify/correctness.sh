@@ -38,7 +38,10 @@ export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
 # capability). These remain for the single-feature regression tests.
 export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-$I/garage-multihull}
 export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/install/garage-hifi}
-export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/out/build/garage-multihull/package}
+export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/build/garage-hifi/package}
+# The PhysX destruction ctest gate's package tree (fix/mac-ctest-baseline; the hifi
+# tree once integration/high-fidelity merges it).
+export DESTRUCTION_CTEST_TREE=${VERIFY_DESTRUCTION_CTEST_TREE:-/Users/glavin/Development/PhysX/.claude/worktrees/ctest-triage/out/build/triage-package}
 export IMPACT_BUILD=${VERIFY_IMPACT_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/build/impact-e-tests}
 t_start=$(date +%s)
 failed=0
@@ -46,6 +49,10 @@ failed=0
 # A GPU environment failure, not a test failure: another process's long GPU work
 # timed this one's command buffers out (Metal), which PhysX reports as CUDA error 2.
 env_failure() { grep -qE 'kIOGPUCommandBufferCallbackErrorTimeout|CUDA error 2\b|cudaErrorMemoryAllocation|CUDA_ERROR_LAUNCH_TIMEOUT|^STALLED' "$1"; }
+
+# Every GPU job goes through the machine-wide admission (at most VIBE_GPU_SLOTS
+# shared jobs at once, by the main checkout's path), one at a time from here.
+GPU_RUN=/Users/glavin/Development/vibe-land/scripts/perf/gpu-run.sh
 
 # watched LOG CMD...: run CMD with its output in LOG; if LOG stops growing for
 # VERIFY_STALL_S (default 600) s -- a process stuck in an uninterruptible GPU wait
@@ -85,7 +92,7 @@ textbook() {
     cd "$ROOT"
     for attempt in 1 2; do
       rm -f "$VERIFY_OUT"
-      watched "$out/textbook-$label.log" cargo test -p vibe-land-physx-bridge --features native-destruction --test textbook \
+      watched "$out/textbook-$label.log" "$GPU_RUN" "verify-textbook-$label" cargo test -p vibe-land-physx-bridge --features native-destruction --test textbook \
         -- --ignored --test-threads=1 --nocapture && break
       env_failure "$out/textbook-$label.log" || break
       echo "[verify] textbook $label: GPU environment failure, rerunning"
@@ -121,7 +128,9 @@ if want regressions; then
     [[ "$cmd" == *ctest* ]] && cmd="unset PX_DESTRUCTION_ALLOW_UNCONVERGED; $cmd"
     st=FAIL
     for attempt in 1 2; do
-      if (cd "$ROOT" && watched "$out/regression-$id.log" bash -c "$cmd"); then st=PASS; break; fi
+      gpu=()
+      [[ "$cmd" == *native-destruction* || "$cmd" == *ctest* ]] && gpu=("$GPU_RUN" "verify-regression-$id")
+      if (cd "$ROOT" && watched "$out/regression-$id.log" ${gpu[@]+"${gpu[@]}"} bash -c "$cmd"); then st=PASS; break; fi
       # Another process's long GPU dispatch can time out this one's command
       # buffers: an environment failure, rerun once, then reported as ENV.
       if env_failure "$out/regression-$id.log"; then st=ENV; echo "[verify] regression $id: GPU environment failure, rerunning"; continue; fi

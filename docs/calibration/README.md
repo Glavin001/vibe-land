@@ -7,13 +7,18 @@ that prediction, and a captioned film. The question they answer: *if you build
 it here and take its supports out the way an expert would, does it stand and
 come down the way the real one would?*
 
-| Scenario | Write-up | What is removed | Prediction | Engine (section / rotation) | Engine (default) |
-|---|---|---|---|---|---|
-| RC slab viaduct, 7 x 10 m | [bridge-piers.md](bridge-piers.md) | piers, one at a time | holds at 20 m spans (u 0.69), collapses at the 30 m span (u 1.69) | as predicted; bonds within 1-5% at rest | survives the 30 m span (bending read 3.65x low) |
-| Glulam Pratt truss footbridge | [truss-members.md](truss-members.md) | truss members | the zero-force vertical can go; any loaded member brings it down | see write-up | see write-up |
-| Brick-veneer bungalow | [house-studs.md](house-studs.md) | front-wall studs | 4 out (2.77 m gap) holds today; 5 out (3.33 m) at the plate's strength | see write-up | see write-up |
-| Three-storey RC frame | [frame-column.md](frame-column.md) | a ground-floor column (GSA 2016 / UFC 4-023-03) | ordinary design collapses (u 2.5-2.9); UFC alternate-path design bridges (u 0.6-0.7) | see write-up | see write-up |
-| Controlled demolition | [demolition.md](demolition.md) | ground-floor columns, by timed charges | into the footprint, progressing from the side fired first | see write-up | see write-up |
+| Scenario | Write-up | Removed | Prediction | rotation | section | default |
+|---|---|---|---|---|---|---|
+| RC slab viaduct, 7 x 10 m | [bridge-piers.md](bridge-piers.md) | piers, one at a time | holds at 20 m spans (u 0.69); collapses at the 30 m span (u 1.69) | **matches**; bonds within 2% at rest | **matches** | survives the 30 m span (bending read 3.65x low) |
+| Glulam Pratt truss, 24 m | [truss-members.md](truss-members.md) | members | zero-force vertical: holds; any cut that leaves a mechanism: collapses | **matches, 6 of 6**; bonds 0.97-1.02 x hand | falls intact | carries cuts at u 3-55 |
+| Brick-veneer bungalow | [house-studs.md](house-studs.md) | front-wall studs | 4 out holds; 5 out at the plate's strength | falls intact (heels) | falls intact | holds all 5 (too strong) |
+| Three-storey RC frame | [frame-column.md](frame-column.md) | a ground-floor column (GSA / UFC) | ordinary design collapses (u 2.5-2.9); UFC design bridges (u 0.6-0.7) | ordinary: **matches**; UFC: collapses (open: a 3D path) | falls intact | misses the edge removal |
+| Controlled demolition | [demolition.md](demolition.md) | ground-floor columns, timed charges | into the footprint, from the side fired first | **blocked** by an engine gap | blocked | blocked |
+
+Profiles: "section" is `VIBE_SECTION_BENDING=1` and "rotation" is
+`VIBE_SECTION_ROTATION=1`; see "Engine configurations" below. The common
+thread: true section moduli are right only together with section rotational
+stiffness. Section bending alone breaks every frame-like structure at rest.
 
 ## Method
 

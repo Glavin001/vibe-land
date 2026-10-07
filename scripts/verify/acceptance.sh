@@ -2,7 +2,9 @@
 # Run the acceptance scenarios' harnesses for one engine profile, then judge.
 #   scripts/verify/acceptance.sh runtime|high [OUTDIR] [--skip testbed,veneer,town,wire,walk,node]
 # The scenario list and criteria are data in scripts/verify/acceptance.mjs.
-# Correctness runs share the GPU (VIBE_GPU_SHARED=1); nothing here takes the lock.
+# Correctness runs share the GPU (VIBE_GPU_SHARED=1): every GPU harness goes
+# through scripts/perf/gpu-run.sh's admission (the test bed, qualification and
+# the walk call it themselves), one at a time.
 # runtime: the shipping SDK and the default packs. high: the high-fidelity
 # profile (scripts/fidelity/high.env) on its SDK, with capabilities that SDK
 # lacks dropped and recorded (VIBE_FIDELITY_MISSING), on the high-fidelity
@@ -66,7 +68,7 @@ if want wire; then
   for t in a_studless_house_collapsing_is_drawn_where_the_server_has_it a_cannonball_hit_is_drawn_where_the_server_has_it; do
     extra=()
     [ "$profile" = high ] && [ "$t" = a_studless_house_collapsing_is_drawn_where_the_server_has_it ] && extra=(VIBE_WIRE_POSE_PACK="$veneer/veneer-house--no-front-studs.json")
-    if (cd "$ROOT" && env ${extra[@]+"${extra[@]}"} cargo test -q --release -p web-fps-server --features native-destruction --lib "wire_chunk_poses::$t" -- --ignored --exact --nocapture --test-threads=1) > "$out/wire-$t.log" 2>&1
+    if (cd "$ROOT" && /Users/glavin/Development/vibe-land/scripts/perf/gpu-run.sh "verify-wire" env ${extra[@]+"${extra[@]}"} cargo test -q --release -p web-fps-server --features native-destruction --lib "wire_chunk_poses::$t" -- --ignored --exact --nocapture --test-threads=1) > "$out/wire-$t.log" 2>&1
     then mark "wire-$t" "ok: $(grep -m1 -iE 'worst' "$out/wire-$t.log" | cut -c1-120)"
     else mark "wire-$t" "fails: $(grep -m1 -E 'panicked|worst' -A1 "$out/wire-$t.log" | tr '\n' ' ' | cut -c1-200)"; fi
   done

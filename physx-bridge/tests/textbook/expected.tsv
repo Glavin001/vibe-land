@@ -281,3 +281,13 @@ high-fidelity	portal-frame-lateral/n24	right base shear	0.0239	STAGE: differs fr
 high-fidelity	portal-frame-lateral/n24	windward column axial (uplift)	0.0188	STAGE: differs from its own model by 0.033
 high-fidelity	portal-frame-lateral/n24	leeward column axial	0.0504	STAGE: differs from its own model by 0.0035
 high-fidelity	portal-frame-lateral/n24	right column-top bending stress	0.0426	STAGE: differs from its own model by 0.016
+runtime	rafter-tie-truss	tie force (rafter thrust)	0.9723	MODEL: uniform rotational stiffness k Ls^2 makes every one-bolt lap rigid; the rafters hold their thrust in bending and the tie carries 3% of it
+runtime	rafter-tie-truss	left support reaction (pin)	0.0148	MODEL: uniform rotational stiffness k Ls^2 makes every one-bolt lap rigid; the rafters hold their thrust in bending and the tie carries 3% of it
+runtime	rafter-tie-truss	left heel lap: twist (a pin)	0.0213	MODEL: uniform rotational stiffness k Ls^2 makes every one-bolt lap rigid (twist graded by the capped area gain)
+runtime	rafter-tie-truss	right heel lap: twist (a pin)	0.0281	MODEL: uniform rotational stiffness k Ls^2 makes every one-bolt lap rigid (twist graded by the capped area gain)
+runtime	rafter-tie-truss	ridge lap: twist (a pin)	0.0915	MODEL: uniform rotational stiffness k Ls^2 makes every one-bolt lap rigid (twist graded by the capped area gain)
+section-bending	rafter-tie-truss	tie force (rafter thrust)	0.9723	MODEL: uniform rotational stiffness k Ls^2 makes every one-bolt lap rigid; the rafters hold their thrust in bending and the tie carries 3% of it
+section-bending	rafter-tie-truss	left support reaction (pin)	0.0148	MODEL: uniform rotational stiffness k Ls^2 makes every one-bolt lap rigid; the rafters hold their thrust in bending and the tie carries 3% of it
+section-bending	rafter-tie-truss	left heel lap: twist (a pin)	5.7371	MODEL: a rigid one-bolt lap's twist graded on the lap patch's polar modulus: 1.29 MPa, 3.7x the bolt's capacity (why section bending alone breaks the veneer house's heels at rest)
+section-bending	rafter-tie-truss	right heel lap: twist (a pin)	5.8905	MODEL: a rigid one-bolt lap's twist graded on the lap patch's polar modulus: 1.32 MPa, 3.8x the bolt's capacity (why section bending alone breaks the veneer house's heels at rest)
+section-bending	rafter-tie-truss	ridge lap: twist (a pin)	0.0715	MODEL: uniform rotational stiffness k Ls^2 makes every one-bolt lap rigid (twist graded on the lap patch)

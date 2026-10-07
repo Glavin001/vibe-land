@@ -1,4 +1,5 @@
 import {realCapacitiesEnabled,characteristicLegacy,GLUED_JOINT} from './real-capacities.mjs';
+import {faceOverlap} from './contact-overlap.mjs';
 import { geometry, prismContact, prismVertices } from './dependencies.mjs';
 import { materials, M, crushFor, crushEnabled } from './materials.mjs';
 export const round=n=>Math.round(n*1e6)/1e6||0;
@@ -53,7 +54,16 @@ export class Builder {
    if(s.nodeColliders[i].kind==='cuboid'&&s.nodeColliders[j].kind==='cuboid') {
     const k=ov.findIndex(x=>Math.abs(x)<.00001);if(k<0)continue;const axes=[0,1,2].filter(x=>x!==k);const normal=[0,0,0];normal[k]=1;
     contact={area:ov[axes[0]]*ov[axes[1]],normal,centroid:lo.map((x,k)=>(Math.max(x,lo2[k])+Math.min(hi[k],hi2[k]))/2)};
-   }else contact=prismContact(this.prisms[i],this.prisms[j],{maxPenetration:1e-5});
+   }else{
+    contact=prismContact(this.prisms[i],this.prisms[j],{maxPenetration:1e-5});
+    // Real capacities: a contact cannot be larger than its faces' overlap in the bond plane
+    // (a mitred rafter end's bounding face read 3% over its top face, a plumb cut 15% over the
+    // ridge board); the native sections take the overlap's shape only when the area fits it.
+    if(contact&&realCapacitiesEnabled()){
+     const overlap=faceOverlap(prismVertices(this.prisms[i]),prismVertices(this.prisms[j]),contact.centroid,contact.normal);
+     if(overlap>1e-7&&overlap<contact.area)contact={...contact,area:overlap};
+    }
+   }
    if(!contact||contact.area<1e-7)continue;
    const A=s.nodes[i],B=s.nodes[j],normal=[...contact.normal];if(normal.reduce((q,x,k)=>q+x*(a(B.centroid)[k]-a(A.centroid)[k]),0)<0)for(let k=0;k<3;k++)normal[k]*=-1;
    let mat=this.table[A.m].tensionFatal<=this.table[B.m].tensionFatal?A.m:B.m;

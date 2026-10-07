@@ -535,6 +535,7 @@ pub fn registry() -> Vec<Statics> {
         pratt_truss(),
         torsion_round(),
         torsion_square(),
+        rafter_tie(),
     ];
     cases.extend([
         refined(simply_supported_point(19), 19),
@@ -755,6 +756,161 @@ pub fn torsion_square() -> Statics {
         checks: vec![
             check("root torsional shear", root, Q::Twist { transverse: w }, torque / (0.208 * side.powi(3)), "T / (0.208 a^3)"),
             check("mid torsional shear", b[n / 2 - 1], Q::Twist { transverse: w }, torque / (0.208 * side.powi(3)), "T / (0.208 a^3)"),
+        ],
+        structure: s,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A roof truss: two rafters and a ceiling-joist tie, bolted laps
+
+/// Convex polygon `a` clipped by convex `b`, both counter-clockwise.
+fn clip2(mut a: Vec<[f64; 2]>, b: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    let c2 = |o: [f64; 2], p: [f64; 2], q: [f64; 2]| (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+    for k in 0..b.len() {
+        let (e0, e1) = (b[k], b[(k + 1) % b.len()]);
+        let input = std::mem::take(&mut a);
+        for i in 0..input.len() {
+            let (p, q) = (input[i], input[(i + 1) % input.len()]);
+            let (dp, dq) = (c2(e0, e1, p), c2(e0, e1, q));
+            let cut = || { let t = dp / (dp - dq); [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])] };
+            if dq >= 0.0 {
+                if dp < 0.0 { a.push(cut()); }
+                a.push(q);
+            } else if dp >= 0.0 {
+                a.push(cut());
+            }
+        }
+    }
+    a
+}
+
+fn centroid2(p: &[[f64; 2]]) -> [f64; 2] {
+    let (mut a, mut cx, mut cy) = (0.0, 0.0, 0.0);
+    for i in 0..p.len() {
+        let (s, t) = (p[i], p[(i + 1) % p.len()]);
+        let w = s[0] * t[1] - t[0] * s[1];
+        a += w;
+        cx += (s[0] + t[0]) * w;
+        cy += (s[1] + t[1]) * w;
+    }
+    [cx / (3.0 * a), cy / (3.0 * a)]
+}
+
+/// Rafter-and-tie roof truss under the rafters' dead load. Two 45 x 140 mm
+/// rafters on a 6 m span rising 2 m, each lapped on the 45 x 140 mm ceiling
+/// joist that ties their feet with one M12 bolt (the town kit's heel joint,
+/// materials.mjs CONNECTIONS heel: its slip modulus K_ser 4.49 kN/mm), and on
+/// each other at the ridge through a glued packer with one bolt. A bolted lap
+/// twists on its bolt (fastenerRow(1, 12 mm)), so every lap is a pin and the
+/// truss is the three-pinned triangle: the tie carries the rafters' thrust,
+/// H = M0 / h (a uniform load: w L^2 / 8h), and the laps carry no moment.
+/// Pin under the left heel, roller under the right.
+pub fn rafter_tie() -> Statics {
+    let mut s = Structure::new();
+    let timber = strong(&mut s, 11e9);
+    // The heel's modulus: K_ser L / A at the house's heel (veneer-houses.mjs jointMaterial).
+    let bolt = s.material(super::model::Material::unbreakable(126.08e6));
+    s.twist = vec![(0.0, 0.0); s.materials.len()];
+    s.twist[bolt] = (0.012 / (2.0 * std::f64::consts::SQRT_2), 0.006);
+    let (span, rise, t, d, e) = (6.0, 2.0, 0.045, 0.14, 0.12);
+    // A rafter's roof dead load: 0.5 kPa on 0.6 m centres over its 3.6 m (110 kg).
+    let rafter_mass = 110.0;
+    let heel = |side: f64| [side * span / 2.0, 0.0];
+    let apex = [0.0, rise];
+    // A rafter's footprint: its centreline from the heel to the apex, run
+    // past both by e so it laps the tie and the other rafter, d deep.
+    let footprint = |side: f64| -> Vec<[f64; 2]> {
+        let (h, a) = (heel(side), apex);
+        let len = ((a[0] - h[0]).powi(2) + (a[1] - h[1]).powi(2)).sqrt();
+        let u = [(a[0] - h[0]) / len, (a[1] - h[1]) / len];
+        let w = [-u[1], u[0]];
+        let p = |sl: f64, sw: f64| [h[0] + u[0] * sl + w[0] * sw, h[1] + u[1] * sl + w[1] * sw];
+        // Counter-clockwise: w is u turned +90 degrees.
+        let poly = vec![p(-e, -d / 2.0), p(len + e, -d / 2.0), p(len + e, d / 2.0), p(-e, d / 2.0)];
+        let area = 0.5 * (0..4).map(|i| { let (a, b) = (poly[i], poly[(i + 1) % 4]); a[0] * b[1] - b[0] * a[1] }).sum::<f64>();
+        assert!(area > 0.0);
+        poly
+    };
+    let prism_chunk = |s: &mut Structure, name: &str, poly: &[[f64; 2]], z0: f64, z1: f64, mass: f64| -> usize {
+        let c = centroid2(poly);
+        let zc = (z0 + z1) / 2.0;
+        let mut pts = Vec::new();
+        for z in [z0, z1] {
+            for p in poly {
+                pts.push([p[0] - c[0], p[1] - c[1], z - zc]);
+            }
+        }
+        s.hull_chunk(name, [c[0], c[1], zc], pts, mass)
+    };
+    // Layers along z: the tie and the packer at [-t/2, t/2], the left rafter
+    // on them at [t/2, 3t/2], the right rafter under them at [-3t/2, -t/2].
+    let (lf, rf) = (footprint(-1.0), footprint(1.0));
+    let left = prism_chunk(&mut s, "rafter L", &lf, t / 2.0, 1.5 * t, rafter_mass);
+    let right = prism_chunk(&mut s, "rafter R", &rf, -1.5 * t, -t / 2.0, rafter_mass);
+    let tie_end = span / 2.0 + 0.25;
+    let tie_l = s.chunk("tie L", [-tie_end / 2.0, 0.0, 0.0], [tie_end / 2.0, d / 2.0, t / 2.0], LIGHT * tie_end * d * t);
+    let tie_r = s.chunk("tie R", [tie_end / 2.0, 0.0, 0.0], [tie_end / 2.0, d / 2.0, t / 2.0], LIGHT * tie_end * d * t);
+    let ps = 0.2;
+    let packer = s.chunk("ridge packer", [apex[0], apex[1], 0.0], [ps / 2.0, ps / 2.0, t / 2.0], LIGHT * ps * ps * t);
+    let rect = |x0: f64, x1: f64, y0: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let lap = |s: &mut Structure, a: usize, b: usize, pa: &[[f64; 2]], pb: Vec<[f64; 2]>, z: f64, mat: usize| -> (usize, [f64; 2], f64) {
+        let p = clip2(pa.to_vec(), &pb);
+        assert!(p.len() >= 3, "no lap");
+        let c = centroid2(&p);
+        let area = 0.5 * (0..p.len()).map(|i| { let (u, v) = (p[i], p[(i + 1) % p.len()]); u[0] * v[1] - v[0] * u[1] }).sum::<f64>();
+        let patch = p.iter().map(|q| [q[0], q[1], z]).collect();
+        // Normal along +z from a to b when b lies above a.
+        let up = s.chunks[b].center[2] > s.chunks[a].center[2];
+        let bond = s.poly_bond(a, b, [c[0], c[1], z], if up { Z } else { scale(Z, -1.0) }, patch, mat);
+        (bond, c, area)
+    };
+    let (heel_l, ch_l, area_l) = lap(&mut s, tie_l, left, &lf, rect(-tie_end, 0.0, -d / 2.0, d / 2.0), t / 2.0, bolt);
+    let (heel_r, ch_r, _) = lap(&mut s, right, tie_r, &rf, rect(0.0, tie_end, -d / 2.0, d / 2.0), -t / 2.0, bolt);
+    // The packer is glued to the left rafter (part of it) and bolted to the right.
+    lap(&mut s, packer, left, &lf, rect(-ps / 2.0, ps / 2.0, apex[1] - ps / 2.0, apex[1] + ps / 2.0), t / 2.0, timber);
+    let (ridge, ca, area_ridge) = lap(&mut s, right, packer, &rf, rect(-ps / 2.0, ps / 2.0, apex[1] - ps / 2.0, apex[1] + ps / 2.0), -t / 2.0, bolt);
+    let mid = s.rect_bond(tie_l, tie_r, [0.0, 0.0, 0.0], X, Y, d, Z, t, timber);
+    let (_, pin, _) = pin_below(&mut s, tie_l, -span / 2.0, -d / 2.0, t, timber);
+    roller_below(&mut s, tie_r, span / 2.0, -d / 2.0, t, timber);
+    // Statics of the three pins. F: the force the left body (rafter L and
+    // its packer) puts on rafter R at the ridge pin. Moments about each heel:
+    //   R:  (ca - ch_r) x F - (g_r - ch_r)_x W = 0
+    //   L: -(ca - ch_l) x F - (g_l - ch_l)_x W = 0
+    let w = rafter_mass * G;
+    let (gl, gr) = (s.chunks[left].center, s.chunks[right].center);
+    let (dl, dr) = ([ca[0] - ch_l[0], ca[1] - ch_l[1]], [ca[0] - ch_r[0], ca[1] - ch_r[1]]);
+    // dr_x Fy - dr_y Fx = (gr_x - ch_r_x) W ;  -dl_x Fy + dl_y Fx = (gl_x - ch_l_x) W
+    let (a11, a12, b1) = (-dr[1], dr[0], (gr[0] - ch_r[0]) * w);
+    let (a21, a22, b2) = (dl[1], -dl[0], (gl[0] - ch_l[0]) * w);
+    let det = a11 * a22 - a12 * a21;
+    let fx = (b1 * a22 - a12 * b2) / det;
+    let fy = (a11 * b2 - a21 * b1) / det;
+    let thrust = fx.abs();
+    // The heels: the rafter's weight less what the ridge takes, and the thrust.
+    let heel_v_r = w + fy;
+    let heel_shear = (thrust * thrust + heel_v_r * heel_v_r).sqrt();
+    let wl = 2.0 * w / span;
+    // The pin's reaction: moments of every weight about the roller.
+    let loads: Vec<(f64, f64)> = s.chunks.iter().filter(|c| c.mass > 0.0).map(|c| (c.center[0], c.mass * G)).collect();
+    let reaction = loads.iter().map(|&(x, f)| f * (span / 2.0 - x) / span).sum::<f64>();
+    // A pin carries no twist: checked against 1% of the bolt's capacity (7 kN
+    // over the lap, materials.mjs CONNECTIONS heel), not against the joint's
+    // own shear, which leaves the check at the FP32 solve's rotation noise
+    // (a twist of 0.08 N m, 8e-5 rad of relative rotation at 1 kN m/rad).
+    let bolt_capacity = 7e3;
+    let _ = gl;
+    Statics {
+        name: "rafter-tie-truss".into(),
+        title: "Rafter-and-tie roof truss, bolted laps (three pins), rafters' dead load",
+        source: "[Hibbeler] 5.3 three-hinged arch / 3.4 truss: tie force H = M0 / h (w L^2 / 8h); a one-bolt lap is a pin",
+        tier: Tier::Quick,
+        checks: vec![
+            check("tie force (rafter thrust)", mid, Q::Axial, thrust, &format!("statics of the three pins (w L^2/8h = {:.3} kN)", wl * span * span / (8.0 * rise) / 1e3)),
+            check("left support reaction (pin)", pin, Q::Axial, -reaction, "-sum W (x_R - x) / L"),
+            zero("left heel lap: twist (a pin)", heel_l, Q::Twist { transverse: heel_shear }, bolt_capacity / area_l, "0: one bolt (1% of its capacity)"),
+            zero("right heel lap: twist (a pin)", heel_r, Q::Twist { transverse: heel_shear }, bolt_capacity / area_l, "0: one bolt"),
+            zero("ridge lap: twist (a pin)", ridge, Q::Twist { transverse: (fx * fx + fy * fy).sqrt() }, bolt_capacity / area_ridge, "0: one bolt"),
         ],
         structure: s,
     }

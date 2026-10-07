@@ -63,7 +63,7 @@ export function writeScenario(scenario) {
   const firings = list.flatMap((c, k) => (c.charges ?? []).map((f) => ({ tick: f.tick, case: c.id, boxes: f.boxes.map(([lo, hi]) => [lo.map((v, i) => v + (i === 2 ? k * scenario.spacing : 0)), hi.map((v, i) => v + (i === 2 ? k * scenario.spacing : 0))]) })));
   if (firings.length) { charges = path.join(dir, 'charges.json'); writeFileSync(charges, JSON.stringify(firings)); }
   const spec = { scenario: scenario.id, charges, title: scenario.title, scene: scenePath, ticks: scenario.ticks ?? 600, criteria: { ...CRITERIA, ...(scenario.criteria ?? {}) },
-    band: scenario.band, models: scenario.models, cases: specCases, hand: scenario.hand ?? null };
+    band: scenario.band, models: scenario.models, tolerate: scenario.tolerate ?? null, cases: specCases, hand: scenario.hand ?? null };
   writeFileSync(path.join(dir, 'spec.json'), JSON.stringify(spec, null, 1));
   return { dir, spec, scene };
 }

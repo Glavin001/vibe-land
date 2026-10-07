@@ -347,22 +347,46 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
     out.shearFatalLimit = m.shear_fatal < 0 ? -1.0f : m.shear_fatal;
     out.residualAreaFraction = m.residual_area_fraction;
     // VIBE_STRENGTH_SHORT_TERM=1 (high-fidelity profile; docs/verification/
-    // FIDELITY_AUDIT.md C1, C2): no sub-fatal section loss and no residual-area
-    // arrest. A bond holds, undamaged, whatever it carries below its fatal
-    // (short-term) limit and breaks there. Duration of load (Gerhards 1979,
-    // Wood Handbook FPL-GTR-282 sec. 5: time to failure exp(43.17 - 49.75 r)
-    // minutes at a load ratio r) puts sub-fatal failure past 29 min below
-    // 0.8 f, so within a session that is the law; brittle materials have no
-    // rate damage at these timescales, and ductile joints yield through
-    // ductileSlip (E). The runtime damages at damageRate (2 /s) above the
-    // elastic limit and arrests at residualAreaFraction, where a loaded joint
-    // can sit just under fatal forever (tests/fidelity_audit.rs
-    // sub_fatal_damage_law).
+    // FIDELITY_AUDIT.md C1, C2): no residual-area arrest, and no sub-fatal
+    // section loss for the families whose strength does not fall over a
+    // session's minutes. By family:
+    // - timber: duration of load (Gerhards 1979; Wood Handbook FPL-GTR-282
+    //   sec. 5): failure takes exp(43.17 - 49.75 r) min at a load ratio r,
+    //   29 min at 0.8 f, so within a session it holds below f and breaks at f;
+    // - concrete: EN 1992-1-1 3.1.6 alpha_cc (0.85-1.0) is the long-term
+    //   factor on f_ck for loads held months; at seconds it is 1;
+    // - masonry: EN 1996-1-1 gives f_k no load-duration factor (creep only);
+    // - glass: static fatigue, EN 16612 k_mod = 0.663 t^(-1/16) (t in hours),
+    //   0.86 at a minute and 1 below ~10 s;
+    //   these are brittle at their fatal limit: elastic := fatal;
+    // - ductile materials (an authored ductileSlip: steel, fasteners): steel
+    //   at ambient temperature has no load-duration factor either (EN 1993-1-1
+    //   applies no k_mod), but it yields before it ruptures (EN 1993-1-1 3.2.2:
+    //   f_u/f_y >= 1.10, elongation >= 15%). They keep their authored band,
+    //   yield at the elastic limit and rupture at the fatal one; past fatal,
+    //   with VIBE_IMPACT_CAPACITY, the impact solve's ductile slip carries
+    //   capacity until the ultimate slip. Between them the stage's only static
+    //   plastic path is its section loss (a MODEL: not plastic strain).
+    // The runtime damages every family at damageRate (2 /s) above the elastic
+    // limit and arrests at residualAreaFraction, where a loaded joint can sit
+    // just under fatal forever (tests/fidelity_audit.rs sub_fatal_damage_law,
+    // steel_yields_before_it_breaks).
     if (native_short_term_strength()) {
-      out.compressionElasticLimit = out.compressionFatalLimit;
-      out.tensionElasticLimit = out.tensionFatalLimit;
-      out.shearElasticLimit = out.shearFatalLimit;
+      const bool ductile = index < settings.ductile_slip.size() && settings.ductile_slip[index] > 0.0f;
       out.residualAreaFraction = 0.0f;
+      if (!ductile) {
+        out.compressionElasticLimit = out.compressionFatalLimit;
+        out.tensionElasticLimit = out.tensionFatalLimit;
+        out.shearElasticLimit = out.shearFatalLimit;
+        // A metal not declared ductile becomes brittle here: say so once.
+        static bool warned = false;
+        if (!warned && m.elastic_modulus >= 150e9f && m.tension_fatal > m.tension_elastic) {
+          std::fprintf(stderr, "[destruction] VIBE_STRENGTH_SHORT_TERM: a material with E %.0f GPa and a yield band has no "
+                               "ductileSlip, so it is brittle at its fatal limit; author ductileSlip for steel\n",
+                       m.elastic_modulus / 1e9f);
+          warned = true;
+        }
+      }
     }
     if (crush) {
       const FfiCrushMaterial &c = settings.crush[index];
@@ -399,6 +423,12 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
                    "twist tables must be empty or parallel to the materials");
     s.twist_gyration.push_back(settings.twist_gyration.empty() ? 0.0f : std::max(0.0f, settings.twist_gyration[index]));
     s.twist_reach.push_back(settings.twist_reach.empty() ? 0.0f : std::max(0.0f, settings.twist_reach[index]));
+    native_require(settings.bearing_modulus.empty() || (settings.bearing_modulus.size() == settings.materials.size() &&
+                                                         settings.bend_gyration.size() == settings.materials.size() &&
+                                                         settings.bend_section.size() == settings.materials.size()),
+                   "bearing tables must be empty or parallel to the materials");
+    s.bend_gyration.push_back(settings.bend_gyration.empty() ? 0.0f : std::max(0.0f, settings.bend_gyration[index]));
+    s.bend_section.push_back(settings.bend_section.empty() ? 0.0f : std::max(0.0f, settings.bend_section[index]));
     ++index;
     s.materials.push_back(out);
   }
@@ -445,6 +475,14 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
       s.sections[i].twistModulus = b.area * g * g / reach;
       ++fastened;
     }
+    // A compressed bearing joint (town-kit materials.mjs restBearing) bends on
+    // its fasteners: a pin, K_ser sum r^2 (the stiffness radius at the joint's
+    // bearing stiffness), graded at the most loaded fastener, S = A g^2 / reach.
+    if (native_section_rotation() && r.found && b.material < s.bend_gyration.size() &&
+        s.bend_gyration[b.material] > 0.0f && s.bend_section[b.material] > 0.0f) {
+      s.sections[i].gyration0 = s.sections[i].gyration1 = s.bend_gyration[b.material];
+      s.sections[i].bendModulus0 = s.sections[i].bendModulus1 = b.area * s.bend_section[b.material];
+    }
 #endif
     if (r.found) {
       ++found;
@@ -482,7 +520,12 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     const float distance = (s.nodes[base + b.node0].position -
                             s.nodes[base + b.node1].position)
                                .magnitude();
-    const float modulus = settings.materials[b.material].elastic_modulus;
+    // Section rotation: a compressed bearing joint is as stiff as the wood it
+    // bears on (town-kit materials.mjs restBearing), not as its nails' slip.
+    const float modulus = native_section_rotation() && !settings.bearing_modulus.empty() &&
+                                  settings.bearing_modulus[b.material] > 0.0f
+                              ? settings.bearing_modulus[b.material]
+                              : settings.materials[b.material].elastic_modulus;
     // Diagnostic (vehicle lab): VIBE_TEST_BOND_WEIGHT=modulus|area|length|all
     // flattens that term of the stiffness weight, to tell a conditioning
     // problem from anything else. Flattening all four left a monster truck's

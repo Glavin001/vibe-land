@@ -104,13 +104,17 @@ function table(v) {
   console.log(`\n${v.config} (held to: ${v.model}${v.own ? `; its own model ${v.own.model}: ${v.own.passed ? 'consistent' : 'inconsistent'}, first collapse ${v.own.firstCollapse.predicted}` : ''}) -- first collapse: engineering prediction ${v.firstCollapse.real}, this model ${v.firstCollapse.predicted}; engine failed ${v.firstCollapse.failed}, fell ${v.firstCollapse.fell}; unconverged ticks ${v.unconvergedTicks}`);
   for (const r of v.cases) {
     const crit = r.stress.critical ? `${r.stress.critical.key} engine ${r.stress.critical.engine} hand ${r.stress.critical.hand}` : '';
-    console.log(`  ${r.ok.state && r.ok.members ? (r.known ? 'FIXD' : 'ok  ') : r.known?.holds ? 'GAP ' : 'MISS'} ${pad(r.case, 7)} predicted ${pad(r.predicted.state, 9)} u ${pad(r.predicted.u, 6)} measured ${pad(r.measured.state, 9)} broken ${pad(r.measured.broken, 4)} free ${pad(r.measured.free, 4)} drop ${pad(r.measured.maxDrop, 6)} | ${crit} | ratio ${r.stress.ratio ? `${r.stress.ratio.median} (${r.stress.ratio.p10}-${r.stress.ratio.p90})` : '-'}${r.measured.firstBroken.length ? ` | first: ${r.measured.firstBroken.slice(0, 4).join(', ')}` : ''}${r.scenario ? ` | ${JSON.stringify(r.scenario)}` : ''}`);
+    console.log(`  ${r.ok.state && r.ok.members ? (r.known && r.known.state !== '*' ? 'FIXD' : 'ok  ') : r.known?.holds ? 'GAP ' : 'MISS'} ${pad(r.case, 7)} predicted ${pad(r.predicted.state, 9)} u ${pad(r.predicted.u, 6)} measured ${pad(r.measured.state, 9)} broken ${pad(r.measured.broken, 4)} free ${pad(r.measured.free, 4)} drop ${pad(r.measured.maxDrop, 6)} | ${crit} | ratio ${r.stress.ratio ? `${r.stress.ratio.median} (${r.stress.ratio.p10}-${r.stress.ratio.p90})` : '-'}${r.measured.firstBroken.length ? ` | first: ${r.measured.firstBroken.slice(0, 4).join(', ')}` : ''}${r.scenario ? ` | ${JSON.stringify(r.scenario)}` : ''}`);
   }
 }
 
 export async function run(id, { configs, ticks, judgeOnly = false, specOnly = false }) {
   const scenario = await import(`./scenarios/${id}.mjs`);
-  const { dir, spec } = writeScenario({ ...scenario, hand: scenario.hand?.() });
+  // CALIB_VARIANT: the same scenario built another way (e.g. VIBE_REAL_CAPACITIES=1 CALIB_VARIANT=real-capacities),
+  // in its own out/<id>-<variant>/ and known-gaps entry.
+  const variant = process.env.CALIB_VARIANT;
+  if (variant) id = `${id}-${variant}`;
+  const { dir, spec } = writeScenario({ ...scenario, id, hand: scenario.hand?.() });
   console.log(`${id}: ${spec.cases.length} cases, scene ${spec.scene}`);
   if (specOnly) return { passed: true };
   const verdicts = [];
@@ -118,7 +122,9 @@ export async function run(id, { configs, ticks, judgeOnly = false, specOnly = fa
     const out = path.join(dir, `report-${config}.json`);
     const iterations = process.env.VIBE_CITY_NATIVE_STRESS_ITERATIONS ?? (scenario.iterations ? String(scenario.iterations) : undefined);
     const extraEnv = { ...(iterations ? { VIBE_CITY_NATIVE_STRESS_ITERATIONS: iterations } : {}), ...(spec.charges ? { VIBE_CALIB_CHARGES: spec.charges } : {}) };
-    const report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks, extraEnv });
+    let report;
+    try { report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks, extraEnv }); }
+    catch (error) { console.log(`\n${config}: NO RUN -- ${error.message.split('\n')[0]}`); verdicts.push({ config, passed: false, error: error.message.split('\n')[0], cases: [] }); continue; }
     // Held to the engineering prediction (`real`); the configuration's own model (the stage's
     // failure law with its bending and limits) is judged too, as a diagnostic of why it differs.
     const own = scenario.configModel?.[config] ?? CONFIGS[config].model;
@@ -131,9 +137,12 @@ export async function run(id, { configs, ticks, judgeOnly = false, specOnly = fa
     if (scenario.judgeCase) for (const r of v.cases) { const extra = scenario.judgeCase(spec, report, spec.cases.find((c) => c.id === r.case)); if (extra) { r.scenario = extra; r.ok.scenario = extra.ok; r.ok.state = r.ok.state && extra.ok; } }
     const gaps = (KNOWN[id] ?? {})[config] ?? {};
     for (const r of v.cases) {
-      const g = gaps[r.case];
-      r.known = g ? { state: g.state, note: g.note, holds: g.state === r.measured.state } : null;
-      r.pass = (r.ok.state && r.ok.members && !g) || (g != null && g.state === r.measured.state);
+      // A case's own record, or the configuration's '*' (every case; state '*' matches any: a
+      // structure that does not yet stand under that configuration, in another agent's hands).
+      const g = gaps[r.case] ?? gaps['*'];
+      const matches = g != null && (g.state === '*' || g.state === r.measured.state);
+      r.known = g ? { state: g.state, note: g.note, holds: matches } : null;
+      r.pass = (r.ok.state && r.ok.members && !g) || matches;
     }
     v.passed = v.cases.every((r) => r.pass);
     v.sdk = report.physxRoot; v.wallSeconds = report.wallSeconds;

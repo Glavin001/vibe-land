@@ -33,6 +33,8 @@ pub struct Strength {
     centroid: Vec<Vector3<f32>>,
     half: Vec<Vector3<f32>>,
     mass: Vec<f32>,
+    /// Per node: its material's Young's modulus (Pa).
+    modulus: Vec<f32>,
     /// Per node: (bond index, other node, upper-bound capacity N).
     bonds: Vec<Vec<(u32, u32, f32)>>,
     pub types: Vec<String>,
@@ -53,6 +55,8 @@ impl Strength {
             let f = |k: &str| materials[m][k].as_f64().unwrap_or(0.) as f32;
             (f("tensionFatal").max(f("compressionFatal")).powi(2) + f("shearFatal").powi(2)).sqrt()
         };
+        let modulus: Vec<f32> = nodes.iter().map(|n| materials.get(n["m"].as_u64().unwrap_or(0) as usize)
+            .and_then(|m| m["elasticModulus"].as_f64()).unwrap_or(30e9) as f32).collect();
         let mut bonds = vec![Vec::new(); nodes.len()];
         for (i, b) in s["bonds"].as_array().unwrap().iter().enumerate() {
             let (a, c) = (b["node0"].as_u64().unwrap() as u32, b["node1"].as_u64().unwrap() as u32);
@@ -61,8 +65,15 @@ impl Strength {
             bonds[c as usize].push((i as u32, a, capacity));
         }
         let strings = |k: &str| s[k].as_array().map_or(Vec::new(), |v| v.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect());
-        Self { centroid, half, mass, bonds, types: strings("nodeTypes"), groups: strings("nodeGroups") }
+        Self { centroid, half, mass, modulus, bonds, types: strings("nodeTypes"), groups: strings("nodeGroups") }
     }
+
+    /// The non-support nodes of a node group (structure), for the energy balance.
+    pub fn nodes_of(&self, group: &str) -> Vec<u32> {
+        (0..self.centroid.len()).filter(|&i| self.mass[i] > 0. && self.groups.get(i).map_or(false, |g| g.starts_with(group))).map(|i| i as u32).collect()
+    }
+    pub fn node_mass(&self, i: u32) -> f32 { self.mass[i as usize] }
+    pub fn node_y(&self, i: u32) -> f32 { self.centroid[i as usize].y }
 
     /// Whether node `i` is a candidate: not a support, and in the struck structure.
     fn candidate(&self, i: usize, group: &str) -> bool {
@@ -91,6 +102,9 @@ impl Strength {
         }).map(|i| i as u32).collect()
     }
 
+    /// The stiffest modulus in `set` (Pa), for the contact it offers.
+    pub fn modulus(&self, set: &[u32]) -> f32 { set.iter().map(|&n| self.modulus[n as usize]).fold(0., f32::max) }
+
     /// The most the bonds leaving `set` (and its weight) can resist (N), and how many bonds that is.
     pub fn capacity(&self, set: &[u32]) -> (f32, u32, f32) {
         let inside: BTreeSet<u32> = set.iter().copied().collect();
@@ -112,15 +126,22 @@ pub struct Probe {
     pub radius: f32,
     /// Depth of the struck layer behind the aim point (m).
     pub layer: f32,
+    /// The impactor's Young's modulus (Pa); 0 for a car (no Hertz contact).
+    pub modulus: f32,
     pub trace: Vec<[f32; 9]>,
     /// The set touched at each tick's end, kept for the hardest tick.
     pub touched: HashMap<u32, Vec<u32>>,
     /// Whether each touched node was on the anchored body after that tick.
     pub anchored_after: HashMap<u32, Vec<bool>>,
+    /// The energy balance of the struck structure, sampled after contact:
+    /// [tick, fragments' translational kinetic energy (J), potential energy
+    /// its pieces released by falling (J), the impactor's kinetic energy lost
+    /// (J), fastest upward fragment (m/s), fragments moving].
+    pub energy: Vec<[f32; 6]>,
 }
 
 impl Probe {
-    pub fn new(mass: f32, radius: f32, layer: f32) -> Self { Self { mass, radius, layer, trace: Vec::new(), touched: HashMap::new(), anchored_after: HashMap::new() } }
+    pub fn new(mass: f32, radius: f32, layer: f32, modulus: f32) -> Self { Self { mass, radius, layer, modulus, trace: Vec::new(), touched: HashMap::new(), anchored_after: HashMap::new(), energy: Vec::new() } }
 
     pub fn summary(&self, strength: &Strength, dt: f32) -> Value {
         let t = &self.trace;
@@ -162,6 +183,18 @@ impl Probe {
         let row = |k: usize| json!({"tick": t[k][0], "past": t[k][1], "v": t[k][2], "broken": t[k][5], "brokenAfterCorrection": t[k][6], "corrections": t[k][7], "converged": t[k][8]});
         // The momentum the hit took (kg m/s) and the energy (J) along the approach.
         let dp = self.mass * (v_in - v_out);
+        // The force the hit really peaks at. The stage loads the bonds with the
+        // tick's impulse over the whole tick (m dv / dt); an elastic sphere on a
+        // flat (Hertz; Johnson, Contact Mechanics, 11.1) delivers it in a pulse
+        // far shorter than a tick: delta_max = (15 m v^2 / (16 E* R^1/2))^(2/5),
+        // F_max = 4/3 E* R^1/2 delta_max^3/2, t ~ 2.94 delta_max / v. The struck
+        // chunk is taken as a half-space of its material (nu 0.2 both sides).
+        let (hertz_peak, hertz_ms) = if self.modulus > 0. && self.radius > 0. && !set.is_empty() {
+            let e2 = strength.modulus(&set);
+            let star = 1. / ((1. - 0.04) / self.modulus + (1. - 0.04) / e2.max(1e6));
+            let delta = (15. * self.mass * v_in * v_in / (16. * star * self.radius.sqrt())).powf(0.4);
+            (4. / 3. * star * self.radius.sqrt() * delta.powf(1.5), 2.94 * delta / v_in * 1e3)
+        } else { (0., 0.) };
         json!({
             "contact": true, "mass": self.mass, "radius": self.radius,
             "firstContactTick": t[first][0], "vIn": v_in, "vMin": v_min, "vOut": v_out, "pastMax": past_max,
@@ -170,12 +203,24 @@ impl Probe {
             "touched": set.len(), "touchedTypes": types, "touchedHeldAnchored": held_set.len(),
             "touchedCapacityN": capacity, "touchedBoundaryBonds": boundary, "touchedWeightN": weight,
             "heldCapacityN": held_capacity,
+            "hertzPeakN": hertz_peak, "hertzPulseMs": hertz_ms,
+            // The real peak force would break the touched set, the tick's average did not.
+            "underloaded": hertz_peak > capacity && force <= capacity,
             // The hardest tick asked more of the anchored chunks it touched than
             // their bonds can give, and they stayed anchored: an infinite wall.
             "infiniteWall": !set.is_empty() && held_set.len() == set.len() && force > capacity,
             // Some of the set was freed, but what stayed anchored took more than its bonds can.
             "partialHold": !held_set.is_empty() && held_set.len() < set.len() && force > held_capacity,
             "window": (first.saturating_sub(2)..t.len().min(first + 8)).map(row).collect::<Vec<_>>(),
+            // Energy from nowhere: the struck structure's fragments carry more
+            // kinetic energy than the impactor lost and their fall released
+            // (rotation left out, so this is a lower bound on what they carry).
+            "energy": self.energy.iter().map(|e| json!(e)).collect::<Vec<_>>(),
+            "energyExcessJ": self.energy.iter().map(|e| e[1] - e[2] - e[3]).fold(f32::MIN, f32::max),
+            "energyExcessRatio": self.energy.iter().map(|e| e[1] / (e[2] + e[3]).max(1.)).fold(0f32, f32::max),
+            "debrisUpMax": self.energy.iter().map(|e| e[4]).fold(0f32, f32::max),
+            "impactorUpMax": t[first..].iter().map(|r| r[3]).fold(f32::MIN, f32::max),
+            "impactorUpIn": t[first - 1][3],
         })
     }
 }

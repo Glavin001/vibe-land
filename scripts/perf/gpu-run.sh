@@ -5,7 +5,7 @@
 # - Timing work (profiling, perf A/B, benchmarks) takes the exclusive lock and
 #   waits until no other GPU job is running, so its numbers are clean.
 # - Correctness runs (tests, trials, qualification, films) set
-#   VIBE_GPU_SHARED=1 and take one of VIBE_GPU_SLOTS slots (default 4). They
+#   VIBE_GPU_SHARED=1 and take one of VIBE_GPU_SLOTS slots (default 3). They
 #   run concurrently, but only that many at once: fifteen at once only queue
 #   on the GPU, crawl, and trip the Metal watchdog
 #   (kIOGPUCommandBufferCallbackErrorTimeout) for everyone.
@@ -15,7 +15,7 @@
 # script by its path in the main checkout. A lock or slot whose owner has exited
 # is reclaimed.
 DIR="${VIBE_GPU_LOCK_DIR:-$HOME/Library/Caches/vibe-land-gpu}"
-SLOTS="${VIBE_GPU_SLOTS:-4}"
+SLOTS="${VIBE_GPU_SLOTS:-3}"
 LOCK="$DIR/exclusive"
 mkdir -p "$DIR"
 label=$1; shift

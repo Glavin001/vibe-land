@@ -116,11 +116,16 @@ pub struct Structure {
     pub origin: V3,
     /// Chunk crushing per material (empty: none), parallel to `materials`.
     pub crush: Vec<vibe_land_physx_bridge::CrushMaterialDesc>,
+    /// Fastener-group twist per material (empty: none), parallel to
+    /// `materials`: (radius of gyration, reach) in m, or (0, 0) for a
+    /// material that twists on its patch. Read under section rotation
+    /// (town-kit materials.mjs fastenerRow; the bridge's twist tables).
+    pub twist: Vec<(f64, f64)>,
 }
 
 impl Structure {
     pub fn new() -> Self {
-        Self { chunks: Vec::new(), bonds: Vec::new(), materials: Vec::new(), rotation: [0.0, 0.0, 0.0, 1.0], linear_damping: None, origin: [0.0, 20.0, 0.0], crush: Vec::new() }
+        Self { chunks: Vec::new(), bonds: Vec::new(), materials: Vec::new(), rotation: [0.0, 0.0, 0.0, 1.0], linear_damping: None, origin: [0.0, 20.0, 0.0], crush: Vec::new(), twist: Vec::new() }
     }
     pub fn material(&mut self, m: Material) -> usize {
         self.materials.push(m);
@@ -287,6 +292,22 @@ pub fn section(bond: &Bond) -> Section {
         g1: (lam0 / a).sqrt(),
         gp: ((lam0 + lam1) / a).sqrt(),
     }
+}
+
+/// The section the stage uses for `b` under `rotation`: under section
+/// rotation a fastener-group material twists on its fasteners (polar radius
+/// g, twist modulus A g^2 / reach), as the bridge sets it.
+pub fn stage_section(s: &Structure, b: &Bond, rotation: Rotation) -> Section {
+    let mut sec = section(b);
+    if rotation == Rotation::Section {
+        if let Some(&(g, reach)) = s.twist.get(b.material) {
+            if g > 0.0 && reach > 0.0 {
+                sec.gp = g;
+                sec.zt = sec.area * g * g / reach;
+            }
+        }
+    }
+    sec
 }
 
 /// How the stress solve stiffens a bond in rotation.
@@ -462,7 +483,7 @@ pub fn solve_model(s: &Structure, g: f64, rotation: Rotation, true_stiffness: bo
             let mut rot = [[0.0; 3]; 3];
             let point = match rotation {
                 Rotation::Section => {
-                    let sec = section(b);
+                    let sec = stage_section(s, b, rotation);
                     for (axis, r) in [(sec.e0, sec.g0), (sec.e1, sec.g1), (b.normal, sec.gp)] {
                         for i in 0..3 {
                             for j in 0..3 {
@@ -574,9 +595,9 @@ pub fn solve_model(s: &Structure, g: f64, rotation: Rotation, true_stiffness: bo
 
 /// Grade one bond's wrench (force on chunk b, moment about `point`) the way
 /// the stage does.
-pub fn grade(s: &Structure, bond_index: usize, w: &Wrench, grading: Grading, bend_gain_max: f64) -> Graded {
+pub fn grade(s: &Structure, bond_index: usize, w: &Wrench, grading: Grading, rotation: Rotation, bend_gain_max: f64) -> Graded {
     let b = &s.bonds[bond_index];
-    let sec = section(b);
+    let sec = stage_section(s, b, rotation);
     let area = sec.area;
     let d = sub(s.chunks[b.b].center, s.chunks[b.a].center);
     let n = if dot(b.normal, d) >= 0.0 { b.normal } else { scale(b.normal, -1.0) };
@@ -611,5 +632,5 @@ pub fn grade(s: &Structure, bond_index: usize, w: &Wrench, grading: Grading, ben
 /// The model's graded answer for every bond in `config`.
 pub fn model_graded(s: &Structure, g: f64, config: Config) -> Vec<Graded> {
     let w = solve_model(s, g, config.rotation, config.true_stiffness);
-    (0..s.bonds.len()).map(|k| grade(s, k, &w[k], config.grading, 3.0)).collect()
+    (0..s.bonds.len()).map(|k| grade(s, k, &w[k], config.grading, config.rotation, 3.0)).collect()
 }

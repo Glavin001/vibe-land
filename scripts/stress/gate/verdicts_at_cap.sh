@@ -7,7 +7,7 @@
 set -u
 cd "$(dirname "$0")/../../.."
 G=scripts/stress/gate
-OUT=${OUT:-target/stress-gate}
+OUT=${OUT:-target/stress-gate}; case $OUT in /*) ;; *) OUT=$PWD/$OUT ;; esac
 for cap in ${CAPS:-16 64}; do
   echo "######## cap $cap"
   VIBE_GPU_SHARED=1 PX_DESTRUCTION_ALLOW_UNCONVERGED=1 GATE_UNBREAKABLE=1 GATE_SOLVER_ENV=app \

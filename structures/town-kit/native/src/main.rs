@@ -98,7 +98,10 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
   ductile_slip:mats.iter().map(|m|m["ductileSlip"].as_f64().unwrap_or(0.0) as f32).collect(),
   impact_modulus:mats.iter().map(|m|m["impactElasticModulus"].as_f64().unwrap_or(0.0) as f32).collect(),
   twist_gyration:mats.iter().map(|m|m["twistGyration"].as_f64().unwrap_or(0.0) as f32).collect(),
-  twist_reach:mats.iter().map(|m|m["twistReach"].as_f64().unwrap_or(0.0) as f32).collect(),maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
+  twist_reach:mats.iter().map(|m|m["twistReach"].as_f64().unwrap_or(0.0) as f32).collect(),
+  bearing_modulus:mats.iter().map(|m|m["bearingElasticModulus"].as_f64().unwrap_or(0.0) as f32).collect(),
+  bend_gyration:mats.iter().map(|m|m["bendGyration"].as_f64().unwrap_or(0.0) as f32).collect(),
+  bend_section:mats.iter().map(|m|m["bendSection"].as_f64().unwrap_or(0.0) as f32).collect(),maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
   apply_excess_forces:true,apply_centrifugal:true,excess_force_scale:0.012,linear_damping:0.25,angular_damping:0.35,
  },1<<5,mask)?;
  let mut contact=ContactSettings::default();
