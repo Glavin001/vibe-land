@@ -605,3 +605,88 @@ fn configure(world: &mut World) {
         })
         .unwrap();
 }
+
+/// One scene: a static floor tilted by `degrees` about z, and `boxes` 20 cm,
+/// 8 kg cubes stacked from its surface (the first kicked along the slope at
+/// `kick` m/s once it has rested for 0.5 s). Returns each cube's displacement
+/// along the slope (+ downhill) and up the stack after `seconds`, and how
+/// many sleep at the end.
+fn floor_scene(degrees: f32, boxes: u32, kick: f32, seconds: f32) -> (Vec<[f32; 2]>, usize) {
+    let theta = degrees.to_radians();
+    let q = Quat { x: 0.0, y: 0.0, z: (theta / 2.0).sin(), w: (theta / 2.0).cos() };
+    let (t, n) = ([theta.cos(), theta.sin()], [-theta.sin(), theta.cos()]);
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1, user_id: 1, pose: Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: q },
+            half_extents: Vec3::new(5.0, 0.1, 1.0), collision_group: 1, collision_mask: u32::MAX,
+        })
+        .unwrap();
+    let mut starts = Vec::new();
+    for k in 0..boxes {
+        let lift = 0.1 + 0.1 + 0.2 * k as f32 + 0.0005 * (k + 1) as f32;
+        let p = [n[0] * lift, n[1] * lift];
+        world
+            .add_dynamic_box(DynamicBoxDesc {
+                entity_id: 2 + k, user_id: 2 + k, pose: Pose { position: Vec3::new(p[0], p[1], 0.0), rotation: q },
+                half_extents: Vec3::new(0.1, 0.1, 0.1), mass: 8.0, collision_group: 1, collision_mask: u32::MAX,
+            })
+            .unwrap();
+        starts.push(p);
+    }
+    let rest = 30u32;
+    let total = (seconds / FIXED_TIMESTEP).round() as u32;
+    for i in 0..total {
+        if i == rest && kick != 0.0 {
+            world.apply_impulse(2, Vec3::new(-t[0] * 8.0 * kick, -t[1] * 8.0 * kick, 0.0)).unwrap();
+        }
+        world.step().unwrap();
+    }
+    let snaps = world.body_snapshots().unwrap();
+    let mut out = Vec::new();
+    let mut sleeping = 0;
+    for k in 0..boxes {
+        let b = snaps.iter().find(|b| b.entity_id == 2 + k).expect("cube");
+        sleeping += b.sleeping as usize;
+        let d = [b.pose.position.x - starts[k as usize][0], b.pose.position.y - starts[k as usize][1]];
+        out.push([-(d[0] * t[0] + d[1] * t[1]), d[0] * n[0] + d[1] * n[1]]);
+    }
+    (out, sleeping)
+}
+
+/// Scene stabilization at rest and at low speed, where PhysX applies it
+/// (PxSceneFlag::eENABLE_STABILIZATION: extra damping and reduced gravity on
+/// slow bodies in contact). Textbook answers (Hibbeler, Dynamics, 13.4;
+/// Statics, 8.2):
+/// - a cube kicked at 0.5 m/s across a flat floor, mu 0.5, stops after
+///   v^2 / (2 mu g) = 25.5 mm;
+/// - a cube at rest on a 20 degree incline (tan 20 = 0.36 < mu) stays put;
+/// - a column of five cubes stands still.
+#[test]
+#[ignore = "requires the GPU PhysX scene"]
+fn stabilization_at_rest_and_slow() {
+    let run = |stab: bool| {
+        if stab { std::env::remove_var("VIBE_PHYSX_STABILIZATION") } else { std::env::set_var("VIBE_PHYSX_STABILIZATION", "0") }
+        let slide = floor_scene(0.0, 1, 0.5, 2.0).0[0][0];
+        let hold = floor_scene(20.0, 1, 0.0, 3.0).0[0][0];
+        let (column, asleep) = floor_scene(0.0, 5, 0.0, 5.0);
+        let drift = column.iter().map(|d| (d[0] * d[0]).sqrt().max(0.0)).fold(0.0f32, f32::max);
+        let sag = column.iter().map(|d| d[1]).fold(0.0f32, f32::min);
+        (slide, hold, drift, sag, asleep)
+    };
+    let on = run(true);
+    let off = run(false);
+    std::env::remove_var("VIBE_PHYSX_STABILIZATION");
+    let stop = 0.5f32 * 0.5 / (2.0 * 0.5 * DEFAULT_WORLD_GRAVITY);
+    println!("kicked cube, 0.5 m/s, mu 0.5: textbook {:.2} mm; stabilization on {:.2} mm, off {:.2} mm", 1e3 * stop, 1e3 * on.0, 1e3 * off.0);
+    println!("cube at rest on 20 degrees: on moved {:.3} mm, off {:.3} mm (textbook 0)", 1e3 * on.1, 1e3 * off.1);
+    println!("column of 5: horizontal drift on {:.3} mm, off {:.3} mm; settled sag on {:.3} mm, off {:.3} mm; asleep on {}/5, off {}/5",
+        1e3 * on.2, 1e3 * off.2, 1e3 * on.3, 1e3 * off.3, on.4, off.4);
+    // Stabilization is kept if it moves nothing that slides or holds and
+    // leaves the stack no further from standing still than without it. The
+    // stack's own error (cm-scale sag and drift for five cubes) is the rigid
+    // solver's (VIBE_PHYSX_POSITION_ITERS / VELOCITY_ITERS, PGS), not this flag's.
+    assert!((on.0 - off.0).abs() <= 0.01 * off.0.abs(), "stabilization changes a slow slide");
+    assert!((on.1 - off.1).abs() <= 1e-4, "stabilization changes a hold on an incline");
+    assert!(on.2 <= off.2 + 1e-4 && on.3 >= off.3 - 1e-4, "stabilization leaves the stack further from rest");
+}
