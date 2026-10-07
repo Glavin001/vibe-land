@@ -68,6 +68,13 @@ impl Strength {
         Self { centroid, half, mass, modulus, bonds, types: strings("nodeTypes"), groups: strings("nodeGroups") }
     }
 
+    /// The non-support nodes of a node group (structure), for the energy balance.
+    pub fn nodes_of(&self, group: &str) -> Vec<u32> {
+        (0..self.centroid.len()).filter(|&i| self.mass[i] > 0. && self.groups.get(i).map_or(false, |g| g.starts_with(group))).map(|i| i as u32).collect()
+    }
+    pub fn node_mass(&self, i: u32) -> f32 { self.mass[i as usize] }
+    pub fn node_y(&self, i: u32) -> f32 { self.centroid[i as usize].y }
+
     /// Whether node `i` is a candidate: not a support, and in the struck structure.
     fn candidate(&self, i: usize, group: &str) -> bool {
         self.mass[i] > 0. && self.groups.get(i).map_or(true, |g| g.starts_with(group))
@@ -126,10 +133,15 @@ pub struct Probe {
     pub touched: HashMap<u32, Vec<u32>>,
     /// Whether each touched node was on the anchored body after that tick.
     pub anchored_after: HashMap<u32, Vec<bool>>,
+    /// The energy balance of the struck structure, sampled after contact:
+    /// [tick, fragments' translational kinetic energy (J), potential energy
+    /// its pieces released by falling (J), the impactor's kinetic energy lost
+    /// (J), fastest upward fragment (m/s), fragments moving].
+    pub energy: Vec<[f32; 6]>,
 }
 
 impl Probe {
-    pub fn new(mass: f32, radius: f32, layer: f32, modulus: f32) -> Self { Self { mass, radius, layer, modulus, trace: Vec::new(), touched: HashMap::new(), anchored_after: HashMap::new() } }
+    pub fn new(mass: f32, radius: f32, layer: f32, modulus: f32) -> Self { Self { mass, radius, layer, modulus, trace: Vec::new(), touched: HashMap::new(), anchored_after: HashMap::new(), energy: Vec::new() } }
 
     pub fn summary(&self, strength: &Strength, dt: f32) -> Value {
         let t = &self.trace;
@@ -200,6 +212,15 @@ impl Probe {
             // Some of the set was freed, but what stayed anchored took more than its bonds can.
             "partialHold": !held_set.is_empty() && held_set.len() < set.len() && force > held_capacity,
             "window": (first.saturating_sub(2)..t.len().min(first + 8)).map(row).collect::<Vec<_>>(),
+            // Energy from nowhere: the struck structure's fragments carry more
+            // kinetic energy than the impactor lost and their fall released
+            // (rotation left out, so this is a lower bound on what they carry).
+            "energy": self.energy.iter().map(|e| json!(e)).collect::<Vec<_>>(),
+            "energyExcessJ": self.energy.iter().map(|e| e[1] - e[2] - e[3]).fold(f32::MIN, f32::max),
+            "energyExcessRatio": self.energy.iter().map(|e| e[1] / (e[2] + e[3]).max(1.)).fold(0f32, f32::max),
+            "debrisUpMax": self.energy.iter().map(|e| e[4]).fold(0f32, f32::max),
+            "impactorUpMax": t[first..].iter().map(|r| r[3]).fold(f32::MIN, f32::max),
+            "impactorUpIn": t[first - 1][3],
         })
     }
 }
