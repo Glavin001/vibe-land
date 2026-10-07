@@ -8,7 +8,8 @@
 #
 # Writes target/vehicle-testbed/wall-<profile>-<label>.json and prints the
 # verdict table; exit 1 when a case meets an infinite wall. A correctness run:
-# it shares the GPU (VIBE_GPU_SHARED=1) and never takes the GPU lock. Extra
+# it takes a shared GPU slot (VIBE_GPU_SHARED=1, scripts/perf/gpu-run.sh), never
+# the exclusive lock. Keep --jobs at 1 (one GPU job per agent). Extra
 # environment passes through (what-ifs). The profile is scripts/fidelity/*.env;
 # high runs on the integration SDK (HIGH_PHYSX_ROOT, default garage-hifi).
 set -euo pipefail
@@ -43,6 +44,10 @@ export CARGO_TARGET_DIR="${WALL_TARGET_DIR:-$ROOT/target/wall-$([ "$profile" = h
 build=$(cd "$ROOT" && cargo test --release -p web-fps-server --features native-destruction --lib --no-run 2>&1) || { echo "$build" | grep -E '^error' -A12; exit 1; }
 bin=$(echo "$build" | sed -n 's/.*Executable unittests src\/lib.rs (\(.*\))/\1/p' | tail -1)
 [ -x "$ROOT/$bin" ] || { echo "no test binary in: $build" | tail -5 >&2; exit 1; }
+# Every GPU job goes through the machine's admission (the main checkout's
+# limiter, shared by worktrees): a shared slot, at most VIBE_GPU_SLOTS at once.
+GPU_RUN=${GPU_RUN:-/Users/glavin/Development/vibe-land/scripts/perf/gpu-run.sh}
+[ -x "$GPU_RUN" ] || GPU_RUN="$ROOT/scripts/perf/gpu-run.sh"
 export VIBE_GPU_SHARED=1 VIBE_TESTBED_META="$meta" VIBE_TESTBED_CARS=${VIBE_TESTBED_CARS:-monster}
 export CUMETAL_CACHE_DIR="${CUMETAL_CACHE_DIR:-$ROOT/target/cumetal-cache-wall}"
 # The trial ids, split over `jobs` processes (each one fresh arena per trial).
@@ -60,7 +65,7 @@ pids=()
 for i in $(seq 0 $((jobs - 1))); do
   [ -n "${parts[$i]}" ] || continue
   (cd "$ROOT" && VIBE_TESTBED_TRIALS="${parts[$i]}" VIBE_TESTBED_LABEL="wall-$profile-$label-$run-$i" \
-    "$ROOT/$bin" vehicle_testbed --ignored --nocapture --test-threads=1 \
+    "$GPU_RUN" "wall-$profile-$label-$i" "$ROOT/$bin" vehicle_testbed --ignored --nocapture --test-threads=1 \
     > "$out/wall-$profile-$label-$run-$i.log" 2>&1) &
   pids+=($!)
 done
