@@ -570,6 +570,11 @@ pub struct CrushMaterialDesc {
     pub crush_viscosity: f32,
     pub strain_rate_exponent: f32,
     pub reference_strain_rate: f32,
+    /// Share of a crushed chunk's mass that survives as debris (0: all dust),
+    /// and in how many pieces. Carried to the stage and to crush events; the
+    /// native stage removes the chunk either way (it creates no new geometry).
+    pub debris_mass_fraction: f32,
+    pub debris_fragment_count: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -1756,6 +1761,13 @@ impl World {
             .map_err(operation_error)
     }
 
+    /// Chunks the native stage crushed since the last call (dust and debris
+    /// for the client to draw; the chunks themselves are gone).
+    #[cfg(feature = "native-destruction")]
+    pub fn native_take_crush_events(&mut self) -> Result<Vec<ffi::FfiChunkCrushEvent>, BridgeError> {
+        self.inner.pin_mut().native_take_crush_events().map_err(operation_error)
+    }
+
     #[cfg(feature = "native-destruction")]
     pub fn native_take_island_events(&mut self) -> Result<Vec<IslandBodyEvent>, BridgeError> {
         self.inner
@@ -2399,6 +2411,8 @@ mod ffi {
         crush_viscosity: f32,
         strain_rate_exponent: f32,
         reference_strain_rate: f32,
+        debris_mass_fraction: f32,
+        debris_fragment_count: u32,
     }
 
     struct FfiDestructibleSettings {
@@ -2451,6 +2465,22 @@ mod ffi {
         chunk_id: u32,
         from_island: u32,
         to_island: u32,
+    }
+
+    /// A chunk the native stage crushed (comminuted) this step: where it was,
+    /// how it moved, what it was made of. The chunk has left the simulation;
+    /// its body on the wire is a singleton island promoted and retired at once.
+    struct FfiChunkCrushEvent {
+        structure_id: u32,
+        chunk_id: u32,
+        /// Index into the structure's materials (`FfiStressMaterial` order).
+        material: u32,
+        mass: f32,
+        volume: f32,
+        position: FfiVec3,
+        linear_velocity: FfiVec3,
+        debris_mass_fraction: f32,
+        debris_fragment_count: u32,
     }
 
     struct FfiIslandBodyEvent {
@@ -2903,6 +2933,7 @@ mod ffi {
             self: Pin<&mut World>,
         ) -> Result<Vec<FfiChunkMigrationEvent>>;
         fn native_take_island_events(self: Pin<&mut World>) -> Result<Vec<FfiIslandBodyEvent>>;
+        fn native_take_crush_events(self: Pin<&mut World>) -> Result<Vec<FfiChunkCrushEvent>>;
         fn native_chunk_body_snapshots(self: &World) -> Result<&[FfiChunkBodySnapshot]>;
         fn native_bond_stress_rows(
             self: &World,
@@ -3306,6 +3337,8 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
                     crush_viscosity: c.crush_viscosity,
                     strain_rate_exponent: c.strain_rate_exponent,
                     reference_strain_rate: c.reference_strain_rate,
+                    debris_mass_fraction: c.debris_mass_fraction,
+                    debris_fragment_count: c.debris_fragment_count,
                 })
                 .collect(),
             maximum_bodies: value.maximum_bodies,

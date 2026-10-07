@@ -803,7 +803,8 @@ mod tests {
 /// Opt-in chunk crushing per material, from a JSON pack's
 /// `defaults.solver.materials[].crush` blocks (scene pack v3 keys:
 /// `capPressure`, `cohesion`, `frictionSlope` Pa / -, `crushEnergy` J/m^3,
-/// `crushViscosity` Pa s). Parallel to the material table, or empty when no
+/// `crushViscosity` Pa s, `strainRateExponent` -, `referenceStrainRate` 1/s,
+/// `debrisMassFraction` -, `debrisFragmentCount`). Parallel to the material table, or empty when no
 /// material authors one -- which is every pack until one opts in. A binary
 /// (VLSP) scene carries no crush table.
 pub fn crush_table(json: &[u8]) -> Vec<vibe_netcode::destruction_backend::CrushMaterial> {
@@ -823,6 +824,10 @@ pub fn crush_table(json: &[u8]) -> Vec<vibe_netcode::destruction_backend::CrushM
                 friction_slope: f(c, "frictionSlope"),
                 crush_energy: f(c, "crushEnergy"),
                 crush_viscosity: f(c, "crushViscosity"),
+                strain_rate_exponent: f(c, "strainRateExponent"),
+                reference_strain_rate: f(c, "referenceStrainRate"),
+                debris_mass_fraction: f(c, "debrisMassFraction"),
+                debris_fragment_count: c["debrisFragmentCount"].as_u64().unwrap_or(0) as u32,
             }
         })
         .collect()

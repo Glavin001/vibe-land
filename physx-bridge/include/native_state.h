@@ -124,6 +124,7 @@ struct NativeDestruction::State {
     std::uint32_t serial = 0;
     std::uint32_t root = PX_INVALID_U32;
     std::uint64_t generation = 0;
+    bool destroyed = false; // crushed by the stage: out of every group for good
   };
 
 #if PX_DESTRUCTION_SCENE_VERSION >= 22
@@ -175,6 +176,8 @@ struct NativeDestruction::State {
   rust::Vec<FfiBrokenBondEvent> broken;
   rust::Vec<FfiChunkMigrationEvent> migrations;
   rust::Vec<FfiIslandBodyEvent> events;
+  rust::Vec<FfiChunkCrushEvent> crushes;
+  std::uint64_t crushed_total = 0;
   mutable std::vector<FfiChunkBodySnapshot> snapshots;
 
   // --- counters published as spans; every one is a real measurement --------

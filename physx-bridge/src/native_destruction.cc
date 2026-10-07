@@ -266,6 +266,8 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
       out.crush.crushViscosity = c.crush_viscosity > 0.0f ? c.crush_viscosity : 1.0f;
       out.crush.strainRateExponent = c.strain_rate_exponent;
       out.crush.referenceStrainRate = c.reference_strain_rate > 0.0f ? c.reference_strain_rate : 1.0f;
+      out.crush.debrisMassFraction = c.debris_mass_fraction;
+      out.crush.debrisFragmentCount = c.debris_fragment_count;
     }
     ++index;
     s.materials.push_back(out);
@@ -865,10 +867,12 @@ void NativeDestruction::prepare_vehicles() {
     auto *carrier=s.chunks[binding.base].shape->getActor();
     native_require(carrier==binding.vehicle->actor(),"native vehicle carrier changed actor unexpectedly");
     PxU32 mask=0,driveMask=15;bool engine=true;
-    for(PxU32 w=0;w<4;++w) if(s.chunks[binding.wheels[w][0]].shape->getActor()==carrier) mask|=1u<<w;
+    // A crushed chunk is on no body.
+    const auto on=[&](PxU32 chunk){return !s.chunks[chunk].destroyed && s.chunks[chunk].shape->getActor()==carrier;};
+    for(PxU32 w=0;w<4;++w) if(on(binding.wheels[w][0])) mask|=1u<<w;
     for(PxU32 w=0;w<4;++w) for(PxU32 chunk:binding.drives[w])
-      if(s.chunks[chunk].shape->getActor()!=carrier) driveMask &= ~(1u<<w);
-    for(PxU32 chunk:binding.engines) engine &= s.chunks[chunk].shape->getActor()==carrier;
+      if(!on(chunk)) driveMask &= ~(1u<<w);
+    for(PxU32 chunk:binding.engines) engine &= on(chunk);
     if(mask!=binding.wheel_mask || engine!=binding.engine_connected) {
       native_require(binding.vehicle->setFunctionalState(mask,engine),"vehicle functional state rejected");
       binding.wheel_mask=mask;binding.engine_connected=engine;
@@ -896,6 +900,7 @@ void NativeDestruction::submit_vehicle_loads(float dt) {
     const PxMat33 inertia=rotation*PxMat33::createDiagonal(actor->getMassSpaceInertiaTensor())*rotation.getTranspose();
     std::set<PxRigidDynamic *> gravityBodies;
     for(PxU32 i=binding.base;i<binding.base+binding.count;++i) {
+      if(s.chunks[i].destroyed) continue; // crushed: no body, no load
       auto *owner=s.chunks[i].shape->getActor()->is<PxRigidDynamic>();native_require(owner,"vehicle chunk lost rigid owner");
       // Fragments may inherit disabled gravity from Vehicle2, or the SDK may
       // enable ordinary gravity. Describe only commands actually submitted.
@@ -1215,7 +1220,7 @@ FfiChunkAim NativeDestruction::chunk_aim(std::uint32_t structure_id,
     if (chunk.structure != structure_id || chunk.authored != node_index) {
       continue;
     }
-    if (chunk.shape == nullptr) {
+    if (chunk.shape == nullptr || chunk.destroyed) {
       break; // destroyed; report not found rather than a stale position
     }
     PxRigidActor *actor = chunk.shape->getActor();

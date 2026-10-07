@@ -53,6 +53,12 @@ pub struct CrushMaterial {
     pub friction_slope: f32,
     pub crush_energy: f32,
     pub crush_viscosity: f32,
+    /// Strength scales by (rate / reference)^exponent; 0 turns rate hardening off.
+    pub strain_rate_exponent: f32,
+    pub reference_strain_rate: f32,
+    /// Share of the crushed chunk's mass left as debris, and in how many pieces.
+    pub debris_mass_fraction: f32,
+    pub debris_fragment_count: u32,
 }
 
 // Not Copy: the material table is a Vec. Settings are built once per match,

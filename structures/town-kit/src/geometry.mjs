@@ -1,5 +1,5 @@
 import { geometry, prismContact, prismVertices } from './dependencies.mjs';
-import { materials, M } from './materials.mjs';
+import { materials, M, crushFor, crushEnabled } from './materials.mjs';
 export const round=n=>Math.round(n*1e6)/1e6||0;
 export const v=a=>({x:round(a[0]),y:round(a[1]),z:round(a[2])});
 export const a=v=>[v.x,v.y,v.z];
@@ -90,6 +90,8 @@ export function composeScene(placements,{key='town-kit-scene',title=key}={}) {
  const library=[],shapes=new Map();
  s.nodeColliders=s.nodeColliders.map(c=>{if(c.kind!=='convex_hull')return c;const key=JSON.stringify(c.points);if(!shapes.has(key)){shapes.set(key,library.length);library.push(c);}return {kind:'shape',shape:shapes.get(key)};});
  if(library.length)s.shapeLibrary=library;
+ // Chunk crushing, opt-in (VIBE_CRUSH=1): each material that crushes by what it is (materials.mjs crushFor).
+ if(crushEnabled())for(const m of table)if(!m.crush){const c=crushFor(m.name);if(c)m.crush=structuredClone(c);}
  return {version:2,key,title,defaults:{solver:{gravity:-9.81,materials:table}},scenario:s};
 }
 

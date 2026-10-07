@@ -71,7 +71,8 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
  // Chunk crushing, opt-in per material (`crush` blocks, scene pack v3 keys): none authored, none run.
  let mats=pack["defaults"]["solver"]["materials"].as_array().ok_or("materials missing")?;
  let crush:Vec<CrushMaterialDesc>=if mats.iter().any(|m|m["crush"].is_object()) { mats.iter().map(|m|{let c=&m["crush"];CrushMaterialDesc{cap_pressure:f(c,"capPressure"),cohesion:f(c,"cohesion"),friction_slope:f(c,"frictionSlope"),
-  crush_energy:f(c,"crushEnergy"),crush_viscosity:f(c,"crushViscosity"),strain_rate_exponent:0.,reference_strain_rate:1.}}).collect() } else { vec![] };
+  crush_energy:f(c,"crushEnergy"),crush_viscosity:f(c,"crushViscosity"),strain_rate_exponent:f(c,"strainRateExponent"),reference_strain_rate:f(c,"referenceStrainRate").max(1e-9),
+  debris_mass_fraction:f(c,"debrisMassFraction"),debris_fragment_count:c["debrisFragmentCount"].as_u64().unwrap_or(0) as u32}}).collect() } else { vec![] };
  let materials=pack["defaults"]["solver"]["materials"].as_array().ok_or("materials missing")?.iter().map(|m|StressMaterialDesc {
   compression_elastic:f(m,"compressionElastic"),compression_fatal:f(m,"compressionFatal"),tension_elastic:f(m,"tensionElastic"),tension_fatal:f(m,"tensionFatal"),shear_elastic:f(m,"shearElastic"),shear_fatal:f(m,"shearFatal"),elastic_modulus:f(m,"elasticModulus"),residual_area_fraction:f(m,"residualAreaFraction") }).collect();
  let mut wc=WorldConfig::default();wc.gravity=Vec3::new(0.,-9.81,0.);wc.cpu_threads=2;

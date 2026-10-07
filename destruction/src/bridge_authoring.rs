@@ -149,8 +149,10 @@ pub(crate) fn ffi_settings(settings: &StressSolverSettings) -> DestructibleSetti
                 friction_slope: c.friction_slope,
                 crush_energy: c.crush_energy,
                 crush_viscosity: c.crush_viscosity,
-                strain_rate_exponent: 0.0,
-                reference_strain_rate: 1.0,
+                strain_rate_exponent: c.strain_rate_exponent,
+                reference_strain_rate: if c.reference_strain_rate > 0.0 { c.reference_strain_rate } else { 1.0 },
+                debris_mass_fraction: c.debris_mass_fraction,
+                debris_fragment_count: c.debris_fragment_count,
             })
             .collect(),
         maximum_bodies: settings.maximum_bodies,

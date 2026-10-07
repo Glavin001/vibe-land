@@ -308,6 +308,31 @@ export const CRUSH = {
   // 13 mm at Wi 8.2 (gypsum rock 8.16): 0.44 kWh/t = 1.6 kJ/kg x 700 kg/m^3 =
   // 1.1 MJ/m^3. DIF 5.4 -> 5.1e5 Pa s.
   gypsum: crushOf(3.5e6, 1.1e6, 5.1e5),
+  // Concrete C30/37: f_ck 30 MPa (EN 1992-1-1 Table 3.1). Rubble to 20 mm from
+  // 100 mm at Wi 11.6 kWh/t (limestone aggregate, Bond 1961): 0.45 kWh/t =
+  // 1.6 kJ/kg x 2400 = 3.9 MJ/m^3. MC90 DIF at 30/s 1.56 -> 5.6e5 Pa s. Reinforced
+  // concrete crushes its concrete only; the cage (bonds) still has to snap.
+  concrete: crushOf(30e6, 3.9e6, 5.6e5),
+  // Annealed float glass fails by tensile cracking under contact (Hertzian
+  // cones), at its characteristic bending strength f_g,k = 45 MPa (EN 572-1),
+  // pressure-independent (slope 0). To 1 mm from a 6 mm pane at Wi 3.08 kWh/t
+  // (glass, Bond 1961): 0.58 kWh/t = 2.1 kJ/kg x 2500 = 5.2 MJ/m^3. Taken as
+  // rate-insensitive -- an assumption, not a measurement: the viscosity lets
+  // 1 MPa of overstress shatter a pane within one 60 Hz tick. Shards, not
+  // dust: all of its mass in a dozen pieces (for the client's debris).
+  glass: { capPressure: 45e6, cohesion: 45e6, frictionSlope: 0, crushEnergy: 5.2e6, crushViscosity: 3.2e3, debrisMassFraction: 1, debrisFragmentCount: 12 },
 };
+/**
+ * The crush block a material gets by what it is, by name: masonry, concrete,
+ * gypsum and glass crush; timber, steel, trim and roofing do not (they snap at
+ * their joints). Anchors (zero-mass chunks) never crush whatever they are.
+ */
+export function crushFor(name = '') {
+  if (/^(brick|garden-masonry)/.test(name) || /masonry/.test(name) && !/connection|seam|joint/.test(name)) return CRUSH.brickVeneer;
+  if (/^(reinforced-concrete|concrete-slab|concrete-wall|pale-paving)$/.test(name)) return CRUSH.concrete;
+  if (/^(plaster|drywall|gypsum)$/.test(name)) return CRUSH.gypsum;
+  if (/^(glass|window-glass)$/.test(name)) return CRUSH.glass;
+  return null;
+}
 /** Crushing on, for builds that opt in (VIBE_CRUSH=1). */
 export const crushEnabled = () => (globalThis.process?.env?.VIBE_CRUSH ?? '0') === '1';

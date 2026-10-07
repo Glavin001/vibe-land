@@ -4189,6 +4189,9 @@ public:
   rust::Vec<FfiIslandBodyEvent> native_take_island_events() {
     return native().take_island_events();
   }
+  rust::Vec<FfiChunkCrushEvent> native_take_crush_events() {
+    return native().take_crush_events();
+  }
   rust::Slice<const FfiChunkBodySnapshot> native_chunk_body_snapshots() const {
     return native().chunk_body_snapshots();
   }
@@ -4754,6 +4757,9 @@ rust::Vec<FfiChunkMigrationEvent> World::native_take_chunk_migrations() {
 
 rust::Vec<FfiIslandBodyEvent> World::native_take_island_events() {
   return impl_->native_take_island_events();
+}
+rust::Vec<FfiChunkCrushEvent> World::native_take_crush_events() {
+  return impl_->native_take_crush_events();
 }
 
 rust::Slice<const FfiChunkBodySnapshot> World::native_chunk_body_snapshots() const {

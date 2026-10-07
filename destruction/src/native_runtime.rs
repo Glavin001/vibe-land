@@ -240,6 +240,24 @@ pub struct NativeTickCounts {
     pub chunks_migrated: u32,
     /// New bodies (island promotions). A tick with any is a split tick.
     pub bodies_promoted: u32,
+    /// Chunks crushed (comminuted and removed) by the stage.
+    pub chunks_crushed: u32,
+}
+
+/// A chunk the stage crushed this tick, for dust and debris (the chunk itself
+/// has left the simulation; on the wire it is a singleton island that is
+/// promoted and retired in the same batch, so clients drop it).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ChunkCrush {
+    pub structure_id: u32,
+    pub chunk_id: u32,
+    pub material: u32,
+    pub mass: f32,
+    pub volume: f32,
+    pub position: [f32; 3],
+    pub linear_velocity: [f32; 3],
+    pub debris_mass_fraction: f32,
+    pub debris_fragment_count: u32,
 }
 
 pub struct NativeCityDestruction {
@@ -249,6 +267,8 @@ pub struct NativeCityDestruction {
     /// their bonds, pieces and bodies are theirs, not city debris.
     own: std::collections::HashSet<u32>,
     encoder_input: Vec<BodySnapshotInput>,
+    /// The last tick's crushed chunks (`crushes`).
+    crushes: Vec<ChunkCrush>,
     stats: DestructionStats,
     extra_spans: Vec<NamedSpan>,
     ticks: u64,
@@ -599,6 +619,7 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
             extra_spans: Vec::new(),
             ticks: 0,
             degraded: false,
+            crushes: Vec::new(),
             last_status: NativeStatus::default(),
             tick_counts: NativeTickCounts::default(),
             pending_wakes: Vec::new(),
@@ -653,6 +674,7 @@ materials={} reserved_pairs={} iterations={} tolerance={:e}",
         self.ticks += 1;
         let started = std::time::Instant::now();
         self.tick_counts = NativeTickCounts::default();
+        self.crushes.clear();
 
         let status = world
             .native_tick()
@@ -702,10 +724,20 @@ no observation this tick",
         let broken: Vec<_> = broken.into_iter().filter(|e| self.own.contains(&e.structure_id)).collect();
         let migrations: Vec<_> = migrations.into_iter().filter(|e| self.own.contains(&e.structure_id)).collect();
         let islands: Vec<_> = islands.into_iter().filter(|e| self.own.contains(&e.structure_id)).collect();
+        let crushes = world
+            .native_take_crush_events()
+            .map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
+        self.crushes = crushes.into_iter().filter(|e| self.own.contains(&e.structure_id)).map(|e| ChunkCrush {
+            structure_id: e.structure_id, chunk_id: e.chunk_id, material: e.material, mass: e.mass, volume: e.volume,
+            position: [e.position.x, e.position.y, e.position.z],
+            linear_velocity: [e.linear_velocity.x, e.linear_velocity.y, e.linear_velocity.z],
+            debris_mass_fraction: e.debris_mass_fraction, debris_fragment_count: e.debris_fragment_count,
+        }).collect();
         self.tick_counts = NativeTickCounts {
             bonds_broken: broken.len() as u32,
             chunks_migrated: migrations.len() as u32,
             bodies_promoted: islands.iter().filter(|event| event.kind == 0).count() as u32,
+            chunks_crushed: self.crushes.len() as u32,
         };
 
         let mut batches: HashMap<u32, FractureBatch> = HashMap::new();
@@ -1374,6 +1406,11 @@ no observation this tick",
     /// observe (rejected or already consumed).
     pub fn tick_counts(&self) -> NativeTickCounts {
         self.tick_counts
+    }
+
+    /// The chunks the stage crushed on the last observed tick.
+    pub fn crushes(&self) -> &[ChunkCrush] {
+        &self.crushes
     }
 
     pub fn ticks(&self) -> u64 {

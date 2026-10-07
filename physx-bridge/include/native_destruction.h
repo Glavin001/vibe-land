@@ -28,6 +28,7 @@ struct FfiChunkBondDesc;
 struct FfiBrokenBondEvent;
 struct FfiChunkMigrationEvent;
 struct FfiIslandBodyEvent;
+struct FfiChunkCrushEvent;
 struct FfiChunkBodySnapshot;
 struct FfiBondStressRow;
 struct FfiDestructionStats;
@@ -149,6 +150,7 @@ public:
   rust::Vec<FfiBrokenBondEvent> take_broken_bonds();
   rust::Vec<FfiChunkMigrationEvent> take_chunk_migrations();
   rust::Vec<FfiIslandBodyEvent> take_island_events();
+  rust::Vec<FfiChunkCrushEvent> take_crush_events();
   /// Per-tick body rows as a slice into a persistent buffer, valid until the
   /// next tick.
   rust::Slice<const FfiChunkBodySnapshot> chunk_body_snapshots() const;

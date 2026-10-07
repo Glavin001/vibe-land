@@ -126,9 +126,10 @@ void NativeDestruction::State::apply_changed_chunks(
   std::map<Key, std::vector<std::uint32_t>> groups;
   std::set<Key> affected;
   std::uint32_t previous = PX_INVALID_U32;
+  std::vector<std::uint32_t> destroyed;
   for (const PxDestructionChangedChunk &row : changed) {
-    native_require(row.chunk < chunks.size() && row.root < chunks.size() &&
-                       row.active != 0,
+    native_require(row.chunk < chunks.size() &&
+                       (row.active == 0 || row.root < chunks.size()),
                    "invalid committed chunk row");
     native_require(previous == PX_INVALID_U32 || previous < row.chunk,
                    "duplicate or unordered committed chunk row");
@@ -137,7 +138,67 @@ void NativeDestruction::State::apply_changed_chunks(
     if (chunk.root != PX_INVALID_U32) {
       affected.emplace(chunk.root, chunk.generation);
     }
+    // An inactive row is a chunk the stage destroyed (crushed): it belongs to
+    // no group from here on.
+    if (row.active == 0) {
+      if (!chunk.destroyed) destroyed.push_back(row.chunk);
+      continue;
+    }
     groups[{row.root, row.generation}].push_back(row.chunk);
+  }
+  // Each crushed chunk leaves its body: on the wire, a singleton island that is
+  // promoted where the chunk was and retired at once (the client drops it), and
+  // a crush event for its dust and debris.
+  for (const std::uint32_t id : destroyed) {
+    Chunk &chunk = chunks[id];
+    const std::uint32_t structure = chunk.structure;
+    const std::uint32_t packed = native_chunk_id(structure, chunk.authored);
+    PxTransform pose(PxIdentity);
+    PxVec3 velocity(0.0f);
+    if (chunk.shape != nullptr && chunk.shape->getActor() != nullptr) {
+      PxRigidActor *actor = chunk.shape->getActor();
+      pose = actor->getGlobalPose() * chunk.shape->getLocalPose();
+      if (PxRigidDynamic *dynamic = actor->is<PxRigidDynamic>()) {
+        velocity = PxRigidBodyExt::getVelocityAtPos(*dynamic, pose.p);
+      }
+    }
+    const std::uint32_t serial = next_serial.at(structure)++;
+    FfiIslandBodyEvent promote{};
+    promote.structure_id = structure;
+    promote.island_id = serial;
+    promote.kind = 0;
+    promote.mass = properties[id].mass;
+    promote.position = native_ffi(pose.p);
+    promote.rotation = native_ffi(pose.q);
+    promote.linear_velocity = native_ffi(velocity);
+    promote.chunk_ids.push_back(packed);
+    events.push_back(std::move(promote));
+    FfiIslandBodyEvent retire{};
+    retire.structure_id = structure;
+    retire.island_id = serial;
+    retire.kind = 1;
+    events.push_back(std::move(retire));
+    migrations.push_back(FfiChunkMigrationEvent{structure, packed, chunk.serial, serial});
+    migration_total += 1;
+    const PxDestructionStressChunk &node = nodes[id];
+    const PxDestructionMaterial &material = materials[node.material];
+    const std::uint32_t base = material_base.count(structure) ? material_base.at(structure) : 0u;
+    FfiChunkCrushEvent crush{};
+    crush.structure_id = structure;
+    crush.chunk_id = packed;
+    crush.material = node.material - base;
+    crush.mass = properties[id].mass;
+    crush.volume = node.volume;
+    crush.position = native_ffi(pose.p);
+    crush.linear_velocity = native_ffi(velocity);
+    crush.debris_mass_fraction = material.crush.debrisMassFraction;
+    crush.debris_fragment_count = material.crush.debrisFragmentCount;
+    crushes.push_back(crush);
+    crushed_total += 1;
+    chunk.destroyed = true;
+    chunk.serial = serial;
+    chunk.root = PX_INVALID_U32;
+    topology_changes += 2;
   }
 
   std::map<Key, NativeBody> next;
@@ -717,6 +778,12 @@ rust::Vec<FfiBrokenBondEvent> NativeDestruction::take_broken_bonds() {
 rust::Vec<FfiChunkMigrationEvent> NativeDestruction::take_chunk_migrations() {
   rust::Vec<FfiChunkMigrationEvent> out = std::move(state_->migrations);
   state_->migrations = {};
+  return out;
+}
+
+rust::Vec<FfiChunkCrushEvent> NativeDestruction::take_crush_events() {
+  rust::Vec<FfiChunkCrushEvent> out = std::move(state_->crushes);
+  state_->crushes = {};
   return out;
 }
 
