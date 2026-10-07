@@ -40,7 +40,7 @@ I=/Users/glavin/Development/PhysX/out/install
 export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
 # High-fidelity runs on high.env's SDK (integration/high-fidelity, garage-hifi: every
 # capability). These remain for the single-feature regression tests.
-export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-$I/garage-multihull}
+export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/install/garage-hifi}
 export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/install/garage-hifi}
 export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/hifi/out/build/garage-hifi/package}
 # The PhysX destruction ctest gate's package tree (fix/mac-ctest-baseline; the hifi
