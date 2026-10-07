@@ -26,7 +26,7 @@ import { writeScenario, REPO, OUT } from './src/scenario.mjs';
 import { CONFIGS, sdkFor } from './src/configs.mjs';
 import { judge } from './src/judge.mjs';
 
-export const SCENARIOS = ['bridge-piers'];
+export const SCENARIOS = ['bridge-piers', 'house-studs'];
 
 const argv = process.argv.slice(2);
 const opt = (name, fallback) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : fallback; };
@@ -74,7 +74,7 @@ export function runScene({ scene, out, config, ticks, extraEnv = {} }) {
   const env = {
     ...process.env, ...CONFIGS[config].env, ...extraEnv,
     PHYSX_ROOT: sdk, VIBE_CITY_SCENE: scene, VIBE_CALIB_OUT: out, VIBE_CALIB_TICKS: String(ticks), VIBE_GPU_SHARED: '1',
-    VIBE_CITY_NATIVE_STRESS_ITERATIONS: process.env.VIBE_CITY_NATIVE_STRESS_ITERATIONS ?? '64',
+    VIBE_CITY_NATIVE_STRESS_ITERATIONS: extraEnv.VIBE_CITY_NATIVE_STRESS_ITERATIONS ?? process.env.VIBE_CITY_NATIVE_STRESS_ITERATIONS ?? '64',
     VIBE_DESTRUCTION_ASSET_DIR: path.join(REPO, 'destruction/assets/scenes'),
     CUMETAL_CACHE_DIR: process.env.CUMETAL_CACHE_DIR ?? path.join(REPO, 'target', 'cumetal-cache-calib'),
   };
@@ -105,8 +105,9 @@ export async function run(id, { configs, ticks, judgeOnly = false, specOnly = fa
   const verdicts = [];
   for (const config of configs) {
     const out = path.join(dir, `report-${config}.json`);
-    const report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks });
-    const v = judge(spec, report, config, CONFIGS[config].model);
+    const iterations = process.env.VIBE_CITY_NATIVE_STRESS_ITERATIONS ?? (scenario.iterations ? String(scenario.iterations) : undefined);
+    const report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks, extraEnv: iterations ? { VIBE_CITY_NATIVE_STRESS_ITERATIONS: iterations } : {} });
+    const v = judge(spec, report, config, scenario.configModel?.[config] ?? CONFIGS[config].model);
     v.sdk = report.physxRoot; v.wallSeconds = report.wallSeconds;
     verdicts.push(v);
     table(v);
