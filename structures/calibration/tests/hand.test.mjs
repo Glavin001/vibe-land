@@ -51,7 +51,8 @@ test('bridge: removals raise the deck moment as the span grows', () => {
 });
 
 test('truss: pin-jointed forces by the method of sections', () => {
-  const P = T.TRUSS, f = T.forces(P, [], { pinned: true });
+  // Simply supported (pin and roller): the textbook truss. (The calibration bridge's bearings are both fixed.)
+  const P = { ...T.TRUSS, support: 'pinned' }, f = T.forces(P, [], { pinned: true });
   // Panel 3's bottom chord (B2-B3): moments about T2 (x 8), where the diagonal T2-B3 and the
   // top chord meet. Panel loads only, so the members' own weight puts it up to ~10% higher.
   const Pn = T.panelLoad(P), M = 2.5 * Pn * 8 - Pn * 4;
@@ -59,6 +60,9 @@ test('truss: pin-jointed forces by the method of sections', () => {
   assert.ok(N > M / P.height && N < 1.12 * M / P.height, `bottom chord ${N} vs ${M / P.height}`);
   assert.ok(Math.abs(f['B3-T3'].mid.N) < 0.05 * Pn, 'midspan vertical carries next to nothing');
   assert.throws(() => T.forces(P, ['T2-B3'], { pinned: true }), /mechanism/);
+  assert.throws(() => T.forces(P, ['B2-B3'], { pinned: true }), /mechanism/);
+  // Both bearings fixed: a cut bottom chord leaves a two-hinged arch, which stands.
+  assert.doesNotThrow(() => T.forces(T.TRUSS, ['B2-B3'], { pinned: true }));
 });
 
 test('frame: GSA removal demands', () => {

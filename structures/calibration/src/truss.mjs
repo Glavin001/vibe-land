@@ -41,7 +41,10 @@ export const TRUSS = {
   panels: 6, panel: 4.0, height: 3.0, width: 0.2,
   chord: 0.28, web: 0.2, post: 0.28,            // in-plane depths (m), GL28h, all 200 wide
   deck: 1.5e3, crowd: null, deckWidth: 3.0,      // kPa loads (crowd from EN 1991-2 5.1)
-  support: 'pinned',
+  // Both bearings fixed against sliding (pinned): the stage cannot give a bearing freedom to
+  // slide (a bond to an anchor holds every direction), so the calibration bridge has two fixed
+  // bearings, as some short footbridges do; an expansion bearing is an engine gap (see the write-up).
+  support: 'pinned-pinned',
   dowel: { d: 0.012, fu: 360e6 },                // S235 dowels (EN 10025), f_u 360 MPa
 };
 export const crowd = (L) => (2.0 + 120 / (L + 30)) * 1e3;
@@ -75,7 +78,8 @@ export function model(P = TRUSS, removed = [], { pinned = false, loadFactor = 1,
   const kept = members.filter((m) => !removed.includes(m.id));
   const ms = kept.map((m) => ({ ...m, k: f.member(node[m.a], node[m.b], { E, A: b * m.depth, I: b * m.depth ** 3 / 12, w: gFactor * b * m.depth * rho * G, release: pinned ? [true, true] : [false, false] }) }));
   // Supports: B0 pinned, B6 on a roller (as built); `fixed`: both bonded (the engine's anchors).
-  f.fix(node[J('B0')], P.support === 'fixed' ? 'xyz' : 'xy'); f.fix(node[J(`B${P.panels}`)], P.support === 'fixed' ? 'xyz' : 'y');
+  const far = P.support === 'fixed' ? 'xyz' : P.support === 'pinned-pinned' ? 'xy' : 'y';
+  f.fix(node[J('B0')], P.support === 'fixed' ? 'xyz' : 'xy'); f.fix(node[J(`B${P.panels}`)], far);
   const Pn = loadFactor * panelLoad(P, { crowdFactor });
   for (let i = 1; i < P.panels; i++) f.load(node[J(`B${i}`)], 0, -Pn, 0);
   return { f, ms, joints, node };
