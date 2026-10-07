@@ -146,6 +146,10 @@ fn calibration_run() {
                     comps.push(format!("[{} n{} {} r{} it{} f2 {:.2e}/{:.2e}]", chunk.map_or("?".into(), |n| case_of(n)), c.chunk_count, if c.anchored { "A" } else { "free" }, c.reason, c.iterations, c.final2, c.tolerance2));
                 }
                 eprintln!("[calibration] tick {tick} solve report: {}", comps.join(" "));
+                // The chunks with the largest contact input (m/s^2 of the chunk's stress input).
+                let mut by: Vec<(f32, u32, f32, f32)> = rep.chunks.iter().map(|c| { let v = &c.contact_linear; ((v.x * v.x + v.y * v.y + v.z * v.z).sqrt(), c.node, v.y, { let g = &c.prepared_linear; g.y }) }).collect();
+                by.sort_by(|a, b| b.0.total_cmp(&a.0));
+                eprintln!("[calibration] tick {tick} contact inputs: {}", by.iter().take(6).map(|(m, n, y, g)| format!("{}#{n} |a| {m:.1} y {y:.1} (prepared y {g:.1})", case_of(*n))).collect::<Vec<_>>().join(", "));
             }
         }
         if let Ok(st) = world.native_last_status() {

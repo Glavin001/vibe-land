@@ -84,6 +84,12 @@ export function judge(spec, report, config, model) {
       return keyByNodes.get(`${Math.min(a, b)}-${Math.max(a, b)}`) ?? null;
     };
     const stress = compareStress(spec, report, c, prediction, bondKeyOf);
+    // Bonds the scenario tolerates breaking without calling it damage (spec.tolerate, a regex over
+    // bond keys: a mortar bed cracking under a plank is not the frame failing).
+    if (spec.tolerate && m.state === 'damaged') {
+      const re = new RegExp(spec.tolerate), keys = (report.cases[c.id]?.broken ?? []).map((b) => { const at = b.detail.at; return keyByNodes.get(`${Math.min(at.node0, at.node1) - c.nodes[0]}-${Math.max(at.node0, at.node1) - c.nodes[0]}`) ?? ''; });
+      if (keys.every((k) => re.test(k))) { m.state = 'holds'; m.tolerated = keys.length; }
+    }
     const firstKeys = m.firstBroken.map((b) => keyByNodes.get(`${b.nodes[0]}-${b.nodes[1]}`) ?? `${b.chunks.join('|')}`);
     // The bonds the hand calculation has past its capacity beyond the band: each must break on the
     // first breaking tick (its trial, or the corrected pass the trial's breaks lead to).
@@ -99,7 +105,7 @@ export function judge(spec, report, config, model) {
     // breaking tick. (Which of the rest also go depends on the order pieces come free: past the
     // first breaks the structure is a mechanism, and `missed` lists them for the record.)
     const worstU = prediction.u, critical = (prediction.over ?? []).filter((o) => o.u >= 0.95 * worstU).map((o) => o.key);
-    const membersOk = prediction.state === 'holds' ? m.broken === 0 : prediction.state === 'collapses' ? critical.some((k) => firstSet.has(k)) : true;
+    const membersOk = prediction.state === 'holds' ? (m.broken === 0 || m.tolerated === m.broken) : prediction.state === 'collapses' ? critical.some((k) => firstSet.has(k)) : true;
     results.push({ case: c.id, label: c.label, predicted: { state: prediction.state, u: prediction.u, worst: prediction.worst },
       measured: { state: m.state, broken: m.broken, firstTick: m.firstTick, maxDrop: m.maxDrop, maxMove: m.maxMove, fallen: m.fallenChunks, free: m.freeChunks, firstBroken: firstKeys, mustBreak, missed: mustBreak.filter((k) => !firstSet.has(k)) },
       stress: { critical: stress.critical && { key: stress.critical.key, engine: +stress.critical.engine.toFixed(3), hand: stress.critical.hand }, engineWorst: stress.engineWorst && { key: stress.engineWorst.key, engine: +stress.engineWorst.engine.toFixed(3), hand: stress.engineWorst.hand }, ratio: stress.ratio },

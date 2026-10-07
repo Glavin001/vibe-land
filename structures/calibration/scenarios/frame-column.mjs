@@ -21,6 +21,8 @@ export const title = 'Calibration: three-storey RC frame, a ground-floor column 
 export const ticks = 600;
 export const spacing = 16;
 export const band = 0.15;
+/** A plank's mortar bed cracking (EN 1996 tension 0.6 MPa) is not the frame failing. */
+export const tolerate = '^bed@';
 export const configModel = { default: 'gain', section: 'real', rotation: 'real' };
 export const models = { real: 'plane frame, gross sections, characteristic capacities (the engineering prediction)', gain: "the default stage's capped square-patch bending gain" };
 const CASES = [
@@ -30,6 +32,9 @@ const CASES = [
   { id: 'robust-intact', kind: 'robust', removed: [], label: 'UFC alternate-path design, as built' },
   { id: 'robust-corner', kind: 'robust', removed: [0], label: 'UFC design, corner column out' },
   { id: 'robust-edge', kind: 'robust', removed: [1], label: 'UFC design, edge column out' },
+  // The stair tower the building needs (walk-tested by walk.mjs): its own case, so a stair that does
+  // not stand under a configuration is reported as that, not as the frame failing.
+  { id: 'with-stair', kind: 'ordinary', removed: [], label: 'Ordinary design with its exterior stair tower', stair: true },
 ];
 const gainS = (sec) => sec.A / Math.min(6 / Math.sqrt(sec.A), 3);
 
@@ -43,7 +48,7 @@ export function hand() {
 
 export function cases() {
   return CASES.map((c) => {
-    const P = F.params(c.kind), D = F.design(P, c.kind), b = F.build(P, c.kind, c.removed.map((i) => ({ i, frame: 0 })));
+    const P = F.params(c.kind), D = F.design(P, c.kind), b = F.build(P, c.kind, c.removed.map((i) => ({ i, frame: 0 })), { stair: !!c.stair });
     const predictions = {};
     for (const [model, bendingModulus] of [['real', (s) => s.S], ['gain', gainS]]) {
       const r = F.check(P, c.removed, D, { bendingModulus });
