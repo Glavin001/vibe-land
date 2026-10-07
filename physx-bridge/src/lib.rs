@@ -2050,6 +2050,7 @@ fn operation_error(error: cxx::Exception) -> BridgeError {
 /// The stress solve report types (World::native_stress_solve_report), named by diagnostics.
 pub use ffi::{FfiChunkCrushEvent, FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3};
 
+#[cfg(feature = "gpu")]
 #[cxx::bridge(namespace = "vibe_land::physx_bridge")]
 mod ffi {
     struct FfiVec3 {
