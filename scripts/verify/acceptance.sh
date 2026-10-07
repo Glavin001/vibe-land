@@ -36,7 +36,7 @@ mark() { # name status
 t0=$(date +%s)
 
 if want testbed; then
-  trials=framed-house,house,cannonball-framed-house,meteor-framed-house,rest,near-miss,knock-mirror,coast,debris-wheel,drift
+  trials=framed-house,house,cannonball-framed-house,meteor-framed-house,smallshots-framed-house,rest,near-miss,knock-mirror,coast,debris-wheel,drift
   label=verify-acceptance-$profile
   (cd "$ROOT" && VIBE_CITY_SCENE="$lab" VIBE_TESTBED_META="${lab%.json}.meta.json" \
     scripts/vehicle-testbed.sh --build monster --trials "$trials" --label "$label" --report-only) > "$out/testbed.log" 2>&1
@@ -50,6 +50,11 @@ if want veneer; then
     "$veneer"/veneer-bungalow--no-front-studs.json "$veneer"/veneer-house--no-front-studs.json \
     "$veneer"/veneer-house--no-ground-front-studs.json --json "$out/qualify-veneer.json" > "$out/qualify-veneer.log" 2>&1
   mark qualify-veneer "$([ -f "$out/qualify-veneer.json" ] && echo ok || echo failed)"
+fi
+if want lab; then
+  # The lab's structures at rest, each alone, counted from tick 0.
+  python3 "$ROOT/scripts/perf/qualify_structures.py" "$lab" --json "$out/qualify-lab.json" > "$out/qualify-lab.log" 2>&1
+  mark qualify-lab "$([ -f "$out/qualify-lab.json" ] && echo ok || echo failed)"
 fi
 if want walk; then
   args=("$veneer/veneer-house.json" --json "$out/walk.json")

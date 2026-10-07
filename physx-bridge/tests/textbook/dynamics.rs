@@ -90,15 +90,17 @@ fn yes(b: bool) -> f64 {
 }
 
 pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Output) {
-    let wanted = |name: &str| {
+    // Quick: the cases that each take a few ticks; full adds the bisections
+    // and multi-second runs (tilted plane, drops, the glancing impact).
+    let wanted_tier = |name: &str, tier: Tier| {
         if let Ok(filter) = std::env::var("VERIFY_CASES") {
             if !filter.is_empty() {
                 return filter.split(',').any(|f| name.contains(f.trim()));
             }
         }
-        let _ = want;
-        true
+        tier == Tier::Quick || want == Tier::Full
     };
+    let wanted = |name: &str| wanted_tier(name, if ["impact-momentum", "impact-plate-punch", "impact-restitution", "crush-locality"].contains(&name) { Tier::Quick } else { Tier::Full });
     if std::env::var("VERIFY_MODEL_ONLY").is_ok_and(|v| v == "1") {
         return;
     }

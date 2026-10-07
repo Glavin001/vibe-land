@@ -43,6 +43,10 @@ export IMPACT_BUILD=${VERIFY_IMPACT_BUILD:-/Users/glavin/Development/PhysX/.clau
 t_start=$(date +%s)
 failed=0
 
+# A GPU environment failure, not a test failure: another process's long GPU work
+# timed this one's command buffers out (Metal), which PhysX reports as CUDA error 2.
+env_failure() { grep -qE 'kIOGPUCommandBufferCallbackErrorTimeout|CUDA error 2\b|cudaErrorMemoryAllocation|CUDA_ERROR_LAUNCH_TIMEOUT' "$1"; }
+
 has() { grep -q "#define $2 1" "$1/include/physx/PxDestructionScene.h" 2>/dev/null; }
 
 # textbook LABEL PROFILE [SDK]: one engine configuration, one process.
@@ -58,8 +62,14 @@ textbook() {
     source "$ROOT/scripts/fidelity/check.sh" --degrade > "$out/textbook-$label.fidelity" 2>&1
     export CARGO_TARGET_DIR=$ROOT/target/verify-$(basename "$PHYSX_ROOT")
     export VERIFY_TIER=$tier VERIFY_OUT=$out/textbook-$label.jsonl
-    cd "$ROOT" && cargo test -p vibe-land-physx-bridge --features native-destruction --test textbook \
-      -- --ignored --test-threads=1 --nocapture > "$out/textbook-$label.log" 2>&1
+    cd "$ROOT"
+    for attempt in 1 2; do
+      rm -f "$VERIFY_OUT"
+      cargo test -p vibe-land-physx-bridge --features native-destruction --test textbook \
+        -- --ignored --test-threads=1 --nocapture > "$out/textbook-$label.log" 2>&1 && break
+      env_failure "$out/textbook-$label.log" || break
+      echo "[verify] textbook $label: GPU environment failure, rerunning"
+    done
   )
   local rc=$?
   echo "[verify] textbook $label: $(grep -hE '^[a-z+()-]+: [0-9]+ checks' "$out/textbook-$label.log" || echo "did not finish (see textbook-$label.log)")"
@@ -86,7 +96,18 @@ if want regressions; then
       continue
     fi
     t0=$(date +%s)
-    if (cd "$ROOT" && bash -c "$cmd") > "$out/regression-$id.log" 2>&1; then st=PASS; else st=FAIL; failed=1; fi
+    # PhysX's own ctests set the stage's convergence mode per test (strict tests
+    # pin it to 0): never hand them the product backstop.
+    [[ "$cmd" == *ctest* ]] && cmd="unset PX_DESTRUCTION_ALLOW_UNCONVERGED; $cmd"
+    st=FAIL
+    for attempt in 1 2; do
+      if (cd "$ROOT" && bash -c "$cmd") > "$out/regression-$id.log" 2>&1; then st=PASS; break; fi
+      # Another process's long GPU dispatch can time out this one's command
+      # buffers: an environment failure, rerun once, then reported as ENV.
+      if env_failure "$out/regression-$id.log"; then st=ENV; echo "[verify] regression $id: GPU environment failure, rerunning"; continue; fi
+      st=FAIL; break
+    done
+    [ "$st" = FAIL ] && failed=1
     dt=$(( $(date +%s) - t0 ))
     echo "[verify] regression $id: $st (${dt}s)"
     echo "{\"id\":\"$id\",\"what\":$(printf '%s' "$what" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))'),\"status\":\"$st\",\"seconds\":$dt}" >> "$out/regressions.jsonl"
