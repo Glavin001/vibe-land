@@ -18,10 +18,13 @@
 #   CALIB_CASES    the cases, comma list (default: every case): a take each, and the
 #                  overview shows only them; CALIB_OVERVIEW=0 skips the overview
 #   CALIB_FREEZE   seconds the opening frame is held (default 4)
+#   CALIB_REUSE    takes already filmed, not filmed again: id=RAW.mp4,... (a take's raw
+#                  recording, its .log beside it -- target/native-video/calibration-<stamp>.mp4)
 #   FILM_SIZE, FILM_FPS, FILM_SEED   as for any film (default 1280x720, 30)
 #   VIBE_SIM_TARGET, NATIVE_SKIP_SIM  the simulation library (scripts/native-mac.sh sim())
 #
-# Correctness runs share the GPU (VIBE_GPU_SHARED=1: no lock). The shared
+# Correctness runs share the GPU: VIBE_GPU_SHARED=1, so native-mac.sh's launch
+# takes one of the machine's shared GPU slots (scripts/perf/gpu-run.sh). The shared
 # client/dist-native bundle: a take waits while target/native-bundle.lock is
 # held by someone else (it does not take it), and while any other app film runs.
 set -euo pipefail
@@ -68,7 +71,15 @@ busy() {
 }
 
 take() {
-  local id="$1" scene held
+  local id="$1" scene held reuse
+  reuse=$(tr ',' '\n' <<< "${CALIB_REUSE:-}" | sed -n "s/^$id=//p" | head -1)
+  if [ -n "$reuse" ]; then
+    [ -f "$reuse" ] && [ -f "${reuse%.mp4}.log" ] || { echo "take $id: CALIB_REUSE $reuse (or its .log) missing" >&2; exit 1; }
+    echo "take $id: reusing $reuse" >&2
+    grep -E '\] calib \{' "${reuse%.mp4}.log" | sed 's/.*\] calib /  /' >&2 || true
+    node "$ROOT/structures/calibration/film/freeze.mjs" "$reuse" "${reuse%.mp4}.log" "${reuse%.mp4}-take.mp4" --fps "$FILM_FPS" >&2
+    echo "${reuse%.mp4}-take.mp4"; return 0
+  fi
   # The scene the take loads: the case alone, or for the overview every case filmed.
   held="$id"; [ "$id" = overview ] && held="$cases"
   if [ "$id" = overview ] && [ -z "${CALIB_CASES:-}" ]; then scene="$DIR/scene.json"; held=""
