@@ -31,7 +31,7 @@
  * is y 0.15; the veneer's outer faces are x +-5.0 and z +-3.9.
  */
 import {Builder,composeScene,round,v} from './geometry.mjs';
-import {M,MORTAR_JOINT,C24,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled} from './materials.mjs';
+import {M,MORTAR_JOINT,C24,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled,ULTIMATE_SLIP} from './materials.mjs';
 import {cornerReferencedHulls} from './parts/hull-origins.mjs';
 import {planStair,checkStair,requiredVoid,checkHeadroom,buildTimberStair,frameFloorOpening,stairConnection,housingShear,STAIR_CONNECTIONS,STAIR_TYPES,OPENING_TYPES,STAIR_SIZES} from './stairs-timber.mjs';
 
@@ -97,7 +97,8 @@ function jointMaterial(b,kind,area,length,table=CONNECTIONS){
  const f={compression:c.compression,tension:c.tension*k,shear:c.shear*k};
  const perArea=c.bearing?BEARING.elasticModulus/c.bearing:c.per==='joint'?c.slip/area:c.slip/(c.perArea??1);
  const elastic=perArea*length;
- return b.table.push({...structuredClone(b.table[M.frame]),name:`${kind}-joint`,color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:elastic,
+ // Fasteners in timber: ductile (materials.mjs ULTIMATE_SLIP).
+ return b.table.push({...structuredClone(b.table[M.frame]),name:`${kind}-joint`,color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:elastic,ductileSlip:ULTIMATE_SLIP,
   compressionElastic:LONG_TERM*f.compression,compressionFatal:f.compression,tensionElastic:LONG_TERM*f.tension,tensionFatal:f.tension,
   shearElastic:LONG_TERM*f.shear,shearFatal:f.shear})-1;
 }
@@ -519,7 +520,7 @@ export function buildVeneerHouse(options={}){
 /** Particleboard flooring nailed to joists: like the gypsum, per area (AS 1860.2: nails at 150 mm on edges, 300 mm in the field). */
 function jointMaterialFlooring(b,length,name='flooring-nail-joint'){
  const area=.3*.045,f={compression:BEARING.compression,tension:NAIL_WITHDRAWAL()/area,shear:770/area};
- return b.table.push({...structuredClone(b.table[M.frame]),name,color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:719e3/area*length,
+ return b.table.push({...structuredClone(b.table[M.frame]),name,color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:719e3/area*length,ductileSlip:ULTIMATE_SLIP,
   compressionElastic:LONG_TERM*f.compression,compressionFatal:f.compression,tensionElastic:LONG_TERM*f.tension,tensionFatal:f.tension,shearElastic:LONG_TERM*f.shear,shearFatal:f.shear})-1;
 }
 const NAIL_WITHDRAWAL=()=>347;

@@ -146,6 +146,24 @@ export const NAIL = { lateral: 770, withdrawal: 347, toeLateral: 0.83, toeWithdr
 export const SLIP = { nail: 719e3, screw: 955e3, bolt: 4.49e6, gypsumScrew: 0.5e6 };
 
 /**
+ * Ultimate slip of a dowel-type connection in timber (nails, screws, bolts,
+ * gypsum-board screws), m: the stage's impact capacity (PhysX
+ * PxDestructionMaterial::ductileSlip, opt-in) lets a joint of such a
+ * material yield at its capacity and break only when its slip over a tick
+ * passes this; a material without it is brittle (mortar, glass, wall ties
+ * pulling out of their bed, timber within a member) and fractures at capacity.
+ * EN 12512 classes a joint "high ductility" at D = v_u / v_y >= 6; with v_y =
+ * F / K_ser (EN 1995-1-1 7.1, 16d nail ~770 N at 719 N/mm: ~1.1 mm) that is
+ * ~6.4 mm, and nailed and bolted timber joints in test reach their ultimate
+ * load at 10-15 mm of slip (Ehlbeck & Larsen 1993, STEP lecture C14; Folz &
+ * Filiatrault 2001, J. Struct. Eng. 127(4): sheathing connectors hold their
+ * peak well past 10-15 mm). 15 mm, as in the impact study
+ * (scripts/impact-study.py ULTIMATE_SLIP). At impact speeds a yielded joint
+ * slips 0.1-0.4 m in one tick, so verdicts there do not depend on it.
+ */
+export const ULTIMATE_SLIP = 0.015;
+
+/**
  * The house's connections, each as its real fasteners. `per: 'joint'`: a
  * capacity in newtons for the joint, which the builder spreads over the
  * measured contact area of that kind of joint (veneer-houses.mjs

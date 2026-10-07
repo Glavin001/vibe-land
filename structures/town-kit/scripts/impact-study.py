@@ -517,7 +517,7 @@ def verdict_plastic(st, active, alive, contacts, total, d, damage, crush, impact
         for i in np.nonzero(new_crush)[0]: contacts.pop(int(i), None); damage[i] = 1.0
         if solves > 200: print('  [plastic] 100 rounds', file=sys.stderr); break
     return dict(broken=broken, crushed=crushed, yielded=yielded & ~broken, solves=solves, events=solves // 2,
-                delivered=delivered, lam=1.0, u_new=u_new)
+                delivered=delivered, lam=1.0, u_new=u_new, J=J, momentum=r)
 
 
 def utilisation_sub(st, rows, JJ):
