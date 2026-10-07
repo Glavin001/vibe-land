@@ -112,11 +112,13 @@ pub struct Structure {
     pub rotation: [f64; 4],
     /// Fragment body linear damping; None keeps the game's default (0.25).
     pub linear_damping: Option<f64>,
+    /// World position of the structure's origin.
+    pub origin: V3,
 }
 
 impl Structure {
     pub fn new() -> Self {
-        Self { chunks: Vec::new(), bonds: Vec::new(), materials: Vec::new(), rotation: [0.0, 0.0, 0.0, 1.0], linear_damping: None }
+        Self { chunks: Vec::new(), bonds: Vec::new(), materials: Vec::new(), rotation: [0.0, 0.0, 0.0, 1.0], linear_damping: None, origin: [0.0, 20.0, 0.0] }
     }
     pub fn material(&mut self, m: Material) -> usize {
         self.materials.push(m);

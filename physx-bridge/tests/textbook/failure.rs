@@ -19,7 +19,7 @@ use super::{classify, Expectation, Output, Row};
 
 /// A failure check's result row.
 #[allow(clippy::too_many_arguments)]
-fn row(config: Config, case: &str, check: &str, formula: &str, source: &str, unit: &str, textbook: f64, model: f64, stage: f64, scale: f64, expected: &[Expectation], out: &mut Output) {
+pub fn row(config: Config, case: &str, check: &str, formula: &str, source: &str, unit: &str, textbook: f64, model: f64, stage: f64, scale: f64, expected: &[Expectation], out: &mut Output) {
     let mut r = Row {
         config: config.name.into(),
         case: case.into(),

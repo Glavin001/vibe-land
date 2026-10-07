@@ -16,7 +16,8 @@ use vibe_land_physx_bridge::{
     WorldConfig,
 };
 
-const GROUP_CHUNK: u32 = 1 << 5;
+pub const GROUP_CHUNK: u32 = 1 << 5;
+pub const GROUP_PLAIN: u32 = 1 << 0;
 
 /// Production stress settings (native_runtime.rs): the fleet's cap of 64,
 /// the SDK-default tolerance 1e-3, no force tolerance.
@@ -88,12 +89,14 @@ pub fn build(s: &Structure) -> World {
     world
         .native_create_destructible(
             0,
-            Pose { position: Vec3::new(0.0, 20.0, 0.0), rotation: Quat { x: x as f32, y: y as f32, z: z as f32, w: w as f32 } },
+            Pose { position: v3(s.origin), rotation: Quat { x: x as f32, y: y as f32, z: z as f32, w: w as f32 } },
             &nodes,
             &bonds,
             settings,
             GROUP_CHUNK,
-            GROUP_CHUNK,
+            // Chunks meet each other and plain bodies (the dynamics cases'
+            // balls, blocks and ground, group 1).
+            GROUP_CHUNK | GROUP_PLAIN,
         )
         .unwrap();
     world.step().unwrap();
