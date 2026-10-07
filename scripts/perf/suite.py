@@ -320,7 +320,7 @@ def pct(v: list[float], p: float) -> float:
 
 def live_metrics(ticks: list[dict]) -> dict:
     total = [t["total"] for t in ticks]
-    fetch = [t["fetch"] for t in ticks]
+    fetch = [t.get("fetch", float("nan")) for t in ticks]
     wait = [t["gpu_wait"] for t in ticks if t.get("gpu_wait") is not None]
     evals = [e for t in ticks for e in t["impact_evals"]]
     passes = [p for t in ticks for p in t["impact_passes"]]
@@ -356,7 +356,7 @@ def read_replay(path: Path) -> dict | None:
                          "chunks": int(m[1]), "bonds": int(m[2])})
     if not runs:
         return None
-    timed = runs[1:] if len(runs) > 1 else runs  # the first run pays first-use costs
+    timed = runs[1:] if len(runs) > 2 else runs  # with 3+ runs the first (first-use costs) is dropped
     ms = [r["ms"] for r in timed]
     r0 = runs[0]
     return {"kind": "replay", "runs": len(timed),
@@ -411,7 +411,9 @@ def summarise(run_dir: Path) -> dict:
                     problems.append(f"{path.name}: no replay result")
     out = {"label": work.get("label"), "tier": work.get("tier"), "reps": work["reps"], "created": work.get("created"),
            "fingerprint": work.get("fingerprint"), "headline": work.get("headline", "high"),
-           "wall_seconds": timing.get("seconds"), "jobs": timing.get("jobs"), "problems": problems, "profiles": {}}
+           "wall_seconds": timing.get("timed_seconds", timing.get("seconds")), "warmup_seconds":
+               sum(j["seconds"] for j in timing.get("jobs", []) if j["job"].startswith("warmup")),
+           "lock_wait_seconds": timing.get("waited_seconds"), "shared_gpu": timing.get("shared"), "jobs": timing.get("jobs"), "problems": problems, "profiles": {}}
     for profile, ss in scen.items():
         prof = {}
         for s, reps in ss.items():
@@ -467,13 +469,16 @@ def fmt(x, nd=1):
 
 def table(report: dict) -> str:
     lines = [f"perf suite: {report.get('label')} ({report.get('tier')}, {report['reps']} rep(s)), "
-             f"wall {fmt(report.get('wall_seconds'), 0)} s inside the GPU lock"]
+             f"{fmt(report.get('wall_seconds'), 0)} s timed on the GPU (+{fmt(report.get('warmup_seconds'), 0)} s warm-up, "
+             f"{fmt(report.get('lock_wait_seconds'), 0)} s waiting for the lock)"
+             + ("  [SHARED GPU: timings indicative only]" if report.get("shared_gpu") else "")]
     for profile in sorted(report["profiles"], key=lambda p: p != report.get("headline")):
         prof = report["profiles"][profile]
         sc = prof.get("score")
         head = f"\n== {profile}{' (headline)' if profile == report.get('headline') else ''}: geomean {fmt(prof['geomean_ms'], 2)} ms"
         if sc:
-            head += f", SCORE {sc['value']:.3f} vs baseline (±{fmt(sc['band_pct'])}%{', significant' if sc['significant'] else ', within noise'})"
+            head += (f", SCORE {sc['value']:.3f} vs baseline (±{fmt(sc['band_pct'])}%, "
+                     f"{('faster' if sc['value'] < 1 else 'SLOWER') if sc['significant'] else 'within noise'}; lower is faster)")
         lines.append(head)
         lines.append(f"{'scenario':<17} {'kind':<6} {'median':>8} {'p95':>8} {'worst':>8} {'fetch':>8} {'it/tick':>7} "
                      f"{'unconv':>6} {'imp.ev':>6} {'imp.steps':>9} {'capped':>6} {'longest':>7} {'cv%':>5}  vs baseline")
@@ -490,7 +495,8 @@ def table(report: dict) -> str:
             d = v.get("delta")
             dtxt = ""
             if d:
-                dtxt = f"{d['pct']:+.1f}% (±{fmt(d['band_pct'])}%) {'SIGNIFICANT' if d['significant'] else 'noise'}"
+                verdict = ("faster" if d["pct"] < 0 else "SLOWER") if d["significant"] else ("within noise" if d["band_pct"] is not None else "no noise estimate (reps)")
+                dtxt = f"{d['pct']:+.1f}% (±{fmt(d['band_pct'])}%) {verdict}"
                 if d.get("work_drift_pct") is not None and abs(d["work_drift_pct"]) > 15:
                     dtxt += f" [bonds broken {d['work_drift_pct']:+.0f}%: different workload]"
             lines.append(f"{s:<17} {v['kind']:<6} {med:8.2f} {p95:8.2f} {worst:8.1f} {fmt(wait, 2):>8} {fmt(it):>7} {fmt(unc, 0):>6} "
@@ -564,7 +570,7 @@ def main() -> None:
     ap.add_argument("--save-baseline", action="store_true", help="write this run as scripts/perf/suite-baseline.json")
     ap.add_argument("--report", default=None, help="re-read a run directory (no GPU)")
     ap.add_argument("--capture", action="store_true", help="make the impact captures the high-fidelity replays use")
-    ap.add_argument("--replay-runs", type=int, default=4)
+    ap.add_argument("--replay-runs", type=int, default=None, help="runs of each impact replay (default 2; quick 1)")
     ap.add_argument("--timeout", type=float, default=900)
     ap.add_argument("--shared", action="store_true", help="share the GPU (VIBE_GPU_SHARED=1): for developing the suite; timings only indicative")
     ap.add_argument("--exec", default=None, help=argparse.SUPPRESS)
@@ -630,7 +636,7 @@ def main() -> None:
                 "profile_env": penv, "headline": spec.get("headline", "high"), "created": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "extra_env": {p: ({"PX_DESTRUCTION_IMPACT_LOG": "1"} if p == "high" else {}) for p in profiles},
                 "warmups": warmups, "jobs": jobs, "replays": replays, "replay_binary": str(rbin) if rbin else None,
-                "replay_runs": args.replay_runs, "timeout": args.timeout, "fingerprint": fingerprint,
+                "replay_runs": args.replay_runs or (1 if tier == "quick" else 2), "timeout": args.timeout, "fingerprint": fingerprint,
                 "build_seconds": time.monotonic() - t_build, "shared": args.shared}
         (run_dir / "work.json").write_text(json.dumps(work, indent=1))
         log(f"built and planned in {work['build_seconds']:.0f} s -> {run_dir}")
