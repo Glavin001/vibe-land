@@ -33,6 +33,14 @@ Statuses:
 Tolerances are never loosened to make a check pass. A gap is recorded with its
 number and its cause.
 
+When a result looks wrong, start with
+`.claude/skills/destruction-fidelity-debugging/SKILL.md`. It covers:
+
+- the environment traps;
+- flag bisection;
+- the impact-solve capture and replay;
+- the momentum and energy checks.
+
 ## The profiles: one switch
 
 ```bash
@@ -66,6 +74,20 @@ The bridge refuses a flag its SDK lacks. Against another SDK, `check.sh
 - `high-fidelity(no-impact)`: run without impact capacity (for example, on the
   rotation-only garage-multihull);
 - `high-fidelity(no-rotation)`: run without section rotation.
+
+### Provenance
+
+`scripts/fidelity/provenance.sh PROFILE` checks that the SDK and the packs are
+what the profile claims. `correctness.sh` and `acceptance.sh` call it before
+any high-fidelity case.
+
+- **SDK.** The SDK's `sdk-artifacts.json` must say `source_dirty: false`. Its
+  `source_revision` must be its checkout's HEAD, or a revision with no
+  `physx/` or `blast/` changes since. Otherwise the high profile refuses to
+  run. `VERIFY_ALLOW_STALE_SDK=1` runs it anyway, and the run records that.
+- **Packs.** High-fidelity packs older than any authoring source are rebuilt
+  (`build-packs.sh high`, a few seconds). Runtime packs that are out of date
+  are reported.
 
 ### The product's stage environment in tests
 

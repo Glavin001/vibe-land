@@ -107,7 +107,13 @@ textbook() {
 
 if want textbook; then
   textbook runtime runtime || failed=1
-  textbook high high || failed=1
+  if (source "$ROOT/scripts/fidelity/high.env"; "$ROOT/scripts/fidelity/provenance.sh" high) > "$out/provenance-high.log" 2>&1; then
+    textbook high high || failed=1
+  else
+    echo "[verify] textbook high: REFUSED, $(grep -m1 'SDK built\|dirty\|missing' "$out/provenance-high.log")"
+    echo '{"config":"high-fidelity","case":"(provenance)","check":"SDK and packs current","status":"FAIL","error":null,"textbook":null,"stage":null,"model":null,"unit":"","formula":"","source":"see provenance-high.log"}' >> "$out/textbook-high.jsonl"
+    failed=1
+  fi
   if [ "$tier" = full ]; then
     textbook section-bending bending || failed=1
   fi
