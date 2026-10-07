@@ -615,7 +615,8 @@ fn energy_audit(config: Config, expected: &[Expectation], out: &mut Output) {
         }
         println!("  {label}: ball {v0} m/s, max speed after contact {vmax:.3}, v_z 4 ticks on {vz_after:.3}; fragments KE {ke_frag:.1} J vs ball loss {ke_ball_loss:.1} J + PE released {pe_release:.1} J");
         let case = format!("impact-energy-{label}");
-        row(config, &case, "the ball never gains speed after contact", "|v| <= v0", source, "m/s", v0, f64::NAN, vmax.max(v0.min(vmax)), v0, expected, out);
+        println!("  {label}: the ball's fastest after contact {vmax:.3} m/s (launched at {v0})");
+        row(config, &case, "the ball never gains speed after contact", "|v| <= v0", source, "1=yes", 1.0, f64::NAN, yes(vmax <= v0 * 1.001), 1.0, expected, out);
         if label == "breakable" {
             let budget = ke_ball_loss + pe_release;
             row(config, &case, "fragments' kinetic energy within the ball's loss plus PE released", "KE_frag <= dKE_ball + m g dh", source, "1=yes", 1.0, f64::NAN, yes(ke_frag <= 1.01 * budget + 1.0), 1.0, expected, out);

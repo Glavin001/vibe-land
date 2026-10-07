@@ -32,6 +32,10 @@ export VIBE_GPU_SHARED=1
 # The product's stage environment, as a backstop for any GPU test that does not
 # set it itself (physx-bridge/tests/common/stage_env.rs; lint-gpu-test-env.sh).
 export PX_DESTRUCTION_ALLOW_UNCONVERGED=1
+# The impact solve's bug detectors (PhysX d4d37749c) print to the logs: a
+# diverged solve, or a GPU dispatch past 100 ms (machine safety). Both fail
+# the job that logged them (bug_signals below).
+export PX_DESTRUCTION_IMPACT_LOG=1
 I=/Users/glavin/Development/PhysX/out/install
 export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
 # High-fidelity runs on high.env's SDK (integration/high-fidelity, garage-hifi: every
@@ -74,6 +78,9 @@ watched() {
   wait "$pid"
 }
 
+# bug_signals LOG: the impact solve's diverged solves and over-100-ms dispatches.
+bug_signals() { grep -hE '\[impact\] DIVERGED|\[impact\] warning: a dispatch took' "$@" 2>/dev/null | sort | uniq -c | head -5; }
+
 has() { grep -q "#define $2 1" "$1/include/physx/PxDestructionScene.h" 2>/dev/null; }
 
 # textbook LABEL PROFILE [SDK]: one engine configuration, one process.
@@ -99,6 +106,12 @@ textbook() {
     done
   )
   local rc=$?
+  local sig; sig=$(bug_signals "$out/textbook-$label.log")
+  if [ -n "$sig" ]; then
+    echo "[verify] textbook $label: IMPACT BUG SIGNALS: $sig"
+    echo "{\"config\":\"$label\",\"case\":\"(impact solve)\",\"check\":\"no diverged solve, no dispatch over 100 ms\",\"status\":\"FAIL\",\"error\":null,\"textbook\":null,\"stage\":null,\"model\":null,\"unit\":\"\",\"formula\":\"\",\"source\":\"$(echo $sig | tr -d '\"' | cut -c1-200)\"}" >> "$out/textbook-$label.jsonl"
+    rc=1
+  fi
   echo "[verify] textbook $label: $(grep -hE '^[a-z+()-]+: [0-9]+ checks' "$out/textbook-$label.log" || echo "did not finish (see textbook-$label.log)")"
   # A run that did not finish (build error, configuration rejected) is a failure.
   grep -qE 'checks, ' "$out/textbook-$label.log" || { echo "{\"config\":\"$label\",\"case\":\"(suite)\",\"check\":\"ran to completion\",\"status\":\"FAIL\",\"error\":null,\"textbook\":null,\"stage\":null,\"model\":null,\"unit\":\"\",\"formula\":\"\",\"source\":\"$(grep -m1 -E 'panicked|error' "$out/textbook-$label.log" | tr '"' "'" | cut -c1-200)\"}" >> "$out/textbook-$label.jsonl"; }
@@ -142,6 +155,7 @@ if want regressions; then
       if env_failure "$out/regression-$id.log"; then st=ENV; echo "[verify] regression $id: GPU environment failure, rerunning"; continue; fi
       st=FAIL; break
     done
+    [ "$st" = PASS ] && [ -n "$(bug_signals "$out/regression-$id.log")" ] && { st=FAIL; echo "[verify] regression $id: impact bug signals: $(bug_signals "$out/regression-$id.log" | tr '\n' ' ')"; }
     [ "$st" = FAIL ] && failed=1
     dt=$(( $(date +%s) - t0 ))
     echo "[verify] regression $id: $st (${dt}s)"
@@ -154,6 +168,8 @@ if want acceptance; then
     # High-fidelity on high.env's SDK (the combined garage-hifi install);
     # VERIFY_HIGH_PHYSX_ROOT picks another.
     HIGH_PHYSX_ROOT=${VERIFY_HIGH_PHYSX_ROOT:-} "$ROOT/scripts/verify/acceptance.sh" "$p" "$out/acceptance-$p" > "$out/acceptance-$p.log" 2>&1 || failed=1
+    sig=$(bug_signals "$out/acceptance-$p"/*.log "$ROOT/target/vehicle-testbed/verify-acceptance-$p.log")
+    [ -n "$sig" ] && { echo "[verify] acceptance $p: IMPACT BUG SIGNALS: $(echo "$sig" | tr '\n' ' ')"; failed=1; }
     echo "[verify] acceptance $p: $(grep -c '"status":"PASS"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) pass, $(grep -c '"status":"KNOWN-GAP"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) known gaps, $(grep -c '"status":"FAIL"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) failing"
   done
 fi
