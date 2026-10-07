@@ -43,7 +43,7 @@
 
 use vibe_land_physx_bridge::{
     ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, NativeConfig, Pose, Quat, RoundDesc, StressMaterialDesc, Vec3,
-    World, WorldConfig, DEFAULT_WORLD_GRAVITY,
+    World, WorldConfig, DEFAULT_WORLD_GRAVITY, DynamicBoxDesc, StaticBoxDesc, FIXED_TIMESTEP,
 };
 
 const GROUP_CHUNK: u32 = 1 << 5;
@@ -430,3 +430,69 @@ fn bond_stiffness_floors() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+
+/// A 20 cm cube released from rest on a 30 degree incline, friction 0.5 (the
+/// world's): distance slid down the slope after `ticks`.
+fn incline_slide(ticks: u32) -> f32 {
+    let theta = 30f32.to_radians();
+    let q = Quat { x: 0.0, y: 0.0, z: (theta / 2.0).sin(), w: (theta / 2.0).cos() };
+    // The plane's +x runs uphill, (cos, sin); its normal is (-sin, cos).
+    let (t, n) = ([theta.cos(), theta.sin()], [-theta.sin(), theta.cos()]);
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 1,
+            pose: Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: q },
+            half_extents: Vec3::new(5.0, 0.1, 1.0),
+            collision_group: 1,
+            collision_mask: u32::MAX,
+        })
+        .unwrap();
+    let lift = 0.1 + 0.1 + 0.0005;
+    let start = [n[0] * lift, n[1] * lift];
+    world
+        .add_dynamic_box(DynamicBoxDesc {
+            entity_id: 2,
+            user_id: 2,
+            pose: Pose { position: Vec3::new(start[0], start[1], 0.0), rotation: q },
+            half_extents: Vec3::new(0.1, 0.1, 0.1),
+            mass: 8.0,
+            collision_group: 1,
+            collision_mask: u32::MAX,
+        })
+        .unwrap();
+    for _ in 0..ticks {
+        world.step().unwrap();
+    }
+    let b = world.body_snapshots().unwrap().into_iter().find(|b| b.entity_id == 2).expect("block");
+    let d = [b.pose.position.x - start[0], b.pose.position.y - start[1]];
+    -(d[0] * t[0] + d[1] * t[1])
+}
+
+/// Scene stabilization (PxSceneFlag::eENABLE_STABILIZATION, on unless
+/// VIBE_PHYSX_STABILIZATION=0): PhysX damps and scales gravity on slow bodies
+/// in contact. A block sliding from rest is slow for its first second, so it
+/// is a measurable fudge. Textbook (Hibbeler, Dynamics, 14th ed., 13.4): a
+/// block on an incline steeper than its friction angle accelerates at
+/// a = g (sin theta - mu cos theta); s = a t^2 / 2.
+#[test]
+#[ignore = "requires the GPU PhysX scene"]
+fn stabilization_on_an_incline() {
+    let ticks = 60u32;
+    let time = ticks as f32 * FIXED_TIMESTEP;
+    let theta = 30f32.to_radians();
+    let a = DEFAULT_WORLD_GRAVITY * (theta.sin() - 0.5 * theta.cos());
+    let textbook = 0.5 * a * time * time;
+    std::env::remove_var("VIBE_PHYSX_STABILIZATION");
+    let on = incline_slide(ticks);
+    std::env::set_var("VIBE_PHYSX_STABILIZATION", "0");
+    let off = incline_slide(ticks);
+    std::env::remove_var("VIBE_PHYSX_STABILIZATION");
+    println!("block on a 30 degree incline, mu 0.5, {time:.2} s (Hibbeler 13.4): s = a t^2/2 = {textbook:.4} m");
+    println!("  stabilization on (runtime):  {on:.4} m ({:+.1}%)", 100.0 * (on - textbook) / textbook);
+    println!("  stabilization off:           {off:.4} m ({:+.1}%)", 100.0 * (off - textbook) / textbook);
+    // PhysX patch friction slides ~2% further than Coulomb at mu 0.5 here.
+    assert!(((off - textbook) / textbook).abs() < 0.03, "without stabilization the slide is not the textbook's");
+    println!("  stabilization changes the slide by {:.2}%", 100.0 * (on - off) / off);
+}
