@@ -35,7 +35,7 @@ export const holdsByDrop = true;
 export const configModel = { default: 'real', section: 'real', rotation: 'real' };
 export const models = { real: 'Heyman limit analysis: t/R >= 0.1075 stands (no tension, no sliding)' };
 export const R = 5.0, DEPTH = 1.0, N = 21, T_MIN = 0.1075;
-const RATIOS = [0.085, 0.1, 0.115, 0.13, 0.16];
+const RATIOS = process.env.CALIB_ARCH_RATIOS ? process.env.CALIB_ARCH_RATIOS.split(',').map(Number) : [0.085, 0.1, 0.115, 0.13, 0.16];
 
 export function build(tOverR) {
   const t = tOverR * R, pk = new Pack(`masonry-arch-${tOverR}`);
