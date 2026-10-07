@@ -151,7 +151,7 @@ export function design(P = FRAME, kind = 'ordinary') {
 }
 
 /** Build the building (design `kind`) with ground-floor columns `removed` ([{i, frame}], frame 0 at z 0, 1 at z 6). */
-export function build(P = FRAME, kind = 'ordinary', removed = [], { stair = true } = {}) {
+export function build(P = FRAME, kind = 'ordinary', removed = [], { stair = true, charged = false } = {}) {
   const D = design(P, kind), xs = columnsX(P), pk = new Pack(`${P.key}-${kind}${removed.length ? `-no-${removed.map((r) => `${r.frame}${r.i}`).join('-')}` : ''}`);
   const beamMat = { ...rcMaterial(`rc-beam-${kind}`, D.beam), color: '#c9c4ba', textureKey: 'concrete-wall' };
   const colMat = { ...rcMaterial('rc-column', D.column), color: '#bdb8ad', textureKey: 'concrete-wall' };
@@ -164,7 +164,8 @@ export function build(P = FRAME, kind = 'ordinary', removed = [], { stair = true
   for (let fz = 0; fz < 2; fz++) {
     const z = frames[fz]; joints[fz] = [];
     for (let i = 0; i < xs.length; i++) {
-      const x = xs[i], gone = removed.some((r) => r.i === i && r.frame === fz);
+      // charged: the ground-floor column is a charge's support (a static box, calibration_charges.rs), not a chunk.
+      const x = xs[i], gone = charged || removed.some((r) => r.i === i && r.frame === fz);
       const plate = pk.box({ min: [x - c, -0.1, z - c], max: [x + c, 0, z + c], material: anchor, type: 'footing', name: `footing-${fz}-${i}`, fixed: true });
       pk.box({ min: [x - c - 0.4, -1, z - c - 0.4], max: [x + c + 0.4, -0.1, z + c + 0.4], material: anchor, type: 'footing', name: `pad-${fz}-${i}`, fixed: true });
       let below = gone ? null : plate;
@@ -214,7 +215,9 @@ export function build(P = FRAME, kind = 'ordinary', removed = [], { stair = true
     for (let i = 0; i < xs.length; i++) pk.box({ min: [xs[i] - P.beam.b / 2 + 0.005, yb, c + 0.005], max: [xs[i] + P.beam.b / 2 - 0.005, yt, P.depth - c - 0.005], material: plank, type: 'plank', name: `strip-${k}-${i}` });
   }
   if (stair) stairTower(pk, P, anchor);
-  return { pack: pk.build(), names: pk.names, bonds, D };
+  // The charged columns' sections: [{line i, frame, box: [min, max]}].
+  const supports = charged ? [0, 1].flatMap((fz) => xs.map((x, i) => ({ i, frame: fz, box: [[x - c, 0, frames[fz] - c], [x + c, columnSpan(P, 0)[1], frames[fz] + c]] }))) : [];
+  return { pack: pk.build(), names: pk.names, bonds, D, supports };
 }
 
 /**

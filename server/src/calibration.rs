@@ -104,34 +104,9 @@ fn calibration_run() {
         [aim.center.x - c[0], aim.center.y - c[1], aim.center.z - c[2]]
     };
 
-    // Charges: static supports removed at their tick.
-    let mut charges: Vec<(u32, Vec<u32>)> = Vec::new();
-    if let Ok(path) = std::env::var("VIBE_CALIB_CHARGES") {
-        let spec: Value = serde_json::from_slice(&std::fs::read(&path).expect("charges file")).expect("charges json");
-        let world = arena.physx_world_mut().unwrap();
-        let mut next_id = 0x00ca_1b00u32;
-        for c in spec.as_array().expect("charges: a list") {
-            let mut ids = Vec::new();
-            for b in c["boxes"].as_array().expect("boxes") {
-                let lo: Vec<f32> = b[0].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
-                let hi: Vec<f32> = b[1].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
-                next_id += 1;
-                world.add_static_box(vibe_land_physx_bridge::StaticBoxDesc {
-                    entity_id: next_id,
-                    user_id: 0,
-                    pose: vibe_land_physx_bridge::Pose {
-                        position: vibe_land_physx_bridge::Vec3::new((lo[0] + hi[0]) / 2. + offset[0], (lo[1] + hi[1]) / 2. + offset[1], (lo[2] + hi[2]) / 2. + offset[2]),
-                        rotation: vibe_land_physx_bridge::Quat::IDENTITY,
-                    },
-                    half_extents: vibe_land_physx_bridge::Vec3::new((hi[0] - lo[0]) / 2., (hi[1] - lo[1]) / 2., (hi[2] - lo[2]) / 2.),
-                    collision_group: vibe_land_destruction::bridge_authoring::GROUP_STATIC,
-                    collision_mask: u32::MAX,
-                }).expect("charge support box");
-                ids.push(next_id);
-            }
-            charges.push((c["tick"].as_u64().expect("charge tick") as u32, ids));
-        }
-    }
+    // Charges (VIBE_CALIB_CHARGES): static supports removed at their tick (calibration_charges.rs).
+    let mut charges = crate::calibration_charges::Charges::from_env();
+    if let Some(c) = charges.as_mut() { c.apply(0, offset, arena.physx_world_mut().unwrap()); }
 
     let mut first_broken: BTreeMap<u32, (u32, Value)> = BTreeMap::new();
     let trace = std::env::var_os("VIBE_CALIB_TRACE").is_some();
@@ -158,14 +133,7 @@ fn calibration_run() {
     positions.push(json!({"tick": 0, "p": snap(&mut arena)}));
     let started = std::time::Instant::now();
     for tick in 1..=ticks {
-        for (at, ids) in &charges {
-            if *at == tick {
-                let world = arena.physx_world_mut().unwrap();
-                for id in ids { world.remove_actor(*id).expect("charge: remove support"); }
-                world.wake_bodies_near(vibe_land_physx_bridge::Vec3::new(offset[0], offset[1], offset[2]), 1.0e4).ok();
-                eprintln!("[calibration] tick {tick}: charge fired, {} supports removed", ids.len());
-            }
-        }
+        if let Some(c) = charges.as_mut() { c.apply(tick, offset, arena.physx_world_mut().unwrap()); }
         if trace && tick == 1 { arena.physx_world_mut().unwrap().native_set_stress_solve_report(1).ok(); }
         arena.step_vehicles_and_dynamics(DT);
         let _ = city.step(tick, DT, gravity, arena.physx_world_mut());
