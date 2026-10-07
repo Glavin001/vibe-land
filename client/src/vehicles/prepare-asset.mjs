@@ -10,11 +10,12 @@ import { buildBuggy } from './dune/buggy.mjs';
 import { visualOwners, simplePhysicsShape } from './simple-physics.mjs';
 import { physicsBundle } from './dune/physics-export.mjs';
 import { validateVehicleAssembly, preparationIssue } from './validation.mjs';
-import { requireConnectedAssembly, STRENGTH_PROFILE_VERSION, SOLVER_MIN_BOND_AREA_M2 } from './strength-profile.mjs';
+import { requireConnectedAssembly, STRENGTH_PROFILE_VERSION } from './strength-profile.mjs';
 import { meshMassProperties, massPropertiesToActor, combineMassProperties } from './mass-properties.mjs';
 import { encodeModel } from './dune/model-codec.mjs';
 import { requireChunkMotion } from './dune/pose-deltas.mjs';
 import { mergeLightChunks, MIN_CHUNK_KG } from './chunk-merge.mjs';
+import { admitBonds, trueBondStiffness } from './bond-admission.mjs';
 import { massBudget, budgetScales, bondScale, MASS_BUDGET_VERSION } from './mass-budget.mjs';
 import { ROAD_WHEEL } from './reality.mjs';
 
@@ -29,7 +30,10 @@ const root = resolve(process.argv[2]);
 // A budgeted build's masses are part of its asset; unbudgeted builds keep
 // their cached hashes (an absent key does not change the JSON).
 const budget = massBudget(configuration.model);
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-14',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration),...(budget&&{massBudget:{version:MASS_BUDGET_VERSION,...budget}})})).digest('hex');
+// Under the bridge's true bond stiffness every measured contact is a bond
+// (bond-admission.mjs); such an asset is a different asset.
+const trueStiffness = trueBondStiffness();
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-14',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration),...(budget&&{massBudget:{version:MASS_BUDGET_VERSION,...budget}}),...(trueStiffness&&{bondArea:'measured'})})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
@@ -53,19 +57,9 @@ catch (error) {
    bond.solidInterfaceAreaM2 = exact;
    if (exact > bond.area) { bond.area = exact; bond.areaSource = 'solid-interface'; } else bond.areaSource = 'collider-face';
  }
- // The native solver floors bond stiffness at SOLVER_MIN_BOND_AREA_M2 but checks
- // strength on the true area, so a smaller interface draws load it cannot carry.
- // Such grazes are excluded, except where one is a part's only link: then the
- // geometry barely meets its mount (an authoring gap to fix), and the mount is
- // represented at the solver minimum rather than disconnecting the part.
- const linked = new Map(), find = id => { let r = id; while (linked.has(r) && linked.get(r) !== r) r = linked.get(r); return r; };
- const link = (a, b) => { linked.set(find(a), find(b)); };
- const grazes = bonds.filter(b => b.area < SOLVER_MIN_BOND_AREA_M2).sort((x, y) => y.area - x.area);
- for (const b of bonds) if (b.area >= SOLVER_MIN_BOND_AREA_M2) link(b.a, b.b);
- const mounts = new Set();
- for (const b of grazes) if (find(b.a) !== find(b.b)) { link(b.a, b.b); mounts.add(b); b.area = SOLVER_MIN_BOND_AREA_M2; b.areaSource = 'minimum-mount'; }
- const excluded = grazes.filter(b => !mounts.has(b));
- bonds.splice(0, bonds.length, ...bonds.filter(b => !excluded.includes(b)));
+ // Which contacts are bonds, at what area: bond-admission.mjs.
+ const { excluded, mounts: mountList } = admitBonds(bonds, { trueStiffness });
+ const mounts = new Set(mountList);
  excludedContacts.push(...excluded.map(b => ({ a: b.visualA, b: b.visualB, reason: 'sub-solver-area-graze' })));
  if (mounts.size) process.stderr.write(`minimum mounts (geometry barely meets its mount): ${[...mounts].map(b => `${b.visualA}/${b.visualB}`).join(', ')}\n`);
  // Stress chunks lighter than MIN_CHUNK_KG join their best-bonded same-motion
