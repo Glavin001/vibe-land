@@ -27,6 +27,7 @@ want() { [[ ",$only," == *",$1,"* ]]; }
 stamp=$(date +%Y%m%d-%H%M%S)
 out=${VERIFY_OUT_DIR:-$ROOT/target/verify/$stamp}
 mkdir -p "$out"
+out=$(cd "$out" && pwd)  # absolute: cargo runs tests from the package directory
 export VIBE_GPU_SHARED=1
 I=/Users/glavin/Development/PhysX/out/install
 export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
