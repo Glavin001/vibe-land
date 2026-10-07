@@ -930,3 +930,92 @@ fn sub_fatal_damage_law() {
     assert_eq!(short[2][2], 0.0, "a bond below its strength still commands damage");
     assert!(runtime[1][0] >= 1.0 && runtime[1][0] <= 2.0, "1.02 f did not break at once");
 }
+
+/// A block hung by one 1 cm^2 S275 steel bond at `ratio` x A f_y (f_y 275,
+/// f_u 430 MPa, EN 10025-2; authored with the elastic limit at yield and the
+/// fatal limit at rupture), with `ductile_slip` (0: not declared ductile).
+/// Returns (tick it broke or 0, remaining area / area at the end).
+fn hung_steel(ratio: f32, ductile_slip: f32, ticks: u32) -> (u32, f32) {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.native_attach().unwrap();
+    let (fy, fu, area) = (275e6f32, 430e6f32, 1e-4f32);
+    let mass = ratio * fy * area / DEFAULT_WORLD_GRAVITY;
+    let nodes = [
+        ChunkNodeDesc { node_index: 0, centroid: Vec3::new(0.0, 0.3, 0.0), mass: 0.0, volume: 0.02, geom_kind: 0,
+            half_extents: Vec3::new(0.1, 0.05, 0.1), convex_points: Vec::new(), material: 0 },
+        ChunkNodeDesc { node_index: 1, centroid: Vec3::new(0.0, 0.0, 0.0), mass, volume: 0.04, geom_kind: 0,
+            half_extents: Vec3::new(0.1, 0.25, 0.1), convex_points: Vec::new(), material: 0 },
+    ];
+    let bonds = [ChunkBondDesc { bond_index: 0, node0: 0, node1: 1, centroid: Vec3::new(0.0, 0.25, 0.0), normal: Vec3::new(0.0, 1.0, 0.0), area, material: 0 }];
+    let settings = DestructibleSettings {
+        materials: vec![StressMaterialDesc {
+            compression_elastic: fy, compression_fatal: fu, tension_elastic: fy, tension_fatal: fu,
+            shear_elastic: fy / 3f32.sqrt(), shear_fatal: fu / 3f32.sqrt(), elastic_modulus: 210e9, residual_area_fraction: 0.6,
+        }],
+        ductile_slip: vec![ductile_slip],
+        maximum_bodies: 0,
+        maximum_fractures_per_actor_per_tick: 0,
+        ..DestructibleSettings::default()
+    };
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 20.0, 0.0), rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }, &nodes, &bonds, settings, GROUP_CHUNK, GROUP_CHUNK).unwrap();
+    world.step().unwrap();
+    configure(&mut world);
+    let mut remaining = 1.0;
+    for t in 1..=ticks {
+        world.step().unwrap();
+        let status = world.native_tick().unwrap();
+        assert_eq!(status.error, 0, "stage rejected the step: {status:?}");
+        if !world.native_take_broken_bonds().unwrap().is_empty() {
+            return (t, 0.0);
+        }
+        if let Some(r) = world.native_bond_stress_rows(0).unwrap().first() {
+            remaining = r.remaining_area / area;
+        }
+    }
+    (0, remaining)
+}
+
+/// VIBE_STRENGTH_SHORT_TERM is scoped by material family (FIDELITY_AUDIT C2):
+/// a material declared ductile (ductileSlip > 0: steel, fasteners) keeps its
+/// yield-to-rupture band (elastic limit at yield, fatal at rupture); the
+/// others become brittle at their fatal limit. So under the flag:
+/// - ductile S275 below yield (0.95 f_y) holds, undamaged;
+/// - ductile S275 past yield (1.2 f_y, below f_u) yields: it does not break
+///   on the tick it is loaded, it loses section first (the stage's static
+///   stand-in for plastic flow; past its fatal limit with VIBE_IMPACT_CAPACITY
+///   the impact solve's ductile slip takes over);
+/// - ductile S275 past rupture (1.05 f_u) breaks at once;
+/// - the same bond not declared ductile, at 1.2 f_y: brittle at its fatal
+///   limit, it holds undamaged.
+#[test]
+#[ignore = "requires the native GPU destruction SDK"]
+fn steel_yields_before_it_breaks() {
+    if std::env::var(ARM).as_deref() == Ok("steel") {
+        let fu_over_fy = 430.0 / 275.0;
+        for (k, (ratio, slip)) in [(0.95f32, 0.015f32), (1.2, 0.015), (1.05 * fu_over_fy, 0.015), (1.2, 0.0)].iter().enumerate() {
+            let (t, a) = hung_steel(*ratio, *slip, 120);
+            println!("case{k}={t},{a}");
+        }
+        return;
+    }
+    let o = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "steel_yields_before_it_breaks", "--nocapture", "--ignored"])
+        .env(ARM, "steel")
+        .env("VIBE_STRENGTH_SHORT_TERM", "1")
+        .env_remove("VIBE_IMPACT_CAPACITY")
+        .output()
+        .unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert!(o.status.success(), "{text}");
+    let c: Vec<Vec<f32>> = (0..4).map(|k| reported(&text, &format!("case{k}"))).collect();
+    println!("S275 bond under VIBE_STRENGTH_SHORT_TERM=1 (EN 10025-2 f_y 275, f_u 430 MPa), 2 s:");
+    for (k, what) in ["ductile, 0.95 f_y", "ductile, 1.20 f_y", "ductile, 1.05 f_u", "not ductile, 1.20 f_y"].iter().enumerate() {
+        println!("  {what:<22} broke at tick {:>3}, area left {:.3}", c[k][0], c[k][1]);
+    }
+    assert!(c[0][0] == 0.0 && c[0][1] == 1.0, "ductile steel below yield broke or lost section");
+    assert!(c[1][0] != 1.0, "ductile steel past yield broke on the tick it was loaded: no yield");
+    assert!(c[1][0] > 1.0 || c[1][1] < 1.0, "ductile steel past yield did not yield (no section lost)");
+    assert_eq!(c[2][0], 1.0, "ductile steel past rupture did not break at once");
+    assert!(c[3][0] == 0.0 && c[3][1] == 1.0, "a non-ductile material lost section below its fatal limit");
+}

@@ -347,22 +347,46 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
     out.shearFatalLimit = m.shear_fatal < 0 ? -1.0f : m.shear_fatal;
     out.residualAreaFraction = m.residual_area_fraction;
     // VIBE_STRENGTH_SHORT_TERM=1 (high-fidelity profile; docs/verification/
-    // FIDELITY_AUDIT.md C1, C2): no sub-fatal section loss and no residual-area
-    // arrest. A bond holds, undamaged, whatever it carries below its fatal
-    // (short-term) limit and breaks there. Duration of load (Gerhards 1979,
-    // Wood Handbook FPL-GTR-282 sec. 5: time to failure exp(43.17 - 49.75 r)
-    // minutes at a load ratio r) puts sub-fatal failure past 29 min below
-    // 0.8 f, so within a session that is the law; brittle materials have no
-    // rate damage at these timescales, and ductile joints yield through
-    // ductileSlip (E). The runtime damages at damageRate (2 /s) above the
-    // elastic limit and arrests at residualAreaFraction, where a loaded joint
-    // can sit just under fatal forever (tests/fidelity_audit.rs
-    // sub_fatal_damage_law).
+    // FIDELITY_AUDIT.md C1, C2): no residual-area arrest, and no sub-fatal
+    // section loss for the families whose strength does not fall over a
+    // session's minutes. By family:
+    // - timber: duration of load (Gerhards 1979; Wood Handbook FPL-GTR-282
+    //   sec. 5): failure takes exp(43.17 - 49.75 r) min at a load ratio r,
+    //   29 min at 0.8 f, so within a session it holds below f and breaks at f;
+    // - concrete: EN 1992-1-1 3.1.6 alpha_cc (0.85-1.0) is the long-term
+    //   factor on f_ck for loads held months; at seconds it is 1;
+    // - masonry: EN 1996-1-1 gives f_k no load-duration factor (creep only);
+    // - glass: static fatigue, EN 16612 k_mod = 0.663 t^(-1/16) (t in hours),
+    //   0.86 at a minute and 1 below ~10 s;
+    //   these are brittle at their fatal limit: elastic := fatal;
+    // - ductile materials (an authored ductileSlip: steel, fasteners): steel
+    //   at ambient temperature has no load-duration factor either (EN 1993-1-1
+    //   applies no k_mod), but it yields before it ruptures (EN 1993-1-1 3.2.2:
+    //   f_u/f_y >= 1.10, elongation >= 15%). They keep their authored band,
+    //   yield at the elastic limit and rupture at the fatal one; past fatal,
+    //   with VIBE_IMPACT_CAPACITY, the impact solve's ductile slip carries
+    //   capacity until the ultimate slip. Between them the stage's only static
+    //   plastic path is its section loss (a MODEL: not plastic strain).
+    // The runtime damages every family at damageRate (2 /s) above the elastic
+    // limit and arrests at residualAreaFraction, where a loaded joint can sit
+    // just under fatal forever (tests/fidelity_audit.rs sub_fatal_damage_law,
+    // steel_yields_before_it_breaks).
     if (native_short_term_strength()) {
-      out.compressionElasticLimit = out.compressionFatalLimit;
-      out.tensionElasticLimit = out.tensionFatalLimit;
-      out.shearElasticLimit = out.shearFatalLimit;
+      const bool ductile = index < settings.ductile_slip.size() && settings.ductile_slip[index] > 0.0f;
       out.residualAreaFraction = 0.0f;
+      if (!ductile) {
+        out.compressionElasticLimit = out.compressionFatalLimit;
+        out.tensionElasticLimit = out.tensionFatalLimit;
+        out.shearElasticLimit = out.shearFatalLimit;
+        // A metal not declared ductile becomes brittle here: say so once.
+        static bool warned = false;
+        if (!warned && m.elastic_modulus >= 150e9f && m.tension_fatal > m.tension_elastic) {
+          std::fprintf(stderr, "[destruction] VIBE_STRENGTH_SHORT_TERM: a material with E %.0f GPa and a yield band has no "
+                               "ductileSlip, so it is brittle at its fatal limit; author ductileSlip for steel\n",
+                       m.elastic_modulus / 1e9f);
+          warned = true;
+        }
+      }
     }
     if (crush) {
       const FfiCrushMaterial &c = settings.crush[index];
