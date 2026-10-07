@@ -35,7 +35,7 @@ def bearing_grade(s, mats, J, sec, st, pos):
         F, M = J[b, :3], J[b, 3:6]
         compression = F @ n                     # the oracle's sign: + presses the chunks together
         z1, z0 = a * r0 * r0 / S0, a * r1 * r1 / S1   # half depths across each bending axis
-        T = max(0.0, abs(M @ e0) / z1 + abs(M @ e1) / z0 - compression)
+        T = max(0.0, abs(M @ e0) / z1 + abs(M @ e1) / z0 - compression)   # compression signed: a pull adds
         shear = st[b, 4]
         comp_stress = max(compression, 0) / a + abs(M @ e0) / S0 + abs(M @ e1) / S1
         st[b, 0] = max(comp_stress / m['compressionElastic'], T / a / m['tensionElastic'], shear / m['shearElastic'])
