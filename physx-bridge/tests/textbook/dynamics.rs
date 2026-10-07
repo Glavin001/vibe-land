@@ -577,15 +577,18 @@ fn energy_audit(config: Config, expected: &[Expectation], out: &mut Output) {
         ball(&mut world, 9007, [0.0, 10.0 + 1.25, 1.0], r, mb, [0.0, 0.0, -v0]);
         let mut masses = std::collections::HashMap::new();
         let mut start_y = std::collections::HashMap::new();
+        let mut broken_total = 0usize;
+        let mut m_freed = 0.0f64;
         let (mut vmax, mut vz_after, mut contact) = (0.0f64, f64::NAN, None::<u32>);
         let (mut ke_frag, mut pe_release, mut ke_ball_loss) = (0.0f64, 0.0f64, 0.0f64);
         for t in 1..=40u32 {
             world.step().unwrap();
             let status = world.native_tick().unwrap();
             assert_eq!(status.error, 0, "stage rejected the step: {status:?}");
-            world.native_take_broken_bonds().unwrap();
+            broken_total += world.native_take_broken_bonds().unwrap().len();
             for ev in world.native_take_island_events().unwrap() {
                 if ev.kind == 0 {
+                    m_freed += ev.mass as f64;
                     masses.insert(ev.island_id, ev.mass as f64);
                     start_y.insert(ev.island_id, ev.position.y as f64);
                 }
@@ -617,6 +620,21 @@ fn energy_audit(config: Config, expected: &[Expectation], out: &mut Output) {
         let case = format!("impact-energy-{label}");
         println!("  {label}: the ball's fastest after contact {vmax:.3} m/s (launched at {v0})");
         row(config, &case, "the ball never gains speed after contact", "|v| <= v0", source, "1=yes", 1.0, f64::NAN, yes(vmax <= v0 * 1.001), 1.0, expected, out);
+        // The other side of the balance: energy lost must be energy the engine
+        // models dissipating. Here: each broken brittle joint's elastic energy
+        // at failure, F^2 / 2k with F = f A and k = E A / L (no ductile slip,
+        // no crush), and the contact loss (1 - e^2) mu v0^2 / 2, mu the ball's
+        // reduced mass against what it set moving (the ball itself against a
+        // wall that held: then the wall's joints must have held, so mu = m).
+        let lost = ke_ball_loss + pe_release - ke_frag;
+        let joint = {
+            let (f, area, len) = (limit * b * b, b * b, b);
+            f * f / (2.0 * E_CONCRETE * area / len)
+        };
+        let mu = if label == "unbreakable" || m_freed <= 0.0 { mb } else { mb * m_freed / (mb + m_freed) };
+        let dissipation = broken_total as f64 * joint + 0.5 * (1.0 - e * e) * mu * v0 * v0;
+        println!("  {label}: energy lost {lost:.1} J; modelled dissipation {dissipation:.1} J (contact, mu {mu:.1} kg against {m_freed:.1} kg set free; {broken_total} joints at {joint:.3} J)");
+        row(config, &case, "no energy vanishes: lost <= modelled dissipation (+10%)", "dKE_ball + dPE - KE_frag <= sum(F^2/2k) + (1-e^2) mu v^2/2", source, "1=yes", 1.0, f64::NAN, yes(lost <= 1.1 * dissipation + 1.0), 1.0, expected, out);
         if label == "breakable" {
             let budget = ke_ball_loss + pe_release;
             row(config, &case, "fragments' kinetic energy within the ball's loss plus PE released", "KE_frag <= dKE_ball + m g dh", source, "1=yes", 1.0, f64::NAN, yes(ke_frag <= 1.01 * budget + 1.0), 1.0, expected, out);
