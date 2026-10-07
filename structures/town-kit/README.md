@@ -290,16 +290,23 @@ A's breaks beyond 4 m grow 0 / 39 / 124 / 421 at 0.25 / 0.84 / 2 / 6.5 MN, E's
 stay 3-8. The design for E and Ci, in the native GPU stage only, is PhysX
 `docs/destruction/IMPACT_CAPACITY_DESIGN.md`.
 
-Chunk crushing as the stage has it is wired through and opt-in: `VIBE_CRUSH=1`
-builds packs whose masonry, concrete, gypsum and glass materials carry `crush`
-blocks (`materials.mjs` CRUSH and `crushFor`, every number cited); the city
-passes them to the stage; `VIBE_NATIVE_CRUSH=0` ignores them. Off by default.
-Do not turn it on yet: the native stage cannot correct a step that crushes a
-chunk (`installCollisionOwners` refuses a removed shape), and in the lab every
-step after the first crush fails and the scene freezes. Crushed chunks reach
-the server as `NativeCityDestruction::crushes()` events and leave the wire as
-retired singleton islands; dust and debris drawing on the client is still to
-be done.
+Chunk crushing is wired through end to end and opt-in. `VIBE_CRUSH=1` builds
+packs whose masonry, concrete, gypsum and glass materials carry `crush` blocks
+(`materials.mjs` CRUSH and `crushFor`, every number cited): the lab
+(`vehicle-lab-crush`), Vibe Town (`vibe-town-crush`), these houses
+(`out/veneer-houses-crush/`), any `composeScene` pack. The city passes them to
+the stage; `VIBE_NATIVE_CRUSH=0` ignores them. It needs PhysX
+`PX_DESTRUCTION_CRUSH_CORRECTION` (branch fix/crush-in-correction): a crushed
+chunk splits off as a body of its own and its step completes (before, one crush
+froze the scene); the bridge refuses crush properties to an SDK without it.
+Dust (`debrisMassFraction` 0) leaves the world the tick it crushes -- its hull
+out of simulation and queries, its island retired on the wire -- and the client
+makes it a `crush` dust source; debris keeps its body. With crushing on: the
+lab's house and wall trials run with 0 failed steps (cannonball into the
+veneer house: 72-89 chunks crushed, the client counting every one), Vibe Town
+qualifies at rest 273 of 273 with nothing crushed, the bungalow and its frame
+pass, and the impact steps cost what they did without it (within run-to-run
+noise, 1-2 ms). It does not make a hit local (see above): that is E.
 
 ## Composed town scenes
 
