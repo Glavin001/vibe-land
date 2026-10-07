@@ -100,12 +100,13 @@ function coursePilot(e) {
     finished = true;
     meter.finish(t);
     const r = { ...meter.result(), ...knocked.result() };
-    if (e.check) ctx.log(`cone-check ${JSON.stringify({ footprint: [...Array(e.cones.length).keys()].map((i) => r.firstHits.some((h) => h.cone === i)), knocked: knocked.perCone() })}`);
+    if (e.check) ctx.log(`cone-check ${JSON.stringify({ struck: r.conesStruck, footprint: [...Array(e.cones.length).keys()].map((i) => r.firstHits.some((h) => h.cone === i)), knocked: knocked.perCone() })}`);
     results.push({ id: e.id, ...r, speed: e.speed ?? null });
     ctx.log(`course ${JSON.stringify({ id: e.id, ...r })}`);
-    // Hit: a cone the game moved (knocked over or pushed); the footprint check too when it disagrees.
-    const hits = r.conesKnocked ?? r.conesHit;
-    const parts = [`${hits} of ${r.cones} cones hit${r.conesKnocked != null && r.conesKnocked !== r.conesHit ? ` (footprint over ${r.conesHit})` : ''}`, `max ${r.maxLatG.toFixed(2)} g`];
+    // Hit: a cone inside the truck's footprint (3.0 x 4.9 m, conservative:
+    // the body clears a cone the box does not); run over: a wheel left the
+    // flat ground beside one (cone-check calibrates both).
+    const parts = [`${r.conesHit} of ${r.cones} cones hit${r.conesStruck ? ` (${r.conesStruck} run over)` : ''}`, `max ${r.maxLatG.toFixed(2)} g`];
     if (r.pathRms != null && !e.circle) parts.push(`path error ${r.pathRms.toFixed(2)} m RMS`);
     if (r.gate) parts.push(r.gate.clean ? `through the gate (${Math.abs(r.gate.offset).toFixed(1)} m off its middle)` : `missed the gate by ${(Math.abs(r.gate.offset) + 1.5 - e.gate.half).toFixed(1)} m`);
     if (r.seconds != null && e.timing) parts.push(`${r.seconds.toFixed(1)} s through`);
@@ -225,8 +226,8 @@ function coneWatch(cones) {
         }
         const r0 = rest.get(slot), i = slotOf.get(slot);
         const shift = Math.hypot(p[0] - r0[0], p[1] - r0[1], p[2] - r0[2]), tilt = 2 * Math.asin(Math.min(1, Math.hypot(q[0], q[2])));
-        const m = moved.get(i) ?? { shift: 0, tiltDeg: 0 };
-        moved.set(i, { shift: Math.max(m.shift, +shift.toFixed(3)), tiltDeg: Math.max(m.tiltDeg, +((tilt * 180) / Math.PI).toFixed(1)) });
+        const m = moved.get(i) ?? { shift: 0, tiltDeg: 0, samples: 0 };
+        moved.set(i, { shift: Math.max(m.shift, +shift.toFixed(3)), tiltDeg: Math.max(m.tiltDeg, +((tilt * 180) / Math.PI).toFixed(1)), samples: m.samples + 1, slot, at: p.map((v) => +v.toFixed(2)) });
       }
     },
     perCone() { return cones.map((_, i) => moved.get(i) ?? null); },
@@ -337,9 +338,9 @@ function closing(episodes) {
     kind: 'hold', name: 'slalom-result', duration: 5, follow: false,
     cues: [[0.1, (ctx) => {
       const runs = results.filter((r) => r.id.startsWith('slalom'));
-      const clean = runs.filter((r) => (r.conesKnocked ?? r.conesHit) === 0).sort((a, b) => b.speed - a.speed)[0];
+      const clean = runs.filter((r) => r.conesHit === 0).sort((a, b) => b.speed - a.speed)[0];
       const text = clean ? `Fastest clean slalom: ${kmh(clean.speed)} (${clean.speed} m/s), ${clean.seconds?.toFixed(1)} s through 7 cones 24 m apart` : 'No clean slalom run';
-      ctx.log(`slalom-summary ${JSON.stringify({ runs: runs.map((r) => ({ speed: r.speed, conesHit: r.conesHit, conesKnocked: r.conesKnocked, conesSeen: r.conesSeen, maxLatG: r.maxLatG, pathRms: r.pathRms, seconds: r.seconds })), fastestClean: clean?.speed ?? null })}`);
+      ctx.log(`slalom-summary ${JSON.stringify({ runs: runs.map((r) => ({ speed: r.speed, conesHit: r.conesHit, conesStruck: r.conesStruck, conesKnocked: r.conesKnocked, maxLatG: r.maxLatG, pathRms: r.pathRms, seconds: r.seconds })), fastestClean: clean?.speed ?? null })}`);
       ctx.edit({ type: 'title', style: 'overlay', size: 'normal', text, from: ctx.t, to: ctx.t + 4.8 });
     }]],
     build: () => () => ({ position: [mid[0] + 70, 40, mid[1] + 20], lookAt: [mid[0], 0, mid[1] + 130] }),
@@ -354,7 +355,8 @@ async function main() {
     return { ...e, seconds: Math.min(e.seconds, Math.ceil(((sim.stoppedAt ?? e.seconds) + 2.5) * 2) / 2) };
   });
   const place = placeResolver(episodes.map((e, i) => ({ id: `car-${i}`, kind: 'car', position: [e.slot[0], 0, e.slot[1]], heading: e.slot[2] })));
-  const film = await boot({ scene: 'lab', place, settle: 2 });
+  // A light haze: the drawn ground ends at +-256 m, and a camera looking out sees its black edge.
+  const film = await boot({ scene: 'lab', place, settle: 2, haze: 0.6 });
   film.log(`turning ${MODE}: ${episodes.length} episodes: ${episodes.map((e) => `${e.id} ${e.seconds}s`).join(', ')}`);
   await film.play([...episodes.map((e, i) => episodeShot(e, i, film.fps)), ...closing(episodes)]);
 }

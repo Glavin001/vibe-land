@@ -92,10 +92,11 @@ export const SYSID2 = [
 // ------------------------------------------------------------------ courses
 //
 // Inside the drawn ground (the client draws +-256 m; beyond it the slab is
-// black): the slaloms and the lane change west of the flat lane (x -245 to
-// -130), the handbrake turns south of the lanes (z -250 to -130), the
-// skidpad, the figure eight and the filmed avoidance run east of the
-// framed-house lane (x 190-245). Every course is a set
+// black): the slaloms and the lane change west of the flat lane (x -230 to
+// -124), the handbrake turns and the tight course south of the lanes (z
+// -250 to -120), the skidpad and the figure eight north of the short lanes
+// (z 130-195, between the flat lane and the street), the filmed avoidance
+// run east of the framed-house lane (x 175-235). Every course is a set
 // of legs for client/native/film/driver.mjs createCourseDriver: paths to
 // track at planned speeds, and handbrake turns closed-loop on the heading.
 // Cones mark what it must keep clear of; a cone is hit when it is inside
@@ -118,7 +119,7 @@ const track = (points, speed, extra = {}) => {
  * 0.72 g, and past the 0.73 g the truck can give (it must run wide).
  */
 function skidpad() {
-  const R = 15, cx = 215, cz = 150;
+  const R = 15, cx = -45, cz = 165;
   const r = route({ x: cx - R, z: cz - 35, psi: 0 }, [{ line: 35 }, { arc: 4 * Math.PI, R }, { line: 30 }]);
   const path = makePath(r.points);
   const half = Math.PI * R, s0 = 35;
@@ -135,13 +136,13 @@ function skidpad() {
     id: 'skidpad', caption: 'Steady turns: a 15 m circle at rising speed', slot: [cx - R, cz - 35, 0], seconds: 45,
     // No slowing when off the path: the last half lap is meant to show what the truck cannot hold.
     legs: [{ kind: 'track', path, profile, stop: true, gains: { offPath: Infinity } }], cones, circle: { cx, cz, R, segments },
-    camera: { watch: [cx + 30, 16, cz - 32] },
+    camera: { watch: [cx + 22, 18, cz + 40] },
   };
 }
 
 /** A figure eight: two 12 m circles at 8.5 m/s (0.61 g), left lobe then right. */
 function figureEight() {
-  const R = 12, x0 = 215, z0 = 215;
+  const R = 12, x0 = 60, z0 = 170;
   const r = route({ x: x0, z: z0 - 35, psi: 0 }, [{ line: 35 }, { arc: -2 * Math.PI, R }, { arc: 2 * Math.PI, R }, { line: 22 }]);
   const path = makePath(r.points);
   const s0 = 35, lobe = 2 * Math.PI * R;
@@ -152,7 +153,7 @@ function figureEight() {
     id: 'figure-eight', caption: 'A figure eight: two 12 m circles at 31 km/h', slot: [x0, z0 - 35, 0], seconds: 40,
     legs: [{ kind: 'track', path, profile, stop: true }], cones: [...ring(x0 - R), ...ring(x0 + R)],
     circle: { segments: [{ s0, s1: s0 + lobe, label: 'left' }, { s0: s0 + lobe, s1: s0 + 2 * lobe, label: 'right' }] },
-    camera: { watch: [x0 + 30, 20, z0 - 38] },
+    camera: { watch: [x0 + 15, 22, z0 + 42] },
   };
 }
 
@@ -161,7 +162,7 @@ function figureEight() {
  * (cones 2.15 m either side of its middle) for 15 m, over by 4 m in 25 m,
  * 20 m there, back in 25 m, and a 15 m exit lane, at `speed`.
  */
-function laneChange(speed, x0 = -140, id = 'lane-change') {
+function laneChange(speed, x0 = -130, id = 'lane-change') {
   const z0 = -240, zA = -190, shift = 4, half = 2.15;
   const d = (z) => {
     if (z < zA) return 0;
@@ -225,7 +226,7 @@ function handbrakeTurn({ id, x0, turn, speed, on, over, caption, maneuver, gateA
  */
 export const SLALOM = { spacing: 24, count: 7, amplitude: HALF_WIDTH + CONE_HALF + 0.7, speeds: [10, 12, 13, 14, 15, 16] };
 function slalom(speed, k) {
-  const x0 = -238 + 15 * k, z0 = -240, zc = -170, { spacing, count, amplitude } = SLALOM;
+  const x0 = -228 + 15 * k, z0 = -240, zc = -170, { spacing, count, amplitude } = SLALOM;
   const zEnd = zc + spacing * (count - 1);
   const ramp = (z) => smoothstep5((z - (zc - spacing * 1.5)) / spacing) * (1 - smoothstep5((z - (zEnd + spacing * 0.5)) / spacing));
   const d = (z) => amplitude * Math.cos((Math.PI * (z - zc)) / spacing) * ramp(z);

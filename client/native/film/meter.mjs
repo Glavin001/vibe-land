@@ -48,7 +48,8 @@ export function coneClearance(st, cx, cz, { hl, hw, cone }) {
  * result() the summary.
  */
 export function createMeter(ep, { hl = 2.45, hw = 1.5, cone = 0.16 } = {}) {
-  const hit = new Set(), firstHit = [];
+  const hit = new Set(), firstHit = [], struck = new Set();
+  let liftedSince = null;
   const cones = ep.cones ?? [];
   let minClear = Infinity, errSq = 0, errN = 0, errMax = 0, maxLat = 0, latWin = [], t0 = null, t1 = null, last = null, gatePassed = null;
   const seg = (ep.circle?.segments ?? []).map((g) => ({ ...g, pts: [], lat: [], speed: [], err: [] }));
@@ -61,6 +62,18 @@ export function createMeter(ep, { hl = 2.45, hw = 1.5, cone = 0.16 } = {}) {
         minClear = Math.min(minClear, c);
         if (c <= 0 && !hit.has(i)) { hit.add(i); firstHit.push({ cone: i, t: +t.toFixed(2) }); }
       }
+      // A wheel off the (flat) ground near a cone: it ran onto it (wheelsOnRoad: Vehicle2's mask).
+      if (st.wheelsOnRoad != null && st.wheelsOnRoad !== 15 && st.speed > 1) {
+        if (liftedSince == null) {
+          liftedSince = t;
+          let best = null;
+          for (let i = 0; i < cones.length; i += 1) {
+            const c = coneClearance(st, cones[i][0], cones[i][1], { hl, hw, cone });
+            if (c < 1 && (!best || c < best.c)) best = { i, c };
+          }
+          if (best) struck.add(best.i);
+        }
+      } else liftedSince = null;
       if (tracking && e != null) { errSq += e * e; errN += 1; errMax = Math.max(errMax, Math.abs(e)); }
       // Lateral acceleration: the change of the velocity across its direction
       // over 0.1 s (v x yaw rate overstates it in a slide).
@@ -91,7 +104,7 @@ export function createMeter(ep, { hl = 2.45, hw = 1.5, cone = 0.16 } = {}) {
     result() {
       const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
       return {
-        conesHit: hit.size, cones: cones.length, firstHits: firstHit.slice(0, 6), minConeClearance: Number.isFinite(minClear) ? +minClear.toFixed(2) : null,
+        conesHit: hit.size, conesStruck: struck.size, cones: cones.length, firstHits: firstHit.slice(0, 6), minConeClearance: Number.isFinite(minClear) ? +minClear.toFixed(2) : null,
         pathRms: errN ? +Math.sqrt(errSq / errN).toFixed(3) : null, pathMax: +errMax.toFixed(2), maxLatG: +(maxLat / 9.81).toFixed(3),
         seconds: t0 != null && t1 != null ? +(t1 - t0).toFixed(2) : null, gate: gatePassed,
         segments: seg.map((g) => {

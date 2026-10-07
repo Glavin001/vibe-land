@@ -20,6 +20,16 @@ which, first), parts off, what the scene lost, a drive-away after hits, and
 the handbrake turn's yaw rate, slip angle and heading change. Writes
 `target/vehicle-testbed/<label>.json` and `<label>-verdict.json`.
 
+House trials (any trial id with `framed-house`) also report `house`: the
+house's bonds broken, frame (veneer-houses.mjs STRUCTURAL_TYPES on both sides)
+against skin, by distance from the impact point, the impact tick's step time,
+the roof members' mean drop, the share of the frame still on the anchored
+body, chunks crushed, and for the truck the house pieces freed inside its hulls
+(each hull's box in the car frame, over the impact tick and the next five) and
+its peak spin over the 3 s after impact. `VIBE_CITY_SCENE=.../vehicle-lab-crush.json`
+runs the lab with chunk crushing authored (`VIBE_CRUSH=1 node build-lab.mjs`);
+`VIBE_NATIVE_CRUSH=0` ignores an authored crush table.
+
 Diagnosis switches: `VIBE_TESTBED_TRACE=1` (per-tick car trace),
 `VIBE_TESTBED_AUDIT=1` (every break explained: the bond's load the tick
 before as a fraction of fatal, and both chunks' stress input on the breaking
@@ -45,6 +55,7 @@ height, wheel loads).
 | rubble | a 1 m heap of wall blocks and slabs | climbing a pile |
 | wall, house | floored from 50 m into a masonry wall / a one-storey house | hitting things at speed |
 | framed-house, cannonball-framed-house, meteor-framed-house | floored into, and the weapons through, the town kit's brick-veneer timber-frame bungalow (lane x 124, front face z 20.1) | a house built the way houses are |
+| framed-house-corner, smallshots-framed-house | the truck into the bungalow's front-left corner (start x 119); three 100 kg steel balls at 60 m/s into its brick skin between the studs | the impact study (town-kit `scripts/impact-study.py`): local damage or the whole house |
 | near-miss, blast-*, graze-*, debris-wheel/cab, knock-mirror* | meteors that miss, a meteor clipping the roof, a 700 kg piece of house thrown into it, a mirror knocked off | nearby blasts and debris (the chase report) |
 | cannonball, meteor | the city's cannonball into its side, the city's meteor on it | the weapons |
 | drift | 1.2 s of full lock and handbrake from 15 m/s | the handbrake feel |
@@ -173,3 +184,31 @@ or its front end still drives on what it has.
   the front end, not at their mounts), the monster's real mass (x1.6) with and
   without sections to match, and wheel hulls inset so tyres meet walls and
   debris (it stalled on rubble and lost every wheel at the wall).
+
+## Turning ground (closed-loop driving)
+
+`structures/vehicle-lab/turning.mjs` holds courses and episodes for the
+monster truck. A closed-loop driver drives them, and it uses only the
+player's controls (`client/native/film/driver.mjs`). The script is
+`scripts/turning-lab.sh MODE`, and it plays `client/native/films/turning.mjs`
+with one car per episode. Modes:
+
+| mode | what |
+|---|---|
+| `sysid`, `sysid2` | system identification: steer steps at 4-24 m/s, handbrake turns, partial pedals, J-turns, steering sines (`node client/native/film/sysid.mjs LOG`) |
+| `hb-tune` | variants of the handbrake turns; logs where each turn ends |
+| `turns` | skidpad (15 m circle at 7 / 9 / 10.3 / 11.5 m/s), figure eight, lane change, 90 and 180 degree handbrake turns |
+| `slalom` | 7 cones 24 m apart at 10-16 m/s, and the tight course (slalom, handbrake turn, lane change, hairpin, finish gate) |
+| `cone-check` | calibrates what counts as a cone hit |
+| `avoid`, `avoid-stats`, `avoid-late`, `avoid-hard`, `avoid-blind` | meteors dropped where the truck would have been: the filmed run, 20 seeds, the same seeds known only 2.74 s ahead, harder roads, and the same seeds without avoidance |
+
+The truck model is `client/native/film/vehicle-model.mjs`. Its header
+gives the numbers it was fitted to. Each run's cones are reported two ways:
+
+- Inside the footprint: a conservative 3.0 x 4.9 m box.
+- Run over: a wheel left the flat ground beside a cone. A Vehicle2 wheel
+  climbs a cone like a step and leaves it where it was. Only the body
+  pushes a cone (`cone-check`).
+
+`node client/native/film/avoid-stats.mjs` gives the avoidance success rate
+on the model, including with a plant that differs from the model.

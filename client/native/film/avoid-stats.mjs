@@ -33,6 +33,7 @@ for (const [name, plant] of Object.entries(PLANTS).slice(0, only ? 1 : undefined
     closest.push(Math.min(...r.clearances));
     lost.push(AVOID.speed * ep.seconds - r.progress);
   }
-  console.log(`${name.padEnd(24)} ${clean}/${seeds} runs clean, ${rocks - hits}/${rocks} rocks avoided; closest p10 ${q(closest, 0.1).toFixed(2)} m, median ${q(closest, 0.5).toFixed(2)} m; `
+  const stalled = lost.filter((m) => m > 60).length;
+  console.log(`${name.padEnd(24)} ${clean}/${seeds} runs clean, ${rocks - hits}/${rocks} rocks avoided, ${stalled} stopped short (>60 m behind); closest p10 ${q(closest, 0.1).toFixed(2)} m, median ${q(closest, 0.5).toFixed(2)} m; `
     + `metres lost to the unhindered run: median ${q(lost, 0.5).toFixed(0)}${failures.length ? `; failed seeds ${failures.slice(0, 10).join(' ')}` : ''}`);
 }
