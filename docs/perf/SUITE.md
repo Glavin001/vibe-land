@@ -70,7 +70,7 @@ solves included.
 
 ## The score
 
-Per profile: the **geometric mean over scenarios of value / baseline value**,
+Per profile: the **geometric mean over scenarios of value / baseline value** (each value the median over reps),
 where value is the p95 step time (live) or the median evaluation time
 (replay). 1.000 is the baseline; lower is faster.
 

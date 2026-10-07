@@ -422,7 +422,9 @@ def summarise(run_dir: Path) -> dict:
         prof = {}
         for s, reps in ss.items():
             vals = [r["score_value"] for r in reps if r.get("complete")]
-            prof[s] = {"kind": reps[0]["kind"], "values": vals, "value": st.fmean(vals) if vals else None,
+            # The median over reps: one rep disturbed (GPU clock, another process
+            # on the GPU outside the lock) does not move the value.
+            prof[s] = {"kind": reps[0]["kind"], "values": vals, "value": st.median(vals) if vals else None,
                        "cv": (st.stdev(vals) / st.fmean(vals)) if len(vals) > 1 else None, "reps": reps}
         out["profiles"][profile] = {"scenarios": prof,
                                     "geomean_ms": gmean([v["value"] for v in prof.values() if v["value"]])}
@@ -644,7 +646,9 @@ def main() -> None:
             w = dict(jobs[p][0]) if jobs[p] else None
             if w:
                 plan = json.loads(Path(w["plan"]).read_text())
-                plan["phases"] = [{"name": "warm", "ticks": 30, "record": False}]
+                # Long enough for the GPU to reach its working clock (a quick
+                # baseline's first rep ran ~40% slow after a 30-tick warm-up).
+                plan["phases"] = [{"name": "warm", "ticks": 150, "record": False}]
                 wp = run_dir / "plans" / f"warmup-{p}.json"
                 wp.write_text(json.dumps(plan))
                 w["plan"] = str(wp)
