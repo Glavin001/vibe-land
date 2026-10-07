@@ -239,7 +239,7 @@ def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
     return J, resid
 
 
-def stresses(s, mats, J, bending='capped', sections=None):
+def stresses(s, mats, J, bending='capped', sections=None, pos=None):
     """bending='capped': the engine (section gain 6/sqrt(A) capped at 3 /m,
     torsion 4.81/sqrt(A) capped likewise). 'section': the real section --
     sigma = |M1|/S1 + |M2|/S2 (the corner fibre of a rectangle under biaxial
@@ -248,6 +248,11 @@ def stresses(s, mats, J, bending='capped', sections=None):
     out = []
     for b, bd in enumerate(s['bonds']):
         n = np.array([bd['normal'][k] for k in 'xyz']); n = n / np.linalg.norm(n); a = bd['area']
+        # Tension pulls node1 back toward node0, so the normal must point from
+        # node0 to node1. The solver orients it along their displacement
+        # (NvBlastExtStressGpu prepare); an authored normal the other way
+        # round otherwise reads every tension as compression.
+        if pos is not None and n @ (pos[bd['node1']] - pos[bd['node0']]) < 0: n = -n
         lin, ang = J[b, :3], J[b, 3:]
         ln = lin @ n
         normal = -ln / a                                   # + tension (pulling node1 back toward node0)
@@ -295,7 +300,7 @@ def main():
         extra = [(node, np.array(a.force))]
         print(f'load {a.force} N on node {node} ({s["nodeTypes"][node]} at {pos[node].round(2).tolist()})')
     J, resid = solve(s, mats, pos, mass, extra, angular=a.angular, sections=sections)
-    st = stresses(s, mats, J, bending=a.bending, sections=sections)
+    st = stresses(s, mats, J, bending=a.bending, sections=sections, pos=pos)
     print(f'equilibrium residual {resid:.1e}; bonds {len(st)}; past elastic {int((st[:, 0] > 1).sum())}, past fatal {int((st[:, 1] > 1).sum())}')
     t = s['nodeTypes']
     name = lambda i: f'{t[i]}#{i}({",".join(f"{x:.2f}" for x in pos[i])})'
