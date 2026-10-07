@@ -186,4 +186,12 @@ Outputs go to `structures/calibration/out/bridge-piers/`:
 - `report-<config>.json`: the GPU run;
 - `verdict.json`.
 
-Video: see `docs/calibration/README.md`.
+## Video
+
+`target/native-video/calibration-bridge-piers-20261007-071906.mp4` (144 s,
+1280x720; `-share.mp4` under 25 MB, `-sheet.jpg`). It opens with all six cases
+side by side from the first tick, then gives each case a take of its own. A
+take opens on the removal and the hand calculation's u and prediction, then
+the engine (section bending) from tick 0 with the live count of bonds broken
+and the drop, then the verdict. Steps 4-5 are captioned with the jammed-deck
+gap. To regenerate: `structures/calibration/film/reel.sh bridge-piers`.
