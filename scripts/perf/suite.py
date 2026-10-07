@@ -486,6 +486,9 @@ def comparability(report: dict, base: dict) -> list[str]:
     return notes
 
 
+SD_FLOOR = {"live": 0.06, "replay": 0.015}
+
+
 def score(report: dict, base: dict | None) -> None:
     """Fills each profile's composite: geomean of value/baseline (1.0 = the baseline; lower is faster),
     with its noise band from the per-rep scatter of both runs."""
@@ -500,7 +503,9 @@ def score(report: dict, base: dict | None) -> None:
             r = v["value"] / bv["value"]
             # Run-to-run noise of log(value): pooled from whichever arms have reps.
             sds = [st.stdev([math.log(x) for x in arm["values"]]) for arm in (v, bv) if len(arm["values"]) > 1]
-            sd = max(sds) if sds else None
+            # Floor: three reps taken minutes apart understate the scatter between
+            # sessions (A/A runs a day's work apart moved live scenarios 5-10 %).
+            sd = max(sds + [SD_FLOOR[v["kind"]]]) if sds else SD_FLOOR[v["kind"]]
             n_c, n_b = len(v["values"]), len(bv["values"])
             band = 2.0 * sd * math.sqrt(1 / n_c + 1 / n_b) if sd is not None else None
             sig = band is not None and abs(math.log(r)) > band and abs(r - 1) >= 0.05 and abs(v["value"] - bv["value"]) >= 0.3

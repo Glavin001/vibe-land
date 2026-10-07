@@ -113,6 +113,18 @@ process on the GPU outside the lock, not the code: the warm-up is 150 ticks
 because a 30-tick one left the first rep ~40 % slow, and the value is the
 median over reps so one disturbed rep does not move it.
 
+Each scenario's band has a floor (6 % live, 1.5 % replay in log terms):
+three reps taken minutes apart understate the scatter between sessions. Two
+A/A runs (identical code, one rep against the 3-rep quick baseline) scored
+0.991 and 1.018 (high), 1.044 (runtime), all within the band; single
+scenarios still came out "significant" twice -- a fracture scenario whose
+workload drifted (flagged) and one process that ran 80 % slow throughout (a
+disturbance outside the lock). So:
+- **decide on the score**, not on a single scenario;
+- for a decision use `--reps 3` (the value is the median over reps, so one
+  disturbed process does not move it); a single `--quick` rep is a smoke
+  check.
+
 `COMPARABILITY` lines name anything besides the code that differs from the
 baseline: packs (sha), captures, tier, a shared GPU.
 
