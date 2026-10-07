@@ -21,12 +21,19 @@
  * knock them off and the frame stands; take out a wall's studs and the roof
  * comes down while the skin and the board just break away.
  *
+ * The two-storey has a stair (stairs-timber.mjs): a timber switchback with a
+ * half landing in the front-right room, by the front door, its housed
+ * stringers hung from the landing rim and from a doubled trimmer of a framed
+ * opening in the upper floor (doubled trimmers and header, tails in hangers).
+ * Its metadata's `route` walks it up and back (scripts/perf/walk_route.py).
+ *
  * x runs along the house (10 m), z front (-) to back (+), y up. The slab top
  * is y 0.15; the veneer's outer faces are x +-5.0 and z +-3.9.
  */
 import {Builder,composeScene,round,v} from './geometry.mjs';
 import {M,MORTAR_JOINT,C24,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled} from './materials.mjs';
 import {cornerReferencedHulls} from './parts/hull-origins.mjs';
+import {planStair,checkStair,requiredVoid,checkHeadroom,buildTimberStair,frameFloorOpening,stairConnection,housingShear,STAIR_CONNECTIONS,STAIR_TYPES,OPENING_TYPES,STAIR_SIZES} from './stairs-timber.mjs';
 
 /** Sizes, metres. Sawn sizes are the AS 1684 / EN 336 metric ones. */
 export const SIZES={
@@ -52,8 +59,8 @@ const range=(a,b)=>Array.from({length:b-a},(_,i)=>a+i);
 /** Every timber connection kind, and what each node type is. */
 const STUDS=new Set(['stud','king-stud','jack-stud','cripple-stud','junction-stud']);
 const HORIZONTAL=new Set(['bottom-plate','top-plate','header','sill-trimmer','rim-joist']);
-const TIMBER=new Set([...STUDS,...HORIZONTAL,'ceiling-joist','floor-joist','rafter','ridge-board']);
-export const STRUCTURAL_TYPES=['foundation',...STUDS,...HORIZONTAL,'ceiling-joist','floor-joist','subfloor','rafter','ridge-board','gable-frame'];
+const TIMBER=new Set([...STUDS,...HORIZONTAL,'ceiling-joist','floor-joist','header-joist','rafter','ridge-board']);
+export const STRUCTURAL_TYPES=['foundation',...STUDS,...HORIZONTAL,'ceiling-joist','floor-joist',...OPENING_TYPES,'subfloor','rafter','ridge-board','gable-frame',...STAIR_TYPES];
 export const SKIN_TYPES=['brick-veneer','veneer-lintel-course','drywall','ceiling-lining'];
 export const COSMETIC_TYPES=[...SKIN_TYPES,'gable-cladding','roof-covering','window-frame','door-frame','glazing'];
 
@@ -85,8 +92,8 @@ function materialsFor(b,crush=false){
  * stiffness k is k L / A, with the kind's median L and A: k from fastener slip
  * (SLIP), or from cross-grain bearing E90 A / t where the joint bears.
  */
-function jointMaterial(b,kind,area,length){
- const c=CONNECTIONS[kind],k=c.per==='joint'?1/area:1/(c.perArea??1);
+function jointMaterial(b,kind,area,length,table=CONNECTIONS){
+ const c=table[kind],k=c.per==='joint'?1/area:1/(c.perArea??1);
  const f={compression:c.compression,tension:c.tension*k,shear:c.shear*k};
  const perArea=c.bearing?BEARING.elasticModulus/c.bearing:c.per==='joint'?c.slip/area:c.slip/(c.perArea??1);
  const elastic=perArea*length;
@@ -96,7 +103,13 @@ function jointMaterial(b,kind,area,length){
 }
 
 /** The connection kind joining two node types (different pieces). */
-function connection(ta,tb,wa,wb){
+function connection(ta,tb,wa,wb,normal){
+ // The stair and its floor opening (stairs-timber.mjs): hangers, housings, the landing frame.
+ const stair=stairConnection(ta,tb,normal);if(stair!==undefined)return stair;
+ if((ta==='header-joist'&&tb==='trimmer-joist')||(tb==='header-joist'&&ta==='trimmer-joist'))return 'header-hanger';
+ if((ta==='header-joist'&&tb==='floor-joist')||(tb==='header-joist'&&ta==='floor-joist'))return 'joist-hanger';
+ // A trimmer is a (doubled) floor joist everywhere else.
+ if(ta==='trimmer-joist')ta='floor-joist';if(tb==='trimmer-joist')tb='floor-joist';
  // A non-bearing partition stops 25 mm under the ceiling; its top plate meets the wall's end on.
  if(ta==='top-plate'&&tb==='top-plate'&&(/partition/.test(wa)||/partition/.test(wb)))return null;
  // An upper-floor partition stands on the floor and is not fixed to the walls it meets: on a
@@ -279,6 +292,7 @@ export function buildVeneerHouse(options={}){
 
  // ---- the storeys ----
  const storeys=[],T=S.drywall;
+ let stair=null,stairTable=STAIR_CONNECTIONS;
  let floor=S.slab;
  for(let s=0;s<C.storeys;s++){
   const top=floor+S.plate+S.studLength+S.topPlate,course=y=>S.slab+Math.round((y-S.slab)/S.course)*S.course;
@@ -326,12 +340,29 @@ export function buildVeneerHouse(options={}){
    const rim=(min,max,split,face,u)=>{const m=member('rim-joist',min,max,{split,face,wall:`${face}-rim`});m.u=u;m.y=[top,yF];};
    rim([-X,top,-Z],[X,yF,-Z+R],[4,1,1],'front',[-X,X]);rim([-X,top,Z-R],[X,yF,Z],[4,1,1],'back',[-X,X]);
    rim([-X,top,-Z+R],[-X+R,yF,Z-R],[1,1,3],'left',[-Z+R,Z-R]);rim([X-R,top,-Z+R],[X,yF,Z-R],[1,1,3],'right',[-Z+R,Z-R]);
-   for(const [k,x] of joistLines().entries())if(k>0&&k<16)for(const [za,zb] of [[-Z+R,0],[0,Z-R]])member('floor-joist',[x,top,za],[x+W,yJ,zb]);
-   const fx=[-X+R,X-R],fz=[-Z+R,Z-R];
-   // Sheets 2.4 x 1.2, jointed on the centre line (under the centre wall) and every 1.2 m out from it.
+   // The stair to it (veneerStair): its floor opening framed in the front half's joists.
+   if(s===0)stair=veneerStair(top,yF);
+   const lines=joistLines().slice(1,16).map(x=>[x,x+W]),front=[-Z+R,0];
+   const framing=stair?frameFloorOpening({axis:'z',joists:lines,span:front,opening:stair.opening}):null;
+   lines.forEach(([x],i)=>{
+    if(!framing||framing.kept.includes(i))member('floor-joist',[x,top,front[0]],[x+W,yJ,front[1]]);
+    member('floor-joist',[x,top,0],[x+W,yJ,Z-R]);
+   });
+   if(framing){
+    // Doubled trimmers (two pieces each, spliced off the header), doubled headers, tails in hangers.
+    for(const t of framing.trimmers)member('trimmer-joist',[t.across[0],top,t.along[0]],[t.across[1],yJ,t.along[1]],{split:[1,1,2]});
+    for(const h of framing.headers)member('header-joist',[h.across[0],top,h.along[0]],[h.across[1],yJ,h.along[1]],{split:[2,1,1]});
+    for(const t of framing.tails)member('floor-joist',[t.across[0],top,t.along[0]],[t.across[1],yJ,t.along[1]]);
+    stair.framing=framing;
+   }
+   const fx=[-X+R,X-R],fz=[-Z+R,Z-R],holes=stair?[stair.opening]:[];
+   // Sheets 2.4 x 1.2, jointed on the centre line (under the centre wall) and every 1.2 m out from it;
+   // cut around the stair opening at its trimmers and header.
    const zc=[fz[0],-2.4,-1.2,0,1.2,2.4,fz[1]];
-   for(let x=fx[0];x<fx[1]-EPS;x+=2.4)for(let k=0;k<zc.length-1;k++){const z=zc[k],zb=zc[k+1],xb=Math.min(x+2.4,fx[1]);if(xb-x<.2)continue;member('subfloor',[x+S.lining/2,yJ,z+S.lining/2],[xb-S.lining/2,yF,zb-S.lining/2],{material:MAT.flooring});}
-   ceiling(top,'floor-joist');
+   for(let x=fx[0];x<fx[1]-EPS;x+=2.4)for(let k=0;k<zc.length-1;k++){const z=zc[k],zb=zc[k+1],xb=Math.min(x+2.4,fx[1]);if(xb-x<.2)continue;
+    for(const [p,q,r,t] of outside([x,xb,z,zb],holes))member('subfloor',[p+S.lining/2,yJ,r+S.lining/2],[q-S.lining/2,yF,t-S.lining/2],{material:MAT.flooring});}
+   ceiling(top,'floor-joist',holes);
+   if(stair)buildTimberStair(stair.plan,{box:(type,min,max,opt)=>member(type,min,max,opt),prism:(type,axis,lo,hi,poly,opt)=>prism(type,axis,lo,hi,poly,opt),nextPiece:()=>b.pieceId++,materials:{timber:MAT.timber,deck:MAT.flooring}});
    floor=yJ+S.subfloor;
   }
  }
@@ -340,14 +371,49 @@ export function buildVeneerHouse(options={}){
  /** Joist and rafter lines: 17 at ~605 mm from gable to gable. */
  function joistLines(){const n=16,step=(2*X-W)/n;return range(0,n+1).map(k=>-X+k*step+(k<n?W:-W));}
  function rafterLines(){const n=16,step=(2*X-W)/n;return range(0,n+1).map(k=>-X+k*step);}
- /** Ceiling lining under the joists of a storey, each side of the centre wall. */
- function ceiling(y,joist){
+ /**
+  * The two-storey's stair (stairs-timber.mjs): a switchback against the front
+  * wall of the front-right room, the room the front door opens into. Its lower
+  * flight (7 risers) climbs west along the wall from beside the door to a half
+  * landing against the front-left partition, its upper flight (8) climbs back
+  * east beside it, its head hung from the trimmer at joist line 10. The opening
+  * runs from that trimmer to joist line 5's (doubled) and from the front rim to
+  * a doubled header just past the stair: lines 6-9 are tails from the header to
+  * the centre wall.
+  */
+ function veneerStair(top,y1){
+  const lines=joistLines(),xt=lines[10],z0=-Zi+T+.01;   // 10 mm off the front wall's board
+  const at=x=>planStair({y0:S.slab,y1,origin:[x,z0],direction:'-x',across:'+z',layout:'switchback',split:7});
+  const trial=at(0),up=trial.flights[1],plan=at(xt-(up.foot[0]+up.head));
+  const bad=checkStair(plan);if(bad.length)throw Error(`veneer stair: ${bad.join('; ')}`);
+  const zMax=Math.max(...plan.landings.map(l=>l.z1));
+  const opening={x0:lines[5]+W,x1:xt,z0:-Z+2*W,z1:zMax+.01};
+  const underside=top-T,ceilingAbove=y1+S.plate+S.studLength+S.topPlate-T;
+  for(const r of requiredVoid(plan,underside))if(r.x0<opening.x0-1e-6||r.x1>opening.x1+1e-6||r.z0<opening.z0-1e-6||r.z1>opening.z1+1e-6)throw Error(`veneer stair: headroom needs ${JSON.stringify(r)} open, outside the opening`);
+  const headroom=checkHeadroom(plan,{underside,ceiling:ceilingAbove,openings:[opening]});
+  if(headroom.failures.length)throw Error(`veneer stair headroom: ${headroom.failures.join('; ')}`);
+  // Free of the partition it stands beside (its board on the east face).
+  if(plan.landings[0].x0<-1.8+D/2+T+.005)throw Error('veneer stair: landing into the front-left partition');
+  return {plan,opening,headroom:headroom.min};
+ }
+ /** Rect [x0,x1,z0,z1] less the holes (each {x0,x1,z0,z1}): the pieces left, at most four a hole. */
+ function outside(r,holes){
+  let out=[r];
+  for(const h of holes)out=out.flatMap(([x0,x1,z0,z1])=>{
+   if(h.x1<=x0+EPS||h.x0>=x1-EPS||h.z1<=z0+EPS||h.z0>=z1-EPS)return [[x0,x1,z0,z1]];
+   const a=Math.max(x0,h.x0),c=Math.min(x1,h.x1);
+   return [[x0,a,z0,z1],[c,x1,z0,z1],[a,c,z0,Math.max(z0,h.z0)],[a,c,Math.min(z1,h.z1),z1]].filter(([p,q,u,w])=>q-p>.05&&w-u>.05);
+  });
+  return out;
+ }
+ /** Ceiling lining under the joists of a storey, each side of the centre wall (less any stair opening). */
+ function ceiling(y,joist,holes=[]){
   const g=S.lining,x0=-Xi+g,x1=Xi-g;
   // Sheet ends on joist centrelines (every fourth joist), as hung.
   const xs=[x0,...joistLines().filter((_,k)=>k%4===0&&k>0&&k<16).map(x=>x+W/2),x1];
   for(const [z0,z1] of [[-Zi+g,-D/2-g],[D/2+g,Zi-g]])for(let i=0;i<xs.length-1;i++)for(let z=z0;z<z1-EPS;z+=1.2){
    const x=xs[i],xb=xs[i+1],zb=Math.min(z+1.2,z1);if(xb-x<.1||zb-z<.1)continue;
-   member('ceiling-lining',[x+g/2,y-T,z+g/2],[xb-g/2,y,zb-g/2],{material:MAT.drywall});
+   for(const [p,q,u,w] of outside([x,xb,z,zb],holes))member('ceiling-lining',[p+g/2,y-T,u+g/2],[q-g/2,y,w-g/2],{material:MAT.drywall});
   }
  }
 
@@ -412,18 +478,20 @@ export function buildVeneerHouse(options={}){
  for(const bond of s.bonds){
   const ta=s.nodeTypes[bond.node0],tb=s.nodeTypes[bond.node1];
   if(s.nodePieces[bond.node0]===s.nodePieces[bond.node1])continue;   // within one member: its own material
-  let kind=connection(ta,tb,wallOf[bond.node0]??'',wallOf[bond.node1]??'');
+  let kind=connection(ta,tb,wallOf[bond.node0]??'',wallOf[bond.node1]??'',bond.normal);
   // The birdsmouth's plumb heel cut stands against the plate's outer face; the seat is what is nailed.
   if(kind==='rafter-seat'&&Math.abs(bond.normal.y)<.5)kind=null;
   // A verge rafter lies on its gable frame for its whole length; the ridge board stops against it.
   if(kind==='ridge'&&(verge.has(bond.node0)||verge.has(bond.node1)))kind=null;if(kind===null){bond.drop=true;continue;}bond.kind=kind;if(!kinds.has(kind))kinds.set(kind,[]);kinds.get(kind).push(bond);
  }
  const kindMaterial={mortar:MAT.mortar,glazing:M.glassJoint};
+ // The housings' shear is the ledge a tread or riser bears on, which its size sets.
+ if(stair){const shear=housingShear(stair.plan);stairTable=Object.fromEntries(Object.entries(STAIR_CONNECTIONS).map(([k,c])=>[k,c.shear==null?{...c,shear:shear[k]}:c]));}
  for(const [kind,list] of kinds){
   if(!(kind in kindMaterial)){
    const median=v=>v.sort((x,y)=>x-y)[v.length>>1],c=i=>s.nodes[i].centroid;
    const area=median(list.map(x=>x.area)),length=median(list.map(x=>Math.hypot(c(x.node0).x-c(x.node1).x,c(x.node0).y-c(x.node1).y,c(x.node0).z-c(x.node1).z)));
-   kindMaterial[kind]=kind==='flooring-nail'?jointMaterialFlooring(b,length):jointMaterial(b,kind,area,length);
+   kindMaterial[kind]=kind==='flooring-nail'||kind==='landing-deck'?jointMaterialFlooring(b,length,`${kind}-joint`):kind in CONNECTIONS?jointMaterial(b,kind,area,length):jointMaterial(b,kind,area,length,stairTable);
   }
   for(const bond of list){bond.m=kindMaterial[kind];delete bond.kind;}
  }
@@ -436,11 +504,12 @@ export function buildVeneerHouse(options={}){
   kind:'building',buildingType:key,options:C,
   structure:{
    system:'brick-veneer timber frame',structuralTypes:STRUCTURAL_TYPES,cosmeticTypes:COSMETIC_TYPES,skinTypes:SKIN_TYPES,
-   loadPath:['concrete slab on grade','bottom plates on M12 anchor bolts','studs at 600 mm, king/jack studs and headers at openings','doubled top plate',...(C.storeys>1?['rim and floor joists, particleboard floor','upper storey frame']:[]),'ceiling joists tying the rafter feet (bolted heels)','rafters on birdsmouth seats, ridge board','concrete tiles on battens'],
+   loadPath:['concrete slab on grade','bottom plates on M12 anchor bolts','studs at 600 mm, king/jack studs and headers at openings','doubled top plate',...(C.storeys>1?['rim and floor joists, particleboard floor','upper storey frame','timber stair: stringers on the slab and the landing, hung from the landing rim and the opening\'s trimmer; landing on posts']:[]),'ceiling joists tying the rafter feet (bolted heels)','rafters on birdsmouth seats, ridge board','concrete tiles on battens'],
    skin:'90 mm brick veneer on the slab, 50 mm cavity, one wall tie per 600 x 405 mm panel; 13 mm gypsum board screwed to the frame',
    ties:ties.length,veneerTop,counts,
   },
   nodeWalls:wallOf.map(w=>w??null),
+  ...(stair&&(()=>{const m=stairMetadata(stair);return {stair:m,route:m.walk};})()),
   frontFaceZ:-3.9,backFaceZ:3.9,
   cameras:{hero:{position:[-17,9,-19],target:[0,2.4,0]},front:{position:[0,4,-20],target:[0,2.4,0]}},
  };
@@ -448,12 +517,31 @@ export function buildVeneerHouse(options={}){
 }
 
 /** Particleboard flooring nailed to joists: like the gypsum, per area (AS 1860.2: nails at 150 mm on edges, 300 mm in the field). */
-function jointMaterialFlooring(b,length){
+function jointMaterialFlooring(b,length,name='flooring-nail-joint'){
  const area=.3*.045,f={compression:BEARING.compression,tension:NAIL_WITHDRAWAL()/area,shear:770/area};
- return b.table.push({...structuredClone(b.table[M.frame]),name:'flooring-nail-joint',color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:719e3/area*length,
+ return b.table.push({...structuredClone(b.table[M.frame]),name,color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:719e3/area*length,
   compressionElastic:LONG_TERM*f.compression,compressionFatal:f.compression,tensionElastic:LONG_TERM*f.tension,tensionFatal:f.tension,shearElastic:LONG_TERM*f.shear,shearFatal:f.shear})-1;
 }
 const NAIL_WITHDRAWAL=()=>347;
+
+/** What the two-storey's stair is, and the walk from the street up it and back. */
+function stairMetadata({plan,opening,headroom,framing}){
+ const r=n=>+n.toFixed(4),pt=p=>p.map(r);
+ // From inside the front door (x 1.6-2.5) to the stair's foot, up, onto the upper floor, and
+ // back the same way. (The door's head frame is 1.97 m over the slab: the walk starts inside it,
+ // so the route's 2.1 m overhead probe measures the stair and the floors, not the doorway.)
+ const up=[{name:'hall',at:[2.05,S.slab,-3.2]},...plan.route,{name:'upper-floor',at:[2.7,plan.y1,plan.flights[1].foot[1]]}];
+ const walk=[...up,...up.slice(0,-1).reverse().map(p=>({...p,name:`down-${p.name}`}))].map(p=>({name:p.name,at:pt(p.at)}));
+ return {
+  layout:plan.layout,risers:plan.risers,riser:r(plan.riser),going:plan.going,nosing:STAIR_SIZES.nosing,clearWidth:plan.clearWidth,split:plan.split,
+  stepRule:r(2*plan.riser+plan.going),pitchDegrees:+(Math.atan2(plan.riser,plan.going)*180/Math.PI).toFixed(2),headroom:r(headroom),
+  flights:plan.flights.map(f=>({id:f.id,foot:pt(f.foot),travel:f.travel,risers:f.risers,base:r(f.base),top:r(f.top),head:r(f.head)})),
+  landings:plan.landings.map(l=>({x0:r(l.x0),x1:r(l.x1),z0:r(l.z0),z1:r(l.z1),level:r(l.level)})),
+  opening:Object.fromEntries(Object.entries(opening).map(([k,x])=>[k,r(x)])),
+  framing:{trimmers:framing.trimmers.length,headers:framing.headers.length,tails:framing.tails.length},
+  walk,
+ };
+}
 
 export const buildVeneerBungalow=(options={})=>buildVeneerHouse({...options,storeys:1});
 export const buildVeneerTwoStorey=(options={})=>buildVeneerHouse({...options,storeys:2});
