@@ -867,15 +867,17 @@ pub fn twist_table(json: &[u8]) -> (Vec<f32>, Vec<f32>) {
 /// `bearingElasticModulus` (Pa), and in bending the pin its fasteners make,
 /// `bendGyration` (m, the stiffness radius) and `bendSection` (m, g^2 / reach:
 /// S = A bendSection). Read by the native stage under VIBE_SECTION_ROTATION.
+/// `bearingJoint` (1): a fastened joint whose members bear on each other,
+/// graded by its fasteners once the contact opens (section bending).
 /// Empty when the pack authors none; 0 where a material has none.
-pub fn bearing_tables(json: &[u8]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+pub fn bearing_tables(json: &[u8]) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
     let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Default::default() };
     let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Default::default() };
-    if !materials.iter().any(|m| m["bearingElasticModulus"].as_f64().unwrap_or(0.0) > 0.0) {
+    if !materials.iter().any(|m| m["bearingElasticModulus"].as_f64().unwrap_or(0.0) > 0.0 || m["bearingJoint"].as_f64().unwrap_or(0.0) > 0.0) {
         return Default::default();
     }
     let get = |k: &str| materials.iter().map(|m| m[k].as_f64().unwrap_or(0.0).max(0.0) as f32).collect();
-    (get("bearingElasticModulus"), get("bendGyration"), get("bendSection"))
+    (get("bearingElasticModulus"), get("bendGyration"), get("bendSection"), get("bearingJoint"))
 }
 
 /// Each material's impact-solve modulus (Pa), `materials[].impactElasticModulus`

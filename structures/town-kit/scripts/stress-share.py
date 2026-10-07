@@ -176,7 +176,8 @@ def bond_sections(s, tol=1e-4):
         # sqrt(k), moduli by k^1.5, radii of gyration by sqrt(k).
         k = bd['area'] / area; k15, k05 = k ** 1.5, k ** 0.5
         out.append((e[0], e[1], S[0] * k15, S[1] * k15, Zt * k15,
-                    np.sqrt(lam[1] / area) * k05, np.sqrt(lam[0] / area) * k05, np.sqrt((lam[0] + lam[1]) / area) * k05))
+                    np.sqrt(lam[1] / area) * k05, np.sqrt(lam[0] / area) * k05, np.sqrt((lam[0] + lam[1]) / area) * k05,
+                    reach[1] * k05, reach[0] * k05))   # half-depths for a moment about e[0], about e[1]
     return out
 
 
@@ -190,12 +191,12 @@ def fastener_twist(s, mats, sections):
         m = mats[bd['m']]; g, reach = m.get('twistGyration') or 0, m.get('twistReach') or 0
         if out[b] is not None and g > 0 and reach > 0:
             r = out[b]
-            out[b] = r[:4] + (bd['area'] * g * g / reach, r[5], r[6], g)
+            out[b] = r[:4] + (bd['area'] * g * g / reach, r[5], r[6], g) + tuple(r[8:])
         # A compressed bearing joint bends on its fasteners (a pin).
         gb, bs = m.get('bendGyration') or 0, m.get('bendSection') or 0
         if out[b] is not None and gb > 0 and bs > 0:
             r = out[b]
-            out[b] = r[:2] + (bd['area'] * bs, bd['area'] * bs, r[4], gb, gb, r[7])
+            out[b] = r[:2] + (bd['area'] * bs, bd['area'] * bs, r[4], gb, gb, r[7]) + tuple(r[8:])
     return out
 
 
@@ -226,7 +227,7 @@ def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
             r = np.sqrt(max(bd['area'], 1e-12) / 12)
             R[b] = np.eye(3) * r; R[b] += (np.sqrt(2) - 1) * r * np.outer(nrm, nrm)   # polar of a square: 2 a^2/12
         else:
-            e1, e2, _, _, _, r1, r2, rt = sec
+            e1, e2, _, _, _, r1, r2, rt = sec[:8]
             R[b] = r1 * np.outer(e1, e1) + r2 * np.outer(e2, e2) + rt * np.outer(nrm, nrm)
     for b, bd in enumerate(bonds):
         i, j = bd['node0'], bd['node1']
@@ -306,6 +307,12 @@ def stresses(s, mats, J, bending='capped', sections=None, pos=None):
             shear += twist * gt; bend *= gb
         tension = max(normal + bend, 0.0); compression = max(bend - normal, 0.0)
         m = mats[bd['m']]
+        if m.get('bearingJoint') and bending == 'section' and sec is not None and len(sec) >= 10:
+            # A fastened bearing joint: the contact bears at its edge, the
+            # fasteners at its centre carry T = |M0|/d0 + |M1|/d1 - C
+            # (PX_DESTRUCTION_BEARING_JOINTS).
+            T = abs(ang @ sec[0]) / sec[8] + abs(ang @ sec[1]) / sec[9] - max(-normal * a, 0.0)
+            tension = max(T, 0.0) / a
         util = max(compression / m['compressionElastic'], tension / m['tensionElastic'], shear / m['shearElastic'])
         fatal = max(compression / m['compressionFatal'], tension / m['tensionFatal'], shear / m['shearFatal'])
         out.append((util, fatal, compression, tension, shear, bend))

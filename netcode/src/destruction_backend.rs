@@ -93,6 +93,9 @@ pub struct StressSolverSettings {
     pub bearing_modulus: Vec<f32>,
     pub bend_gyration: Vec<f32>,
     pub bend_section: Vec<f32>,
+    /// Empty, or parallel to `materials`: 1 for a fastened bearing joint,
+    /// graded by its fasteners once the contact opens (section bending).
+    pub bearing_joint: Vec<f32>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -123,6 +126,7 @@ impl Default for StressSolverSettings {
             bearing_modulus: Vec::new(),
             bend_gyration: Vec::new(),
             bend_section: Vec::new(),
+            bearing_joint: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,

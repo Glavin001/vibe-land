@@ -112,6 +112,9 @@ function jointMaterial(b,kind,area,length,table=CONNECTIONS){
   shearElastic:LONG_TERM*f.shear,shearFatal:f.shear,
   // A few discrete fasteners twist on their own group (materials.mjs fastenerRow); read under VIBE_SECTION_ROTATION.
   ...(c.twist?{twistGyration:c.twist.gyration,twistReach:c.twist.reach}:{}),
+  // Its members bear on each other (every connection here has a bearing compression): graded by its
+  // fasteners once the contact opens, not as a glued patch (PX_DESTRUCTION_BEARING_JOINTS).
+  ...(realCapacitiesEnabled()&&c.compression>0?{bearingJoint:1}:{}),
   // A compressed bearing joint (materials.mjs CONNECTIONS restBearing): its stiffness at rest is the
   // wood's in bearing; in rotation it is a pin on its nails, K_ser sum r^2 at that stiffness
   // (radius scaled by sqrt(slip / bearing)), graded at the most loaded nail (S = A g^2 / reach).
@@ -542,7 +545,9 @@ function jointMaterialFlooring(b,length,name='flooring-nail-joint'){
  const LONG_TERM=connectionElastic();
  const area=.3*.045,f={compression:BEARING.compression,tension:NAIL_WITHDRAWAL()/area,shear:770/area};
  return b.table.push({...structuredClone(b.table[M.frame]),name,color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:719e3/area*length,ductileSlip:ULTIMATE_SLIP,
-  compressionElastic:LONG_TERM*f.compression,compressionFatal:f.compression,tensionElastic:LONG_TERM*f.tension,tensionFatal:f.tension,shearElastic:LONG_TERM*f.shear,shearFatal:f.shear})-1;
+  compressionElastic:LONG_TERM*f.compression,compressionFatal:f.compression,tensionElastic:LONG_TERM*f.tension,tensionFatal:f.tension,shearElastic:LONG_TERM*f.shear,shearFatal:f.shear,
+  // The sheet bears on its joist: graded by its nails once the contact opens.
+  ...(realCapacitiesEnabled()?{bearingJoint:1}:{})})-1;
 }
 const NAIL_WITHDRAWAL=()=>347;
 

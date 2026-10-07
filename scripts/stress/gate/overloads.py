@@ -31,7 +31,7 @@ def bearing_grade(s, mats, J, sec, st, pos):
         if m['name'] not in names or sec[b] is None: continue
         n = np.array([bd['normal'][k] for k in 'xyz'], float); n /= np.linalg.norm(n)
         if n @ (pos[bd['node1']] - pos[bd['node0']]) < 0: n = -n
-        a = bd['area']; e0, e1, S0, S1, Zt, r0, r1, rt = sec[b]
+        a = bd['area']; e0, e1, S0, S1, Zt, r0, r1, rt = sec[b][:8]
         F, M = J[b, :3], J[b, 3:6]
         compression = F @ n                     # the oracle's sign: + presses the chunks together
         z1, z0 = a * r0 * r0 / S0, a * r1 * r1 / S1   # half depths across each bending axis
@@ -58,7 +58,7 @@ def whatif(s, mats):
             u = np.cross(n, [1.0, 0, 0] if abs(n[0]) < 0.9 else [0, 1.0, 0]); u /= np.linalg.norm(u); v = np.cross(n, u)
             r = (u, v, a ** 3 / 6, a ** 3 / 6, a ** 3 / 4.81, a / np.sqrt(12), a / np.sqrt(12), a / np.sqrt(6))
         g = max(pin[name], 1e-6)
-        sec[b] = r[:5] + ((g, g, g * 2 ** 0.5) if os.environ.get('PIN_ALL') else (r[5], r[6], g))
+        sec[b] = r[:5] + ((g, g, g * 2 ** 0.5) if os.environ.get('PIN_ALL') else (r[5], r[6], g)) + tuple(r[8:])
     return sec
 
 
