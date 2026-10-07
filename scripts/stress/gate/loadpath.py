@@ -10,7 +10,7 @@ spec = importlib.util.spec_from_file_location('ss', os.path.join(os.path.dirname
 ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
 path, cut, zmax = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
 pack, s, mats, pos, mass = ss.load(path)
-sec = ss.bond_sections(s)
+sec = ss.fastener_twist(s, mats, ss.bond_sections(s))
 J, _ = ss.solve(s, mats, pos, mass, angular='section', sections=sec)
 st = ss.stresses(s, mats, J, bending='section', sections=sec, pos=pos)
 t = [x.split('@')[0] for x in s['nodeTypes']]

@@ -613,6 +613,11 @@ pub struct DestructibleSettings {
     /// `elastic_modulus` is a concession for gravity load sharing (a wall tie,
     /// soft in its wall's plane, stiff along its axis); 0: `elastic_modulus`.
     pub impact_modulus: Vec<f32>,
+    /// Empty, or parallel to `materials`: a fastener group's radius of
+    /// gyration in twist and its farthest fastener (m), in place of the
+    /// contact patch's (section rotation only); 0 keeps the patch.
+    pub twist_gyration: Vec<f32>,
+    pub twist_reach: Vec<f32>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -643,6 +648,8 @@ impl Default for DestructibleSettings {
             crush: Vec::new(),
             ductile_slip: Vec::new(),
             impact_modulus: Vec::new(),
+            twist_gyration: Vec::new(),
+            twist_reach: Vec::new(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -2502,6 +2509,9 @@ mod ffi {
         ductile_slip: Vec<f32>,
         /// Empty, or parallel to `materials`: the impact solve's modulus (Pa), 0 elastic_modulus.
         impact_modulus: Vec<f32>,
+        /// Empty, or parallel to `materials`: fastener-group twist radius and reach (m).
+        twist_gyration: Vec<f32>,
+        twist_reach: Vec<f32>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -3427,6 +3437,8 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
                 .collect(),
             ductile_slip: value.ductile_slip,
             impact_modulus: value.impact_modulus,
+            twist_gyration: value.twist_gyration,
+            twist_reach: value.twist_reach,
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,

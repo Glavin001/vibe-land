@@ -180,6 +180,20 @@ def bond_sections(s, tol=1e-4):
     return out
 
 
+def fastener_twist(s, mats, sections):
+    """A joint of a few discrete fasteners twists on them (town-kit
+    materials.mjs fastenerRow; the bridge under VIBE_SECTION_ROTATION): polar
+    radius of gyration the fasteners' rms distance g, and twist graded at the
+    most loaded fastener, Zt = A g^2 / reach."""
+    out = list(sections)
+    for b, bd in enumerate(s['bonds']):
+        m = mats[bd['m']]; g, reach = m.get('twistGyration') or 0, m.get('twistReach') or 0
+        if out[b] is not None and g > 0 and reach > 0:
+            r = out[b]
+            out[b] = r[:4] + (bd['area'] * g * g / reach, r[5], r[6], g)
+    return out
+
+
 def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
     """angular='uniform': the engine (every bond's angular impulse weighted by
     the mean bond offset Ls). 'section': each bond's rotational stiffness from
@@ -305,6 +319,7 @@ def main():
     sections = None
     if a.bending == 'section' or a.angular == 'section':
         sections = bond_sections(s)
+        if a.angular == 'section': sections = fastener_twist(s, mats, sections)
         miss = sum(x is None for x in sections)
         ratio = [((x[2] * 6) / s['bonds'][b]['area']) for b, x in enumerate(sections) if x is not None]
         print(f'sections: {len(sections) - miss} from geometry, {miss} without (square patch of their area); '

@@ -394,6 +394,11 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
       out.impactStiffness = impact > 0.0f ? impact / solve : 1.0f;
     }
 #endif
+    native_require(settings.twist_gyration.empty() || (settings.twist_gyration.size() == settings.materials.size() &&
+                                                        settings.twist_reach.size() == settings.materials.size()),
+                   "twist tables must be empty or parallel to the materials");
+    s.twist_gyration.push_back(settings.twist_gyration.empty() ? 0.0f : std::max(0.0f, settings.twist_gyration[index]));
+    s.twist_reach.push_back(settings.twist_reach.empty() ? 0.0f : std::max(0.0f, settings.twist_reach[index]));
     ++index;
     s.materials.push_back(out);
   }
@@ -421,13 +426,26 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
       for (const PxShape *shape : e->second) vibe_bond_section::append_vertices(*shape, v);
     return vertices.emplace(chunk, std::move(v)).first->second;
   };
-  std::size_t found = 0;
+  std::size_t found = 0, fastened = 0;
   std::vector<double> depths, ratios;
   for (std::size_t i = bond_base; i < s.bonds.size(); ++i) {
     const auto &b = s.bonds[i];
     const auto r = vibe_bond_section::section(chunk_vertices(b.chunk0), chunk_vertices(b.chunk1), b.centroid,
                                               b.normal, b.area);
     s.sections[i] = r.section;
+#if defined(VIBE_PHYSX_HAS_SECTION_ROTATION)
+    // A joint of a few discrete fasteners twists on them (town-kit
+    // materials.mjs fastenerRow): rotational stiffness K_ser sum r^2, the most
+    // loaded fastener at the reach, F = T reach / sum r^2 -- as a stress over
+    // the joint's area (its capacity is spread there), tau = T A^-1 reach / r_g^2.
+    if (native_section_rotation() && r.found && b.material < s.twist_gyration.size() &&
+        s.twist_gyration[b.material] > 0.0f && s.twist_reach[b.material] > 0.0f) {
+      const float g = s.twist_gyration[b.material], reach = s.twist_reach[b.material];
+      s.sections[i].polarGyration = g;
+      s.sections[i].twistModulus = b.area * g * g / reach;
+      ++fastened;
+    }
+#endif
     if (r.found) {
       ++found;
       depths.push_back(r.depth);
@@ -442,9 +460,9 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
   std::fprintf(stderr,
                "[destruction] sections: structure %u (base %u): %zu of %zu bonds from chunk geometry, "
                "the rest a square patch of their area; shallow depth p10 %.3f median %.3f m; "
-               "geometric/authored area p10 %.2f median %.2f p90 %.2f\n",
+               "geometric/authored area p10 %.2f median %.2f p90 %.2f; %zu twist on their fasteners\n",
                structure_id, base, found, s.bonds.size() - bond_base, pct(depths, 0.1), pct(depths, 0.5),
-               pct(ratios, 0.1), pct(ratios, 0.5), pct(ratios, 0.9));
+               pct(ratios, 0.1), pct(ratios, 0.5), pct(ratios, 0.9), fastened);
 }
 #endif
 

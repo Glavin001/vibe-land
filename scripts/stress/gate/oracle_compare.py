@@ -20,6 +20,7 @@ p.add_argument('--snapshot', type=int, default=0)
 a = p.parse_args()
 pack, s, mats, pos, mass = ss.load(a.pack)
 sections = ss.bond_sections(s) if 'section' in (a.bending, a.angular) else None
+if a.angular == 'section': sections = ss.fastener_twist(s, mats, sections)
 J, resid = ss.solve(s, mats, pos, mass, angular=a.angular, sections=sections)
 st = ss.stresses(s, mats, J, bending=a.bending, sections=sections, pos=pos)  # util, fatal, comp, tens, shear, bend
 snap = json.load(open(a.rows))['snapshots'][a.snapshot]

@@ -171,6 +171,24 @@ export const ULTIMATE_SLIP = 0.015;
  * of contact. `compression` is bearing in Pa. Schedules: IRC 2021 Table
  * R602.3(1) (the fastening schedule), AS 1684.2 (nominal fixings).
  */
+/**
+ * A joint of a few discrete fasteners twists (about its contact normal) on
+ * the fasteners alone: each slips K_ser per unit of its own displacement,
+ * r_i theta, so the joint's rotational stiffness is K_ser sum r_i^2 (the
+ * elastic method for fastener groups, EN 1995-1-1 7.1 with AISC Manual Part 8),
+ * and the joint's translational stiffness n K_ser. Its radius of gyration in
+ * twist is therefore the fasteners' rms distance from their centroid, not the
+ * contact patch's: a single bolt is a pin in the plane of its lap. `reach`,
+ * the farthest fastener, gives the most loaded one (F = T reach / sum r^2).
+ * Fasteners in one row of length L: rms L / (n - 1) sqrt((n^2 - 1) / 12),
+ * reach L / 2. The row spans the member less an end/edge distance of 5 d each
+ * side (EN 1995-1-1 Table 8.2, a_4,c for nails; 3.15 mm: 16 mm), across a 90 mm
+ * member: 58 mm. One dowel twists on its own section: rms d / (2 sqrt 2), reach d / 2.
+ */
+export const fastenerRow = (n, length) => n < 2
+  ? { gyration: length / (2 * Math.SQRT2), reach: length / 2 }
+  : { gyration: length / (n - 1) * Math.sqrt((n * n - 1) / 12), reach: length / 2 };
+const NAIL_ROW = 0.09 - 2 * 5 * 3.15e-3;
 const toe = (n) => ({ tension: n * NAIL.withdrawal * NAIL.toeWithdrawal, shear: n * NAIL.lateral * NAIL.toeLateral });
 /**
  * A rafter or ceiling-joist tie-down: a framing anchor / hurricane tie at
@@ -186,13 +204,13 @@ export const CONNECTIONS = {
   // (R602.3(1) "2-16d end nail"), lateral in end grain at NDS 12.5.2's 0.67;
   // end-grain withdrawal is not relied on, so tension is that of the 4-8d
   // toe-nail alternative, as 2 toe nails.
-  'stud-plate': { per: 'joint', ...toe(2), shear: 2 * NAIL.lateral * 0.67, compression: BEARING.compression, slip: 2 * SLIP.nail },
+  'stud-plate': { per: 'joint', ...toe(2), shear: 2 * NAIL.lateral * 0.67, compression: BEARING.compression, slip: 2 * SLIP.nail, twist: fastenerRow(2, NAIL_ROW) },
   // Ceiling joist to top plate: 3 toe nails (R602.3(1) "3-8d toe nails") and a tie-down.
-  'joist-plate': { per: 'joint', ...tied(3), compression: BEARING.compression, slip: 3 * SLIP.nail },
+  'joist-plate': { per: 'joint', ...tied(3), compression: BEARING.compression, slip: 3 * SLIP.nail, twist: fastenerRow(3, NAIL_ROW) },
   // Rafter seat (birdsmouth) to top plate: 3 toe nails (R602.3(1) "3-16d toe nails") and a tie-down.
-  'rafter-seat': { per: 'joint', ...tied(3), compression: BEARING.compression, slip: 3 * SLIP.nail },
+  'rafter-seat': { per: 'joint', ...tied(3), compression: BEARING.compression, slip: 3 * SLIP.nail, twist: fastenerRow(3, NAIL_ROW) },
   // Rafter plumb cut to ridge board: 4 toe nails (R602.3(1) "4-16d toenail").
-  ridge: { per: 'joint', ...toe(4), compression: BEARING.compression, slip: 4 * SLIP.nail },
+  ridge: { per: 'joint', ...toe(4), compression: BEARING.compression, slip: 4 * SLIP.nail, twist: fastenerRow(4, NAIL_ROW) },
   // Rafter heel to the ceiling joist beside it, which ties the rafter feet
   // together: one M12 grade 4.6 bolt (AS 1684.2 allows a bolted heel).
   // EN 1995-1-1 8.5.1 / 8.2.2, single shear, two 45 mm C24 members:
@@ -200,17 +218,17 @@ export const CONNECTIONS = {
   // 12^2.6 = 77 N m; mode f: 1.15 sqrt(2 M f_h d) = 7.8 kN, the lowest of
   // the modes but (a) 13.7 kN -> 7 kN. Tension: the washer crushing the wood,
   // 3 f_c,90,k x washer area (8.5.2(2), 36 mm square washer, 1e-3 m^2) = 7.5 kN.
-  heel: { per: 'joint', tension: 7.5e3, shear: 7e3, compression: BEARING.compression, slip: SLIP.bolt },
+  heel: { per: 'joint', tension: 7.5e3, shear: 7e3, compression: BEARING.compression, slip: SLIP.bolt, twist: fastenerRow(1, 0.012) },
   // Ceiling joists spliced over the centre wall: lapped and face-nailed with
   // as many nails as the heel needs, since the splice carries the same tie
   // force (IRC R802.5.2 and its table: 4+ 16d for this span and pitch), or a
   // nail plate. The model's joist halves butt end to end, so the nails'
   // lateral capacity is the butt's tension as well as its shear.
-  'joist-splice': { per: 'joint', tension: 4 * NAIL.lateral, shear: 4 * NAIL.lateral, compression: BEARING.compression, slip: 4 * SLIP.nail },
+  'joist-splice': { per: 'joint', tension: 4 * NAIL.lateral, shear: 4 * NAIL.lateral, compression: BEARING.compression, slip: 4 * SLIP.nail, twist: fastenerRow(4, NAIL_ROW) },
   // Top plates at corners and intersections: the upper plate laps the other
   // wall's, 2 face nails (R602.3(1) "2-16d face nails"). The model's plates
   // meet end on, so the nails' lateral capacity is the butt's tension too.
-  'plate-lap': { per: 'joint', tension: 2 * NAIL.lateral, shear: 2 * NAIL.lateral, compression: BEARING.compression, slip: 2 * SLIP.nail },
+  'plate-lap': { per: 'joint', tension: 2 * NAIL.lateral, shear: 2 * NAIL.lateral, compression: BEARING.compression, slip: 2 * SLIP.nail, twist: fastenerRow(2, NAIL_ROW) },
   // The same joint nail-plated as well, where the upper storey's walls meet
   // on the floor platform, whose settlement loads them: AS 1684.2 allows a
   // nail plate at top-plate joints; a 75 x 150 mm toothed plate each face,

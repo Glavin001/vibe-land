@@ -166,6 +166,9 @@ struct NativeDestruction::State {
   /// Each bond's cross-section from its chunks' geometry (bond_section.h),
   /// parallel to `bonds`; filled only under VIBE_SECTION_BENDING=1.
   std::vector<physx::PxDestructionBondSection> sections;
+  // Per material (global index): a fastener group's twist radius of gyration
+  // and farthest fastener (m), 0 where the material twists on its patch.
+  std::vector<float> twist_gyration, twist_reach;
 #endif
   /// (structure, authored bond index) per stage bond, in stage order.
   std::vector<std::pair<std::uint32_t, std::uint32_t>> bond_ids;

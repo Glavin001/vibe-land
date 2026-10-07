@@ -17,7 +17,7 @@ ss = importlib.util.module_from_spec(spec); spec.loader.exec_module(ss)
 
 
 def whatif(s, mats):
-    sec = ss.bond_sections(s)
+    sec = ss.bond_sections(s) if os.environ.get('NO_FASTENER_TWIST') else ss.fastener_twist(s, mats, ss.bond_sections(s))
     for kv in filter(None, os.environ.get('STIFF', '').split(',')):
         for m in mats:
             if m['name'] == kv.split(':')[0]: m['elasticModulus'] *= float(kv.split(':')[1])
