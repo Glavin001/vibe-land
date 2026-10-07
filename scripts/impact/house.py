@@ -17,3 +17,14 @@ for path in sys.argv[1:]:
         print(f"  {r['trial']:24s} house {h['broken']:5d}/{h['bonds']} (frame {h['structuralBroken']}/{h['structuralBonds']}), median break {h.get('medianBreakDistance', 0):.1f} m,"
               f" by distance {h.get('byDistance')}, frame anchored {h.get('frameAnchoredFrac', 0):.2f}, roof drop {h.get('roofDropMean', 0):.2f} m"
               f" ({h.get('roofMembersDown')}/{h.get('roofMembers')} down), crushed {h.get('crushedChunks')}, car bonds {r.get('bondsBroken')}, {reach}")
+# With a .log beside the .json: the impact solve's cost and detectors.
+import os, re
+for path in sys.argv[1:]:
+    log = path[:-5] + '.log'
+    if not os.path.exists(log): continue
+    ev = [float(m.group(1)) for m in re.finditer(r'\[impact\] evaluation \d+ pass \d: ([\d.]+) ms', open(log).read())]
+    disp = [float(m.group(1)) for m in re.finditer(r'longest ([\d.]+) ms\)', open(log).read())]
+    txt = open(log).read()
+    def total(key): return sum(int(m.group(1)) for m in re.finditer(r'(\d+) ' + key, txt))
+    if ev: print(f"  impact solve: {len(ev)} evaluations, mean {sum(ev)/len(ev):.0f} ms, max {max(ev):.0f} ms, longest dispatch {max(disp):.0f} ms;"
+                 f" capped {total('capped')}, diverged {total('diverged')}, held stops {total('held stops')}, energy gains {total('energy gains')}, infeasible {total('infeasible projections')}")
