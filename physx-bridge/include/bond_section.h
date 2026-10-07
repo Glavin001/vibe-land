@@ -180,8 +180,14 @@ inline Result section(const std::vector<P3> &a, const std::vector<P3> &b, const 
   // scaled up to the authored area it gave a 0.056 m^2 vehicle bond radii of
   // gyration of 94 m and 6e-5 m. Such a bond keeps the square patch of its
   // area. A smaller authored area (a fastener inside a larger overlap) keeps
-  // the overlap's shape, scaled down.
-  if (area > A + 1e-6) return r;
+  // the overlap's shape, scaled down. The slice takes faces within tol of the
+  // plane, so the overlap is uncertain by a band tol wide around its perimeter.
+  double perimeter = 0;
+  for (size_t i = 0; i < p.size(); ++i) {
+    const P2 s = p[i], t = p[(i + 1) % p.size()];
+    perimeter += std::sqrt((t.x - s.x) * (t.x - s.x) + (t.y - s.y) * (t.y - s.y));
+  }
+  if (area > A + perimeter * tol + 1e-6) return r;
   cx /= 6 * A;
   cy /= 6 * A;
   xx = xx / 12 - A * cx * cx; // int u^2 dA about the patch centroid

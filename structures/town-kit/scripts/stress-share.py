@@ -145,7 +145,10 @@ def bond_sections(s, tol=1e-4):
         # A contact cannot exceed its faces' overlap: where the authored area
         # does (beyond the 1e-6 m^2 rounding) the faces are not the contact and
         # the bond keeps the square patch of its area (bond_section.h).
-        if bd['area'] > area + 1e-6: out.append(None); continue
+        # The slice takes faces within tol of the plane, so the overlap is
+        # uncertain by a band tol wide around its perimeter.
+        perimeter = np.sqrt((np.roll(x, -1) - x) ** 2 + (np.roll(y, -1) - y) ** 2).sum()
+        if bd['area'] > area + perimeter * tol + 1e-6: out.append(None); continue
         cx, cy = ((x + x1) * cr).sum() / (6 * area), ((y + y1) * cr).sum() / (6 * area)
         Ixx = ((x * x + x * x1 + x1 * x1) * cr).sum() / 12 - area * cx * cx   # int u^2
         Iyy = ((y * y + y * y1 + y1 * y1) * cr).sum() / 12 - area * cy * cy   # int v^2
