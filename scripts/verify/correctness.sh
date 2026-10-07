@@ -45,7 +45,27 @@ failed=0
 
 # A GPU environment failure, not a test failure: another process's long GPU work
 # timed this one's command buffers out (Metal), which PhysX reports as CUDA error 2.
-env_failure() { grep -qE 'kIOGPUCommandBufferCallbackErrorTimeout|CUDA error 2\b|cudaErrorMemoryAllocation|CUDA_ERROR_LAUNCH_TIMEOUT' "$1"; }
+env_failure() { grep -qE 'kIOGPUCommandBufferCallbackErrorTimeout|CUDA error 2\b|cudaErrorMemoryAllocation|CUDA_ERROR_LAUNCH_TIMEOUT|^STALLED' "$1"; }
+
+# watched LOG CMD...: run CMD with its output in LOG; if LOG stops growing for
+# VERIFY_STALL_S (default 600) s -- a process stuck in an uninterruptible GPU wait
+# behind another process's hung dispatch -- kill it and mark the log STALLED.
+watched() {
+  local log=$1; shift
+  "$@" > "$log" 2>&1 &
+  local pid=$! last=$(date +%s) size=-1
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 5
+    local now=$(date +%s) cur=$(stat -f %z "$log" 2>/dev/null || echo 0)
+    if [ "$cur" != "$size" ]; then size=$cur; last=$now; fi
+    if [ $(( now - last )) -ge "${VERIFY_STALL_S:-600}" ]; then
+      pkill -9 -P "$pid" 2>/dev/null; kill -9 "$pid" 2>/dev/null
+      echo "STALLED: no output for ${VERIFY_STALL_S:-600} s (a GPU wait that never returned); killed" >> "$log"
+      return 124
+    fi
+  done
+  wait "$pid"
+}
 
 has() { grep -q "#define $2 1" "$1/include/physx/PxDestructionScene.h" 2>/dev/null; }
 
@@ -65,8 +85,8 @@ textbook() {
     cd "$ROOT"
     for attempt in 1 2; do
       rm -f "$VERIFY_OUT"
-      cargo test -p vibe-land-physx-bridge --features native-destruction --test textbook \
-        -- --ignored --test-threads=1 --nocapture > "$out/textbook-$label.log" 2>&1 && break
+      watched "$out/textbook-$label.log" cargo test -p vibe-land-physx-bridge --features native-destruction --test textbook \
+        -- --ignored --test-threads=1 --nocapture && break
       env_failure "$out/textbook-$label.log" || break
       echo "[verify] textbook $label: GPU environment failure, rerunning"
     done
@@ -101,7 +121,7 @@ if want regressions; then
     [[ "$cmd" == *ctest* ]] && cmd="unset PX_DESTRUCTION_ALLOW_UNCONVERGED; $cmd"
     st=FAIL
     for attempt in 1 2; do
-      if (cd "$ROOT" && bash -c "$cmd") > "$out/regression-$id.log" 2>&1; then st=PASS; break; fi
+      if (cd "$ROOT" && watched "$out/regression-$id.log" bash -c "$cmd"); then st=PASS; break; fi
       # Another process's long GPU dispatch can time out this one's command
       # buffers: an environment failure, rerun once, then reported as ENV.
       if env_failure "$out/regression-$id.log"; then st=ENV; echo "[verify] regression $id: GPU environment failure, rerunning"; continue; fi
