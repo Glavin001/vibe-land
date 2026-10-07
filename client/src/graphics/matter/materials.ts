@@ -83,6 +83,13 @@ export interface MatterOptions {
    * roughness. What a city full of windows can afford.
    */
   glassLite?: boolean;
+  /**
+   * Concrete's coarse relief by parallax (default true): two more full field
+   * evaluations per pixel, tripling concrete's cost, for relief a few
+   * millimetres deep. The lab keeps it; the city, which sees concrete from
+   * metres away across whole walls, does not.
+   */
+  parallax?: boolean;
 }
 
 /** The lab's space: the mesh's own geometry and model matrix. */
@@ -257,14 +264,15 @@ export function createMaterial(input: MaterialRecipe, options: MatterOptions = {
   let field = fieldFn(p, space.normal, a, b, seed, footprint, knot).toVar();
 
   let coarseRelief: Node = null;
-  if (recipe.kind === 'concrete') {
+  const displaced = !options.space && options.displacement !== false;
+  if (recipe.kind === 'concrete' && (displaced || options.parallax !== false)) {
     // The coarse cavity relief, as geometry (displacement) and as parallax:
     // two steps of re-evaluating the field where the eye ray meets it.
     coarseRelief = fieldFn(p, space.normal, a, b, seed, float(0.0025), knot).element(1).x;
     const view = space.viewDirection.normalize();
     const cosine = view.dot(space.normal).abs().max(0.22);
     const tangent = view.sub(space.normal.mul(view.dot(space.normal)));
-    for (let step = 0; step < 2; step++) {
+    for (let step = 0; step < (options.parallax === false ? 0 : 2); step++) {
       const residual = field.element(1).x.sub(varying(coarseRelief));
       const parallaxPosition = p.add(tangent.mul(residual.div(cosine)));
       field = fieldFn(parallaxPosition, space.normal, a, b, seed, footprint, knot).toVar();
@@ -274,7 +282,7 @@ export function createMaterial(input: MaterialRecipe, options: MatterOptions = {
   const fiber = recipe.kind === 'oak' ? createFiberLUT() : null;
   const material = new MeshPhysicalNodeMaterial();
   material.name = `Matter / ${recipe.kind}`;
-  if (coarseRelief && !options.space && options.displacement !== false)
+  if (coarseRelief && displaced)
     material.positionNode = positionGeometry.add(normalGeometry.mul(coarseRelief));
   material.colorNode = field.element(0).xyz.mul(tint);
   material.roughnessNode = field.element(0).w;

@@ -69,9 +69,13 @@ const oakField = field('matterOak', `
   let fine=mnoise(q*vec3f(950.,13.,950.)+s);
   color=mix(vec3f(.28,.137,.047),vec3f(.46,.275,.12),clamp(.48+grain*.23+fine*.09,0.,1.));
   color=mix(color,color*vec3f(.48,.46,.4),late*.5);
-  let vq=vec3f((q.x+influence*.012)*1300.,q.y*7.,q.z*1300.)+s;
-  let poreCell=mcell(vq); let pr=clamp(a.z*1300.,.035,.43); let pores=(1.-smoothstep(pr,pr+.08,poreCell.x))*(.15+early*.85);
+  // Vessels only where the footprint resolves them (they are faded to zero beyond).
   let resolved=1.-smoothstep(.00012,.0007,fp);
+  var pores=0.;
+  if(resolved>0.){
+   let vq=vec3f((q.x+influence*.012)*1300.,q.y*7.,q.z*1300.)+s;
+   let poreCell=mcell(vq); let pr=clamp(a.z*1300.,.035,.43); pores=(1.-smoothstep(pr,pr+.08,poreCell.x))*(.15+early*.85);
+  }
   color*=1.-pores*.48*resolved*detail;
   let theta=atan2(q.z,q.x); let rayCoord=theta*53.+mnoise(q*vec3f(14.,8.,14.)+s)*.7;
   let rays=(1.-smoothstep(.04,.14,abs(fract(rayCoord)-.5)))*(smoothstep(-.3,.6,mnoise(q*vec3f(11.,120.,11.)+s)));
@@ -102,12 +106,18 @@ const concreteField = field('matterConcrete', `
   let aggregateColor=mix(vec3f(.105,.1,.082),vec3f(.38,.37,.31),agg.y);
   color=vec3f(.34,.345,.315)*(1.+broadVariation*b.z+medium*.045+fine*.023*detail);
   color=mix(color,aggregateColor,mineral*.9);
-  let pores=mcell(p*430.+s*1.3); let large=mcell(p*95.+s*2.);
-  let microVoid=(1.-smoothstep(.07,.16,pores.x))*smoothstep(.2,.4,pores.y);
-  let cavityRadius=mix(.08,.39,pow(large.y,6.));
-  let cavity=(1.-smoothstep(cavityRadius*.45,cavityRadius,large.x))*smoothstep(1.-a.z*.65,1.-a.z*.65+.05,large.y);
+  // Pores and cavities only where the footprint still resolves them: beyond
+  // that they are faded to exactly zero, so skipping their cell noise (81
+  // hashes each) changes nothing.
   let microResolved=1.-smoothstep(.0002,.0012,fp); let bigResolved=1.-smoothstep(.001,.006,fp);
-  let cv=cavity*bigResolved;
+  var microVoid=0.; var cv=0.;
+  if(microResolved>0.){let pores=mcell(p*430.+s*1.3); microVoid=(1.-smoothstep(.07,.16,pores.x))*smoothstep(.2,.4,pores.y);}
+  if(bigResolved>0.){
+   let large=mcell(p*95.+s*2.);
+   let cavityRadius=mix(.08,.39,pow(large.y,6.));
+   let cavity=(1.-smoothstep(cavityRadius*.45,cavityRadius,large.x))*smoothstep(1.-a.z*.65,1.-a.z*.65+.05,large.y);
+   cv=cavity*bigResolved;
+  }
   height=((-microVoid*.00012*microResolved-cv*b.y)+(medium*.00006+fine*.000018*microResolved))*(1.-b.x*.9)*detail;
   color*=1.-(microVoid*.18*microResolved+cv*.20)*detail;
   rough=clamp(.81-b.x*.59+fine*.025+mineral*.05+cv*.12,.12,.98); mask=cv;
@@ -147,14 +157,17 @@ const marbleField = field('matterMarble', `
   let vein=1.-smoothstep(width*.35,width*1.8,line);
   let lace=1.-smoothstep(.018,.045,abs(sin(layer*33.+mnoise(q*14.+s))));
   let mineral=clamp(vein*.8+lace*.08,0.,1.); let cloud=mnoise(p*21.+s)*.035;
-  let grains=mcell(p/max(a.w,.0001)+s); let fine=mnoise(p*2100.+s);
+  let fine=mnoise(p*2100.+s);
   color=vec3f(.68,.675,.615)+cloud;
   let halo=(1.-smoothstep(width*.5,width*4.,line))*.12;
   color=mix(color,vec3f(.22,.24,.215),mineral*(.45+b.y*.5)+halo);
+  // Crystal grains only where the footprint resolves them (faded to zero beyond).
   let resolved=1.-smoothstep(a.w*.2,a.w*1.4,fp);
-  color+=vec3f(grains.y-.5)*.02*resolved*detail;
+  var grain=0.;
+  if(resolved>0.){grain=mcell(p/max(a.w,.0001)+s).y;}
+  color+=vec3f(grain-.5)*.02*resolved*detail;
   height=(fine*.000013*resolved+mineral*.000018)*(1.-b.z*.97)*detail;
-  rough=clamp(.44-b.z*.31+grains.y*.016*resolved,.055,.7); mask=mineral; coat=0.;
+  rough=clamp(.44-b.z*.31+grain*.016*resolved,.055,.7); mask=mineral; coat=0.;
 `);
 
 /** Glass: white base, surface roughness a.z and faint manufacturing waviness a.w. */

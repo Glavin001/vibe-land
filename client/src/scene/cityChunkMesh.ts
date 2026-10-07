@@ -164,6 +164,15 @@ function matterSourceMaterial(matter: ResolvedMatter, appearance: MaterialAppear
   return source;
 }
 
+/** The side of the square regions Matter chunks are drawn in, metres (world XZ). */
+const MATTER_REGION_M = 128;
+
+/** Which materials can share one Matter material: same look, same recipe, and for glass the same tint. */
+function matterLookKey(matter: ResolvedMatter, appearance: MaterialAppearance): string {
+  const glass = appearance.opacity != null ? `|${appearance.opacity}|${appearance.color ?? ''}` : '';
+  return `${JSON.stringify(matter.recipe)}|${matter.axis}${glass}`;
+}
+
 /**
  * Per-slot material index, and which slots are transparent.
  *
@@ -545,19 +554,33 @@ export function buildCityMesh(client: CityClient): CityMeshState {
   const concrete = buildCityMaterial();
   const depth = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
   const glassByKey = new Map<number, THREE.Material>();
+  // One Matter material per LOOK, not per manifest material: a city's table
+  // repeats materials (three reinforced concretes, pine framing under two
+  // names), and each distinct material is its own meshes and shader.
+  const matterByLook = new Map<string, THREE.Material>();
   const materialFor = (key: number): THREE.Material => {
     const appearance = key < 0 ? undefined : materials.appearance[key];
     const matter = key < 0 ? null : materials.matterOfMaterial[key] ?? null;
     if (!appearance || (!matter && appearance.opacity == null)) return concrete;
+    if (matter) {
+      const look = matterLookKey(matter, appearance);
+      let built = matterByLook.get(look);
+      if (!built) {
+        built = matterSourceMaterial(matter, appearance);
+        matterByLook.set(look, built);
+      }
+      return built;
+    }
     let built = glassByKey.get(key);
     if (!built) {
-      built = matter ? matterSourceMaterial(matter, appearance) : buildGlassMaterial(appearance);
+      built = buildGlassMaterial(appearance);
       glassByKey.set(key, built);
     }
     return built;
   };
 
   let cellCount = 0;
+  const matterRegions = new Map<string, { material: THREE.Material; slots: number[] }>();
   for (const structure of manifest.structures) {
     const structureSlots = structure.chunks.map((chunk) =>
       client.topology.slotOf(structure.structureId, chunk.nodeIndex),
@@ -572,21 +595,41 @@ export function buildCityMesh(client: CityClient): CityMeshState {
       cellCount += 1;
       // Split by MATERIAL. Transparency is a property of the material and
       // cannot ride on a vertex, so a cell holding both glazing and concrete
-      // gets a mesh of each; so is a Matter look (its own shader). Other
-      // opaque chunks of every material share one, because which brick or
-      // concrete they wear travels in the anchor.
-      const byMaterial = new Map<number, number[]>();
+      // gets a mesh of each. Other opaque chunks of every material share
+      // one, because which brick or concrete they wear travels in the anchor.
+      const byMaterial = new Map<THREE.Material, number[]>();
       for (const slot of slots) {
-        const own = materials.transparentBySlot[slot] || materials.matterBySlot[slot];
-        const key = own ? materials.materialOfSlot[slot] : -1;
-        const list = byMaterial.get(key) ?? [];
+        if (materials.matterBySlot[slot]) {
+          // Matter chunks group by region instead (below).
+          const material = materialFor(materials.materialOfSlot[slot]);
+          const key = `${material.uuid}|${Math.floor(anchors[slot * 4] / MATTER_REGION_M)}|${Math.floor(anchors[slot * 4 + 2] / MATTER_REGION_M)}`;
+          let region = matterRegions.get(key);
+          if (!region) {
+            region = { material, slots: [] };
+            matterRegions.set(key, region);
+          }
+          region.slots.push(slot);
+          continue;
+        }
+        const material = materialFor(materials.transparentBySlot[slot] ? materials.materialOfSlot[slot] : -1);
+        const list = byMaterial.get(material) ?? [];
         list.push(slot);
-        byMaterial.set(key, list);
+        byMaterial.set(material, list);
       }
-      for (const [key, list] of byMaterial) {
-        buildCell(sink, client, materialFor(key), depth, shapeBySlot, cell, list);
+      for (const [material, list] of byMaterial) {
+        buildCell(sink, client, material, depth, shapeBySlot, cell, list);
       }
     }
+  }
+  // Matter looks dress small, scattered parts (worktops, fittings, frames,
+  // panes) of many buildings, so they are drawn per look per region rather
+  // than per look per building: a town's houses would otherwise each add a
+  // draw (and a shadow draw) for every look they wear. The pose textures are
+  // city-wide, so any chunks can share a mesh.
+  for (const { material, slots } of matterRegions.values()) {
+    const cell = cellCount;
+    cellCount += 1;
+    buildCell(sink, client, material, depth, shapeBySlot, cell, slots);
   }
 
   const state: CityMeshState = {
@@ -596,7 +639,7 @@ export function buildCityMesh(client: CityClient): CityMeshState {
     scales,
     radii,
     poses,
-    materials: [concrete, depth, ...glassByKey.values()],
+    materials: [concrete, depth, ...glassByKey.values(), ...matterByLook.values()],
     matterLooks: materials.appearance.map((_, i) => materials.matterOfMaterial[i]?.name ?? null),
   };
   // Every record and every body the ledger has, so the first frame draws the

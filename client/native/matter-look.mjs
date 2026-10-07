@@ -57,13 +57,14 @@ async function run() {
   globalThis.__VIBE_NATIVE_HUD__.visible = false;
   await sleep(2000);
   const materials = e2e.cityMaterials();
+  log(`chunk draws (render cells): ${e2e.frameProfile?.().subDraws}`);
   for (const m of materials) log(`material ${m.index} ${m.name}: ${m.worn ? m.look : `triplanar${m.look ? ` (maps to ${m.look})` : ''}`} (${m.chunks} chunks)`);
   for (const pose of matterPoses(materials)) {
     e2e.setCapturePose({ position: pose.position, lookAt: pose.lookAt });
     await sleep(1600);
     const file = `${MATTER_OUT}/${pose.name}.png`;
     const saved = __mystralSaveScreenshot(file);
-    const gpu = await gpuFrameMs(3000);
+    const gpu = await gpuFrameMs(6000);
     log(`${pose.name}: ${saved ? file : 'FAILED'}  gpu ms median ${gpu.median.toFixed(2)} p95 ${gpu.p95.toFixed(2)} readbacks ${gpu.readbacks} frame ms ${gpu.frame.toFixed(2)}`);
   }
   const builds = e2e.shaderBuilds?.();

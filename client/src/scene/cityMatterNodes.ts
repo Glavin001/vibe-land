@@ -81,7 +81,7 @@ export function matterSlotMaterial(source: THREE.Material, poses: CityGpuPoses):
     toWorld: (direction: Node) => quatRotate(q, toRest(code, direction)),
     viewDirection: toMaterial(code, quatRotate(conjugate(q), cameraPosition.sub(positionWorld))),
   };
-  const handle = createMaterial(matter.recipe, { space, glassLite: true });
+  const handle = createMaterial(matter.recipe, { space, glassLite: true, parallax: false });
   const material = handle.material;
   material.name = `City / ${matter.name}`;
   material.positionNode = nodes.positionNode;
