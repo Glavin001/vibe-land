@@ -62,17 +62,8 @@ Fixed constraints, not levers:
 - Measured: within run-to-run noise (1-2 ms) on impact steps with crushing on (vehicle lab, 2026-10-07).
 - Re-measure with contact crush inside the impact solve.
 
-## The performance suite (to build)
-- 60-120 s, one answer.
-- Draws on the same data-driven scenarios as the correctness suites:
-  - Vibe Town idle and under bombardment;
-  - the vehicle fleet;
-  - house impacts: truck, cannonball, meteor;
-  - the calibration structures.
-- Reports:
-  - step time: median, p95, worst tick;
-  - GPU time;
-  - stress iterations;
-  - impact-solve iterations;
-  - unconverged count.
-- Paired A/B method from the `perf-ab-measure` and `perf-measure` skills.
+## The performance suite
+Built: `scripts/perf/suite.sh` (`--quick`, `--compare`), described in
+[SUITE.md](SUITE.md); the baseline is `scripts/perf/suite-baseline.json`.
+Every optimisation step must lower its high-fidelity score (beyond the noise
+band) and keep `scripts/verify/correctness.sh` green.
