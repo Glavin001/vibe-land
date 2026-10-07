@@ -127,6 +127,19 @@ static bool native_true_bond_stiffness() {
   static const bool value = native_env_f32("VIBE_BOND_TRUE_STIFFNESS", 0.0f) != 0.0f || native_section_rotation();
   return value;
 }
+/// VIBE_NATIVE_UNCAPPED_SPIN=1 (high-fidelity profile; docs/verification/
+/// FIDELITY_AUDIT.md): native clusters, vehicle carriers and rounds take the
+/// SDK's numeric range for angular velocity, as add_dynamic's bodies already
+/// do, instead of PhysX's default 100 rad/s clamp, which nothing here ever
+/// chose. The clamp is not physics: PxRigidBody::setMaxAngularVelocity warns
+/// that enforcing it introduces momentum error, and every fragment inherits
+/// its source's limit (PxgDestructionMotionState). A 1 m rod struck 0.4 m off
+/// centre at 100 m/s spins at ~180 rad/s (tests/fidelity_audit.rs).
+static bool native_uncapped_spin() {
+  static const bool value = native_env_f32("VIBE_NATIVE_UNCAPPED_SPIN", 0.0f) != 0.0f;
+  return value;
+}
+static constexpr float kUncappedAngularVelocity = 1.0e16f; // add_dynamic's value
 static float native_depenetration_velocity() {
   static const float value = native_env_f32("VIBE_CITY_NATIVE_DEPEN_VELOCITY", 0.0f);
   return value;
