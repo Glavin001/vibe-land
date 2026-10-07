@@ -54,6 +54,13 @@ def stage_wrench(st, k, J):
 def export(a):
     st = study.Structure(a.pack)
     st.inertia[:] = st.inertia.mean(1, keepdims=True)   # the stage's scalar inertia
+    # Evidence runs (the oracle is not ground truth): the oracle with the
+    # problem's tie stiffness in its elastic tie-break, and/or its ramp refined.
+    authored_w = st.w.copy(); oracle_w = st.w.copy()
+    if a.oracle_tie_stiffness:
+        oracle_w[np.array([m == 'wall-tie' for m in st.bmat])] = np.sqrt(a.tie_stiffness / 30e9)
+    if a.oracle_ramp:
+        study.RAMP, study.RAMP_LEVELS = a.oracle_ramp[0], int(a.oracle_ramp[1])
     out = pathlib.Path(a.out); out.mkdir(parents=True, exist_ok=True)
     sc = study.scenarios()
     for name in a.scenario or ['cannonball', 'truck', 'truck-corner', 'meteor', 'small+0.86']:
@@ -66,7 +73,9 @@ def export(a):
         F = study.gravity_loads(st) + Fc
         Jf, _ = sol.solve(F, Tc)
         t0 = time.time()
+        st.w = oracle_w   # the elastic solves above keep the authored weights (the stress solve's)
         v = None if a.problem_only else study.verdict_plastic(st, active.copy(), alive.copy(), dict(contacts), total, imp.d, np.zeros(st.n), False)
+        st.w = authored_w
         wall = time.time() - t0
         L = float(st.Ls)
         with open(out / f'{name}.impe', 'wb') as f:
@@ -153,7 +162,9 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
     e = sub.add_parser('export'); e.add_argument('pack'); e.add_argument('out'); e.add_argument('--scenario', nargs='*')
     e.add_argument('--problem-only', action='store_true', help='rewrite the .impe only, keep the oracle files')
-    e.add_argument('--tie-stiffness', type=float, help="the wall ties' stiffness (N/m) in the problem's weights (the oracle's verdict does not depend on it)")
+    e.add_argument('--tie-stiffness', type=float, help="the wall ties' stiffness (N/m) in the problem's weights")
+    e.add_argument('--oracle-tie-stiffness', action='store_true', help="the oracle's elastic tie-break with the same tie stiffness (needs --tie-stiffness)")
+    e.add_argument('--oracle-ramp', type=float, nargs=2, help="the oracle's ramp factor and levels (default 2 9: from 1/256)")
     c = sub.add_parser('compare'); c.add_argument('pack'); c.add_argument('base')
     a = ap.parse_args()
     export(a) if a.cmd == 'export' else compare(a)
