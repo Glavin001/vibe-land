@@ -1,0 +1,300 @@
+# Verification: does the destruction stage do what a structural engineer expects?
+
+This suite checks the PhysX native GPU destruction stage (CuMetal on the Mac)
+against closed-form structural mechanics, locks in this week's accuracy fixes
+with regression tests, and runs the owner's acceptance scenarios. Every result
+is reported for two **engine profiles**:
+
+- **runtime**: what the game ships. Every new capability is off.
+- **high-fidelity**: every accuracy capability is on. Optimisation work gates
+  on this profile. The runtime profile must never regress.
+
+```bash
+scripts/verify/correctness.sh quick    # ~5 min: textbook + quick regressions, both profiles
+scripts/verify/correctness.sh full     # ~1.5-2 h: + refinement study, rest, impact SDK,
+                                       #   all regressions, acceptance scenarios in both profiles
+scripts/verify/correctness.sh full --only acceptance
+```
+
+The run writes `target/verify/<stamp>/report.md`. That is one table: for each
+case and check it gives the textbook value and, for each configuration, the
+simulated value, the error and the status. Exit 1 means something FAILed.
+
+Statuses:
+
+- **PASS**: within the 1% tolerance.
+- **KNOWN-GAP**: listed in `physx-bridge/tests/textbook/expected.tsv` (or
+  `scripts/verify/acceptance-expected.tsv`) with its measured error and a cause.
+  A gap fails again (GAP-WORSE) if its error grows past 1.25x the recorded error
+  plus 0.5%.
+- **FIXED**: a listed gap that now passes. Remove it from the list.
+- **FAIL**: anything else.
+
+Tolerances are never loosened to make a check pass. A gap is recorded with its
+number and its cause.
+
+## The profiles: one switch
+
+```bash
+source scripts/fidelity/high.env       # or runtime.env
+scripts/fidelity/profile.sh high CMD   # run CMD in a profile
+scripts/fidelity/check.sh              # which capabilities does $PHYSX_ROOT carry?
+scripts/fidelity/build-packs.sh high   # the high-fidelity packs (isolated copy, target/fidelity/high)
+scripts/fidelity/packs.sh high         # their paths
+```
+
+| Capability | Flag | Needs |
+|---|---|---|
+| Bond bending and torsion from the real section | `VIBE_SECTION_BENDING=1` | `PX_DESTRUCTION_SECTION_BENDING` |
+| Rotational stiffness from the real section | `VIBE_SECTION_ROTATION=1` | `PX_DESTRUCTION_SECTION_ROTATIONAL_STIFFNESS` |
+| Bond stiffness E A / L with no floors, contact length max(d, sqrt A) | `VIBE_BOND_TRUE_STIFFNESS=1`, `VIBE_BOND_CONTACT_LENGTH=1` | bridge (implied by rotation) |
+| Impact capacity E and impact-pressure crush | `VIBE_IMPACT_CAPACITY=1` | `PX_DESTRUCTION_IMPACT_CAPACITY` |
+| Chunk crushing | `VIBE_CRUSH=1` (pack build), `VIBE_NATIVE_CRUSH=1` | `PX_DESTRUCTION_CRUSH_CORRECTION` |
+| Real capacities for outdoor props and trees | `VIBE_REAL_CAPACITIES=1` (pack build) | |
+| Hulls referenced from their centroid | `TOWN_KIT_HULL_ORIGIN=centroid` (pack build) | |
+| Players snap to ground within 0.2 m | `VIBE_PLAYER_SNAP_TO_GROUND=1` | |
+| No 100 rad/s spin clamp on native bodies | `VIBE_NATIVE_UNCAPPED_SPIN=1` | bridge |
+
+**No single SDK has every capability yet (2026-10-07).**
+
+- The E SDK (`feat/impact-capacity`, `garage-impact`) has bending, crush
+  correction and impact capacity, but not rotational stiffness.
+- `garage-multihull` (`feat/section-rotational-stiffness`) has rotation, but
+  not crush or impact.
+
+The bridge refuses a flag its SDK lacks. `check.sh --degrade` drops the missing
+flags and records them in `VIBE_FIDELITY_MISSING`. The configuration name says
+what actually ran:
+
+- `high-fidelity(no-impact)`: the stress-solve suite, run on the rotation SDK.
+- `high-fidelity(no-rotation)`: run on the E SDK.
+
+The E branch merged the rotation branch at 70876b143. Once an SDK built from
+it is installed, `high.env`'s `PHYSX_ROOT` will carry everything.
+
+## How the textbook cases are built
+
+Each case is a structure of rigid box (or convex hull) chunks joined by bonds,
+exactly what the stage is given. It runs on the GPU stage at the **shipping
+solver settings** (`physx-bridge/tests/textbook/stage.rs`):
+
+- 64 stress iterations per tick, tolerance 1e-3, warm start;
+- one corrected pass;
+- `PX_DESTRUCTION_ALLOW_UNCONVERGED=1`.
+
+A static solve that does not converge in one tick carries on the next tick, as
+it does in the game. The iteration cap is never raised and the tolerance is
+never loosened.
+
+Each check reports three numbers:
+
+- **textbook**: the closed form, with its formula and source.
+- **model**: the exact f64 answer of the stage's own discrete model
+  (`model.rs`). Every bond is a spring k = (E/E_ref) A / L, with a rotational
+  stiffness k Ls^2 (runtime) or k I/A from its section (high-fidelity), and the
+  grading of the configuration. Model vs textbook is the **chunking's** error;
+  it is deterministic.
+- **stage**: what the GPU computed. Stage vs model is the **solver's** error
+  (FP32, production tolerance).
+
+Across every case and every configuration the stage matches its model to
+better than 0.1% (most to 0.00%). Where a case misses the textbook, the
+discrete model already misses it. These are modelling gaps, not solver bugs,
+with one exception (see the known gaps).
+
+Supports are physical details, because the stage only knows chunks and bonds
+(`build.rs`):
+
+- A **fixed end** is the member's face bonded to an anchor plate centred on that
+  face.
+- A **pin** is a 2 cm bearing strip on a 2 cm block.
+- A **roller** is a 30 cm pendulum link with a 2 cm strip at each end.
+- A **hanger** is the same link from above.
+
+A 2 cm strip resists moment only through its section, so pins and rollers
+behave as pins and rollers only when rotational stiffness comes from the
+section (high-fidelity). In the runtime solve every bond is k Ls^2 stiff in
+rotation, so the strips clamp.
+
+### Cases (closed form, source)
+
+Sources:
+
+- [Gere] Gere & Goodno, *Mechanics of Materials*
+- [Hibbeler] Hibbeler, *Structural Analysis*
+- [Hib-MoM] Hibbeler, *Mechanics of Materials*
+- [Roark] Young & Budynas, *Roark's Formulas for Stress and Strain*
+- [Timo-Goodier] Timoshenko & Goodier, *Theory of Elasticity*
+
+Statics:
+
+| Case | What is checked | Formula | Source |
+|---|---|---|---|
+| cantilever-tip-load | root and midspan bending stress, root shear, axial = 0 | M = P a, sigma = M/S, S = b d^2/6, V = P | [Gere] 4.4, 5.5 |
+| cantilever-self-weight | root and midspan bending stress, root shear, under rho = 2400 kg/m3, g = 9.81 | M = w L^2/2, V = w L, w = rho A g | [Gere] 4.4 |
+| simply-supported-point | both reactions, bending beside the load | R = P/2, M = P x/2 (max P L/4) | [Gere] 4.5 |
+| simply-supported-udl | reactions, midspan and quarter-span bending | R = w L/2, M = w x (L - x)/2, max w L^2/8 | [Gere] 4.5 |
+| propped-cantilever-udl | prop reaction, fixed-end shear and moment, span moment near 5L/8 | R = 3wL/8, 5wL/8, M = wL^2/8, 9wL^2/128 | [Gere] 10.3, [Roark] 8.1 |
+| fixed-fixed-udl | end and midspan moments, end shear | wL^2/12, wL^2/24, wL/2 | [Gere] 10.4, [Roark] 8.1 |
+| fixed-fixed-point (full) | end moment, moment beside the load | P L/8, P x/2 - P L/8 | [Roark] 8.1 |
+| two-span-continuous | centre and end reactions, hogging moment over the centre support | R_B = 10wL/8, R_A = 3wL/8, M_B = wL^2/8 | [Hibbeler] 10, [Roark] 8.1 |
+| axial-column | axial force at the base and mid-height | N = P + w (h - y) | [Gere] 1.2 |
+| eccentric-column | compression and tension fibres, outside the kern | sigma = -P/A -/+ P e/S | [Gere] 11.5, [Hib-MoM] 8.4 |
+| portal-frame-lateral | base and column-top moments, column shears, overturning axial forces | M_base = (Hh/2)(1+3k)/(1+6k), k = (I_b/L)/(I_c/h) | [Hibbeler] 11.5 (slope-deflection with sidesway) |
+| three-hinged-frame | thrust, vertical reaction, beam axial force, knee moment | H = M0(crown)/h (UDL: wL^2/8h) | [Hibbeler] 5.3 |
+| pratt-truss | end diagonal, chords, hanger, diagonal, zero-force centre vertical, reaction | method of joints | [Hibbeler] 3.4 |
+| torsion-round-shaft | torsional shear (root, mid), bending, shear | tau = T r / J, sigma = M c / I | [Gere] 3.3, [Roark] A.1 |
+| torsion-square-shaft | torsional shear | tau = T / (0.208 a^3) (Saint-Venant) | [Roark] 10.1, [Timo-Goodier] 109 |
+
+The portal frame's lateral load is applied by turning the frame 90 degrees
+(structure pose), so a 10 t knee's weight acts along the frame. The round shaft
+is a 28-sided hull. The 32-sided version had 64 hull vertices, and the cooked
+hull dropped one: the section's principal axis then followed the long edge and
+bending read 40% high. Keep hull chunks well under the cooker's 64-vertex limit.
+
+Failure, redundancy, gravity and rest (`failure.rs`). Materials are brittle
+(elastic limit = fatal limit). The breaking load is found by bisection to 0.1%,
+with a fresh world for each trial.
+
+| Case | What is checked | Formula |
+|---|---|---|
+| break-cantilever-root | breaking load; the root bond breaks first | P = f_t S / a |
+| break-column-crush | breaking load; the base bond crushes first | P = f_c A - w h |
+| break-eccentric-tension | breaking load; the tension face cracks | P = f_t / (e/S - 1/A) |
+| break-simply-supported | breaking load; the bonds beside the load break first | P = 2 f_t S / x |
+| redundancy-propped | the hanger fails; the beam holds as a cantilever; root moment redistributes to wL^2/2 | indeterminate: alternative path |
+| redundancy-simple | the hanger fails; the beam falls (> 1 m in 1.5 s) | determinate: mechanism |
+| gravity-free-fall | a broken-off fragment accelerates at g (not 2g, not 0) | dv/dt = g |
+| rest-near-capacity (full) | a tower at 95% of crushing capacity and a cantilever at 95% of tension capacity stand 10 s, with no break and no stress creep | statics |
+
+The full tier also runs a **refinement study**: the indeterminate cases at 2x
+and 4x the chunk count (`case/nN`).
+
+### What rigid chunks and bonds cannot represent (known limits, not faked)
+
+- **Deflection within a chunk, and elastic dynamics.** Chunks are rigid. There
+  is no wave propagation and no vibration. A suddenly applied load gives the
+  static answer, not the textbook 2x dynamic amplification: the quasi-static
+  stress solve has no elastic mass-spring dynamics to overshoot.
+- **Buckling.** Euler buckling, lateral-torsional buckling and P-delta need
+  geometric nonlinearity. The stress solve is linear and posed on the undeformed
+  geometry. A slender column carries any axial load up to its crushing stress.
+- **Continuous plastic hinging, and ductility in bending.** A bond is brittle,
+  or ductile in slip under impact capacity. No moment-rotation plateau
+  redistributes moments as plastic analysis does.
+- **Saint-Venant torsion of non-circular sections.** The stage grades torsion
+  with the interface (weld-group) modulus I_p / r_max. That is exact for a
+  circle and 12% unconservative for a square (measured, torsion-square-shaft).
+- **Shear deformation and shear stress distribution.** The bond's shear spring
+  is E A / L (not G A_s / L), and the stage grades V/A (mean), not 1.5 V/A
+  (the peak in a rectangle).
+- **Joints.** Every joint between chunks resists moment. Pins and rollers are
+  narrow contact strips, valid only in high-fidelity. A truss with real
+  gussets has secondary bending: 2.4% on the bottom chord here.
+
+## Known gaps
+
+The full list with numbers is in `physx-bridge/tests/textbook/expected.tsv`.
+By cause:
+
+1. **runtime grading** (bending and torsion stresses 80-90% low): the moment is
+   graded as M/A x min(6/sqrt(A), 3), not M/S. The gain cap is a 2 m deep
+   section for every joint. The eccentric column's tension face never cracks
+   (it reads 0 MPa against 2.18 MPa). The cantilever breaks at 5x its textbook
+   load.
+2. **runtime and section-bending rotational stiffness** (reactions 1-13% off,
+   moments in indeterminate structures and frames wrong): every bond is
+   k Ls^2 stiff in rotation, with Ls one length for the whole structure. Pin
+   and roller strips clamp. Load shares by that stiffness, not by EI. The
+   three-hinged frame's thrust reads 19% low.
+3. **high-fidelity discretisation** (1-3.5% at 0.5 m chunks): fixed-fixed,
+   propped and two-span beams. The true-stiffness rule (2c9fd106) sets a bond's
+   spring length to max(distance, sqrt(A)). A fixed end at a thin anchor then
+   counts as softer than a rigid wall, and chunks shorter than their section
+   depth soften every joint. So the **refinement study diverges** (fixed-fixed
+   end moment: 1.8% at n12, 4.2% at n24, 2.1% at n48 with midspan 8.3% at n24).
+   Before that rule (floors, centre distance) the same study converged at
+   second order: 0.69% at n12. This is the physical contact length against the
+   textbook's rigid wall, a modelling choice to put to the owner.
+4. **Stage: zero solve under extreme mass ratios.** The case is
+   simply-supported-point/n37: a 10 t chunk, 0.013 kg beam chunks and 1e-4 kg
+   bearing blocks. The stage reports every bond force as 0 and "converged" at
+   iteration 0, every tick, in all configurations. The same beam in 19 chunks
+   solves exactly. With the light chunks 100x heavier, the n37 beam solves and
+   converges. The same light support blocks keep the stage from ever setting
+   its convergence flag, although its forces match the model from tick 1:
+   "converged NO by tick 600, accurate tick 1". That flag gates the stage's
+   settled-component skip, so this costs performance as well. It is a real
+   conditioning issue for the solver owners.
+5. **Square torsion** (12%, every configuration): Saint-Venant, see the limits
+   above.
+6. **Truss gussets** (2.4%): rigid 0.3 m gussets on 2 m panels.
+
+The high-fidelity profile on the E SDK (impact capacity) currently cannot run
+the suite: `native destruction configuration was rejected` for every
+structure, including the existing `section_bending.rs`, with
+`VIBE_IMPACT_CAPACITY=1` on the 03:10 garage-impact install.
+
+## Regression tests (`scripts/verify/regressions.tsv`)
+
+One line per fix: id, tier, the fix and what the test proves, and the command.
+
+| Fix | Test |
+|---|---|
+| Stale 20.0 resting-load gravity (f3744df8) | `gravity_single_source.rs` (source scan and one default); textbook cantilever-self-weight (rho A g at 9.81: a solver fed 20 reads 2.04x) |
+| Carrier double gravity (PhysX e58f080a9) | PhysX ctest `destruction_gpu_carrier_gravity`, `physx_native_chunk_loads_fragment_gravity`; textbook gravity-free-fall (a structure fragment falls at g); vehicle lab ride-height criteria (acceptance) |
+| Roof / island centre-of-mass mismatch (bcbc27d8) | `wire_chunk_poses` studless collapse and cannonball (1 mm); `mass_offset` tests, client topology and manifestBinary tests, town-kit hull-origins |
+| Oracle bond-normal orientation (f03cd6e6) | `structures/town-kit/scripts/test-stress-share.py` (new: fails on the pre-fix script) |
+| Crush freezing a step under correction (PhysX fix/crush-in-correction) | ctest `blast_stress_gpu_crush_correction`; `native_gameplay` crush tests on a crush SDK; vehicle lab `failedSteps == 0` |
+| Coast resistance (a15ebd6e) | vehicle lab `coast` (acceptance: car-coasts-ride-height) |
+| Vehicle ride height under double gravity | vehicle lab ride-height criteria for knock-mirror, debris-wheel and near-miss (acceptance) |
+| Strike collision in films (7ee21fa9) | `node --test client/native/film` (`assertStrikesClear`) |
+| Mortar joints (01ec017a) | town-kit `veneer-houses.test.mjs`; Vibe Town qualification (acceptance) |
+| Section bending and rotation (f3288d7c, 63284285) | `section_bending.rs`, `section_rotation.rs` |
+| Stiffness floors and spin clamp (200f31b0) | `fidelity_audit.rs` (both profiles; see docs/verification/FIDELITY_AUDIT.md) |
+
+## Acceptance scenarios (`scripts/verify/acceptance.mjs`)
+
+These are the behaviours asked for this week. The list is data (`node
+scripts/verify/acceptance.mjs list`), judged from the existing harnesses: the
+vehicle test bed, structure qualification, wire poses, the route walk and the
+film unit tests. `scripts/verify/acceptance.sh PROFILE` runs the harnesses on
+the profile's SDK and packs, then judges.
+
+| Scenario | Harness | Gate |
+|---|---|---|
+| truck-through-house | test bed `framed-house`, `house` | through the front wall (`>= 0` m past z 20.1); through the house (past the back wall, z 27.9); roof holds; frame holds; no failed step |
+| shots-through-house | test bed `cannonball-framed-house`, `meteor-framed-house` | through; roof and frame hold for the cannonball; damage within 8 m; the meteor's roof and frame are measured only |
+| crush-only-where-hit | test bed `rest`, `near-miss`, `knock-mirror`, cannonball; qualification | no crush without a hit; crush on a hit (high); no structure crushes at rest |
+| houses-stand-and-converge | qualification of the veneer houses | PASS (<= 10% unconverged, <= 0.5% broken) |
+| studless-houses-collapse | qualification, no-front-studs variants | >= 2% of bonds broken (`COLLAPSE_SHARE`) |
+| roof-drawn-where-physics-has-it | `wire_chunk_poses` | worst <= 1 mm |
+| stairs-walkable | `walk_route.py` (with `--snap` in high) | the walk passes |
+| car-coasts-ride-height | test bed `coast`, `knock-mirror(-driving)`, `debris-wheel`, `near-miss` | criteria.mjs |
+| turning-slalom-avoidance | test bed `drift`; `node --test client/native/film` | criteria.mjs; unit tests |
+| vibe-town-qualifies | qualification of the town pack | no FAIL, FALLS, CRUSH or ERROR |
+
+Thresholds this suite introduces are marked *proposed* in `acceptance.mjs`, with
+their reasoning, for the owner to confirm:
+
+- the roof holds = no roof member dropped more than 0.5 m (the house probe's
+  own definition);
+- the frame holds = at least 80% of frame chunks still anchored;
+- a cannonball's damage stays within 8 m.
+
+Two behaviours have no automated gate:
+
+- crush **positions**: no harness records them;
+- slalom and avoidance: `scripts/turning-lab.sh` is an in-app film with no
+  pass/fail.
+
+They are listed as gaps.
+
+## Reusing the scenarios (performance suite)
+
+- Textbook structures are data. `VERIFY_DUMP=dir cargo test ... --test textbook`
+  writes each one as JSON (chunks, hulls, bonds with contact patches,
+  materials, pose rotation). The Rust builders live in
+  `physx-bridge/tests/textbook/cases.rs`.
+- The acceptance list is `node scripts/verify/acceptance.mjs list`.
+- The regression list is `scripts/verify/regressions.tsv`.

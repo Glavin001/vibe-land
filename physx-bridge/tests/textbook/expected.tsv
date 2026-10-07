@@ -1,0 +1,188 @@
+# Known accuracy gaps of the textbook suite (physx-bridge/tests/textbook), recorded
+# with the error measured when listed (2026-10-07, garage-roof for runtime and
+# section-bending, garage-multihull for high-fidelity(no-impact)). A listed check
+# that misses the 1% tolerance is KNOWN-GAP; it FAILs again (GAP-WORSE) above
+# 1.25x this error + 0.5%; one that passes is FIXED and should be removed here.
+# Never raise a number here to make a run pass: a worse error is a regression.
+# Causes: MODEL (the stage's model differs from the textbook; the stage matches its
+# own model), DISCRETISATION (the chunking), MODEL LIMIT (not representable),
+# STAGE (the GPU solve differs from its own model).
+# config	case	check	error	cause
+runtime	cantilever-tip-load	root bending stress	0.8000	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	cantilever-tip-load	midspan bending stress	0.8000	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	cantilever-self-weight	root bending stress	0.8000	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	cantilever-self-weight	midspan bending stress	0.8000	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	simply-supported-point	left reaction (pin)	0.0113	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	simply-supported-point	right reaction (roller)	0.0112	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	simply-supported-point	bending stress beside the load	0.8396	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	simply-supported-udl	midspan bending stress	0.8540	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	simply-supported-udl	quarter-span bending stress	0.8738	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	propped-cantilever-udl	prop reaction	0.0813	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	propped-cantilever-udl	fixed-end shear	0.0461	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	propped-cantilever-udl	fixed-end bending stress	0.8139	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	propped-cantilever-udl	span bending stress near 5L/8	0.8235	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-udl	left end bending stress	0.8014	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-udl	right end bending stress	0.8014	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-udl	midspan bending stress	0.7972	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-point	end bending stress	0.8025	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-point	bending stress beside the load	0.7968	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	two-span-continuous	centre reaction	0.0778	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	two-span-continuous	end reaction (pin)	0.1339	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	two-span-continuous	end reaction (roller)	0.1253	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	two-span-continuous	hogging stress beside the centre support	0.8438	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	eccentric-column	base compression fibre	0.5667	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	eccentric-column	base tension fibre	1.0000	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	portal-frame-lateral	left base bending stress	0.8451	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	portal-frame-lateral	right base bending stress	0.8547	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	portal-frame-lateral	left column-top bending stress	0.8546	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	portal-frame-lateral	left base shear	0.0266	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	portal-frame-lateral	right base shear	0.0265	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	portal-frame-lateral	right column-top bending stress	0.8592	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	three-hinged-frame	left horizontal thrust	0.1860	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	three-hinged-frame	right horizontal thrust	0.1860	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	three-hinged-frame	beam axial force (= -H)	0.1860	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	three-hinged-frame	column-top bending stress	0.8927	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	pratt-truss	end diagonal B0-T1	0.5580	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+runtime	pratt-truss	bottom chord B1-B2	0.8827	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+runtime	pratt-truss	top chord T1-T2	0.5162	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+runtime	pratt-truss	vertical B1-T1	0.6926	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+runtime	pratt-truss	diagonal T1-B2	0.6310	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+runtime	pratt-truss	centre vertical B2-T2 (zero-force)	0.3519	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+runtime	pratt-truss	left support reaction	0.0245	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+runtime	torsion-round-shaft	root torsional shear	0.8512	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	torsion-round-shaft	mid torsional shear	0.8512	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	torsion-round-shaft	root bending stress	0.9251	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	torsion-round-shaft	root shear force	0.7305	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	torsion-square-shaft	root torsional shear	0.8752	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
+runtime	torsion-square-shaft	mid torsional shear	0.8752	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
+runtime	simply-supported-point/n19	bending stress beside the load	0.8466	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	simply-supported-point/n37	left reaction (pin)	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+runtime	simply-supported-point/n37	right reaction (roller)	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+runtime	simply-supported-point/n37	bending stress beside the load	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+runtime	propped-cantilever-udl/n24	prop reaction	0.1074	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	propped-cantilever-udl/n24	fixed-end shear	0.0617	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	propped-cantilever-udl/n24	fixed-end bending stress	0.8205	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	propped-cantilever-udl/n24	span bending stress near 5L/8	0.8324	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	propped-cantilever-udl/n48	prop reaction	0.1279	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	propped-cantilever-udl/n48	fixed-end shear	0.0740	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	propped-cantilever-udl/n48	fixed-end bending stress	0.8248	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	propped-cantilever-udl/n48	span bending stress near 5L/8	0.8384	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-udl/n24	left end bending stress	0.8003	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-udl/n24	right end bending stress	0.8003	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-udl/n24	midspan bending stress	0.7993	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-udl/n48	left end bending stress	0.8001	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-udl/n48	right end bending stress	0.8001	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	fixed-fixed-udl/n48	midspan bending stress	0.7998	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	two-span-continuous/n41	centre reaction	0.0704	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	two-span-continuous/n41	end reaction (pin)	0.1157	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	two-span-continuous/n41	end reaction (roller)	0.1190	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	two-span-continuous/n41	hogging stress beside the centre support	0.8287	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	two-span-continuous/n81	centre reaction	0.0750	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	two-span-continuous/n81	end reaction (pin)	0.1154	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	two-span-continuous/n81	end reaction (roller)	0.1346	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	two-span-continuous/n81	hogging stress beside the centre support	0.8241	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	portal-frame-lateral/n24	left base bending stress	0.8486	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	portal-frame-lateral/n24	right base bending stress	0.8513	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	portal-frame-lateral/n24	left column-top bending stress	0.8469	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	portal-frame-lateral/n24	right column-top bending stress	0.8484	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	break-cantilever-root	breaking load	4.0020	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	break-eccentric-tension	breaking load	inf	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	break-simply-supported	breaking load	5.7488	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+runtime	redundancy-propped	root bending stress, redistributed	0.8000	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+runtime	rest-near-capacity	cantilever root tension after 10 s	0.8000	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
+section-bending	simply-supported-point	left reaction (pin)	0.0113	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	simply-supported-point	right reaction (roller)	0.0112	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	simply-supported-point	bending stress beside the load	0.1980	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	simply-supported-udl	midspan bending stress	0.2698	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	simply-supported-udl	quarter-span bending stress	0.3690	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl	prop reaction	0.0813	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl	fixed-end shear	0.0461	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl	fixed-end bending stress	0.0694	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl	span bending stress near 5L/8	0.1177	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	fixed-fixed-udl	midspan bending stress	0.0139	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	fixed-fixed-point	end bending stress	0.0123	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	fixed-fixed-point	bending stress beside the load	0.0159	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous	centre reaction	0.0778	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous	end reaction (pin)	0.1339	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous	end reaction (roller)	0.1253	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous	hogging stress beside the centre support	0.2188	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	portal-frame-lateral	left base bending stress	0.0325	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	portal-frame-lateral	right base bending stress	0.0311	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	portal-frame-lateral	left column-top bending stress	0.0152	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	portal-frame-lateral	left base shear	0.0266	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	portal-frame-lateral	right base shear	0.0265	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	portal-frame-lateral	right column-top bending stress	0.0177	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	three-hinged-frame	left horizontal thrust	0.1860	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	three-hinged-frame	right horizontal thrust	0.1860	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	three-hinged-frame	beam axial force (= -H)	0.1860	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	three-hinged-frame	column-top bending stress	0.2719	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	pratt-truss	end diagonal B0-T1	0.5580	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+section-bending	pratt-truss	bottom chord B1-B2	0.8827	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+section-bending	pratt-truss	top chord T1-T2	0.5162	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+section-bending	pratt-truss	vertical B1-T1	0.6926	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+section-bending	pratt-truss	diagonal T1-B2	0.6310	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+section-bending	pratt-truss	centre vertical B2-T2 (zero-force)	0.3519	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+section-bending	pratt-truss	left support reaction	0.0245	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+section-bending	torsion-square-shaft	root torsional shear	0.1175	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
+section-bending	torsion-square-shaft	mid torsional shear	0.1175	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
+section-bending	simply-supported-point/n19	bending stress beside the load	0.2330	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	simply-supported-point/n37	left reaction (pin)	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+section-bending	simply-supported-point/n37	right reaction (roller)	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+section-bending	simply-supported-point/n37	bending stress beside the load	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+section-bending	propped-cantilever-udl/n24	prop reaction	0.1074	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl/n24	fixed-end shear	0.0617	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl/n24	fixed-end bending stress	0.1023	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl/n24	span bending stress near 5L/8	0.1618	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl/n48	prop reaction	0.1279	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl/n48	fixed-end shear	0.0740	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl/n48	fixed-end bending stress	0.1238	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	propped-cantilever-udl/n48	span bending stress near 5L/8	0.1919	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous/n41	centre reaction	0.0704	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous/n41	end reaction (pin)	0.1157	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous/n41	end reaction (roller)	0.1190	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous/n41	hogging stress beside the centre support	0.1437	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous/n81	centre reaction	0.0750	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous/n81	end reaction (pin)	0.1154	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous/n81	end reaction (roller)	0.1346	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	two-span-continuous/n81	hogging stress beside the centre support	0.1204	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+section-bending	break-simply-supported	breaking load	0.2624	MODEL: uniform rotational stiffness k Ls^2 for every bond (supports clamp; load shares by the wrong stiffness)
+high-fidelity(no-impact)	propped-cantilever-udl	prop reaction	0.0121	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	propped-cantilever-udl	fixed-end bending stress	0.0218	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	propped-cantilever-udl	span bending stress near 5L/8	0.0150	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	fixed-fixed-udl	left end bending stress	0.0177	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	fixed-fixed-udl	right end bending stress	0.0177	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	fixed-fixed-udl	midspan bending stress	0.0354	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	fixed-fixed-point	end bending stress	0.0123	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	fixed-fixed-point	bending stress beside the load	0.0159	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	two-span-continuous	end reaction (pin)	0.0101	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	two-span-continuous	end reaction (roller)	0.0102	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	two-span-continuous	hogging stress beside the centre support	0.0271	DISCRETISATION: 0.5 m chunks (Hencky bar chain), fixed ends at contact length max(d, sqrt A)
+high-fidelity(no-impact)	pratt-truss	bottom chord B1-B2	0.0236	DISCRETISATION: rigid 0.3 m gussets on 2 m panels make the joints moment-resisting (secondary bending), not pins
+high-fidelity(no-impact)	torsion-square-shaft	root torsional shear	0.1175	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
+high-fidelity(no-impact)	torsion-square-shaft	mid torsional shear	0.1175	MODEL LIMIT: interface torsion modulus I_p/r_max (weld group) vs Saint-Venant warping torsion, 12% unconservative for a square
+high-fidelity(no-impact)	simply-supported-point/n37	left reaction (pin)	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+high-fidelity(no-impact)	simply-supported-point/n37	right reaction (roller)	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+high-fidelity(no-impact)	simply-supported-point/n37	bending stress beside the load	1.0000	STAGE: returns zero bond forces, "converged" at iteration 0 (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks)
+high-fidelity(no-impact)	propped-cantilever-udl/n24	prop reaction	0.0244	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	propped-cantilever-udl/n24	fixed-end shear	0.0120	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	propped-cantilever-udl/n24	fixed-end bending stress	0.0583	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	propped-cantilever-udl/n24	span bending stress near 5L/8	0.0370	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	propped-cantilever-udl/n48	prop reaction	0.0159	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	propped-cantilever-udl/n48	fixed-end bending stress	0.0312	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	propped-cantilever-udl/n48	span bending stress near 5L/8	0.0172	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	fixed-fixed-udl/n24	left end bending stress	0.0417	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	fixed-fixed-udl/n24	right end bending stress	0.0417	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	fixed-fixed-udl/n24	midspan bending stress	0.0833	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	fixed-fixed-udl/n48	left end bending stress	0.0208	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	fixed-fixed-udl/n48	right end bending stress	0.0208	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	fixed-fixed-udl/n48	midspan bending stress	0.0417	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	two-span-continuous/n41	end reaction (pin)	0.0112	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	two-span-continuous/n41	end reaction (roller)	0.0114	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	two-span-continuous/n41	hogging stress beside the centre support	0.0277	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	two-span-continuous/n81	hogging stress beside the centre support	0.0179	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	portal-frame-lateral/n24	left base bending stress	0.0281	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	portal-frame-lateral/n24	right base bending stress	0.0365	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	portal-frame-lateral/n24	left column-top bending stress	0.0647	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	portal-frame-lateral/n24	windward column axial (uplift)	0.0540	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	portal-frame-lateral/n24	leeward column axial	0.0540	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
+high-fidelity(no-impact)	portal-frame-lateral/n24	right column-top bending stress	0.0600	DISCRETISATION: chunks shorter than sqrt(A) take the contact length max(d, sqrt A) (2c9fd106), softening joints and fixed ends: error grows with refinement
