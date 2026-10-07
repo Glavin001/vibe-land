@@ -1,0 +1,218 @@
+#![cfg(feature = "native-destruction")]
+
+//! An impactor meets an "effectively infinite wall": the native stage's
+//! anchored remnant is kinematic, so whatever a tick's corrected pass meets on
+//! it stops the impactor at any force, however little its bonds can carry.
+//! Closed-form expectations from momentum and strength, on the GPU stage at
+//! the shipping settings (internalCorrectionLimit 1, 64 stress iterations,
+//! FP32, unconverged solves continue).
+//!
+//! The wall: two plates, front and back, touching, each 10 kg and each held
+//! to a fixed footing (mass 0) by one weak bond (fatal 100 kPa over 1 cm^2,
+//! 10 N in tension; the same in compression and shear). A 1 t steel ball at
+//! 20 m/s strikes the front plate square on.
+//!
+//! What a real wall does (Hibbeler, Dynamics, 15.4: a perfectly plastic
+//! impact conserves momentum): the bonds can resist at most F_b = 10 N each,
+//! an impulse F_b dt = 0.17 N s a tick against the ball's 20,000 N s, so the
+//! ball sweeps both plates along: at worst it shares its momentum with them,
+//! m v0 / (m + 2 m_p) = 19.6 m/s. Anything under 0.9 v0 needs a force the
+//! plates cannot have exerted.
+//!
+//! What the stage does with one corrected pass: the trial sees the front
+//! plate (kinematic, on the anchored remnant) take the ball, breaks its bond,
+//! and rewinds. In the corrected pass the freed front plate is pushed into the
+//! back plate -- still anchored, so kinematic -- and the ball stops behind it.
+//! The back plate's bond breaks only in the evaluation after the corrected
+//! pass, which is applied to the motion already solved, with no further pass.
+//!
+//! Arms (each its own process; the bridge reads its flags once):
+//!   one_plate     the front plate alone: the control
+//!   two_plates    both plates
+//!   unbreakable   the front plate alone, bonded beyond any load: the
+//!                 control, a wall that must stop the ball
+//!   grid          load_moves_in_the_corrected_pass, below
+//! and the high-fidelity profile's flags pass through from the environment.
+//!
+//! VIBE_GPU_SHARED=1 PHYSX_ROOT=... CARGO_TARGET_DIR=... cargo test \
+//!   -p vibe-land-physx-bridge --features native-destruction \
+//!   --test infinite_wall -- --ignored --test-threads=1 --nocapture
+
+use vibe_land_physx_bridge::{
+    ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, LaunchedBallDesc, NativeConfig, Pose, Quat, StressMaterialDesc, Vec3,
+    World, WorldConfig,
+};
+
+const GROUP_CHUNK: u32 = 1 << 5;
+const GROUP_BALL: u32 = 1 << 3;
+const ALL: u32 = u32::MAX;
+const BALL: u32 = 0x0300_0001;
+const ARM: &str = "INFINITE_WALL_ARM";
+const DT: f32 = 1.0 / 60.0;
+const V0: f32 = 20.0;
+const BALL_MASS: f32 = 1000.0;
+const PLATE_MASS: f32 = 10.0;
+const Y: f32 = 20.0;
+
+fn identity() -> Quat { Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } }
+
+/// The 2 x 2 grid: four 0.5 m plates (10 kg, 0.1 m thick) meeting at the
+/// ball's aim point, each held sideways to its own footing beside the grid
+/// (out of the ball's path) by one bond. The two on the left are weak (10 N);
+/// the two on the right can each carry `STRONG` newtons. Struck at the
+/// centre, the trial -- every plate kinematic -- shares the ball's stopping
+/// impulse four ways.
+const STRONG: f32 = 0.3 * BALL_MASS * V0 / DT;
+
+fn grid() -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {
+    let mut nodes = Vec::new();
+    let mut bonds = Vec::new();
+    let node = |i: u32, c: Vec3, h: Vec3, m: f32| ChunkNodeDesc {
+        node_index: i, centroid: c, mass: m, volume: 8.0 * h.x * h.y * h.z, geom_kind: 0, half_extents: h, convex_points: Vec::new(), material: 0,
+    };
+    // Footings left and right (mass 0), 0.5 m wide, clear of the ball (r 0.31).
+    nodes.push(node(0, Vec3::new(-0.75, Y, 0.0), Vec3::new(0.25, 0.5, 0.05), 0.0));
+    nodes.push(node(1, Vec3::new(0.75, Y, 0.0), Vec3::new(0.25, 0.5, 0.05), 0.0));
+    let mut k = 2;
+    for (x, footing, material) in [(-0.25f32, 0u32, 0u32), (0.25, 1, 1)] {
+        for y in [-0.25f32, 0.25] {
+            nodes.push(node(k, Vec3::new(x, Y + y, 0.0), Vec3::new(0.25, 0.25, 0.05), PLATE_MASS));
+            let face = if x < 0.0 { -0.5 } else { 0.5 };
+            bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: footing, node1: k, centroid: Vec3::new(face, Y + y, 0.0),
+                normal: Vec3::new(1.0, 0.0, 0.0), area: 1e-4, material });
+            k += 1;
+        }
+    }
+    (nodes, bonds)
+}
+
+/// The ball's velocity along +z each tick, and bonds broken.
+fn strike(plates: u32) -> (Vec<f32>, usize) {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.native_attach().unwrap();
+    // Footing (mass 0) under the plates; plates 1 x 1 x 0.1 m standing on it.
+    let mut nodes = vec![ChunkNodeDesc {
+        node_index: 0, centroid: Vec3::new(0.0, Y - 0.6, 0.05), mass: 0.0, volume: 1.0 * 0.2 * 0.4,
+        geom_kind: 0, half_extents: Vec3::new(0.5, 0.1, 0.2), convex_points: Vec::new(), material: 0,
+    }];
+    let mut bonds = Vec::new();
+    for k in 0..if plates == 4 { 0 } else { plates } {
+        let z = 0.1 * k as f32;
+        nodes.push(ChunkNodeDesc {
+            node_index: k + 1, centroid: Vec3::new(0.0, Y, z), mass: PLATE_MASS, volume: 1.0 * 1.0 * 0.1,
+            geom_kind: 0, half_extents: Vec3::new(0.5, 0.5, 0.05), convex_points: Vec::new(), material: 0,
+        });
+        bonds.push(ChunkBondDesc { bond_index: k, node0: 0, node1: k + 1, centroid: Vec3::new(0.0, Y - 0.5, z), normal: Vec3::new(0.0, 1.0, 0.0), area: 1e-4, material: 0 });
+    }
+    if plates == 4 { (nodes, bonds) = grid(); }
+    // The control: one plate that cannot break, a wall that must stop the ball.
+    if std::env::var(ARM).as_deref() == Ok("unbreakable") { bonds[0].material = 2; }
+    let material = |fatal: f32| StressMaterialDesc {
+        compression_elastic: 0.5 * fatal, compression_fatal: fatal, tension_elastic: 0.5 * fatal, tension_fatal: fatal,
+        shear_elastic: 0.5 * fatal, shear_fatal: fatal, elastic_modulus: 10e9, residual_area_fraction: 0.0,
+    };
+    let settings = DestructibleSettings {
+        max_solver_iterations_per_frame: 64,
+        // Weak (10 N over 1 cm^2), and the grid's strong plates (STRONG over 1 cm^2).
+        materials: vec![material(1e5), material(STRONG / 1e-4), material(1e13)],
+        ductile_slip: if std::env::var("VIBE_IMPACT_CAPACITY").as_deref() == Ok("1") { vec![0.0; 3] } else { Vec::new() },
+        maximum_bodies: 0,
+        maximum_fractures_per_actor_per_tick: 0,
+        linear_damping: 0.0,
+        angular_damping: 0.0,
+        ..DestructibleSettings::default()
+    };
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: identity() }, &nodes, &bonds, settings, GROUP_CHUNK, ALL).unwrap();
+    world.step().unwrap();
+    world.native_configure(NativeConfig {
+        max_iterations: 64, tolerance: 1e-3, force_tolerance: 0.0, warm_start: true, damage_rate: 2.0, bend_gain_max: 3.0,
+        fibre_bending: true, reserved_contact_pairs: 64, preserve_unchanged_contact_pairs: true, gpu_island_repair: true, verdict_sample_ticks: 1,
+    }).unwrap();
+    for _ in 0..10 { world.step().unwrap(); world.native_tick().unwrap(); }
+    // 1 t of steel (7850 kg/m^3): r 0.31 m, its surface 2 cm short of the front plate's face.
+    let radius = (BALL_MASS / 7850.0 * 3.0 / (4.0 * std::f32::consts::PI)).cbrt();
+    world.launch_dynamic_ball(LaunchedBallDesc {
+        entity_id: BALL, user_id: 1, pose: Pose { position: Vec3::new(0.0, Y, -0.05 - radius - 0.02), rotation: identity() },
+        radius, mass: BALL_MASS, linear_velocity: Vec3::new(0.0, 0.0, V0), collision_group: GROUP_BALL, collision_mask: ALL,
+    }).unwrap();
+    world.native_set_impactor_impedance(BALL, (7850.0f32 * 200e9).sqrt()).unwrap();
+    let (mut vz, mut broken) = (Vec::new(), 0usize);
+    for t in 0..20 {
+        world.step().unwrap();
+        let status = world.native_tick().unwrap();
+        assert_eq!(status.error, 0, "stage rejected step {t}: {status:?}");
+        broken += world.native_take_broken_bonds().unwrap().len();
+        let ball = world.body_snapshots().unwrap().into_iter().find(|b| b.entity_id == BALL).expect("ball");
+        println!("tick {t} vz {:.3} broken {} after-correction {} corrections {}", ball.linear_velocity.z, status.broken_bonds, status.post_correction_broken_bonds, status.correction_passes);
+        vz.push(ball.linear_velocity.z);
+    }
+    (vz, broken)
+}
+
+fn run_arm(arm: &str, env: &[(&str, &str)]) -> String {
+    let exe = std::env::current_exe().expect("test binary path");
+    let mut command = std::process::Command::new(exe);
+    command.args(["--exact", "arm", "--nocapture", "--ignored", "--test-threads=1"]).env(ARM, arm);
+    for (k, v) in env { command.env(k, v); }
+    let output = command.output().expect("spawn arm");
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "arm {arm} failed:\n{text}");
+    text
+}
+
+fn reported(text: &str, key: &str) -> f32 {
+    text.lines().find_map(|l| l.strip_prefix(&format!("{key}="))).unwrap_or_else(|| panic!("no {key}:\n{text}")).trim().parse().unwrap()
+}
+
+#[test]
+#[ignore = "spawned by layered_wall"]
+fn arm() {
+    let Ok(arm) = std::env::var(ARM) else { return };
+    let plates = match arm.as_str() { "one_plate" | "unbreakable" => 1, "grid" => 4, _ => 2 };
+    let (vz, broken) = strike(plates);
+    println!("v_end={}", vz.last().unwrap());
+    println!("v_min={}", vz.iter().copied().fold(f32::MAX, f32::min));
+    println!("broken={broken}");
+}
+
+/// The ball keeps what momentum and the plates' strength leave it.
+#[test]
+#[ignore = "requires the GPU and the native-destruction SDK"]
+fn layered_wall() {
+    let plates = 2.0 * PLATE_MASS;
+    let floor = BALL_MASS * V0 / (BALL_MASS + plates);
+    println!("closed form: v >= {floor:.2} m/s (perfectly plastic with both plates); bonds resist {:.2} N s a tick", 3.0 * 1e5 * 1e-4 * DT);
+    let mut failures = Vec::new();
+    for (arm, env) in [("one_plate", vec![]), ("two_plates", vec![]), ("unbreakable", vec![])] {
+        let text = run_arm(arm, &env);
+        let (end, min, broken) = (reported(&text, "v_end"), reported(&text, "v_min"), reported(&text, "broken"));
+        println!("{arm:<14} v_end {end:7.2}  v_min {min:7.2}  bonds broken {broken}");
+        let wall = min < 0.9 * V0;
+        if arm == "unbreakable" {
+            // The control: a plate that cannot break is a wall, and the test must see it.
+            assert!(wall, "the unbreakable plate should stop the ball, and the test would not see a wall:\n{text}");
+        } else if wall {
+            failures.push(format!("{arm}: the ball fell to {min:.2} m/s (ended {end:.2}); momentum and the bonds' strength allow no less than {floor:.2}\n{text}"));
+        }
+    }
+    assert!(failures.is_empty(), "an infinite wall:\n{}", failures.join("\n"));
+}
+
+/// Load moved in the corrected pass. Struck at the grid's centre, the trial
+/// (all four plates kinematic) shares the stop four ways, about 0.28 m v0 / dt
+/// a plate: the weak pair breaks, the strong pair (0.3 m v0 / dt each) holds.
+/// In the corrected pass the weak pair is free and the strong pair -- still
+/// anchored, so kinematic -- takes the whole stop, twice what its bonds carry.
+/// A real grid: the strong pair resists at most 2 x 0.3 m v0 for the tick
+/// its bonds hold, and the weak pair's 20 kg takes its share of momentum, so
+/// the ball keeps at least (m v0 - 0.6 m v0) / (m + 40 kg) = 7.7 m/s.
+#[test]
+#[ignore = "requires the GPU and the native-destruction SDK"]
+fn load_moves_in_the_corrected_pass() {
+    let floor = (BALL_MASS * V0 - 2.0 * STRONG * DT) / (BALL_MASS + 4.0 * PLATE_MASS);
+    let text = run_arm("grid", &[]);
+    let (end, min, broken) = (reported(&text, "v_end"), reported(&text, "v_min"), reported(&text, "broken"));
+    println!("grid: v_end {end:.2} v_min {min:.2} bonds broken {broken}; closed form v >= {floor:.2} m/s");
+    assert!(min >= 0.9 * floor, "an infinite wall: the ball fell to {min:.2} m/s (ended {end:.2}); the strong plates can take it no lower than {floor:.2}\n{text}");
+}
