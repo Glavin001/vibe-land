@@ -235,7 +235,7 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
             if stress > 0.0 { c.predicted * c.limit / stress } else { f64::NAN }
         };
         let _ = model_stress;
-        match breaking_load(&make, c.predicted / 8.0, c.predicted * 8.0) {
+        super::guard(config, c.name, expected, out, |out| match breaking_load(&make, c.predicted / 8.0, c.predicted * 8.0) {
             Some((load, all, trial)) => {
                 // The tick's events come sorted by bond, not by pass; the
                 // status says how many broke in the trial evaluation (the
@@ -258,16 +258,16 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
             None => {
                 row(config, c.name, "breaking load", c.formula, c.source, "kN", c.predicted * G * 1e-3, model_load * G * 1e-3, f64::INFINITY, c.predicted * G * 1e-3, expected, out);
             }
-        }
+        });
     }
     if wanted("redundancy", Tier::Quick) {
-        redundancy(config, expected, out);
+        super::guard(config, "redundancy", expected, out, |out| redundancy(config, expected, out));
     }
     if wanted("gravity-free-fall", Tier::Quick) {
-        free_fall(config, expected, out);
+        super::guard(config, "free-fall", expected, out, |out| free_fall(config, expected, out));
     }
     if wanted("rest-near-capacity", Tier::Full) {
-        rest_near_capacity(config, expected, out);
+        super::guard(config, "rest-near-capacity", expected, out, |out| rest_near_capacity(config, expected, out));
     }
 }
 

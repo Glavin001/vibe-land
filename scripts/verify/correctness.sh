@@ -31,9 +31,8 @@ out=$(cd "$out" && pwd)  # absolute: cargo runs tests from the package directory
 export VIBE_GPU_SHARED=1
 I=/Users/glavin/Development/PhysX/out/install
 export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
-# No single SDK has every high-fidelity capability yet (scripts/fidelity/check.sh):
-# the stress-solve cases run high-fidelity on the SDK with section rotational
-# stiffness; impact capacity and crush are exercised on the E SDK.
+# High-fidelity runs on high.env's SDK (integration/high-fidelity, garage-hifi: every
+# capability). These remain for the single-feature regression tests.
 export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-$I/garage-multihull}
 export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/install/garage-impact}
 export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/out/build/garage-multihull/package}
@@ -68,10 +67,9 @@ textbook() {
 
 if want textbook; then
   textbook runtime runtime || failed=1
-  textbook high high "$ROTATION_SDK" || failed=1
+  textbook high high || failed=1
   if [ "$tier" = full ]; then
     textbook section-bending bending || failed=1
-    textbook high-impact-sdk high "$CRUSH_SDK" || failed=1
   fi
 fi
 
@@ -94,10 +92,9 @@ fi
 
 if want acceptance; then
   for p in runtime high; do
-    # High-fidelity on the rotation SDK until an SDK carrying every capability
-    # configures (the E SDK rejects every structure with impact capacity on as of
-    # 2026-10-07): VERIFY_HIGH_PHYSX_ROOT picks another.
-    HIGH_PHYSX_ROOT=${VERIFY_HIGH_PHYSX_ROOT:-$ROTATION_SDK} "$ROOT/scripts/verify/acceptance.sh" "$p" "$out/acceptance-$p" > "$out/acceptance-$p.log" 2>&1 || failed=1
+    # High-fidelity on high.env's SDK (the combined garage-hifi install);
+    # VERIFY_HIGH_PHYSX_ROOT picks another.
+    HIGH_PHYSX_ROOT=${VERIFY_HIGH_PHYSX_ROOT:-} "$ROOT/scripts/verify/acceptance.sh" "$p" "$out/acceptance-$p" > "$out/acceptance-$p.log" 2>&1 || failed=1
     echo "[verify] acceptance $p: $(grep -c '"status":"PASS"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) pass, $(grep -c '"status":"KNOWN-GAP"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) known gaps, $(grep -c '"status":"FAIL"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) failing"
   done
 fi

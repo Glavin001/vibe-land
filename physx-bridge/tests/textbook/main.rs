@@ -120,6 +120,27 @@ fn classify(row: &mut Row, expected: &[Expectation]) {
     };
 }
 
+/// Run one case; if the stage fails a step (or anything panics), record a
+/// FAIL row "the stage completed every step" with the message and carry on
+/// with the next case in a fresh world.
+pub fn guard(config: Config, case: &str, expected: &[Expectation], out: &mut Output, f: impl FnOnce(&mut Output)) {
+    let n = out.rows.len();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(out)));
+    if let Err(e) = result {
+        let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+        println!("  CASE ABORTED: {msg}");
+        let mut row = Row {
+            config: config.name.into(), case: case.into(), check: "the stage completed every step".into(),
+            formula: msg.chars().take(160).collect(), source: String::new(), unit: "1=yes".into(),
+            textbook: 1.0, model: f64::NAN, stage: 0.0, error: 1.0, solver_error: f64::NAN, tolerance: TOL,
+            status: String::new(), ticks: 0, converged: false, accurate_at: None,
+        };
+        classify(&mut row, expected);
+        out.push(row);
+    }
+    let _ = n;
+}
+
 fn value(q: Q, g: &Graded, area: f64) -> f64 {
     match q {
         Q::Axial => g.normal * area,
@@ -190,53 +211,56 @@ fn run_statics(config: Config, want: Tier, expected: &[Expectation], out: &mut O
         if !wanted(&case.name, case.tier, want) {
             continue;
         }
-        println!("\n{} -- {}\n  {}", case.name, case.title, case.source);
-        let model = model::model_graded(&case.structure, cases::G, config);
-        let checked: Vec<(usize, Q, f64)> = case
-            .checks
-            .iter()
-            .map(|c| (c.bond, c.q, value(c.q, &model[c.bond], model::section(&case.structure.bonds[c.bond]).area)))
-            .collect();
-        let accurate = |rows: &[Graded]| {
-            checked.iter().all(|&(b, q, m)| {
-                let area = model::section(&case.structure.bonds[b]).area;
-                let scale = case.checks.iter().map(|c| c.scale).fold(0.0f64, f64::max).max(m.abs());
-                rel(value(q, &rows[b], area), m, scale) <= 1e-3
-            })
-        };
-        let solved = if model_only() {
-            stage::Solved { rows: model.clone(), ticks: 0, converged: true, converged_at: 0, accurate_at: Some(0) }
-        } else {
-            stage::solve(&case.structure, 600, accurate)
-        };
-        let (stage, ticks, converged) = (&solved.rows, if solved.converged { solved.converged_at } else { solved.ticks }, solved.converged);
-        for c in &case.checks {
-            let Check { label, bond, q, textbook, formula, scale } = c;
-            let area = model::section(&case.structure.bonds[*bond]).area;
-            let m = value(*q, &model[*bond], area);
-            let s = value(*q, &stage[*bond], area);
-            let k = q.display();
-            let mut row = Row {
-                config: config.name.into(),
-                case: case.name.clone(),
-                check: label.clone(),
-                formula: formula.clone(),
-                source: case.source.into(),
-                unit: q.unit().into(),
-                textbook: textbook * k,
-                model: m * k,
-                stage: s * k,
-                error: rel(s, *textbook, *scale),
-                solver_error: rel(s, m, scale.max(m.abs())),
-                tolerance: TOL,
-                status: String::new(),
-                ticks,
-                converged,
-                accurate_at: solved.accurate_at,
+        let name = case.name.clone();
+        guard(config, &name, expected, out, |out| {
+            println!("\n{} -- {}\n  {}", case.name, case.title, case.source);
+            let model = model::model_graded(&case.structure, cases::G, config);
+            let checked: Vec<(usize, Q, f64)> = case
+                .checks
+                .iter()
+                .map(|c| (c.bond, c.q, value(c.q, &model[c.bond], model::section(&case.structure.bonds[c.bond]).area)))
+                .collect();
+            let accurate = |rows: &[Graded]| {
+                checked.iter().all(|&(b, q, m)| {
+                    let area = model::section(&case.structure.bonds[b]).area;
+                    let scale = case.checks.iter().map(|c| c.scale).fold(0.0f64, f64::max).max(m.abs());
+                    rel(value(q, &rows[b], area), m, scale) <= 1e-3
+                })
             };
-            classify(&mut row, expected);
-            out.push(row);
-        }
+            let solved = if model_only() {
+                stage::Solved { rows: model.clone(), ticks: 0, converged: true, converged_at: 0, accurate_at: Some(0) }
+            } else {
+                stage::solve(&case.structure, 600, accurate)
+            };
+            let (stage, ticks, converged) = (&solved.rows, if solved.converged { solved.converged_at } else { solved.ticks }, solved.converged);
+            for c in &case.checks {
+                let Check { label, bond, q, textbook, formula, scale } = c;
+                let area = model::section(&case.structure.bonds[*bond]).area;
+                let m = value(*q, &model[*bond], area);
+                let s = value(*q, &stage[*bond], area);
+                let k = q.display();
+                let mut row = Row {
+                    config: config.name.into(),
+                    case: case.name.clone(),
+                    check: label.clone(),
+                    formula: formula.clone(),
+                    source: case.source.into(),
+                    unit: q.unit().into(),
+                    textbook: textbook * k,
+                    model: m * k,
+                    stage: s * k,
+                    error: rel(s, *textbook, *scale),
+                    solver_error: rel(s, m, scale.max(m.abs())),
+                    tolerance: TOL,
+                    status: String::new(),
+                    ticks,
+                    converged,
+                    accurate_at: solved.accurate_at,
+                };
+                classify(&mut row, expected);
+                out.push(row);
+            }
+        });
     }
 }
 
