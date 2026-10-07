@@ -16,7 +16,8 @@ export type AppRoute =
   | { kind: 'bodiesLab' }
   | { kind: 'renderBench' }
   | { kind: 'cityReplay' }
-  | { kind: 'structureViewer'; pack: string };
+  | { kind: 'structureViewer'; pack: string }
+  | { kind: 'fractureLab' };
 
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === '/') {
@@ -65,6 +66,9 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
     case '/structure':
       // Standalone viewer for an authored ScenePack. No server, no manifest.
       return { kind: 'structureViewer', pack: params.get('pack') ?? 'algedra-tower' };
+    case '/fracture-lab':
+      // How broken pieces could look: exploded specimens, today vs enhanced.
+      return { kind: 'fractureLab' };
     case '/stats':
       return { kind: 'stats' };
     case '/loadtest':

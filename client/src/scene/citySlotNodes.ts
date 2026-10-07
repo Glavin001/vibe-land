@@ -13,8 +13,6 @@ import * as THREE from 'three';
 import {
   Fn,
   attribute,
-  cross,
-  dot,
   float,
   int,
   ivec2,
@@ -29,28 +27,19 @@ import {
   uniform,
   varyingProperty,
   vec3,
-  vec4,
 } from 'three/tsl';
 import { MeshStandardNodeMaterial } from 'three/webgpu';
 
 import { CHUNK_HIDE_Y_M } from '../city/cityPoseStore';
 import type { CityTriplanarConfig } from './cityMaterialShader';
 import { cityTriplanarNodes, restToViewThrough } from './cityMaterialNodes';
+import { quatMul, quatRotate } from './quatNodes';
 import type { CityGpuPoses } from './citySlotMesh';
 
 // TSL nodes are loosely typed in @types/three 0.170; keep this file honest
 // at the call sites rather than fighting the generics.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
-
-const quatMul = (a: Node, b: Node): Node =>
-  vec4(
-    a.w.mul(b.xyz).add(b.w.mul(a.xyz)).add(cross(a.xyz, b.xyz)),
-    a.w.mul(b.w).sub(dot(a.xyz, b.xyz)),
-  );
-
-const quatRotate = (q: Node, v: Node): Node =>
-  v.add(cross(q.xyz, cross(q.xyz, v).add(q.w.mul(v))).mul(2.0));
 
 const nodeMaterials = new WeakMap<THREE.Material, THREE.Material>();
 

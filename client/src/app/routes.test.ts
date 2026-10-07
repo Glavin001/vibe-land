@@ -50,6 +50,11 @@ describe('resolveAppRoute', () => {
     expect(resolveAppRoute('/gallery')).toEqual({ kind: 'gallery' });
   });
 
+  it('routes the fracture lab page', () => {
+    expect(resolveAppRoute('/fracture-lab')).toEqual({ kind: 'fractureLab' });
+    expect(resolveAppRoute('/fracture-lab/', '?specimen=rc-wall')).toEqual({ kind: 'fractureLab' });
+  });
+
   it('routes the ragdoll lab page', () => {
     expect(resolveAppRoute('/ragdoll-lab')).toEqual({ kind: 'ragdollLab' });
     expect(resolveAppRoute('/ragdoll-lab/')).toEqual({ kind: 'ragdollLab' });
