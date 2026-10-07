@@ -16,7 +16,7 @@
 //                                     re-solves every tick)
 //
 // Takes the shared GPU lock (target/native-bundle.lock) for the whole run and
-// releases it however the run ends. Writes target/qualify-structures/veneer-houses.json.
+// releases it however the run ends; VIBE_GPU_SHARED=1 shares the GPU instead. Writes target/qualify-structures/veneer-houses.json.
 // Exit 1 when an expectation fails.
 import {execFileSync} from 'node:child_process';
 import {mkdirSync,writeFileSync,readFileSync,rmSync,existsSync} from 'node:fs';
@@ -36,9 +36,13 @@ const packs=keys.flatMap(k=>['',  '--frame','--no-front-studs',...(k==='veneer-h
 const lock=path.join(REPO,'target/native-bundle.lock'),json=path.join(REPO,'target/qualify-structures/veneer-houses.json');
 mkdirSync(path.dirname(json),{recursive:true});
 const sleep=s=>Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,s*1000);
-for(;;){try{mkdirSync(lock);break;}catch{sleep(15);}}
-writeFileSync(path.join(lock,'owner'),`qualify-veneer-houses ${process.pid} ${new Date().toISOString()}\n`);
-const release=()=>{if(existsSync(lock))rmSync(lock,{recursive:true,force:true});};
+// VIBE_GPU_SHARED=1: a correctness run may share the GPU (gpu-run.sh); no lock.
+const shared=process.env.VIBE_GPU_SHARED==='1';
+if(!shared){
+ for(;;){try{mkdirSync(lock);break;}catch{sleep(15);}}
+ writeFileSync(path.join(lock,'owner'),`qualify-veneer-houses ${process.pid} ${new Date().toISOString()}\n`);
+}
+const release=()=>{if(!shared&&existsSync(lock))rmSync(lock,{recursive:true,force:true});};
 process.on('exit',release);for(const s of ['SIGINT','SIGTERM'])process.on(s,()=>{release();process.exit(130);});
 try{
  try{execFileSync('python3',[path.join(REPO,'scripts/perf/qualify_structures.py'),...packs,'--ticks',ticks,'--json',json],{cwd:REPO,stdio:'inherit'});}

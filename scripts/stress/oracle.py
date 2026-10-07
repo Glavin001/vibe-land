@@ -90,6 +90,14 @@ class Capture:
             self.components = np.zeros(0, dtype=COMPONENT)
             self.solution = self.lam = self.history = None
         self.solve = meta['solve']
+        # Per-bond rotational stiffness (sectionRotationalStiffness): each
+        # bond's angular columns of B carry s A instead of s I.
+        self.rotation = None
+        if meta.get('rotation'):
+            packed = np.fromfile(base + '.rotation.bin', dtype='<f4').reshape(-1, 6).astype(np.float64)
+            require(len(packed) == len(self.bonds), 'truncated rotation capture')
+            xx, yy, zz, xy, xz, yz = packed.T
+            self.rotation = np.stack([np.stack([xx, xy, xz], 1), np.stack([xy, yy, yz], 1), np.stack([xz, yz, zz], 1)], 1)
 
     def component_ids(self):
         ids = [int(i) for i in np.unique(self.nodes['component']) if i != INVALID]
@@ -125,6 +133,8 @@ class System:
                     continue
                 block = np.eye(6)
                 block[:3, 3:] = -skew(bond['offset' + str(side)])
+                if getattr(cap, "rotation", None) is not None:
+                    block[:, :3] = block[:, :3] @ cap.rotation[source]
                 block[:3] *= float(nodes['inertia'][node][0])
                 block[3:] *= float(nodes['inertia'][node][1])
                 block *= float(bond['scale']) * (1 if side == 0 else -1)
@@ -383,7 +393,10 @@ class Verdicts:
 
     def multiplier(self, lam):
         lam = lam.reshape(-1, 6)
-        ang = lam[:, :3] * (self.scale * self.ang_scale)[:, None]
+        ang = lam[:, :3]
+        if getattr(self.cap, "rotation", None) is not None:   # the physical moment is s A times the stored variable
+            ang = np.einsum('bij,bj->bi', self.cap.rotation[self.system.selected], ang)
+        ang = ang * (self.scale * self.ang_scale)[:, None]
         lin = lam[:, 3:] * (self.scale * self.lin_scale)[:, None]
         n, area = self.normal, self.area
         ln = np.einsum('ij,ij->i', lin, n)
