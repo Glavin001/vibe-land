@@ -186,7 +186,7 @@ fn run(pack: std::path::PathBuf, rest: u32, cannonball: bool) -> Tally {
         let origin = aim + nalgebra::Vector3::new(20., 0.5, 0.);
         let speed = crate::city::city_ball_speed_ms();
         let t = 20. / speed;
-        arena.launch_ball_from_muzzle(origin, (aim - origin) / t + nalgebra::Vector3::new(0., 0.5 * 9.81 * t, 0.),
+        arena.launch_ball_from_muzzle(origin, (aim - origin) / t + nalgebra::Vector3::new(0., 0.5 * (vibe_netcode::movement::GRAVITY as f32) * t, 0.),
             crate::city::city_ball_radius_m(), crate::city::city_ball_mass_kg(), 600).expect("ball");
         eprintln!("cannonball fired at tick {tick}");
     }

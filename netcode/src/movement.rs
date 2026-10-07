@@ -30,7 +30,7 @@ impl Default for MoveConfig {
             ground_accel: 80.0,
             air_accel: 18.0,
             friction: 10.0,
-            gravity: 9.81,
+            gravity: GRAVITY,
             // 4.55, not 6.5, so the jump keeps the HEIGHT it had.
             //
             // Jump height is v^2/2g, so halving gravity without touching this
@@ -52,6 +52,12 @@ impl Default for MoveConfig {
         }
     }
 }
+
+/// Standard gravity, m/s^2: the one value for the whole world. Players, the
+/// PhysX scene (physx-bridge DEFAULT_WORLD_GRAVITY, asserted equal), the stress
+/// loads, the vehicles and the encoder all take it from here
+/// (physx-bridge/tests/gravity_single_source.rs).
+pub const GRAVITY: f64 = 9.81;
 
 /// The world's gravity vector, in m/s^2, taken from the same constant the
 /// player falls by.

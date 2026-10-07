@@ -108,9 +108,18 @@ fn env_f32(name: &str, default: f32) -> f32 {
 /// deck sits at 99% of its cracking stress with no safety factor, so realistic
 /// concrete cracked it under its own weight.
 ///
-/// Override with VIBE_WORLD_GRAVITY (a positive magnitude).
+/// No override. VIBE_WORLD_GRAVITY used to move the PhysX scene alone while
+/// the players, the encoder, the vehicles and the stress-load references kept
+/// 9.81 (docs/verification/FIDELITY_AUDIT.md G2); a value other than Earth's
+/// is now refused rather than half-applied.
 pub fn world_gravity_magnitude() -> f32 {
-    env_f32("VIBE_WORLD_GRAVITY", DEFAULT_WORLD_GRAVITY).abs()
+    let g = env_f32("VIBE_WORLD_GRAVITY", DEFAULT_WORLD_GRAVITY).abs();
+    assert!(
+        g == DEFAULT_WORLD_GRAVITY,
+        "VIBE_WORLD_GRAVITY={g} is not supported: gravity is Earth's ({DEFAULT_WORLD_GRAVITY} m/s^2) everywhere, \
+         and the override only ever reached the PhysX scene"
+    );
+    g
 }
 
 /// Earth. The one default for world gravity. Must match

@@ -64,3 +64,83 @@ fn no_native_source_keeps_its_own_world_gravity_default() {
         offenders.join("\n  ")
     );
 }
+
+/// Every Rust crate the server runs takes gravity from the one constant
+/// (vibe_netcode::movement::GRAVITY, which DEFAULT_WORLD_GRAVITY and
+/// MoveConfig::default() both equal). A literal 9.81 anywhere else in
+/// production code is a copy that a change of gravity would miss:
+/// docs/verification/FIDELITY_AUDIT.md row G2 found five (warm-start
+/// compatibility, rolling resistance, suspension rest load, the lateral
+/// limiter, the encoder's extrapolation). Test modules (after the file's first
+/// `#[cfg(test)]`), comments and the constant's own definition are exempt.
+#[test]
+fn no_rust_source_keeps_a_gravity_literal() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut offenders = Vec::new();
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    for dir in ["server/src", "destruction/src", "netcode/src", "physx-bridge/src"] {
+        walk(&root.join(dir), &mut files);
+    }
+    // Whole files compiled only under #[cfg(test)] in their parent module.
+    const TEST_ONLY: [&str; 2] = ["physx_runtime/vehicle_destruction_tests.rs", "physx_runtime/vehicle_lab.rs"];
+    for path in files {
+        if TEST_ONLY.iter().any(|t| path.ends_with(t)) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read source");
+        let production = source.split("#[cfg(test)]").next().unwrap_or("");
+        for (line, text) in production.lines().enumerate() {
+            let code = text.split("//").next().unwrap_or("");
+            if code.contains("9.81") && !code.contains("pub const GRAVITY") && !code.contains("pub const DEFAULT_WORLD_GRAVITY") {
+                offenders.push(format!("{}:{}: {}", path.display(), line + 1, text.trim()));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "gravity copies (use vibe_netcode::movement::GRAVITY):\n  {}",
+        offenders.join("\n  ")
+    );
+    // The browser cannot import the constant; its extrapolation must equal it.
+    let presentation = std::fs::read_to_string(root.join("client/src/city/presentation.ts")).expect("presentation.ts");
+    assert!(
+        presentation.contains(&format!("gravity: [0, -{}, 0]", vibe_netcode::movement::GRAVITY)),
+        "client/src/city/presentation.ts extrapolates under a gravity other than vibe_netcode::movement::GRAVITY"
+    );
+}
+
+/// VIBE_WORLD_GRAVITY moved only the PhysX scene: the players, the stress
+/// loads' reference, the encoder and the vehicles kept 9.81 (audit row G2).
+/// Gravity is Earth's; the override is refused rather than half-applied.
+#[test]
+fn a_gravity_override_is_refused_not_half_applied() {
+    if std::env::var("GRAVITY_ARM").is_ok() {
+        let _ = vibe_land_physx_bridge::world_gravity_magnitude();
+        return;
+    }
+    let exe = std::env::current_exe().expect("test binary");
+    let out = std::process::Command::new(exe)
+        .args(["--exact", "a_gravity_override_is_refused_not_half_applied", "--nocapture"])
+        .env("GRAVITY_ARM", "1")
+        .env("VIBE_WORLD_GRAVITY", "20")
+        .output()
+        .expect("spawn");
+    assert!(!out.status.success(), "VIBE_WORLD_GRAVITY=20 was accepted and would move only the PhysX scene");
+    let same = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "a_gravity_override_is_refused_not_half_applied", "--nocapture"])
+        .env("GRAVITY_ARM", "1")
+        .env("VIBE_WORLD_GRAVITY", "9.81")
+        .output()
+        .expect("spawn");
+    assert!(same.status.success(), "VIBE_WORLD_GRAVITY equal to Earth's must still be accepted");
+}

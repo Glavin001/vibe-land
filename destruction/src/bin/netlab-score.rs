@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => None,
     };
-    let gravity: f32 = flag("--gravity").map_or(Ok(9.81), |v| v.parse())?;
+    let gravity: f32 = flag("--gravity").map_or(Ok(vibe_netcode::movement::GRAVITY as f32), |v| v.parse())?;
     let dump_worst: usize = flag("--dump-worst").map_or(Ok(0), |v| v.parse())?;
 
     let started = std::time::Instant::now();

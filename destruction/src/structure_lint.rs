@@ -16,7 +16,7 @@ pub const SOLVER_MIN_BOND_AREA_M2: f32 = 1e-4;
 /// append_bonds' reference modulus and length floor (stiffness weight).
 const REFERENCE_MODULUS_PA: f32 = 30e9;
 const MIN_WEIGHT_LENGTH_M: f32 = 0.05;
-const G: f32 = 9.81;
+const G: f32 = vibe_netcode::movement::GRAVITY as f32;
 
 #[derive(Clone, Debug)]
 pub struct LintNode {
