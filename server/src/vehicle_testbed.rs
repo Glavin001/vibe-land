@@ -18,6 +18,7 @@
 //! VIBE_TESTBED_TRIALS   trial ids or prefixes (default all); `id$` matches that id exactly
 //! VIBE_TESTBED_LABEL    report name: target/vehicle-testbed/<label>.json (default "report")
 //! VIBE_TESTBED_META     the lab meta (default structures/vehicle-lab/out/vehicle-lab.meta.json)
+//! VIBE_TESTBED_SERVER_POLICY=1  the plain server's stage policy (main.rs apply_stage_policy_defaults) first
 //! VIBE_TESTBED_TRACE=1  a per-tick trace of the car in each run (speed, z, height, jounce)
 //! VIBE_TESTBED_START_OFFSET=dx,dz  start the car off its slot (m): how much an outcome depends on the exact pose
 //! VIBE_VEHICLE_ROAD_LOG=1  per tick: the bridge's road hits, then the wheels' loads, the car's stress input by
@@ -51,6 +52,10 @@ fn repo() -> std::path::PathBuf { std::path::PathBuf::from(env!("CARGO_MANIFEST_
 /// The native app's settings (sim-native city.rs apply_app_defaults), for
 /// anything not already set.
 fn app_settings() {
+    // VIBE_TESTBED_SERVER_POLICY=1: the stage policy as the plain server sets
+    // it (main.rs apply_stage_policy_defaults), not the app's list below --
+    // run with PX_DESTRUCTION_ALLOW_UNCONVERGED unset to test that path.
+    if std::env::var_os("VIBE_TESTBED_SERVER_POLICY").is_some() { crate::apply_stage_policy_defaults(); }
     for (name, value) in [
         ("VIBE_GARAGE_VEHICLE_DESTRUCTION", "1"),
         ("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1"),
@@ -939,6 +944,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         out["probe"] = pr.summary(strength, DT);
         out["layer"] = trial["layer"].clone();
         out["matrix"] = trial["matrix"].clone();
+        out["expect"] = trial["expect"].clone();
         if tracing { out["probeTrace"] = json!(pr.trace); }
     }
     out["stepMs"] = json!({"median": sorted.get(sorted.len() / 2), "p95": sorted.get(sorted.len() * 95 / 100), "max": sorted.last()});

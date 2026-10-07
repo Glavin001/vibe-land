@@ -97,7 +97,11 @@ function trial(pack, target, impactorId, angle, point = 'centre', extra = {}) {
     const b = (from * Math.PI) / 180;
     const heading = (from + 180) % 360;
     const start = [aim[0] + Math.sin(b) * run, aim[2] + Math.cos(b) * run];
-    return { ...base, at: `slot/${start[0].toFixed(2)},${start[1].toFixed(2)},${heading}`, drive: { kind: 'cruise', speed }, seconds: run / speed + 3.5 };
+    // The owner's bar (2026-10-07): a vehicle drives through the first wall or
+    // two of a house, losing momentum as it goes. Square on at 20 m/s into the
+    // veneer house's skin, the masonry wall or the brick house: it gets through.
+    const expect = speed >= 20 && ['veneer', 'masonry', 'brick-house'].includes(target.id) && angle === '0' ? ['through'] : undefined;
+    return { ...base, ...(expect ? { expect } : {}), at: `slot/${start[0].toFixed(2)},${start[1].toFixed(2)},${heading}`, drive: { kind: 'cruise', speed }, seconds: run / speed + 3.5 };
   }
   const attack = { kind: 'shot', projectile: imp.attack === 'meteor' ? 'meteor' : 'cannonball', at: 0.5, target: aim, from,
     slope: target.slope ?? (imp.attack === 'meteor' ? target.meteorSlope : undefined) ?? (target.town ? (imp.attack === 'meteor' ? 0.5 : 0.1) : imp.attack === 'meteor' ? 0.05 : 0.02),
