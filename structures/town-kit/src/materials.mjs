@@ -27,9 +27,22 @@ export function materials(palette='sage') {
   mat('insulated-appliance-panel','wood-frame','#e6e4d4',null,280,{compressionElastic:8e6,compressionFatal:16e6,tensionElastic:5e5,tensionFatal:1e6,shearElastic:1e6,shearFatal:2e6,elasticModulus:1e9,roughness:.25,metalness:.15}),
  ];
  table.push(mortarMaterial(table[4]));
+ table.push(concreteFooting());
  return table;
 }
-export const M={frame:0,siding:1,trim:2,plaster:3,brick:4,footing:5,glass:6,roof:7,dark:8,oak:9,ceramic:10,metal:11,fabric:12,bedding:13,glassJoint:14,wall:15,joint:16,furnitureJoint:17,fastener:18,appliance:19,mortar:20};
+export const M={frame:0,siding:1,trim:2,plaster:3,brick:4,footing:5,glass:6,roof:7,dark:8,oak:9,ceramic:10,metal:11,fabric:12,bedding:13,glassJoint:14,wall:15,joint:16,furnitureJoint:17,fastener:18,appliance:19,mortar:20,concrete:21};
+
+/**
+ * Concrete above grade (TOWN_KIT_BURIED_ANCHORS=1, geometry.mjs): a footing,
+ * kerb, step, ramp or deck standing proud of the ground is a member, not the
+ * ground. C30/37 plain concrete (EN 1992-1-1 Table 3.1): fck 30 MPa, fctm
+ * 2.9 MPa, Ecm 33 GPa; shear at the tensile strength (no stirrups); the
+ * elastic limits at 40% (the linear range of the stress-strain curve). The
+ * `footing` material keeps the anchor grade's limits (1 GPa): it is only for
+ * what never moves. Crushes as concrete (materials.mjs CRUSH, by name).
+ */
+export const concreteFooting = () => ({ ...structuredClone(base.find((m) => m.name === 'footing-anchor')), name: 'concrete-footing', color: '#86877b', textureKey: 'concrete-wall', density: 2400,
+  compressionFatal: 30e6, compressionElastic: 12e6, tensionFatal: 2.9e6, tensionElastic: 1.16e6, shearFatal: 2.9e6, shearElastic: 1.16e6, elasticModulus: 33e9, residualAreaFraction: 0 });
 
 /**
  * Masonry fails at its joints, not through its bricks: Eurocode 6 puts the
@@ -395,7 +408,7 @@ export const CRUSH = {
  */
 export function crushFor(name = '') {
   if (/^(brick|garden-masonry)/.test(name) || /masonry/.test(name) && !/connection|seam|joint/.test(name)) return CRUSH.brickVeneer;
-  if (/^(reinforced-concrete|concrete-slab|concrete-wall|pale-paving)$/.test(name)) return CRUSH.concrete;
+  if (/^(reinforced-concrete|concrete-slab|concrete-wall|concrete-footing|pale-paving)$/.test(name)) return CRUSH.concrete;
   if (/^(plaster|drywall|gypsum)$/.test(name)) return CRUSH.gypsum;
   if (/^(glass|window-glass)$/.test(name)) return CRUSH.glass;
   return null;

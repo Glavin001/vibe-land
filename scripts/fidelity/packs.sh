@@ -10,7 +10,7 @@ case ${1:?usage: packs.sh runtime|high} in
     echo "veneer=$ROOT/structures/town-kit/out/veneer-houses"
     echo "town=$ROOT/structures/vibe-town/out/vibe-town.json" ;;
   high)
-    b=$ROOT/target/fidelity/high/structures
+    b=${FIDELITY_PACK_DIR:-$ROOT/target/fidelity/high}/structures
     echo "lab=$b/vehicle-lab/out/vehicle-lab-crush.json"
     echo "veneer=$b/town-kit/out/veneer-houses-crush"
     echo "town=$b/vibe-town/out/vibe-town-crush-real.json" ;;

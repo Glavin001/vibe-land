@@ -5,7 +5,8 @@
 #                                             isolated copy under target/fidelity/high so the
 #                                             default and crush packs other work uses are
 #                                             never overwritten (TOWN_KIT_HULL_ORIGIN changes
-#                                             pack contents without changing file names)
+#                                             pack contents without changing file names);
+#                                             FIDELITY_PACK_DIR builds them elsewhere (a what-if)
 # Prints the packs it built; scripts/fidelity/packs.sh PROFILE prints their paths.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -16,7 +17,7 @@ case $profile in
     base=$ROOT ;;
   high)
     source "$ROOT/scripts/fidelity/high.env"
-    base=$ROOT/target/fidelity/high
+    base=${FIDELITY_PACK_DIR:-$ROOT/target/fidelity/high}
     mkdir -p "$base/client/native" "$base/client/src"
     rsync -a --delete --exclude out --exclude node_modules --exclude .vite --exclude __pycache__ "$ROOT/structures/" "$base/structures/"
     rsync -a --delete "$ROOT/client/native/film/" "$base/client/native/film/"
