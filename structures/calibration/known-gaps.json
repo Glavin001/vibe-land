@@ -1,7 +1,24 @@
 {
  "bridge-piers": {
   "default": {
-   "step3": {"state": "holds", "note": "default bending gain reads the deck's M 3.65x low (u 0.57 in its own model): survives a 30 m span at real u 1.69"}
+   "step3": {
+    "state": "holds",
+    "note": "default bending gain reads the deck's M 3.65x low (u 0.57 in its own model): survives a 30 m span at real u 1.69"
+   }
+  }
+ },
+ "house-studs": {
+  "section": {
+   "*": {
+    "state": "*",
+    "note": "the kit's bungalow does not stand under section bending alone: its nailed joints' real sections read the bond moments the default rotational stiffness puts through them (king/jack/header joints break on tick 1, the house falls, intact)"
+   }
+  },
+  "rotation": {
+   "*": {
+    "state": "*",
+    "note": "under section rotation (garage-multihull 9d5024d1e+) the bungalow's heel joints (rafter to ceiling joist) break at rest and the frame comes down or sheds its roof, intact; the kit is being requalified for rotation (another agent's work)"
+   }
   }
  }
 }
