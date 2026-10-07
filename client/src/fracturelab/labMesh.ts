@@ -478,7 +478,7 @@ export function labMaterial(poses: LabPoses, looks: FractureLookUniforms, option
       nView.assign(normalize(restToView(restN)));
     };
     if (options.fracture) {
-      if (only) {
+      if (only && only.cut !== undefined) {
         if (only.cut) cutBranch();
         else skinBranch();
       } else {
@@ -569,10 +569,13 @@ export function ghostMaterial(poses: LabPoses): THREE.Material {
 }
 
 
-/** One draw of the compact layout: a class, and outer skin or cut faces. */
+/**
+ * One specialised draw: a class, and outer skin or cut faces (`cut`), or
+ * every kind of face of that class (`cut` left out; the kinds still branch).
+ */
 export interface LabGroup {
   cls: number;
-  cut: boolean;
+  cut?: boolean;
 }
 
 /** The groups buildCompactGeometry split its triangles into, by material index. */

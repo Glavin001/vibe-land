@@ -103,7 +103,12 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
   }, [pieces, builder, codes, compact, table]);
 
   const poses = useMemo(() => new LabPoses(n * copies), [n, copies]);
-  const pool = useMemo(() => new SkinPool(POOL_VERTICES, POOL_INDICES), []);
+  // The pool's index budget, shared out by how many pieces each class has.
+  const pool = useMemo(() => {
+    const share = new Map<number, number>();
+    for (const piece of pieces) if (!isGlass(piece)) share.set(piece.cls, (share.get(piece.cls) ?? 0) + 1);
+    return new SkinPool(POOL_VERTICES, POOL_INDICES, share);
+  }, [pieces]);
   useEffect(() => () => pool.dispose(), [pool]);
 
   const materials = useMemo(() => {
@@ -120,7 +125,18 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
           ...common, tier: 'base', instanceStride: n, compact: base.info ?? undefined, only,
         }))
         : labMaterial(poses, looks, { ...common, tier: 'base', instanceStride: n, compact: base.info ?? undefined }),
-      pool: labMaterial(poses, looks, { ...common, tier: 'skin' }),
+      // The pool draws a mesh per class: specialised to it, or all the
+      // uber-shader.
+      pool: (() => {
+        const uber = state.specialise ? null : labMaterial(poses, looks, { ...common, tier: 'skin' });
+        const byClass = new Map<number, THREE.Material>();
+        return (cls: number): THREE.Material => {
+          if (uber) return uber;
+          let material = byClass.get(cls);
+          if (!material) byClass.set(cls, material = labMaterial(poses, looks, { ...common, tier: 'skin', only: { cls } }));
+          return material;
+        };
+      })(),
       glass: glassMaterial(poses, { fracture: state.shading, wireframe: state.wireframe, instanceStride: n }),
       shadow: shadowProxyMaterial(poses, n),
     };
@@ -140,6 +156,24 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
     return a;
   }, [copies]);
   const instancedMeshes = useRef<THREE.InstancedMesh[]>([]);
+  // Pool meshes, one per class part, added as parts appear.
+  const poolGroup = useRef<THREE.Group | null>(null);
+  const poolDrawn = useRef(new Map<number, THREE.Mesh>());
+  const poolSeen = useRef(-1);
+  const syncPool = (): void => {
+    const into = poolGroup.current;
+    if (!into || pool.partsVersion === poolSeen.current) return;
+    for (const part of pool.parts) {
+      if (poolDrawn.current.has(part.cls)) continue;
+      const mesh = new THREE.Mesh(part.geometry, materials.pool(part.cls));
+      mesh.frustumCulled = false;
+      mesh.castShadow = false;
+      mesh.receiveShadow = state.shadows;
+      poolDrawn.current.set(part.cls, mesh);
+      into.add(mesh);
+    }
+    poolSeen.current = pool.partsVersion;
+  };
   const shadowMesh = useRef<THREE.InstancedMesh | null>(null);
   const sun = useRef<THREE.DirectionalLight | null>(null);
   const copyCount = useRef(-1);
@@ -183,13 +217,17 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
     }
     instancedMeshes.current = meshes;
     for (const m of meshes) group.add(m);
-    const detail = new THREE.Mesh(pool.geometry, materials.pool);
-    detail.frustumCulled = false;
-    detail.castShadow = false;
-    detail.receiveShadow = state.shadows;
+    const detail = new THREE.Group();
     group.add(detail);
+    poolGroup.current = detail;
+    poolDrawn.current.clear();
+    poolSeen.current = -1;
+    syncPool();
     scene.add(group);
-    return () => { scene.remove(group); };
+    return () => {
+      scene.remove(group);
+      poolGroup.current = null;
+    };
   }, [scene, base, materials, pool, copies, copyAttribute, shadowCopyAttribute, state.shadows]);
   useEffect(() => () => {
     base.opaque.dispose();
@@ -334,6 +372,9 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
       stats.current.builtTotal += 1;
     }
     const buildMs = performance.now() - started;
+
+    // A class's first detailed piece brings its part (and mesh) into being.
+    syncPool();
 
     // --- Culling: only copies the camera can see are drawn ------------------
     {
