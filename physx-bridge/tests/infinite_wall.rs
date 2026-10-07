@@ -458,3 +458,33 @@ fn meteor_on_a_foundation() {
     println!("meteor on a concrete member footing: up to {up:.1} m/s; allowed {bound:.1}");
     assert!(up <= bound, "an infinite foundation: the footing edge threw the meteor up at {up:.1} m/s, concrete could not exceed {bound:.1}\n{text}");
 }
+
+/// Known gap, reported and never gated (FIDELITY_AUDIT E10): terrain has no
+/// penetration resistance. The meteor meeting static ground steeply (slope
+/// 1, 45 degrees) at 140 m/s: a real soil craters, the rock burying itself
+/// over metres (Poncelet, F = A (c0 + c2 rho v^2); Young, SAND97-2426), its
+/// normal speed spent in the ground, none returned. The static box returns
+/// e v_n and takes the rest in one tick. Reports the normal speed the rock is
+/// stopped from in that tick and the deceleration (g), against Poncelet's
+/// for loose soil (c2 ~ 1, rho 1800 kg/m^3: about 50 g at 99 m/s for this rock).
+#[test]
+#[ignore = "requires the GPU; a known gap, reported"]
+fn meteor_into_terrain() {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.add_static_box(StaticBoxDesc { entity_id: 0x0100_0001, user_id: 1, pose: Pose { position: Vec3::new(0.0, -5.0, 0.0), rotation: identity() },
+        half_extents: Vec3::new(500.0, 5.0, 500.0), collision_group: GROUP_CHUNK, collision_mask: ALL }).unwrap();
+    world.step().unwrap();
+    let (mass, radius, speed) = (110_000.0f32, 2.0f32, 140.0f32);
+    let v = Vec3::new(0.0, -speed / 2f32.sqrt(), speed / 2f32.sqrt());
+    world.launch_dynamic_ball(LaunchedBallDesc { entity_id: BALL, user_id: 1, pose: Pose { position: Vec3::new(0.0, radius + 0.01 - v.y * DT, 0.0), rotation: identity() },
+        radius, mass, linear_velocity: v, collision_group: GROUP_BALL, collision_mask: ALL }).unwrap();
+    let mut vy = Vec::new();
+    for _ in 0..4 {
+        world.step().unwrap();
+        vy.push(world.body_snapshots().unwrap().into_iter().find(|b| b.entity_id == BALL).expect("meteor").linear_velocity.y);
+    }
+    let dv = vy.iter().copied().fold(f32::MIN, f32::max) - v.y;
+    let poncelet = std::f32::consts::PI * radius * radius * 1800.0 * v.y * v.y / mass / 9.81;
+    println!("KNOWN GAP meteor_into_terrain: normal speed {:.1} m/s stopped in one tick ({:.0} g); Poncelet soil: ~{poncelet:.0} g, the rock buries itself", -v.y, dv / DT / 9.81);
+}
