@@ -25,13 +25,13 @@
 import { loadPlaces, placeResolver, point, offset } from './places.mjs';
 import { hold as filmHold } from './shots.mjs';
 import {
-  hold, path, orbit, track, watch, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, slowmo,
-  flash, fade, METEOR_FLIGHT_S, timeline, cameraProblems, sightBlocked,
+  hold, path, orbit, track, watch, mount, chase, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, caption, trim,
+  slowmo, flash, fade, METEOR_FLIGHT_S, timeline, cameraProblems, sightBlocked,
 } from './shots.mjs';
 
 export {
-  hold, path, orbit, track, watch, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, slowmo,
-  flash, fade, METEOR_FLIGHT_S, point, offset,
+  hold, path, orbit, track, watch, mount, chase, fire, meteor, drive, goto, note, strike, strikeNear, enter, barrage, title, card, caption, trim,
+  slowmo, flash, fade, METEOR_FLIGHT_S, point, offset,
 };
 
 // Set by native-mac.sh at bundle time (esbuild --define).
@@ -58,7 +58,7 @@ const ONLY_SHOTS = typeof FILM_SHOTS === 'string' && FILM_SHOTS ? FILM_SHOTS.spl
 /** Seconds of film before the selected shots, for meteors they launch early (METEOR_FLIGHT_S). */
 const PREROLL_S = 3;
 /** Scenes with a town-kit details layer (tree leaves), which loads after the city. */
-const TOWN_KIT_SCENES = new Set(['town', 'showcase', 'bayline']);
+const TOWN_KIT_SCENES = new Set(['town', 'hero', 'showcase', 'bayline']);
 
 const started = Date.now();
 // `[film 12.3s] rolling` / `cut`: the shape native-mac.sh trims a --video recording by.
@@ -226,10 +226,47 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
   /** Stop recording, hand the clock back and exit. */
   async function cut(code = 0) {
     stopRecording();
+    e2e.setCaptureMount?.(null);
     if (filmMode) filmMode.disable();
     driveBridge.clear();
     log('cut');
     setTimeout(() => process.exit(code), 300);
+  }
+
+  let lastT = null;
+  /** Every vehicle's position and velocity (film time), for track() and strikeNear(). */
+  const trackVehicles = (t) => {
+    const seen = new Map();
+    for (const v of e2e.snapshot?.()?.vehicles ?? []) {
+      const before = ctx.vehicles.get(v.id), dt = lastT == null ? 0 : t - lastT;
+      const velocity = before && dt > 0 ? v.position.map((c, k) => (c - before.position[k]) / dt) : before?.velocity ?? [0, 0, 0];
+      const smoothed = before ? before.velocity.map((c, k) => c + (velocity[k] - c) * 0.3) : velocity;
+      // Acceleration from the smoothed velocity, smoothed again (strikeNear's lead).
+      const acceleration = before && dt > 0 ? smoothed.map((c, k) => (c - before.velocity[k]) / dt) : [0, 0, 0];
+      seen.set(v.id, {
+        ...v, velocity: smoothed,
+        acceleration: before?.acceleration ? before.acceleration.map((c, k) => c + (acceleration[k] - c) * 0.1) : acceleration,
+      });
+    }
+    ctx.vehicles = seen;
+    lastT = t;
+  };
+
+  /**
+   * The camera for a film frame: the shot's pose (shaken), and for a mount the
+   * vehicle-mounted camera the app resolves from the drawn vehicle (the same
+   * shake passed along). Returns the pose set, for the film's own checks.
+   */
+  function aim(s, t, pose, shakeT) {
+    const posed0 = shakeT == null ? pose : shakes.apply(pose, shakeT);
+    const posed = s.fov ? { ...posed0, fov: s.fov } : posed0;
+    e2e.setCapturePose(posed);
+    const spec = s.pose.mount?.(Math.min(s.duration, Math.max(0, t - s.start)));
+    if (spec) {
+      const d = (a, b) => a.map((v, k) => v - b[k]);
+      e2e.setCaptureMount?.({ ...spec, shake: { position: d(posed.position, pose.position), look: d(posed.lookAt, pose.lookAt) } });
+    } else e2e.setCaptureMount?.(null);
+    return { posed, mounted: !!spec };
   }
 
   /** Each shot's middle, as a still, then exit: the film checked in seconds. */
@@ -237,8 +274,9 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
     const dir = OUT.replace(/\.mp4$/, '-preview');
     for (const cue of tl.cues.filter((c) => c.first)) log(`  cue ${cue.time.toFixed(1)}s: ${cue.label}`);
     for (const [i, s] of tl.shots.entries()) {
+      trackVehicles(s.start + s.duration / 2);
       const pose = s.pose(s.duration / 2);
-      e2e.setCapturePose(pose);
+      aim(s, s.start + s.duration / 2, pose, null);
       for (let k = 0; k < 4; k += 1) await nextFrame();
       await sleep(400);
       const file = `${dir}/${String(i + 1).padStart(2, '0')}-${s.name.replace(/[^a-z0-9-]+/gi, '-')}.png`;
@@ -277,24 +315,6 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
     let stills = 0;
     let shown = -1, next = 0, followed = -Infinity;
     if (letterbox) ctx.edit({ type: 'letterbox', ratio: letterbox });
-    let lastT = null;
-    /** Every vehicle's position and velocity (film time), for track() and strikeNear(). */
-    const trackVehicles = (t) => {
-      const seen = new Map();
-      for (const v of e2e.snapshot?.()?.vehicles ?? []) {
-        const before = ctx.vehicles.get(v.id), dt = lastT == null ? 0 : t - lastT;
-        const velocity = before && dt > 0 ? v.position.map((c, k) => (c - before.position[k]) / dt) : before?.velocity ?? [0, 0, 0];
-        const smoothed = before ? before.velocity.map((c, k) => c + (velocity[k] - c) * 0.3) : velocity;
-        // Acceleration from the smoothed velocity, smoothed again (strikeNear's lead).
-        const acceleration = before && dt > 0 ? smoothed.map((c, k) => (c - before.velocity[k]) / dt) : [0, 0, 0];
-        seen.set(v.id, {
-          ...v, velocity: smoothed,
-          acceleration: before?.acceleration ? before.acceleration.map((c, k) => c + (acceleration[k] - c) * 0.1) : acceleration,
-        });
-      }
-      ctx.vehicles = seen;
-      lastT = t;
-    };
     // How much of each shot's view something stands in front of, as filmed
     // (live poses: tracks follow the real cars). A line per shot at its end.
     const occluders = place.all.filter((p) => p.min && p.max);
@@ -343,8 +363,8 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
           if (strayFrames <= 5) log(`WARNING: a frame at ${t.toFixed(2)}s drawn ${off.toFixed(1)} m from the film's camera (at ${drawn.map((v) => v.toFixed(1)).join(', ')})`);
         }
       }
-      posed = shakes.apply(pose, t - offset);
-      e2e.setCapturePose(posed);
+      const aimed = aim(tl.shots[i], t, pose, t - offset);
+      posed = aimed.mounted ? null : aimed.posed;
       if (t >= tl.duration && strayFrames) log(`WARNING: ${strayFrames} frames drawn from somewhere other than the film's camera`);
       return t >= tl.duration;
     };
@@ -409,7 +429,8 @@ export async function boot({ scene = DEFAULT_SCENE, fps = DEFAULT_FPS, preview =
       log(`${tl.shots.length} shots, ${tl.duration.toFixed(1)} s`);
       for (const problem of cameraProblems(tl, place.all)) log(`  WARNING: ${problem}`);
       if (preview) { await runPreview(tl); await cut(0); return; }
-      e2e.setCapturePose(tl.poseAt(0));
+      trackVehicles(0);
+      aim(tl.shots[0], 0, tl.poseAt(0), null);
       if (filmMode) for (let k = Math.round(hold * fps); k > 0; k -= 1) await filmMode.frame();
       else await sleep(hold * 1000);
       await runFilm(tl, tl.preRoll ?? 0);

@@ -14,7 +14,8 @@ const resolvePose = (pose, ctx) => ({ position: point(pose.position, ctx.place),
  * A shot: `build(ctx)` resolves its points and returns pose(t) for t in
  * [0, seconds]. Options on every shot: `name` (logs and preview stills),
  * `cues` ([[t, action], ...]: actions at t seconds into the shot), `player`
- * (a point to put the player at as the shot starts: goto()), and on
+ * (a point to put the player at as the shot starts: goto()), `fov` (the
+ * lens: vertical field of view in degrees; the game's 75 when absent), and on
  * moves `ease` ('both' | 'in' | 'out' | 'none', default 'both') and `ramp`
  * (the eased fraction at each end, default 0.25).
  */
@@ -24,7 +25,7 @@ function shot(kind, seconds, opts, build) {
   // streamed, cars above all, is what is near the player).
   const follow = opts.player === 'camera';
   const cues = [...(opts.player && !follow ? [[0, goto(opts.player)]] : []), ...(opts.cues ?? [])];
-  return { kind, name: opts.name ?? kind, duration: seconds, cues, build, follow };
+  return { kind, name: opts.name ?? kind, duration: seconds, cues, build, follow, fov: opts.fov ?? null };
 }
 
 /** The camera still at one pose. */
@@ -102,13 +103,114 @@ export const watch = (position, target, seconds, opts = {}) => shot('watch', sec
   };
 });
 
+// ------------------------------------------------------------ mounts
+
+/** The dune family's seats and a car-sized box, for poses worked out away from the game (lint, sight checks). */
+const ROUGH_EYES = {
+  driver: [0.32, 0.73, -0.28], passenger: [-0.32, 0.73, -0.28], hood: [0, 1.2, 1.4], bumper: [0, 0.4, 2.25], roof: [0, 1.9, -0.4],
+  rear: [0, 1.4, -2.3], 'side-left': [1.3, 0.6, 0], 'side-right': [-1.3, 0.6, 0], 'wheel-left': [1.35, 0.1, 0.85], 'wheel-right': [-1.35, 0.1, 0.85],
+};
+const deg = Math.PI / 180;
+const smooth01 = (u) => { const t = Math.max(0, Math.min(1, u)); return t * t * (3 - 2 * t); };
+/** Rotate v by quaternion q ([x, y, z, w]). */
+export function rotate(q, v) {
+  const [x, y, z, w] = q ?? [0, 0, 0, 1], [vx, vy, vz] = v;
+  const ix = w * vx + y * vz - z * vy, iy = w * vy + z * vx - x * vz, iz = w * vz + x * vy - y * vx, iw = -x * vx - y * vy - z * vz;
+  return [ix * w + iw * -x + iy * -z - iz * -y, iy * w + iw * -y + iz * -x - ix * -z, iz * w + iw * -z + ix * -y - iy * -x];
+}
 /**
- * The live vehicle a film means: a vehicle id, or a parking place (car-N:
- * the car nearest that spot when first asked, then that car wherever it
- * goes). Each frame's position and velocity come from the runner (ctx.vehicles).
+ * A look over a mount's shot: { yaw, pitch } (degrees in the vehicle's frame,
+ * yaw + to the left), or keyframes [[t, { yaw, pitch }], ...] eased between
+ * (a head turning to watch something go by and back).
+ */
+function lookOver(look) {
+  if (!Array.isArray(look)) { const l = look ?? {}; return () => ({ yaw: l.yaw ?? 0, pitch: l.pitch ?? 0 }); }
+  const keys = look.map(([t, l]) => [t, { yaw: l.yaw ?? 0, pitch: l.pitch ?? 0 }]).sort((a, b) => a[0] - b[0]);
+  return (t) => {
+    if (t <= keys[0][0]) return keys[0][1];
+    for (let i = 1; i < keys.length; i += 1) {
+      const [t1, b] = keys[i], [t0, a] = keys[i - 1];
+      if (t <= t1) { const u = smooth01((t - t0) / (t1 - t0 || 1)); return { yaw: a.yaw + (b.yaw - a.yaw) * u, pitch: a.pitch + (b.pitch - a.pitch) * u }; }
+    }
+    return keys[keys.length - 1][1];
+  };
+}
+
+/**
+ * A camera mounted on a vehicle, moving with it as it is drawn (to the pixel:
+ * the app resolves it after placing the vehicle, scene/captureCamera.ts).
+ * `target`: a vehicle id, 'driven' or a parking place (vehicleOf). Options:
+ *   at        'driver' (the head in the driver's seat, from the vehicle's own
+ *             parts), 'passenger', 'hood', 'bumper', 'roof', 'rear',
+ *             'side-left', 'side-right', 'wheel-left', 'wheel-right', or
+ *             [x, y, z] in its frame (+x the driver's side, +y up, +z forward)
+ *   offset    [x, y, z] added to that, in its frame
+ *   look      { yaw, pitch } in its frame (degrees; yaw + to the left), or
+ *             keyframes [[t, { yaw, pitch }], ...] -- the head turning
+ *   lookAt    instead of `look`: a point, place or vehicle ({ vehicle }) to keep looking at
+ *   horizon   'vehicle' (tilts with it: a bolted-on camera), 'level' (world
+ *             up: a stabilised one) or 0..1 between; default 'vehicle'
+ *   headingLag seconds the camera's frame trails the vehicle's heading (0: rigid)
+ *   fov       the lens, vertical degrees
+ */
+export const mount = (target, seconds, opts = {}) => shot('mount', seconds, opts, (ctx) => {
+  const at = opts.at ?? 'driver', off = opts.offset ?? [0, 0, 0], lookAt = lookOver(opts.look);
+  const lookTarget = opts.lookAt == null ? null
+    : opts.lookAt.vehicle != null ? () => vehicleOf(opts.lookAt.vehicle, ctx)?.position ?? null
+      : (() => { const p = point(opts.lookAt, ctx.place); return () => p; })();
+  const spec = (t) => {
+    const v = vehicleOf(target, ctx);
+    if (!v) return null;
+    const l = lookAt(t), world = lookTarget?.();
+    return {
+      vehicleId: v.id, eye: at, eyeOffset: off,
+      ...(world ? { lookAt: world } : { yaw: l.yaw, pitch: l.pitch }),
+      horizon: opts.horizon ?? 'vehicle', headingLag: opts.headingLag ?? 0, ...(opts.fov ? { fov: opts.fov } : {}),
+    };
+  };
+  // Roughly where it is, for the film's own checks (sight lines, the player
+  // following): the drawn pose is the app's, from the vehicle itself.
+  let lastPose = null;
+  const pose = (t) => {
+    const v = vehicleOf(target, ctx);
+    if (!v) return lastPose ?? { position: point(typeof target === 'string' && target !== 'driven' ? target : [0, 2, 0], ctx.place), lookAt: [0, 2, 10] };
+    const q = v.quaternion ?? [0, Math.sin((v.heading ?? 0) / 2), 0, Math.cos((v.heading ?? 0) / 2)];
+    const eye = Array.isArray(at) ? at : ROUGH_EYES[at] ?? ROUGH_EYES.driver;
+    const position = add(v.position, rotate(q, add(eye, off)));
+    const world = lookTarget?.();
+    const l = lookAt(t);
+    const dir = [Math.sin(l.yaw * deg) * Math.cos(l.pitch * deg), Math.sin(l.pitch * deg), Math.cos(l.yaw * deg) * Math.cos(l.pitch * deg)];
+    lastPose = { position, lookAt: world ?? add(position, rotate(q, dir.map((c) => c * 10))) };
+    return lastPose;
+  };
+  pose.mount = spec;
+  return pose;
+});
+
+/**
+ * A chase camera: mounted `back` metres behind and `up` above the vehicle,
+ * looking `ahead` metres past it, its frame trailing the vehicle's heading by
+ * `lag` seconds and kept level -- it swings round after the car on a turn
+ * and does not roll with it. `side` moves it off the centre line (+ the
+ * driver's side).
+ */
+export const chase = (target, seconds, { back = 7.5, up = 2.6, ahead = 6, side = 0, lift = 1, lag = 0.35, ...opts } = {}) => mount(target, seconds, {
+  at: [side, up, -back], horizon: 'level', headingLag: lag,
+  look: { yaw: 0, pitch: Math.atan2(lift - up, back + ahead) / deg },
+  ...opts,
+});
+
+/**
+ * The live vehicle a film means: a vehicle id, 'driven' (the one the player
+ * is driving), or a parking place (car-N: the car nearest that spot when
+ * first asked, then that car wherever it goes). Each frame's position and velocity come from the runner (ctx.vehicles).
  */
 export function vehicleOf(target, ctx) {
   ctx.vehicleIds ??= new Map();
+  if (target === 'driven') {
+    const id = ctx.e2e?.snapshot?.()?.drivenVehicleId;
+    return id == null ? null : ctx.vehicles?.get(id) ?? null;
+  }
   let id = typeof target === 'number' ? target : ctx.vehicleIds.get(target);
   if (id == null) {
     const spot = point(target, ctx.place);
@@ -362,6 +464,13 @@ const editAt = (fields, seconds) => ({
 export const title = (text, seconds, { style = 'overlay', size = 'normal' } = {}) => editAt({ type: 'title', text, style, size }, seconds);
 /** Words on black. */
 export const card = (text, seconds, { size = 'normal' } = {}) => title(text, seconds, { style: 'card', size });
+/**
+ * A subtitle over the picture: as written (no upper-casing), a clean sans
+ * face, one line centred above the bottom of the frame (post.py `caption`).
+ */
+export const caption = (text, seconds, { size = 'normal' } = {}) => editAt({ type: 'title', style: 'caption', text, size }, seconds);
+/** The cut starts here: everything recorded before this cue is dropped (post.py `trim`). */
+export const trim = () => ({ label: 'trim', steps: [[0, (ctx) => ctx.edit({ type: 'trim', from: ctx.t })]] });
 /** The next `seconds` at `rate` speed in the cut (record at FILM_FPS=60: half speed keeps every frame). */
 export const slowmo = (seconds, rate = 0.5) => editAt({ type: 'slowmo', rate }, seconds);
 /** A white flash. */

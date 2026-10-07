@@ -9,7 +9,7 @@ import { CityEnvironment, resolveFogColor } from './CityEnvironment';
 import { CityGrass } from './CityGrass';
 import { isTownKitPage } from '../city/townKitState';
 import { CITY_WORLD_DOCUMENT } from '../world/cityWorld';
-import { applyCapturePose } from './captureCamera';
+import { applyCaptureMount, applyCapturePose } from './captureCamera';
 import { advanceAerialPose, type AerialPose } from './aerialFlight';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -2782,6 +2782,7 @@ export function GameWorld({
               id: vs.id,
               driverId: vs.driverId,
               position: [...vs.position] as [number, number, number],
+              quaternion: [...vs.quaternion] as [number, number, number, number],
               speedMs: Math.hypot(vs.linearVelocity[0], vs.linearVelocity[1], vs.linearVelocity[2]),
             }))
           : [],
@@ -2959,6 +2960,9 @@ export function GameWorld({
         },
       );
       nearestVehicleIdRef.current = nearest;
+      // A film's camera mounted on a vehicle (captureCamera.ts): resolved
+      // from the vehicle as just drawn, so it moves with it to the pixel.
+      applyCaptureMount(camera, (id) => vehiclesRenderer.meshes.get(id));
     }
   });
 

@@ -37,6 +37,10 @@
 #                   cars in the driveways, the Market Quarter's shops, towers,
 #                   cinema, library, bus station and market square -- every
 #                   structure qualified, everything above ground destructible
+#   hero            Vibe Town for the hero film (client/native/films/hero-run.mjs):
+#                   a launch ramp on an approach road, the furnished corner cafe,
+#                   fences and garden walls, and the film's cast of ten cars
+#   veneer          the town kit's brick-veneer houses (VENEER_REEL picks the reel)
 #
 # MYSTRAL_ROOT: the mystralnative checkout (default ../mystralnative), built
 # from its `vibe-land` integration branch. Extra `run` args go to `mystral run`
@@ -145,6 +149,25 @@ case "$SCENE" in
       VIBE_CITY_SPAWN_X=-146 VIBE_CITY_SPAWN_Z=0 \
       VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-16}" \
       VITE_TOWN_KIT_SCENE=vibe-town ;;
+  hero)
+    # The hero film's town (client/native/films/hero-run.mjs): Vibe Town with
+    # an approach road and launch ramp west of Elm Park, the furnished corner
+    # cafe, a furnished cafe and grocer in the Market Quarter, picket fences
+    # and garden walls -- and the film's cast of ten cars parked along its
+    # route (the builder's .slots and .fleet: slot n is the n-th car). The
+    # spawn is on the approach by the truck. Stress iterations: 64, which the
+    # furnished buildings stand at (they do not at 16).
+    pack="$ROOT/structures/vibe-town/out/vibe-town-hero"
+    stale=0
+    for source in "$ROOT"/structures/vibe-town/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
+    [ -f "$pack.json" ] && [ "$stale" = 0 ] || VIBE_TOWN_VARIANT=hero node "$ROOT/structures/vibe-town/build-town.mjs"
+    export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_VISUALS="$pack.visuals.json" \
+      VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \
+      VIBE_CITY_DESTRUCTIBLE_VEHICLES="${VIBE_CITY_DESTRUCTIBLE_VEHICLES:-$(cat "$pack.fleet")}" \
+      VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:-$(cat "$pack.slots")}" \
+      VIBE_CITY_SPAWN_X="${VIBE_CITY_SPAWN_X:--244}" VIBE_CITY_SPAWN_Z="${VIBE_CITY_SPAWN_Z:-3}" \
+      VIBE_CITY_NATIVE_STRESS_ITERATIONS="${VIBE_CITY_NATIVE_STRESS_ITERATIONS:-64}" \
+      VITE_TOWN_KIT_SCENE=vibe-town-hero ;;
   veneer)
     # The town kit's brick-veneer houses on open ground, for their film
     # (client/native/films/veneer-houses.mjs, scripts/veneer-reel.sh):
@@ -156,7 +179,7 @@ case "$SCENE" in
     [ -f "$pack.json" ] || node "$ROOT/structures/town-kit/scripts/build-veneer-reel.mjs"
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 VIBE_CITY_VEHICLES=0 \
       VIBE_CITY_DESTRUCTIBLE_VEHICLES=0 VIBE_CITY_SPAWN_X=0 VIBE_CITY_SPAWN_Z=-60 ;;
-  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, lab, town, veneer)" >&2; exit 2 ;;
+  *) echo "unknown --scene $SCENE (city, skyline, bayline, showcase, lab, town, hero, veneer)" >&2; exit 2 ;;
 esac
 [ "$SCENE" = city ] || echo "scene: $SCENE (${VIBE_CITY_SCENE})"
 

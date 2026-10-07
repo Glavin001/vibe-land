@@ -38,7 +38,7 @@ import { setLookTuning } from './graphics/lookTuning';
 import { pushDebugDustSource } from './vfx/dustDebug';
 
 let dustBurstSerial = 1;
-import { setCapturePose } from './scene/captureCamera';
+import { setCaptureMount, setCapturePose, type CaptureMount } from './scene/captureCamera';
 import { getMatchStats } from './app/connectPhase';
 import { markShaderWarmupDone, shaderBuilds } from './graphics/webgpu/shaderBuildMonitor';
 import { townKitSnapshot } from './city/townKitState';
@@ -107,6 +107,8 @@ export interface GameE2ESnapshot {
     id: number;
     driverId: number;
     position: [number, number, number];
+    /** The vehicle's rotation (x, y, z, w), for cameras mounted on it. */
+    quaternion?: [number, number, number, number];
     speedMs: number;
   }>;
 
@@ -506,7 +508,16 @@ export interface VibeE2EBridge {
   setCapturePose(next: {
     position: [number, number, number];
     lookAt: [number, number, number];
+    up?: [number, number, number];
+    fov?: number;
   } | null): void;
+  /**
+   * A camera fixed to a vehicle as it is drawn (scene/captureCamera.ts): an
+   * eye in its frame (a named one -- 'driver', 'hood', 'roof', ... -- or a
+   * point) and a look in its frame or at a world point. Wins over
+   * setCapturePose while set and the vehicle is drawn; null releases it.
+   */
+  setCaptureMount(next: CaptureMount | null): void;
   /**
    * Every city structure's footing, height and size, from the client's own
    * decoded manifest -- the served manifest is binary, so a harness cannot
@@ -616,7 +627,7 @@ const refs = {
   } as GameE2ESnapshot['movementTelemetry'],
   drivenVehicleId: null as number | null,
   nearestVehicleId: null as number | null,
-  vehicles: [] as Array<{ id: number; driverId: number; position: [number, number, number]; speedMs: number }>,
+  vehicles: [] as Array<{ id: number; driverId: number; position: [number, number, number]; quaternion?: [number, number, number, number]; speedMs: number }>,
   remotePlayers: [] as Array<{ id: number; position: [number, number, number] }>,
   statsSnapshot: { ...DEFAULT_STATS } as DebugStats,
   city: null as CityE2EStats | null,
@@ -660,7 +671,7 @@ export function updateE2EBridgeFrameState(state: {
   movementTelemetry: GameE2ESnapshot['movementTelemetry'];
   drivenVehicleId: number | null;
   nearestVehicleId: number | null;
-  vehicles: Array<{ id: number; driverId: number; position: [number, number, number]; speedMs: number }>;
+  vehicles: Array<{ id: number; driverId: number; position: [number, number, number]; quaternion?: [number, number, number, number]; speedMs: number }>;
   remotePlayers: Array<{ id: number; position: [number, number, number] }>;
   stats: DebugStats;
 }): void {
@@ -705,7 +716,7 @@ function buildSnapshot(): GameE2ESnapshot {
     },
     drivenVehicleId: refs.drivenVehicleId,
     nearestVehicleId: refs.nearestVehicleId,
-    vehicles: refs.vehicles.map((v) => ({ ...v, position: [...v.position] as [number, number, number] })),
+    vehicles: refs.vehicles.map((v) => ({ ...v, position: [...v.position] as [number, number, number], ...(v.quaternion ? { quaternion: [...v.quaternion] as [number, number, number, number] } : {}) })),
     remotePlayers: refs.remotePlayers.map((rp) => ({
       id: rp.id,
       position: [...rp.position] as [number, number, number],
@@ -782,6 +793,7 @@ const bridge: VibeE2EBridge = {
   shotMode: () => shotMode(),
   dropAt: (pose) => { pendingDrop = pose; },
   setCapturePose: (next) => setCapturePose(next),
+  setCaptureMount: (next) => setCaptureMount(next),
   meteors: () => {
     const now = performance.now();
     return currentMeteorFlights().map((flight) => {
