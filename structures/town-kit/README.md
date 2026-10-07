@@ -241,6 +241,66 @@ out on both storeys 54.7% (ground floor's alone: 3.5%, the upper storey hangs on
 as a deep beam over the gap). `VIBE_QUALIFY_BOND_ROWS=path` on `city_structures_qualify` dumps every
 bond's stress and the tick it broke.
 
+### Stairs
+
+Every multi-storey building needs a stair the player can walk up and down,
+with a landing. `src/stairs-timber.mjs` is the reusable house stair:
+
+- `planStair({y0, y1, origin, direction, across, layout})` lays out a
+  `switchback` (U), `l` (quarter turn) or `straight` stair, always broken by a
+  landing, from the building code: IRC R311.7 (risers <= 196 mm and equal;
+  going >= 254 mm with a 19-32 mm nosing; clear width >= 914 mm; headroom
+  2032 mm; landing >= the stair's width in the direction of travel), the DIN
+  18065 step rule (2R + T 590-650 mm) and IBC 1011.8 (3.66 m a flight).
+  `checkStair` checks it against the code and the player's controller
+  (`netcode/src/movement.rs` MoveConfig: 0.55 m step, 0.2 m step width, 45
+  degree slope, the 0.7 x 1.6 m capsule). `requiredVoid` is the floor
+  opening headroom needs; `checkHeadroom` measures what was framed.
+- `buildTimberStair` builds it in timber: two housed 38 x 286 stringers a
+  flight, 38 mm treads and 18 mm risers housed into them, each flight's head
+  in a stair-stringer hanger, a framed landing (rims, joists, deck) on posts in
+  post bases. `frameFloorOpening` trims the floor's joists around the opening:
+  doubled trimmers and header, tails in joist hangers (IRC R502.10).
+  `STAIR_CONNECTIONS` rates every joint by its fasteners.
+
+The two-storey's stair is a switchback by the front door: 15 risers of
+186.5 mm, 270 mm going, 7 + 8 either side of a half landing. Headroom as
+framed is 2.494 m or more. With the stair, the house qualifies at rest as it
+did without one: PASS, 6.4% unconverged, and one bond broken, the same
+cripple-stud drywall screw as before. The stair's busiest joints at rest are
+the upper flight's stringer feet, at 0.58 utilisation.
+
+The walk test (`scripts/perf/walk_route.py PACK [--snap]`;
+`structure_qualification.rs route_walk`) runs on the GPU stage under the
+app's stress settings. The server's own player walks the pack metadata's
+`route` on walking input only. The test fails on:
+
+- a point not reached while on the ground;
+- a teleport;
+- a fall of more than one code riser;
+- headroom under 2032 mm;
+- any bond broken.
+
+The PhysX player does not snap to ground by default. At the game's 6 m/s it
+leaves the treads going down a stair, falling up to 0.82 m at a time, which
+fails the test. `VIBE_PLAYER_SNAP_TO_GROUND=1` (`--snap`) gives it Rapier's
+`snap_to_ground` of 0.2 m. With it, the two-storey's walk passes: hall, up,
+upper floor, down, 17 points in 2.7 s, grounded every tick, least headroom
+2.346 m.
+
+```sh
+VIBE_GPU_SHARED=1 python3 scripts/perf/walk_route.py structures/town-kit/out/veneer-houses/veneer-house.json --snap
+VIBE_PLAYER_SNAP_TO_GROUND=1 VENEER_REEL=stairs FILM_FPS=60 FILM_SIZE=1920x1080 \
+  scripts/native-mac.sh film veneer-stairs --scene veneer     # the walk, filmed in the app
+```
+
+The other multi-storey kit buildings already have stairs: porch house,
+corner grocery, workshop, fire station and the Victorian café (2 or 3
+storeys). Each uses `src/stairs.mjs` `townStaircase`, a dogleg with a 1.35 m
+half landing, risers of 178-189 mm and a 290 mm going. Those stairs are
+monolithic waist-profile pieces, not stringers and treads, and the masonry
+buildings do not yet have a concrete stair.
+
 The reel (`scripts/veneer-reel.sh`, 1080p60, in the app on `--scene veneer`,
 `client/native/films/veneer-houses.mjs`): each house as built and frame only,
 orbited; its collapse with the front studs out, from the first tick; the city
