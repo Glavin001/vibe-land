@@ -19,6 +19,7 @@ import {
   dot,
   float,
   floor,
+  instanceIndex,
   fwidth,
   int,
   ivec2,
@@ -174,18 +175,31 @@ const texel = (tex: Node, index: Node): Node => {
 };
 
 /** Compose a vertex's posed position from its piece's texels; writes the pose varying. */
-function posedPosition(poses: LabPoses, pose: Node | null): Node {
+/**
+ * Which pieces a mesh draws, from the pose's fourth component: 0 hidden,
+ * 1 drawn by the shading-only mesh, 2 drawn by the detailed pool instead.
+ * 'all' draws anything not hidden (a whole specimen built one way).
+ */
+export type LabTier = 'all' | 'base' | 'skin';
+
+function posedPosition(poses: LabPoses, pose: Node | null, tier: LabTier = 'all', instanceStride = 0): Node {
   const tex = texture(poses.texture);
   tex.updateMatrix = false;
   return Fn(() => {
-    const p = int(attribute('labPiece', 'float'));
+    // Instanced copies of one specimen: copy c's piece p is global piece
+    // p + c * stride in the pose texture.
+    const local = int(attribute('labPiece', 'float'));
+    const p = instanceStride > 0 ? local.add(int(instanceIndex).mul(instanceStride)) : local;
     const t0 = texel(tex, p.mul(2));
     const q = texel(tex, p.mul(2).add(1));
     if (pose) {
       pose.assign(q);
       normalLocal.assign(quatRotate(q, normalGeometry));
     }
-    return quatRotate(q, positionGeometry).mul(t0.w).add(t0.xyz);
+    const shown = tier === 'base' ? select(t0.w.greaterThan(0.5).and(t0.w.lessThan(1.5)), float(1), float(0))
+      : tier === 'skin' ? select(t0.w.greaterThan(1.5), float(1), float(0))
+        : select(t0.w.greaterThan(0.5), float(1), float(0));
+    return quatRotate(q, positionGeometry).mul(shown).add(t0.xyz);
   })();
 }
 
@@ -266,6 +280,10 @@ export interface LabMaterialOptions {
    * photographic texture layers as /city has them.
    */
   skin: 'procedural' | 'city';
+  /** Which pieces this mesh draws (see LabTier). */
+  tier?: LabTier;
+  /** Pieces per instanced copy, when drawn as an InstancedMesh of copies. */
+  instanceStride?: number;
 }
 
 const LabOut = struct({ albedo: 'vec3', rough: 'float', metal: 'float', ao: 'float', normal: 'vec3' }, 'FractureLabOut');
@@ -274,7 +292,7 @@ export function labMaterial(poses: LabPoses, looks: FractureLookUniforms, option
   const material = new MeshStandardNodeMaterial({ color: 0xffffff, roughness: 1, metalness: 0 });
   material.wireframe = options.wireframe;
   const pose = varyingProperty('vec4', 'vCityQuat');
-  material.positionNode = posedPosition(poses, pose);
+  material.positionNode = posedPosition(poses, pose, options.tier ?? 'all', options.instanceStride ?? 0);
   const restToView = restToViewThrough(pose, quatRotate);
   // Procedural skins replace the city's texture layers entirely, so they are
   // only sampled when the outer faces actually wear them.
@@ -403,13 +421,15 @@ export function colliderMaterial(poses: LabPoses, color: THREE.ColorRepresentati
  * material does both. Depth is written, as the city's glass does, so a stack
  * of panes keeps the nearest.
  */
-export function glassMaterial(poses: LabPoses, options: { fracture: boolean; wireframe: boolean }): THREE.Material {
+export function glassMaterial(
+  poses: LabPoses, options: { fracture: boolean; wireframe: boolean; instanceStride?: number },
+): THREE.Material {
   const material = new MeshStandardNodeMaterial({
     color: 0xffffff, roughness: 0.05, metalness: 0, transparent: true, depthWrite: true,
   });
   material.wireframe = options.wireframe;
   const pose = varyingProperty('vec4', 'vGlassQuat');
-  material.positionNode = posedPosition(poses, pose);
+  material.positionNode = posedPosition(poses, pose, 'all', options.instanceStride ?? 0);
   const face = attribute('labFace', 'vec4');
   const kind = face.x.sub(floor(face.x.div(8)).mul(8));
   const edge = options.fracture ? kind.greaterThan(0.5).and(kind.lessThan(2.5)) : float(0).greaterThan(1);

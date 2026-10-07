@@ -19,7 +19,7 @@
 // joint face are only allowed to slide WITHIN that face (or along the line of
 // two), so the seam faces still close the solid.
 
-import { fbm3, worley3 } from './hash';
+import { fbm3, hash01 } from './hash';
 import type { CrackInterface } from './interface';
 import { dot, normalize, scale, sub, type Vec3 } from './math';
 
@@ -57,6 +57,12 @@ export class WearField {
     return this.look.radius * (1 + this.look.variation) * (1 + this.look.chipDepth) * 1.35;
   }
 
+  /** The largest k anywhere: beyond 12 of these from an edge, F is exact. */
+  private get kMax(): number {
+    const { radius, variation, chipDepth } = this.look;
+    return radius * K_PER_RADIUS * (1 + variation * 1.6) * (1 + chipDepth);
+  }
+
   /** Local smoothing scale at x. */
   k(x: Vec3): number {
     const { radius, variation, chips, chipSize, chipDepth } = this.look;
@@ -64,10 +70,17 @@ export class WearField {
     const wander = 1 + variation * fbm3(x[0] * s, x[1] * s, x[2] * s, this.seed + 71, 2) * 1.6;
     let bite = 1;
     if (chips > 0 && chipSize > 0) {
+      // One chip per cell at most, jittered in the cell's middle half: a
+      // round bite that never needs the neighbours (cheap, unlike Worley).
       const c = 1 / chipSize;
-      const cell = worley3(x[0] * c, x[1] * c, x[2] * c, this.seed + 73);
-      if (((cell.id >>> 4) & 0xff) / 255 < chips) {
-        const blob = 1 - Math.min(1, Math.max(0, (cell.f1 - 0.15) / 0.5));
+      const cx = Math.floor(x[0] * c);
+      const cy = Math.floor(x[1] * c);
+      const cz = Math.floor(x[2] * c);
+      if (hash01(cx, cy, cz, this.seed + 73) < chips) {
+        const dx = x[0] * c - (cx + 0.25 + 0.5 * hash01(cx, cy, cz, this.seed + 74));
+        const dy = x[1] * c - (cy + 0.25 + 0.5 * hash01(cx, cy, cz, this.seed + 75));
+        const dz = x[2] * c - (cz + 0.25 + 0.5 * hash01(cx, cy, cz, this.seed + 76));
+        const blob = 1 - Math.min(1, Math.max(0, (Math.hypot(dx, dy, dz) - 0.08) / 0.32));
         bite += chipDepth * blob * blob * (3 - 2 * blob);
       }
     }
@@ -76,9 +89,23 @@ export class WearField {
 
   /** F and its gradient (k held constant across the gradient). */
   value(x: Vec3): { f: number; g: Vec3 } {
-    const k = this.k(x);
+    // The two nearest planes decide whether x is near an edge at all; far
+    // from every edge F is just the max, and the noise is never evaluated.
     let m = -Infinity;
-    for (const p of this.planes) m = Math.max(m, dot(p.n, x) - p.w);
+    let second = -Infinity;
+    let best = this.planes[0];
+    for (const p of this.planes) {
+      const a = dot(p.n, x) - p.w;
+      if (a > m) {
+        second = m;
+        m = a;
+        best = p;
+      } else if (a > second) {
+        second = a;
+      }
+    }
+    if (second - m < -12 * this.kMax) return { f: m, g: best.n };
+    const k = this.k(x);
     let sum = 0;
     const g: Vec3 = [0, 0, 0];
     for (const p of this.planes) {

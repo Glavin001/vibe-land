@@ -22,6 +22,7 @@ const origin = flag('origin', 'http://localhost:3013');
 const outDir = path.resolve(flag('out', '../docs/fracture'));
 const specimens = flag('specimens', 'rc-wall,concrete-wall,rc-column,brick-wall,timber-stud,drywall,glass-pane').split(',');
 const views = flag('views', 'split,closeup,book,blast').split(',');
+const copies = Number(flag('copies', '64'));
 const width = Number(flag('width', '1600'));
 const height = Number(flag('height', '1000'));
 
@@ -39,6 +40,11 @@ const VIEWS = {
   book: { state: { compare: 'enhanced', mode: 'book', amount: 1, spin: 0 }, camera: 'split' },
   crack: { state: { compare: 'split', mode: 'crack', amount: 0.08, spin: 0 }, camera: 'frame' },
   blast: { state: { compare: 'split', mode: 'blast', blastStrength: 6, timeScale: 1 }, camera: 'frame', settle: 700 },
+  // Scale: many copies of the specimen, everything broken and spread, seen
+  // from above -- the cost of each tier across a whole scene.
+  'scale-today': { state: { compare: 'today', mode: 'radial', amount: 0.3, spin: 0.4 }, camera: 'overview', scale: true },
+  'scale-shading': { state: { compare: 'enhanced', mode: 'radial', amount: 0.3, spin: 0.4, rough: false, wear: false }, camera: 'overview', scale: true },
+  'scale-geometry': { state: { compare: 'enhanced', mode: 'radial', amount: 0.3, spin: 0.4, rough: true, wear: true }, camera: 'overview', scale: true },
   // Unbroken surfaces up close: the outer skin and the worn arrises.
   corner: { state: { compare: 'enhanced', mode: 'intact' }, camera: 'corner' },
   'corner-today': { state: { compare: 'today', mode: 'intact' }, camera: 'corner' },
@@ -61,8 +67,14 @@ const report = [];
 
 for (const specimen of specimens) {
   const query = specimen.startsWith('pack:') ? `pack=${specimen.slice(5)}` : `specimen=${specimen}`;
-  await page.goto(`${origin}/fracture-lab?${query}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForFunction(() => window.__VIBE_FRACTURE_LAB__?.ready === true, null, { timeout: 120000 });
+  // Open in the first view's state, so the page never builds a default it
+  // will throw away (whole buildings with every layer take a while).
+  const first = VIEWS[views[0]];
+  const initial = { copies: first?.scale ? copies : 1, ...(first?.state ?? {}) };
+  const params = Object.entries(initial)
+    .map(([k, v]) => `${k}=${typeof v === 'boolean' ? (v ? 1 : 0) : v}`).join('&');
+  await page.goto(`${origin}/fracture-lab?${query}&${params}`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForFunction(() => window.__VIBE_FRACTURE_LAB__?.ready === true, null, { timeout: 300000 });
   await page.waitForFunction(() => window.__VIBE_CITY_TEX_READY__ === true, null, { timeout: 60000 }).catch(() => {});
   // Hide the panel: stills are of the scene. The canvas re-measures on resize.
   await page.evaluate(() => document.querySelector('button[type=button]')?.click());
@@ -72,10 +84,26 @@ for (const specimen of specimens) {
   for (const viewName of views) {
     const view = VIEWS[viewName];
     if (!view) throw new Error(`unknown view ${viewName}`);
-    await page.evaluate((state) => window.__VIBE_FRACTURE_LAB__.set({ debugKinds: false, ...state, blastToken: Date.now() }), view.state);
+    const state = { debugKinds: false, copies: view.scale ? copies : 1, rough: true, wear: true, ...view.state, blastToken: Date.now() };
+    await page.evaluate((s) => window.__VIBE_FRACTURE_LAB__.set(s), state);
     await page.evaluate(() => new Promise((r) => setTimeout(r, 600)));
     if (view.camera === 'frame') {
       await page.evaluate(() => window.__VIBE_FRACTURE_LAB__.frame());
+    } else if (view.camera === 'overview') {
+      // Above the copies grid (the lab lays copies out in a square grid,
+      // rows receding along -z), looking down at about 40 degrees.
+      await page.evaluate((n) => {
+        const lab = window.__VIBE_FRACTURE_LAB__;
+        const { min, max } = lab.info();
+        const size = [0, 1, 2].map((k) => max[k] - min[k]);
+        const cols = Math.ceil(Math.sqrt(Math.max(1, n)));
+        const rows = Math.ceil(n / cols);
+        const pitchX = size[0] * 1.4 + 0.6;
+        const pitchZ = Math.max(size[2], 1) * 1.8 + 1.5;
+        const wide = Math.max(cols * pitchX, rows * pitchZ);
+        const target = [0, 0, -((rows - 1) * pitchZ) / 2];
+        lab.camera([target[0], wide * 0.55, target[2] + wide * 0.75], target);
+      }, copies);
     } else if (view.camera === 'corner' || view.camera === 'face') {
       // The top front corner of the intact specimen, or the middle of its face.
       await page.evaluate((rule) => {
@@ -121,6 +149,17 @@ for (const specimen of specimens) {
       }, view.camera);
     }
     await page.evaluate((ms) => new Promise((r) => setTimeout(r, ms)), view.settle ?? 500);
+    // GPU time: the median of several readings (single ones are noisy).
+    if (view.scale) {
+      const readings = [];
+      for (let i = 0; i < 8; i += 1) {
+        await page.evaluate(() => new Promise((r) => setTimeout(r, 600)));
+        const g = await page.evaluate(() => window.__VIBE_FRACTURE_LAB__.stats()?.gpuMs ?? null);
+        if (g !== null) readings.push(g);
+      }
+      readings.sort((x, y) => x - y);
+      console.log(`  ${viewName}: GPU median ${readings.length ? readings[readings.length >> 1].toFixed(2) : 'n/a'} ms over ${readings.length} readings`);
+    }
     const file = path.join(outDir, `${specimen.replace(':', '-')}--${viewName}.png`);
     await page.screenshot({ path: file });
     const stats = await page.evaluate(() => window.__VIBE_FRACTURE_LAB__.stats());

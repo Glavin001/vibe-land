@@ -41,26 +41,25 @@ export function triangulateConvex(boundary: readonly Vec2[], interior: readonly 
  */
 export function refine(points: readonly Vec2[], initial: readonly number[], firstInsert: number): number[] {
   const n = points.length;
-  const key = (i: number, j: number): number => i * n + j;
   const tris: Array<[number, number, number]> = [];
   const alive: boolean[] = [];
-  const edges = new Map<number, number>();
+  const edges = new EdgeMap(n);
 
   const add = (a: number, b: number, c: number): number => {
     const t = tris.length;
     tris.push([a, b, c]);
     alive.push(true);
-    edges.set(key(a, b), t);
-    edges.set(key(b, c), t);
-    edges.set(key(c, a), t);
+    edges.set(a, b, t);
+    edges.set(b, c, t);
+    edges.set(c, a, t);
     return t;
   };
   const remove = (t: number): void => {
     alive[t] = false;
     const [a, b, c] = tris[t];
-    for (const k of [key(a, b), key(b, c), key(c, a)]) {
-      if (edges.get(k) === t) edges.delete(k);
-    }
+    edges.delete(a, b, t);
+    edges.delete(b, c, t);
+    edges.delete(c, a, t);
   };
   const third = (t: number, a: number, b: number): number => {
     const [x, y, z] = tris[t];
@@ -82,8 +81,8 @@ export function refine(points: readonly Vec2[], initial: readonly number[], firs
     while (stack.length > 0 && guard < 100_000) {
       guard += 1;
       const [a, b] = stack.pop()!;
-      const t1 = edges.get(key(a, b));
-      const t2 = edges.get(key(b, a));
+      const t1 = edges.get(a, b);
+      const t2 = edges.get(b, a);
       if (t1 === undefined || t2 === undefined) continue;
       const c = third(t1, a, b);
       const d = third(t2, b, a);
@@ -122,9 +121,9 @@ export function refine(points: readonly Vec2[], initial: readonly number[], firs
     const o0 = orient2(points[a], points[b], q);
     const o1 = orient2(points[b], points[c], q);
     const o2 = orient2(points[c], points[a], q);
-    if (o0 < -eps) return { inside: false, edge: null, exit: edges.get(key(b, a)) ?? -1 };
-    if (o1 < -eps) return { inside: false, edge: null, exit: edges.get(key(c, b)) ?? -1 };
-    if (o2 < -eps) return { inside: false, edge: null, exit: edges.get(key(a, c)) ?? -1 };
+    if (o0 < -eps) return { inside: false, edge: null, exit: edges.get(b, a) ?? -1 };
+    if (o1 < -eps) return { inside: false, edge: null, exit: edges.get(c, b) ?? -1 };
+    if (o2 < -eps) return { inside: false, edge: null, exit: edges.get(a, c) ?? -1 };
     const edge: [number, number] | null = Math.abs(o0) <= eps ? [a, b] : Math.abs(o1) <= eps ? [b, c]
       : Math.abs(o2) <= eps ? [c, a] : null;
     return { inside: true, edge, exit: -1 };
@@ -155,7 +154,7 @@ export function refine(points: readonly Vec2[], initial: readonly number[], firs
     if (located < 0) continue; // outside the polygon: dropped
     if (onEdge) {
       const [a, b] = onEdge;
-      const t2 = edges.get(key(b, a));
+      const t2 = edges.get(b, a);
       const c = third(located, a, b);
       remove(located);
       add(a, p, c);
@@ -185,4 +184,81 @@ export function refine(points: readonly Vec2[], initial: readonly number[], firs
     if (alive[i]) triangles.push(t[0], t[1], t[2]);
   });
   return triangles;
+}
+
+/**
+ * Directed edge (i, j) -> triangle: open addressing on (i, j), in flat arrays
+ * shared across calls and cleared by bumping a generation stamp, so refining
+ * thousands of faces allocates nothing per face. A Map keyed on i * n + j, and
+ * then per-vertex lists, were both the hot spot: earcut and the initial fan
+ * leave a few vertices with hundreds of edges.
+ */
+class EdgeMap {
+  private static keysI = new Int32Array(0);
+  private static keysJ = new Int32Array(0);
+  private static vals = new Int32Array(0);
+  private static stamp = new Int32Array(0);
+  private static generation = 0;
+  private readonly mask: number;
+
+  constructor(vertices: number) {
+    let cap = 1024;
+    while (cap < vertices * 32) cap *= 2;
+    if (EdgeMap.vals.length < cap) {
+      EdgeMap.keysI = new Int32Array(cap);
+      EdgeMap.keysJ = new Int32Array(cap);
+      EdgeMap.vals = new Int32Array(cap);
+      EdgeMap.stamp = new Int32Array(cap);
+      EdgeMap.generation = 0;
+    }
+    EdgeMap.generation += 1;
+    this.mask = Math.min(cap, EdgeMap.vals.length) - 1;
+  }
+
+  private slot(i: number, j: number): number {
+    return (Math.imul(i, 0x9e3779b1) ^ Math.imul(j + 0x632be5ab, 0x85ebca77)) & this.mask;
+  }
+
+  get(i: number, j: number): number | undefined {
+    const g = EdgeMap.generation;
+    for (let s = this.slot(i, j); ; s = (s + 1) & this.mask) {
+      if (EdgeMap.stamp[s] !== g) return undefined;
+      if (EdgeMap.keysI[s] === i && EdgeMap.keysJ[s] === j) {
+        const v = EdgeMap.vals[s];
+        return v >= 0 ? v : undefined;
+      }
+    }
+  }
+
+  set(i: number, j: number, t: number): void {
+    const g = EdgeMap.generation;
+    let tomb = -1;
+    for (let s = this.slot(i, j); ; s = (s + 1) & this.mask) {
+      if (EdgeMap.stamp[s] !== g) {
+        const at = tomb >= 0 ? tomb : s;
+        EdgeMap.stamp[at] = g;
+        EdgeMap.keysI[at] = i;
+        EdgeMap.keysJ[at] = j;
+        EdgeMap.vals[at] = t;
+        return;
+      }
+      if (EdgeMap.keysI[s] === i && EdgeMap.keysJ[s] === j) {
+        EdgeMap.vals[s] = t;
+        return;
+      }
+      if (EdgeMap.vals[s] < 0 && tomb < 0) tomb = s;
+    }
+  }
+
+  /** Remove (i, j) only if it still points at triangle t (leaves a tombstone). */
+  delete(i: number, j: number, t: number): void {
+    const g = EdgeMap.generation;
+    for (let s = this.slot(i, j); ; s = (s + 1) & this.mask) {
+      if (EdgeMap.stamp[s] !== g) return;
+      if (EdgeMap.keysI[s] === i && EdgeMap.keysJ[s] === j) {
+        if (EdgeMap.vals[s] === t) EdgeMap.vals[s] = -1;
+        return;
+      }
+    }
+  }
 }

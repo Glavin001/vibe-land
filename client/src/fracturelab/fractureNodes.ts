@@ -137,25 +137,32 @@ fn fractureSurface(p: vec3f, n: vec3f, cls: f32, relief: f32, fp: f32, base: vec
   let bump = max(a.z, 0.0005);
   let fine = 1.0 - smoothstep(bump * 0.3, bump * 1.6, fp);
 
-  // Grit: every broken surface is granular at the scale of its grain.
-  let grit = frFbmD(p / bump, 3);
-  color *= 0.86 + 0.28 * (grit.x * 0.5 + 0.5) * fine + 0.14 * (1.0 - fine);
-  h += grit.x * bump * 0.3 * fine;
-  grad += grit.yzw * 0.3 * fine;
+  // Grit: every broken surface is granular at the scale of its grain. Like
+  // the skins, detail is branched by pixel footprint: far pixels skip it.
+  if (fp < bump * 1.6) {
+    let grit = frFbmD(p / bump, 3);
+    color *= 0.86 + 0.28 * (grit.x * 0.5 + 0.5) * fine + 0.14 * (1.0 - fine);
+    h += grit.x * bump * 0.3 * fine;
+    grad += grit.yzw * 0.3 * fine;
+  }
 
   if (ic <= 1 || ic == 3) {
     // Fresh cement paste is full of sand: grains a few millimetres across,
     // lighter and darker than the paste around them.
-    let sandCell = frCell(p / 0.0032);
-    let sandHash = frHash(vec3f(sandCell[0].z * 11.0, 2.0, 5.0));
-    let sand = step(sandHash, 0.6) * (1.0 - smoothstep(0.3, 0.48, sandCell[0].x)) * fine;
-    color = mix(color, color * (0.7 + 0.6 * frHash(vec3f(sandCell[0].z * 19.0, 1.0, 3.0))), sand);
+    if (fp < 0.004) {
+      let sand = frDot(p, 0.0032, 0.6, 0.24) * fine;
+      color = mix(color, color * (0.7 + 0.6 * sand.y), sand.x);
+    }
     // Crushed-stone aggregate: ANGULAR grains (Voronoi cells shrunk by a seam
     // of paste), at two sizes. Most broke through and sit flush on both
     // pieces; some pulled out of one piece, standing proud on it and leaving
     // a socket in the other.
     let cs = max(a.y, 0.002);
-    for (var layer = 0; layer < 2; layer++) {
+    // Grains smaller than a few pixels average out: draw only the layers the
+    // footprint can resolve, and blend the rest in as their mean colour.
+    let layers = select(select(0, 1, fp < cs * 0.35), 2, fp < cs * 0.15);
+    color = mix(color, accent, a.x * 0.45 * (1.0 - f32(min(layers, 1))));
+    for (var layer = 0; layer < layers; layer++) {
       let size = select(cs * 0.42, cs, layer == 0);
       let cell = frCell(p / size + vec3f(f32(layer) * 13.7));
       let f1 = cell[0].x;
@@ -244,7 +251,7 @@ fn fractureSurface(p: vec3f, n: vec3f, cls: f32, relief: f32, fp: f32, base: vec
   }
 
   // Pores and voids.
-  if (b.x > 0.0) {
+  if (b.x > 0.0 && fp < 0.004) {
     let pore = frDot(p, 0.0035, b.x * 4.0, 0.18).x * fine;
     color *= 1.0 - 0.5 * pore;
     h -= pore * 0.0012;
@@ -305,6 +312,12 @@ fn skinSurface(p: vec3f, n: vec3f, cls: f32, fp: f32, color: vec3f, color2: vec3
   var h = 0.0;
   var grad = vec3f(0.0);
   var ao = 1.0;
+  // Level of detail by pixel footprint (metres per pixel). Far pixels -- a
+  // whole city at once, sub-pixel triangles shaded four at a time -- take the
+  // cheap path; patterns and stains from mid range in; grit, pores and specks
+  // only up close. Branches, not multiplies: skipped work costs nothing.
+  let tierMid = fp < 0.03;
+  let tierNear = fp < 0.004;
   let fine = 1.0 - smoothstep(0.0008, 0.004, fp);
   let vertical = 1.0 - abs(n.y);
   // In-plane coordinates on a vertical face: u along the face, v up.
@@ -312,13 +325,19 @@ fn skinSurface(p: vec3f, n: vec3f, cls: f32, fp: f32, color: vec3f, color2: vec3
   let u = dot(p, uAxis);
   let v = p.y;
 
-  // Every skin: a broad mottle and sand-scale grit.
-  let mottle = frFbmD(p / 0.35, 3).x;
-  let blotch = frFbmD(p / 0.06, 2).x;
-  albedo *= 1.0 + a.w * (0.6 * mottle + 0.3 * blotch);
-  let grit = frFbmD(p / 0.0018, 2);
-  h += grit.x * 0.00025 * fine * b.y;
-  grad += grit.yzw * (0.00025 / 0.0018) * fine * b.y;
+  // Every skin: a broad mottle; up close, sand-scale grit.
+  var mottle = frNoiseD(p / 0.35).x * 0.5;
+  if (tierMid) {
+    mottle = frFbmD(p / 0.35, 3).x;
+    let blotch = frFbmD(p / 0.06, 2).x;
+    albedo *= 1.0 + a.w * 0.3 * blotch;
+  }
+  albedo *= 1.0 + a.w * 0.6 * mottle;
+  if (tierNear) {
+    let grit = frFbmD(p / 0.0018, 2);
+    h += grit.x * 0.00025 * fine * b.y;
+    grad += grit.yzw * (0.00025 / 0.0018) * fine * b.y;
+  }
 
   if (ic <= 1 || ic == 3) {
     // Cast concrete, form face. Colour moves at every scale -- pour lifts and
@@ -327,56 +346,65 @@ fn skinSurface(p: vec3f, n: vec3f, cls: f32, fp: f32, color: vec3f, color2: vec3
     // bugholes, lime bloom, the plywood panel joints and tie-rod holes of the
     // formwork, rain streaks, splash grime at the foot, and a gentle
     // undulation where the form panels bowed under the pour.
-    let big = frFbmD(p / 1.6, 2).x;
-    let mid = frFbmD(p / 0.22, 3).x;
-    let small = frFbmD(p / 0.035, 2).x;
-    let hue = frFbmD(p / 0.9 + 3.1, 2).x;
-    albedo *= 1.0 + a.w * (1.0 * big + 0.7 * mid + 0.35 * small * fine);
-    // Cloudy blotches with soft edges: where the cement paste set darker.
-    let cloud = smoothstep(0.05, 0.45, frFbmD(p / 0.45 + 1.7, 3).x);
-    albedo *= 1.0 - 0.16 * cloud * a.w * 4.0;
+    let big = frNoiseD(p / 1.6).x;
+    let hue = frNoiseD(p / 0.9 + 3.1).x;
+    albedo *= 1.0 + a.w * big;
     albedo *= mix(vec3f(0.97, 0.99, 1.03), vec3f(1.05, 1.0, 0.93), hue * 0.5 + 0.5);
-    let speck = frDot(p, 0.0025, 0.3, 0.22) * fine;
-    albedo *= 1.0 + (speck.y - 0.5) * 0.4 * speck.x;
-    let pin = frDot(p + 4.1, 0.004, 0.1, 0.14) * fine;
-    albedo *= 1.0 - 0.45 * pin.x;
-    ao *= 1.0 - 0.3 * pin.x;
-    let bug = frDot(p + 9.3, max(a.x, 0.004), 0.08, 0.2 * (0.5 + 0.5 * frHash(floor(p / max(a.x, 0.004)) + 2.2)));
-    albedo *= 1.0 - 0.55 * bug.x;
-    h -= bug.x * 0.002;
-    ao *= 1.0 - 0.5 * bug.x;
-    let bloom = smoothstep(0.35, 0.75, frFbmD(p / 0.5 + 7.3, 3).x);
-    albedo = mix(albedo, vec3f(0.62, 0.61, 0.58), bloom * 0.18 * b.x);
-    let undulate = frFbmD(p / 0.7, 2);
-    grad += undulate.yzw * (0.0015 / 0.7);
+    if (tierMid) {
+      let mid = frFbmD(p / 0.22, 3).x;
+      let cloud = smoothstep(0.05, 0.45, frFbmD(p / 0.45 + 1.7, 3).x);
+      albedo *= 1.0 + a.w * 0.7 * mid;
+      albedo *= 1.0 - 0.16 * cloud * a.w * 4.0;
+      let bug = frDot(p + 9.3, max(a.x, 0.004), 0.08, 0.2 * (0.5 + 0.5 * frHash(floor(p / max(a.x, 0.004)) + 2.2)));
+      albedo *= 1.0 - 0.55 * bug.x;
+      h -= bug.x * 0.002;
+      ao *= 1.0 - 0.5 * bug.x;
+      let bloom = smoothstep(0.35, 0.75, frFbmD(p / 0.5 + 7.3, 3).x);
+      albedo = mix(albedo, vec3f(0.62, 0.61, 0.58), bloom * 0.18 * b.x);
+      let undulate = frFbmD(p / 0.7, 2);
+      grad += undulate.yzw * (0.0015 / 0.7);
+    }
+    if (tierNear) {
+      let small = frFbmD(p / 0.035, 2).x;
+      albedo *= 1.0 + a.w * 0.35 * small * fine;
+      let speck = frDot(p, 0.0025, 0.3, 0.22) * fine;
+      albedo *= 1.0 + (speck.y - 0.5) * 0.4 * speck.x;
+      let pin = frDot(p + 4.1, 0.004, 0.1, 0.14) * fine;
+      albedo *= 1.0 - 0.45 * pin.x;
+      ao *= 1.0 - 0.3 * pin.x;
+    }
     if (vertical > 0.6) {
       let panel = vec2f(fract(u / 1.22), fract(v / 2.44));
-      let seam = min(min(panel.x, 1.0 - panel.x) * 1.22, min(panel.y, 1.0 - panel.y) * 2.44);
-      let fin = 1.0 - smoothstep(0.0012, 0.0035, seam);
-      h += fin * 0.0012;
-      albedo *= 1.0 - 0.1 * fin;
-      // Panels each took the cement a little differently.
       let panelId = frHash(vec3f(floor(u / 1.22), floor(v / 2.44), 13.0));
       albedo *= 0.95 + 0.1 * panelId;
       let tie = vec2f(fract(u / 0.61 + 0.5), fract(v / 0.61 + 0.5)) - 0.5;
       let tieR = length(tie * 0.61);
       let hole = 1.0 - smoothstep(0.011, 0.014, tieR);
-      let ring = (1.0 - smoothstep(0.014, 0.035, tieR)) * (1.0 - hole);
-      albedo = mix(albedo * (1.0 - 0.12 * ring), color2 * 0.45, hole);
-      h -= hole * 0.006;
-      ao *= 1.0 - 0.55 * hole;
-      // Rain streaks: long in v, narrow in u, stronger under the tie holes.
-      let streakN = frFbmD(vec3f(u * 7.0, v * 0.35, dot(p, vec3f(0.3, 0.0, 0.7)) * 2.0), 3).x;
-      let underTie = (1.0 - smoothstep(0.0, 0.03, abs(tie.x * 0.61))) * step(tie.y, 0.0) * 0.6;
-      let streak = clamp(smoothstep(0.05, 0.6, streakN) + underTie * smoothstep(-0.2, 0.3, streakN), 0.0, 1.0);
-      albedo = mix(albedo, albedo * color2 / max(color, vec3f(0.01)), streak * b.x * 0.55);
+      albedo = mix(albedo, color2 * 0.45, hole);
       let foot = 1.0 - smoothstep(0.0, 0.6, v);
-      albedo *= 1.0 - 0.3 * foot * b.x * (0.6 + 0.4 * mid);
+      albedo *= 1.0 - 0.3 * foot * b.x;
+      if (tierMid) {
+        let seam = min(min(panel.x, 1.0 - panel.x) * 1.22, min(panel.y, 1.0 - panel.y) * 2.44);
+        let fin = 1.0 - smoothstep(0.0012, 0.0035, seam);
+        h += fin * 0.0012;
+        albedo *= 1.0 - 0.1 * fin;
+        let ring = (1.0 - smoothstep(0.014, 0.035, tieR)) * (1.0 - hole);
+        albedo *= 1.0 - 0.12 * ring;
+        h -= hole * 0.006;
+        ao *= 1.0 - 0.55 * hole;
+        // Rain streaks: long in v, narrow in u, stronger under the tie holes.
+        let streakN = frFbmD(vec3f(u * 7.0, v * 0.35, dot(p, vec3f(0.3, 0.0, 0.7)) * 2.0), 3).x;
+        let underTie = (1.0 - smoothstep(0.0, 0.03, abs(tie.x * 0.61))) * step(tie.y, 0.0) * 0.6;
+        let streak = clamp(smoothstep(0.05, 0.6, streakN) + underTie * smoothstep(-0.2, 0.3, streakN), 0.0, 1.0);
+        albedo = mix(albedo, albedo * color2 / max(color, vec3f(0.01)), streak * b.x * 0.55);
+      }
     } else if (n.y > 0.5) {
       // A slab top: steel-trowelled, smoother, with fine swirl scratches.
       rough *= 0.85;
-      let swirl = frFbmD(vec3f(p.x * 40.0, 0.0, p.z * 40.0), 2).x;
-      albedo *= 1.0 + 0.05 * swirl;
+      if (tierNear) {
+        let swirl = frFbmD(vec3f(p.x * 40.0, 0.0, p.z * 40.0), 2).x;
+        albedo *= 1.0 + 0.05 * swirl;
+      }
     }
   } else if (ic == 2 || ic == 10) {
     // Running-bond brickwork: courses of a.x high (the course grid the
@@ -396,14 +424,16 @@ fn skinSurface(p: vec3f, n: vec3f, cls: f32, fp: f32, color: vec3f, color2: vec3
     let fv = fract(rowAxis / rowSize);
     let du = min(fu, 1.0 - fu) * len;
     let dv = min(fv, 1.0 - fv) * rowSize;
-    // Joints wander a millimetre or two: hand-laid.
-    let wobble = frFbmD(p / 0.05, 2).x * 0.0015;
+    var wobble = 0.0;
+    if (tierMid) { wobble = frFbmD(p / 0.05, 2).x * 0.0015; }
     let edge = min(du, dv) - joint * 0.5 + wobble;
     // Which way is "out of the brick" at its nearest edge (rest space).
     let rowDir = select(vec3f(0.0, 1.0, 0.0), wAxis, flat);
     let toEdge = select(rowDir * select(-1.0, 1.0, fv > 0.5), uAxis * select(-1.0, 1.0, fu > 0.5), du < dv);
     let brickId = frHash(vec3f(k, j, 3.0));
-    let mortar = 1.0 - smoothstep(-0.0006, 0.0006, edge);
+    // Far away a joint is a fraction of a pixel: blend it as coverage.
+    let jointBlur = max(0.0006, fp * 0.7);
+    let mortar = 1.0 - smoothstep(-jointBlur, jointBlur, edge);
     // Colour: most red, some darker flashed, some orange; burnt ends,
     // mottle, iron spots.
     var brick = color * (0.8 + 0.4 * brickId);
@@ -411,28 +441,35 @@ fn skinSurface(p: vec3f, n: vec3f, cls: f32, fp: f32, color: vec3f, color2: vec3
     else if (brickId < 0.12) { brick = color * vec3f(1.22, 1.08, 0.9); }
     let burn = (1.0 - smoothstep(0.0, len * 0.25, du)) * step(0.55, frHash(vec3f(k, j, 5.0)));
     brick *= 1.0 - 0.3 * burn;
-    let bm = frFbmD(p / 0.025 + vec3f(k, j, 0.0) * 3.7, 3).x;
-    brick *= 1.0 + 0.16 * bm;
-    let iron = frDot(p, 0.006, 0.07, 0.2) * fine;
-    brick *= 1.0 - 0.5 * iron.x;
-    let sand = frFbmD(p / 0.0028, 2);
-    brick *= 0.9 + 0.2 * (sand.x * 0.5 + 0.5) * fine + 0.1 * (1.0 - fine);
-    // Knocked arrises: some brick corners chipped.
-    let cornerD = length(vec2f(du, dv));
-    let knock = (1.0 - smoothstep(0.004, 0.016, cornerD)) * step(frHash(vec3f(k, j, 17.0)), 0.5) * (1.0 - mortar);
-    brick = mix(brick, brick * 1.15, knock * 0.5);
-    let sandy = frFbmD(p / 0.0015, 2).x;
-    let joints = color2 * (0.82 + 0.3 * sandy * fine);
+    var joints = color2;
+    var knock = 0.0;
+    if (tierMid) {
+      let bm = frFbmD(p / 0.025 + vec3f(k, j, 0.0) * 3.7, 3).x;
+      brick *= 1.0 + 0.16 * bm;
+      // Knocked arrises: some brick corners chipped.
+      let cornerD = length(vec2f(du, dv));
+      knock = (1.0 - smoothstep(0.004, 0.016, cornerD)) * step(frHash(vec3f(k, j, 17.0)), 0.5) * (1.0 - mortar);
+      brick = mix(brick, brick * 1.15, knock * 0.5);
+    }
+    if (tierNear) {
+      let iron = frDot(p, 0.006, 0.07, 0.2) * fine;
+      brick *= 1.0 - 0.5 * iron.x;
+      let sand = frFbmD(p / 0.0028, 2);
+      brick *= 0.9 + 0.2 * (sand.x * 0.5 + 0.5) * fine + 0.1 * (1.0 - fine);
+      grad += sand.yzw * (0.00025 / 0.0028) * fine * (1.0 - mortar);
+      let sandy = frFbmD(p / 0.0015, 2).x;
+      joints = color2 * (0.82 + 0.3 * sandy * fine);
+    }
     albedo = mix(brick, joints, mortar);
     // Relief: pillowed faces, struck/raked joints set back 4 mm, with the
     // gradient so the lighting actually catches them.
     let pillowT = clamp(edge / 0.016, 0.0, 1.0);
     let pillowSlope = 6.0 * pillowT * (1.0 - pillowT) / 0.016;
-    let stepT = clamp((edge + 0.0012) / 0.0024, 0.0, 1.0);
-    let stepSlope = 6.0 * stepT * (1.0 - stepT) / 0.0024;
+    let stepW = max(0.0024, jointBlur * 2.0);
+    let stepT = clamp((edge + stepW * 0.5) / stepW, 0.0, 1.0);
+    let stepSlope = 6.0 * stepT * (1.0 - stepT) / stepW;
     h += pillowT * pillowT * (3.0 - 2.0 * pillowT) * 0.0009 - (1.0 - stepT * stepT * (3.0 - 2.0 * stepT)) * 0.004 - knock * 0.003;
     grad += toEdge * -(pillowSlope * 0.0009 + stepSlope * 0.004);
-    grad += sand.yzw * (0.00025 / 0.0028) * fine * (1.0 - mortar);
     ao *= 1.0 - 0.5 * mortar;
     rough = mix(0.86, 0.97, mortar);
     // A slight per-brick tilt catches the light differently brick to brick.
@@ -444,22 +481,30 @@ fn skinSurface(p: vec3f, n: vec3f, cls: f32, fp: f32, color: vec3f, color2: vec3
     let along = dot(p, g);
     let across = p - g * along;
     let q = across / max(a.x, 0.001) + g * along / max(a.x * 40.0, 0.01);
-    let streak = frFbmD(q, 3);
-    albedo = mix(color, color2, smoothstep(-0.1, 0.45, streak.x));
-    let endGrain = abs(dot(n, g));
-    let ring = fract(length(across - floor(across / 0.25) * 0.25 - vec3f(0.125)) / max(a.x * 1.2, 0.001));
-    albedo = mix(albedo, color2 * 0.9, endGrain * smoothstep(0.75, 0.95, ring));
-    let knot = frCell(across / 0.09 + g * along / 0.35);
-    let isKnot = step(frHash(vec3f(knot[0].z * 31.0, 2.0, 2.0)), 0.06);
-    albedo = mix(albedo, color2 * 0.45, (1.0 - smoothstep(0.08, 0.2, knot[0].x)) * isKnot);
-    h += streak.x * 0.0002;
+    if (tierMid) {
+      let streak = frFbmD(q, 3);
+      albedo = mix(color, color2, smoothstep(-0.1, 0.45, streak.x));
+      h += streak.x * 0.0002;
+      let endGrain = abs(dot(n, g));
+      let ring = fract(length(across - floor(across / 0.25) * 0.25 - vec3f(0.125)) / max(a.x * 1.2, 0.001));
+      albedo = mix(albedo, color2 * 0.9, endGrain * smoothstep(0.75, 0.95, ring));
+      let knot = frCell(across / 0.09 + g * along / 0.35);
+      let isKnot = step(frHash(vec3f(knot[0].z * 31.0, 2.0, 2.0)), 0.06);
+      albedo = mix(albedo, color2 * 0.45, (1.0 - smoothstep(0.08, 0.2, knot[0].x)) * isKnot);
+    } else {
+      albedo = mix(color, color2, 0.35);
+    }
   } else if (ic == 5 || ic == 6) {
     // Painted drywall / plaster: orange-peel roller texture, scuffs.
-    let peel = frFbmD(p / 0.0012, 2);
-    h += peel.x * 0.00008 * b.y;
-    grad += peel.yzw * (0.00008 / 0.0012) * b.y;
-    let scuff = smoothstep(0.35, 0.8, frFbmD(p / 0.15, 3).x);
-    albedo = mix(albedo, albedo * color2 / max(color, vec3f(0.01)), scuff * b.x);
+    if (tierNear) {
+      let peel = frFbmD(p / 0.0012, 2);
+      h += peel.x * 0.00008 * b.y;
+      grad += peel.yzw * (0.00008 / 0.0012) * b.y;
+    }
+    if (tierMid) {
+      let scuff = smoothstep(0.35, 0.8, frFbmD(p / 0.15, 3).x);
+      albedo = mix(albedo, albedo * color2 / max(color, vec3f(0.01)), scuff * b.x);
+    }
   } else if (ic == 8) {
     metal = 1.0;
     rough = a.z;

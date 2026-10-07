@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { assembleBroken, assembleContacts } from './assemble';
+import { assembleBroken, assembleContacts, FractureBuilder } from './assemble';
 import { FaceKind } from './contacts';
 import { triangulateConvex } from './delaunay2d';
 import { interfacePoint } from './interface';
@@ -176,5 +176,22 @@ describe('worn edges', () => {
       }
     }
     expect(checked).toBeGreaterThan(100);
+  });
+});
+
+describe('on-demand building', () => {
+  it('builds each piece the same on demand, in any order, as all at once', () => {
+    for (const key of ['rc-wall', 'brick-wall'] as const) {
+      const specimen = buildSpecimen(key);
+      const table = assembleContacts(specimen.pieces);
+      const options = {
+        broken: () => true, rough: true, wear: true, rebar: true, density: 1, looks: FRACTURE_LOOKS,
+        families: specimen.rebar, seed: 1,
+      };
+      const all = assembleBroken(specimen.pieces, table, options).meshes;
+      const builder = new FractureBuilder(specimen.pieces, table, options);
+      const order = specimen.pieces.map((_, p) => p).reverse();
+      for (const p of order) expect(builder.pieceMesh(p).positions, `${key} ${p}`).toEqual(all[p].positions);
+    }
   });
 });

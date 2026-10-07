@@ -13,20 +13,22 @@ import * as THREE from 'three';
 import { assembleBroken, assembleToday, type AssembleStats } from '../city/fracture/assemble';
 import { findContacts } from '../city/fracture/contacts';
 import { FRACTURE_LOOKS } from '../city/fracture/looks';
-import { exteriorTextureKey, FractureClass } from '../city/fracture/materialClass';
+import { FractureClass } from '../city/fracture/materialClass';
 import type { Specimen } from '../city/fracture/specimens';
-import { cityTextureDetail, heroTilingEnabled, maxDpr } from '../app/renderQuality';
+import { maxDpr } from '../app/renderQuality';
 import { SkyEnvironment } from '../graphics/SkyEnvironment';
 import { getFogSettings, resolveFogColor } from '../graphics/fogSettings';
 import { withRenderBackend } from '../graphics/webgpu/rendererBackend';
 import { SunLight } from '../scene/SunLight';
-import { layerCodeForTextureKey, loadCityTextures } from '../scene/cityTextures';
+import { loadCityTextures } from '../scene/cityTextures';
 import { Blast, brokenInMode, explodedPose, type ExplodeMode } from './explode';
 import {
   FractureLookUniforms, LabPoses, buildColliderGeometry, buildLabGeometry, colliderMaterial, ghostMaterial,
   glassMaterial, labMaterial,
 } from './labMesh';
 import type { PackSpecimen } from './packSpecimen';
+import { TieredStage, type TierStats } from './TieredStage';
+import { layerCodes, labTriplanar } from './labShared';
 
 export type Compare = 'split' | 'enhanced' | 'today';
 export type Bodies = 'visual' | 'collider' | 'both';
@@ -53,6 +55,14 @@ export interface LabState {
   skin: 'procedural' | 'city';
   copies: number;
   seed: number;
+  /**
+   * Scene scale: copies become ONE scene of distinct pieces, every piece
+   * shading-only, and only those within `tierRadius` of the camera get the
+   * detailed geometry, built `tierBudgetMs` per frame into a fixed pool.
+   */
+  tiered: boolean;
+  tierRadius: number;
+  tierBudgetMs: number;
   /** Bumped when a geometry look parameter changes. */
   lookVersion: number;
 }
@@ -66,6 +76,8 @@ export interface LabStats {
   gpuMs: number | null;
   drawCalls: number;
   triangles: number;
+  /** Scene-scale mode only. */
+  tier?: TierStats;
 }
 
 export interface LabCameraApi {
@@ -104,20 +116,12 @@ export function FractureLabCanvas(props: SceneProps) {
         <planeGeometry args={[400, 400]} />
         <meshStandardMaterial color="#6b6e63" roughness={1} metalness={0} />
       </mesh>
-      <LabStage {...props} />
+      {props.state.tiered ? <TieredStage {...props} /> : <LabStage {...props} />}
     </Canvas>
   );
 }
 
-const TRIPLANAR = () => ({ pbr: true, detail: cityTextureDetail(), hero: heroTilingEnabled() });
-
-function layerCodes(specimen: Specimen): Array<{ layerCode: number }> {
-  const keys = (specimen as Partial<PackSpecimen>).textureKeys;
-  const fallback = layerCodeForTextureKey('concrete-wall') ?? 0;
-  return specimen.pieces.map((piece, i) => ({
-    layerCode: layerCodeForTextureKey(keys?.[i] ?? exteriorTextureKey(piece.cls)) ?? fallback,
-  }));
-}
+const TRIPLANAR = labTriplanar;
 
 function LabStage({ specimen, state, onStats, onCamera }: SceneProps) {
   const gl = useThree((s) => s.gl);

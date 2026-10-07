@@ -12,7 +12,7 @@ import { canonicalSign } from './canonical';
 import { FaceKind, type FracturePiece } from './contacts';
 import { refine } from './delaunay2d';
 import { interfacePoint, type CrackInterface } from './interface';
-import { add, cross, distance, dot, lerp, normalize, orient2, scale, segmentDistance2, sub, type Vec2, type Vec3 } from './math';
+import { add, cross, distance, dot, insideConvex2, lerp, normalize, orient2, scale, segmentDistance2, sub, type Vec2, type Vec3 } from './math';
 import { anyBasis, faceAcross, type Polytope } from './polytope';
 import { appendTube, type RebarStub, type TubeMesh } from './rebar';
 import type { WearField } from './wear';
@@ -134,8 +134,18 @@ export function pieceSkinMesh(input: SkinInput): PieceMesh {
     });
   }
   const project = makeProjector(piece, kinds, wear);
+  // Boundary points an outer face put on a shared straight edge, so the cut
+  // or joint face on the other side of that edge walks exactly the same
+  // points (key: the edge's vertex indices, low first; points low to high).
+  const recorded = new Map<string, Vec3[]>();
+  const edgeKeyOf = (i: number, j: number): string => (i < j ? `${i},${j}` : `${j},${i}`);
+  const recordedRun = (i: number, j: number): Vec3[] | null => {
+    const points = recorded.get(edgeKeyOf(i, j));
+    if (!points) return null;
+    return i < j ? points : points.slice().reverse();
+  };
 
-  poly.faces.forEach((face, f) => {
+  const buildFace = (face: Polytope['faces'][number], f: number): void => {
     const replaced = interfaces.get(f);
     if (replaced) {
       appendInterface(mesh, replaced.iface, replaced.side, piece.centroid, kinds[f]);
@@ -147,6 +157,12 @@ export function pieceSkinMesh(input: SkinInput): PieceMesh {
     // bend them.
     const outline: OutlinePoint[] = [];
     const wornSegments: Array<[Vec3, Vec3]> = [];
+    // The face's own corners while nothing has been spliced in: a convex
+    // polygon, which can take the structured worn-band layout.
+    const corners: OutlinePoint[] = [];
+    const wornFlags: boolean[] = [];
+    const cornerIndex: number[] = [];
+    let spliced = false;
     for (let k = 0; k < face.loop.length; k += 1) {
       const i = face.loop[k];
       const j = face.loop[(k + 1) % face.loop.length];
@@ -172,21 +188,50 @@ export function pieceSkinMesh(input: SkinInput): PieceMesh {
           }
           // The inset line is this face's own, so wear may still move it.
           run = inset.map((p, n) => ({ p, frozen: iface.chipWidth[indices![n]] <= 0 }));
+          spliced = true;
           break;
         }
       }
       if (!run) {
         const a = at(i);
         const b = at(j);
+        corners.push(a);
+        cornerIndex.push(i);
         const wornEdge = isWorn(f, i, j);
+        wornFlags.push(wornEdge);
         if (wornEdge) wornSegments.push([a.p, b.p]);
-        run = [a, ...edgeSamples(a.p, b.p, wornEdge, wornVertex.has(i), wornVertex.has(j), wear), b];
+        const known = recordedRun(i, j);
+        const middle = known
+          ? known.map((p) => ({ p, frozen: false }))
+          : edgeSamples(a.p, b.p, wornEdge, wornVertex.has(i), wornVertex.has(j), wear);
+        if (!known && !wornEdge && middle.length > 0) {
+          recorded.set(edgeKeyOf(i, j), (i < j ? middle : middle.slice().reverse()).map((o) => o.p));
+        }
+        run = [a, ...middle, b];
       }
       for (let s = 0; s + 1 < run.length; s += 1) outline.push(run[s]);
     }
-    const band = wear && wornSegments.length > 0 ? bandPoints(outline, wornSegments, face.normal, wear) : [];
+    if (wear && !spliced && wornSegments.length > 0) {
+      const sides = appendWornFace(mesh, corners, wornFlags, face.normal, piece.centroid, kinds[f], wear, project);
+      if (sides) {
+        // Record what this face put on its plain edges, for the faces beyond.
+        sides.forEach((points, k) => {
+          if (wornFlags[k] || points.length === 0) return;
+          const i = cornerIndex[k];
+          const j = cornerIndex[(k + 1) % cornerIndex.length];
+          recorded.set(edgeKeyOf(i, j), i < j ? points : points.slice().reverse());
+        });
+        return;
+      }
+    }
+    const band = wear && wornSegments.length > 0
+      ? bandPoints(spliced ? outline.map((o) => o.p) : corners.map((c) => c.p), !spliced, wornSegments, face.normal, wear)
+      : [];
     appendPolygon(mesh, outline, band, face.normal, piece.centroid, kinds[f], project);
-  });
+  };
+  // Outer faces first: they decide the points shared edges carry.
+  poly.faces.forEach((face, f) => { if (kinds[f] === FaceKind.Exterior) buildFace(face, f); });
+  poly.faces.forEach((face, f) => { if (kinds[f] !== FaceKind.Exterior) buildFace(face, f); });
 
   if (input.stubs.length > 0) {
     const tube: TubeMesh = { positions: [], normals: [], along: [], indices: [] };
@@ -203,6 +248,158 @@ export function pieceSkinMesh(input: SkinInput): PieceMesh {
     for (const i of tube.indices) mesh.indices.push(start + i);
   }
   return mesh;
+}
+
+/**
+ * Distances from a worn arris at which the worn band places its rows: a
+ * geometric series, dense where the rounding bends most. Shared by the rows
+ * of a structured face and the graded samples of the edges beyond it, so the
+ * two land on the same points where they meet at right angles.
+ */
+function gradedDistances(wear: SkinWear, limit = Infinity): number[] {
+  const out: number[] = [];
+  for (let d = wear.spacing * 0.5; d < Math.min(wear.field.reach * 0.9, limit); d *= 2) out.push(d);
+  return out;
+}
+
+/**
+ * A convex outer face with worn edges, laid out as rows instead of
+ * triangulated: row r is the face polygon offset inward by d_r along its worn
+ * edges (plain edges stay put, so each row's corners slide along them), worn
+ * edges are sampled at the same count in every row, rows are stitched with
+ * quads, and the innermost row is fanned. No Delaunay, no point location:
+ * linear in the vertices, and two pieces sharing a seam compute the same
+ * points on it because they offset the same lines by the same distances.
+ *
+ * Returns, per polygon edge, the points it put between that edge's corners
+ * (empty for edges with none), or null when the face is too small to take
+ * any rows (the caller falls back to the general path).
+ */
+function appendWornFace(
+  mesh: PieceMesh, corners: readonly OutlinePoint[], worn: readonly boolean[], normal: Vec3,
+  origin: Vec3, kind: number, wear: SkinWear, project: Projector,
+): Vec3[][] | null {
+  const m = corners.length;
+  if (m < 3) return null;
+  const { t, b } = anyBasis(normal);
+  const to2 = (p: Vec3): Vec2 => [dot(p, t), dot(p, b)];
+  const plane = dot(corners[0].p, normal);
+  const from2 = (q: Vec2): Vec3 => add(add(scale(t, q[0]), scale(b, q[1])), scale(normal, plane));
+  const c2 = corners.map((c) => to2(c.p));
+  // Inward normals of each edge (CCW polygon: the inside is to the left).
+  const inward = c2.map((p, i) => {
+    const q = c2[(i + 1) % m];
+    const l = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    return [-(q[1] - p[1]) / l, (q[0] - p[0]) / l] as Vec2;
+  });
+  const offsetPolygon = (d: number): Vec2[] | null => {
+    const out: Vec2[] = [];
+    for (let i = 0; i < m; i += 1) {
+      const h = (i + m - 1) % m;
+      // Corner i is where edge h (shifted) meets edge i (shifted).
+      const dh = worn[h] ? d : 0;
+      const di = worn[i] ? d : 0;
+      const p0: Vec2 = [c2[h][0] + inward[h][0] * dh, c2[h][1] + inward[h][1] * dh];
+      const r0: Vec2 = [c2[i][0] - c2[h][0], c2[i][1] - c2[h][1]];
+      const p1: Vec2 = [c2[i][0] + inward[i][0] * di, c2[i][1] + inward[i][1] * di];
+      const r1: Vec2 = [c2[(i + 1) % m][0] - c2[i][0], c2[(i + 1) % m][1] - c2[i][1]];
+      const den = r0[0] * r1[1] - r0[1] * r1[0];
+      if (Math.abs(den) < 1e-12) return null;
+      const s = ((p1[0] - p0[0]) * r1[1] - (p1[1] - p0[1]) * r1[0]) / den;
+      out.push([p0[0] + r0[0] * s, p0[1] + r0[1] * s]);
+    }
+    // Still the same polygon, just smaller: every edge keeps its direction.
+    for (let i = 0; i < m; i += 1) {
+      const a = out[i];
+      const c = out[(i + 1) % m];
+      const e0: Vec2 = [c2[(i + 1) % m][0] - c2[i][0], c2[(i + 1) % m][1] - c2[i][1]];
+      if ((c[0] - a[0]) * e0[0] + (c[1] - a[1]) * e0[1] <= 0) return null;
+    }
+    return out;
+  };
+  // Rows depend only on the material, never on this face's size, so the
+  // neighbour across a seam offsets the same lines by the same amounts.
+  const rows: Vec2[][] = [c2];
+  for (const d of gradedDistances(wear)) {
+    const row = offsetPolygon(d);
+    if (!row) break;
+    rows.push(row);
+  }
+  if (rows.length < 2) return null;
+  // Samples per edge, the same in every row: worn edges are subdivided.
+  const counts = c2.map((p, i) => {
+    if (!worn[i]) return 1;
+    const q = c2[(i + 1) % m];
+    return Math.max(1, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / wear.spacing));
+  });
+  const side = canonicalSign(normal);
+  const start = mesh.positions.length / 3;
+  const emit = (q: Vec2, frozen: boolean): number => {
+    const out = project({ p: from2(q), frozen }, kind);
+    const n = out.normal ?? normal;
+    mesh.positions.push(out.p[0] - origin[0], out.p[1] - origin[1], out.p[2] - origin[2]);
+    mesh.normals.push(n[0], n[1], n[2]);
+    mesh.kinds.push(kind);
+    mesh.relief.push(out.wear);
+    mesh.sides.push(side);
+    return mesh.positions.length / 3 - 1 - start;
+  };
+  // Row r as a closed ring of vertex indices, edge by edge.
+  const ringOf = (r: number): number[][] => rows[r].map((p, i) => {
+    const q = rows[r][(i + 1) % m];
+    const ids: number[] = [];
+    for (let k = 0; k < counts[i]; k += 1) {
+      const u = k / counts[i];
+      // The outer row's corners are the polytope's (and may be frozen).
+      ids.push(r === 0 && k === 0 ? emit(c2[i], corners[i].frozen) : emit([p[0] + (q[0] - p[0]) * u, p[1] + (q[1] - p[1]) * u], false));
+    }
+    return ids;
+  });
+  const rings = rows.map((_, r) => ringOf(r));
+  const at = (r: number, i: number, k: number): number =>
+    (k < counts[i] ? rings[r][i][k] : rings[r][(i + 1) % m][0]) + start;
+  for (let r = 0; r + 1 < rows.length; r += 1) {
+    for (let i = 0; i < m; i += 1) {
+      // A plain edge: rows r and r + 1 lie on one line here, so there is
+      // nothing between them; the worn neighbours' strips end on it.
+      if (!worn[i]) continue;
+      for (let k = 0; k < counts[i]; k += 1) {
+        const a = at(r, i, k);
+        const c = at(r, i, k + 1);
+        const d = at(r + 1, i, k + 1);
+        const e = at(r + 1, i, k);
+        mesh.indices.push(a, c, d, a, d, e);
+      }
+    }
+  }
+  // The innermost row: a fan from its centroid (it is convex).
+  const inner = rows[rows.length - 1];
+  let cx = 0;
+  let cy = 0;
+  for (const p of inner) {
+    cx += p[0] / inner.length;
+    cy += p[1] / inner.length;
+  }
+  const centre = emit([cx, cy], false) + start;
+  const last = rows.length - 1;
+  for (let i = 0; i < m; i += 1) {
+    for (let k = 0; k < counts[i]; k += 1) mesh.indices.push(centre, at(last, i, k), at(last, i, k + 1));
+  }
+  // What each plain edge now carries between its corners, in order: the
+  // corners its worn neighbours slid along it, row by row.
+  return c2.map((_, i) => {
+    if (worn[i]) return [];
+    const j = (i + 1) % m;
+    const points: Vec3[] = [];
+    for (let r = 1; r < rows.length; r += 1) {
+      if (worn[(i + m - 1) % m]) points.push(from2(rows[r][i]));
+    }
+    const tail: Vec3[] = [];
+    for (let r = 1; r < rows.length; r += 1) {
+      if (worn[j]) tail.push(from2(rows[r][j]));
+    }
+    return [...points, ...tail.reverse()];
+  });
 }
 
 /** A vertex as emitted: final position, normal and wear. */
@@ -261,8 +458,7 @@ function edgeSamples(a: Vec3, b: Vec3, worn: boolean, aWorn: boolean, bWorn: boo
     const n = Math.max(1, Math.ceil(len / wear.spacing));
     for (let k = 1; k < n; k += 1) ts.push(k / n);
   } else if (aWorn || bWorn) {
-    const reach = Math.min(wear.field.reach * 1.2, len * 0.45);
-    for (let d = wear.spacing * 0.5; d < reach; d *= 1.6) {
+    for (const d of gradedDistances(wear, len * 0.45)) {
       if (aWorn) ts.push(d / len);
       if (bWorn) ts.push(1 - d / len);
     }
@@ -276,10 +472,12 @@ function edgeSamples(a: Vec3, b: Vec3, worn: boolean, aWorn: boolean, bWorn: boo
  * distance, so the rounded arris has vertices to bend across. Only points
  * clearly inside the outline are kept.
  */
-function bandPoints(outline: readonly OutlinePoint[], worn: ReadonlyArray<[Vec3, Vec3]>, normal: Vec3, wear: SkinWear): Vec3[] {
+function bandPoints(
+  outline: readonly Vec3[], convex: boolean, worn: ReadonlyArray<[Vec3, Vec3]>, normal: Vec3, wear: SkinWear,
+): Vec3[] {
   const { t, b } = anyBasis(normal);
   const to2 = (p: Vec3): Vec2 => [dot(p, t), dot(p, b)];
-  const poly2 = outline.map((o) => to2(o.p));
+  const poly2 = outline.map(to2);
   const reach = wear.field.reach * 1.2;
   const points: Vec3[] = [];
   for (const [a, c] of worn) {
@@ -288,12 +486,18 @@ function bandPoints(outline: readonly OutlinePoint[], worn: ReadonlyArray<[Vec3,
     const dir = normalize(sub(c, a));
     // CCW loop about the normal: the face lies to the left of each edge.
     const inward = normalize(cross(normal, dir));
-    for (let d = wear.spacing * 0.6; d < reach; d *= 1.7) {
-      const along = wear.spacing * (1 + (d / reach) * 1.5);
+    // Few rows: the vertex normals (the field's gradient) do the rounding's
+    // shading; the rows only have to carry its silhouette and its chips.
+    for (let d = wear.spacing * 0.6; d < reach * 0.85; d *= 2.2) {
+      const along = wear.spacing * (1 + (d / reach) * 2.5);
       const n = Math.max(1, Math.round(len / along));
       for (let k = 0; k <= n; k += 1) {
         const p = add(lerp(a, c, k / n), scale(inward, d));
         const q = to2(p);
+        if (convex) {
+          if (insideConvex2(q, poly2, along * 0.4)) points.push(p);
+          continue;
+        }
         if (!insidePolygon(q, poly2)) continue;
         let clear = Infinity;
         for (let s = 0; s < poly2.length; s += 1) {

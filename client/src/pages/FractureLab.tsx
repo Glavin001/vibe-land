@@ -42,6 +42,9 @@ const DEFAULT_STATE: LabState = {
   skin: 'procedural',
   copies: 1,
   seed: 7,
+  tiered: false,
+  tierRadius: 12,
+  tierBudgetMs: 3,
   lookVersion: 0,
 };
 
@@ -62,6 +65,17 @@ function initialState(): LabState {
   if (params.has('amount') && Number.isFinite(amount)) state.amount = amount;
   const compare = params.get('compare');
   if (compare === 'split' || compare === 'today' || compare === 'enhanced') state.compare = compare;
+  // Layers and scale, so a link (or the stills tool) opens in a known state
+  // without first building an expensive default.
+  for (const key of ['shading', 'rough', 'wear', 'rebar', 'debugKinds', 'wireframe', 'tiered'] as const) {
+    if (params.has(key)) state[key] = params.get(key) !== '0';
+  }
+  for (const key of ['spin', 'density', 'copies', 'seed', 'tierRadius', 'tierBudgetMs'] as const) {
+    const v = Number(params.get(key));
+    if (params.has(key) && Number.isFinite(v)) state[key] = v;
+  }
+  const skin = params.get('skin');
+  if (skin === 'procedural' || skin === 'city') state.skin = skin;
   return state;
 }
 
@@ -223,7 +237,17 @@ export function FractureLabPage() {
             <Slider label="Detail" min={0.25} max={2} step={0.05} value={state.density} onChange={(v) => set({ density: v })} />
             <Check label="Colour by face kind" value={state.debugKinds} onChange={(v) => set({ debugKinds: v })} />
             <Check label="Wireframe" value={state.wireframe} onChange={(v) => set({ wireframe: v })} />
-            <Slider label="Copies" min={1} max={49} step={1} value={state.copies} onChange={(v) => set({ copies: v })} />
+            <Slider label="Copies" min={1} max={121} step={1} value={state.copies} onChange={(v) => set({ copies: v })} />
+          </Section>
+
+          <Section title="Scene scale">
+            <Check label="Detail near the camera only (copies = one scene)" value={state.tiered} onChange={(v) => set({ tiered: v, compare: 'enhanced' })} />
+            {state.tiered && (
+              <>
+                <Slider label="Radius" min={2} max={60} step={1} value={state.tierRadius} onChange={(v) => set({ tierRadius: v })} />
+                <Slider label="ms/frame" min={0.5} max={12} step={0.5} value={state.tierBudgetMs} onChange={(v) => set({ tierBudgetMs: v })} />
+              </>
+            )}
           </Section>
 
           {mainClass !== null && (
@@ -285,6 +309,12 @@ function StatsHud({ stats, state }: { stats: LabStats; state: LabState }) {
     <div style={hudStyle}>
       <div><b>{stats.frameMs.toFixed(1)} ms</b> frame · GPU {stats.gpuMs !== null ? `${stats.gpuMs.toFixed(2)} ms` : 'n/a'} · {stats.drawCalls} draws · {fmt(stats.triangles)} tris drawn</div>
       <div>{stats.pieces} pieces · today {fmt(stats.todayTriangles)} tris · enhanced {fmt(stats.enhancedTriangles)} tris ({(stats.enhancedTriangles / Math.max(1, stats.todayTriangles)).toFixed(0)}×)</div>
+      {stats.tier && (
+        <div>
+          {fmt(stats.tier.chunks)} chunks · {fmt(stats.tier.skinned)} detailed near the camera · pool {fmt(stats.tier.poolVertices)} / {fmt(stats.tier.poolCapacity)} verts
+          {' '}· {stats.tier.queue} queued · building {stats.tier.buildMs.toFixed(1)} ms/frame · {fmt(stats.tier.builtTotal)} built
+        </div>
+      )}
       {b && (
         <div>
           {b.contacts} contacts ({b.fullContacts} full) · {b.broken} broken · {b.interfaces} crack surfaces · {b.rebarStubs} rebar stubs · built in {b.ms.toFixed(0)} ms
