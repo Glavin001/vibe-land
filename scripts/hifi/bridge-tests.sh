@@ -2,6 +2,7 @@
 # Every bridge test binary (ignored included, benches excluded) in one profile.
 #   scripts/hifi/bridge-tests.sh runtime|high
 source "$(dirname "$0")/env.sh" "$1"
+export PX_DESTRUCTION_ALLOW_UNCONVERGED=1  # the product setting; until the shared test helper (96e92f54) sets it
 log=$HIFI_LOGS/bridge-$1.log; : > "$log"
 cd "$HIFI_ROOT/physx-bridge"
 cargo test --release -p vibe-land-physx-bridge --features native-destruction --no-run >> "$log.build" 2>&1 || { echo "build failed: $log.build"; exit 1; }
