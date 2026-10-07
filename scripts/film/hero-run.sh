@@ -79,7 +79,10 @@ run() {
   zone_env "$zone"
   local out; out="$ROOT/target/hero-run-$(date +%H%M%S)-$zone.out"
   echo "hero-run: $zone ($*) -> $out"
-  env "$@" VIBE_GPU_SHARED="${VIBE_GPU_SHARED:-1}" "$ROOT/scripts/native-mac.sh" film hero-run --scene hero > "$out" 2>&1 || { tail -20 "$out"; echo "hero-run: FAILED ($out)" >&2; return 1; }
+  # mystral is killed on its way out (exit 137, reference: mystralnative quirks):
+  # a take that reached its cut is done whatever the status says.
+  env "$@" VIBE_GPU_SHARED="${VIBE_GPU_SHARED:-1}" "$ROOT/scripts/native-mac.sh" film hero-run --scene hero > "$out" 2>&1 \
+    || grep -qE '\[film [0-9.]+s\] cut$' "$out" || { tail -20 "$out"; echo "hero-run: FAILED ($out)" >&2; return 1; }
   local log; log=$(grep -oE '/[^ ]*hero-run-[0-9]+-[0-9]+\.log' "$out" | head -1)
   [ -n "$log" ] || log=$(ls -t "$ROOT"/target/native-video/hero-run-*.log | head -1)
   grep -oE '/[^ ]*hero-run-[0-9-]+-(check\.jpg|final\.mp4|share\.mp4|sheet\.jpg)' "$out" | sort -u | sed 's/^/  /' || true

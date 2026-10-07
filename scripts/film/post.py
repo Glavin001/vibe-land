@@ -36,9 +36,9 @@ timeline. The cut is rendered in one ffmpeg pass, in this order:
              bottom 13% (clear of a phone player's controls), a soft shadow
              and no band, a 0.2 s fade. "case":"keep" keeps any title's
              case; "case":"upper" upper-cases a caption.
-  trim       {"from","to"?}  the cut starts at `from` (and ends at `to`):
-             the recording before it is dropped and every later edit is
-             shifted with it (the last trim wins).
+  trim       {"from"?,"to"?}  the cut starts at `from` and ends at `to`:
+             the recording outside them is dropped and every edit is shifted
+             with it (a later trim's `from` or `to` replaces an earlier one's).
   cut        ignored. Unknown types are warned about and skipped.
 
 Sound (optional; without either flag the cut is silent, as before):
@@ -223,7 +223,13 @@ def build(edits, info, out_fps, font, tmp, caption_font=None):
             elif kind == "letterbox":
                 letterbox = num(e, "ratio", 2.39)
             elif kind == "trim":
-                trim = (max(0.0, num(e, "from", 0)), min(dur, float(e["to"])) if e.get("to") is not None else dur)
+                # A head trim and a tail trim may come as two edits: each sets its own end.
+                head, tail = trim if trim else (0.0, dur)
+                if e.get("from") is not None:
+                    head = max(0.0, num(e, "from"))
+                if e.get("to") is not None:
+                    tail = min(dur, num(e, "to"))
+                trim = (head, tail)
             elif kind == "title":
                 style, size = e.get("style", "overlay"), e.get("size", "normal")
                 if style not in ("overlay", "card", "lower", "caption"):
