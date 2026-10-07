@@ -1,0 +1,132 @@
+#!/usr/bin/env node
+/**
+ * Calibration structures: build a scenario's scene, run it on the GPU stage
+ * under each engine configuration, judge it against the hand calculation.
+ *
+ *   node structures/calibration/run.mjs bridge-piers [--configs default,section,rotation]
+ *        [--ticks N] [--judge-only] [--spec-only]
+ *   node structures/calibration/run.mjs --all            # every scenario (the regression suite)
+ *
+ * Writes structures/calibration/out/<scenario>/{scene,spec}.json, a report per
+ * configuration (report-<config>.json, server/src/calibration.rs) and
+ * verdict.json. Exit 1 when a configuration held to the engineering
+ * prediction (`real`) misses it.
+ *
+ * Correctness runs share the GPU (VIBE_GPU_SHARED=1 is set for the harness:
+ * no timing is taken here). Each SDK builds in its own cargo tree,
+ * target/calib-<sdk> (CALIB_TARGET_DIR overrides); PHYSX_ROOT replaces every
+ * configuration's SDK, e.g. to run impact model E:
+ *   PHYSX_ROOT=../PhysX/.claude/worktrees/impact-e/out/install/garage-impact \
+ *     node structures/calibration/run.mjs bridge-piers --configs impact
+ */
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import path from 'node:path';
+import { writeScenario, REPO, OUT } from './src/scenario.mjs';
+import { CONFIGS, sdkFor } from './src/configs.mjs';
+import { judge } from './src/judge.mjs';
+
+export const SCENARIOS = ['bridge-piers'];
+
+const argv = process.argv.slice(2);
+const opt = (name, fallback) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : fallback; };
+const flag = (name) => argv.includes(name);
+
+/**
+ * The source the harness builds from. The shared checkout carries other
+ * agents' work in progress (a half-committed bridge does not compile), so a
+ * pinned worktree, target/calib-src (`git worktree add --detach target/calib-src
+ * <commit>`), with this checkout's harness copied over it, when one exists;
+ * CALIB_SRC overrides, CALIB_SRC=. builds the checkout itself.
+ */
+export function source() {
+  const dir = path.resolve(REPO, process.env.CALIB_SRC ?? 'target/calib-src');
+  if (dir === REPO || !existsSync(path.join(dir, 'server/src/main.rs'))) return REPO;
+  const harness = readFileSync(path.join(REPO, 'server/src/calibration.rs'), 'utf8'), target = path.join(dir, 'server/src/calibration.rs');
+  if (!existsSync(target) || readFileSync(target, 'utf8') !== harness) writeFileSync(target, harness);
+  const main = path.join(dir, 'server/src/main.rs'), text = readFileSync(main, 'utf8');
+  if (!/^mod calibration;$/m.test(text)) writeFileSync(main, text.replace(/^mod structure_qualification;$/m, 'mod structure_qualification;\nmod calibration;'));
+  return dir;
+}
+
+/** The test binary holding calibration_run for an SDK (cargo builds it once per tree). */
+const binaries = new Map();
+export function binary(sdk) {
+  if (binaries.has(sdk)) return binaries.get(sdk);
+  const target = process.env.CALIB_TARGET_DIR ?? path.join(REPO, 'target', `calib-${path.basename(sdk)}`);
+  const src = source();
+  const r = spawnSync('cargo', ['test', '-p', 'web-fps-server', '--release', '--features', 'native-destruction', '--no-run', '--message-format=json'],
+    { cwd: src, env: { ...process.env, PHYSX_ROOT: sdk, CARGO_TARGET_DIR: target }, encoding: 'utf8', maxBuffer: 1 << 28 });
+  if (r.status !== 0) { process.stderr.write(r.stderr.slice(-4000)); throw Error(`build against ${sdk} failed`); }
+  for (const line of r.stdout.split('\n')) {
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.executable && path.basename(m.executable).startsWith('web_fps_server-')) {
+      const list = spawnSync(m.executable, ['--list', '--ignored'], { encoding: 'utf8' }).stdout;
+      if (list.includes('calibration_run')) { binaries.set(sdk, m.executable); return m.executable; }
+    }
+  }
+  throw Error('no test binary with calibration_run');
+}
+
+/** One GPU run of a scene under a configuration; returns the report. */
+export function runScene({ scene, out, config, ticks, extraEnv = {} }) {
+  const sdk = sdkFor(config), exe = binary(sdk);
+  const env = {
+    ...process.env, ...CONFIGS[config].env, ...extraEnv,
+    PHYSX_ROOT: sdk, VIBE_CITY_SCENE: scene, VIBE_CALIB_OUT: out, VIBE_CALIB_TICKS: String(ticks), VIBE_GPU_SHARED: '1',
+    VIBE_CITY_NATIVE_STRESS_ITERATIONS: process.env.VIBE_CITY_NATIVE_STRESS_ITERATIONS ?? '64',
+    VIBE_DESTRUCTION_ASSET_DIR: path.join(REPO, 'destruction/assets/scenes'),
+    CUMETAL_CACHE_DIR: process.env.CUMETAL_CACHE_DIR ?? path.join(REPO, 'target', 'cumetal-cache-calib'),
+  };
+  const log = out.replace(/\.json$/, '.log');
+  const r = spawnSync(path.join(REPO, 'scripts/perf/gpu-run.sh'), [`calib-${config}`, exe, 'calibration_run', '--ignored', '--nocapture', '--test-threads=1'],
+    { cwd: path.join(REPO, 'server'), env, encoding: 'utf8', maxBuffer: 1 << 28 });
+  writeFileSync(log, `${r.stdout}\n${r.stderr}`);
+  if (r.status !== 0 || !existsSync(out)) throw Error(`calibration run (${config}) failed: see ${log}\n${(r.stderr ?? '').split('\n').filter((l) => /panicked|error|Error/.test(l)).slice(0, 8).join('\n')}`);
+  const line = (r.stderr ?? '').split('\n').find((l) => l.startsWith('[calibration]') && l.includes('ticks in'));
+  if (line) console.log(`  ${config}: ${line.replace('[calibration] ', '')}`);
+  return JSON.parse(readFileSync(out, 'utf8'));
+}
+
+function table(v) {
+  const pad = (s, n) => String(s ?? '-').padEnd(n);
+  console.log(`\n${v.config} (held to: ${v.model}) -- first collapse: engineering prediction ${v.firstCollapse.real}, this model ${v.firstCollapse.predicted}; engine failed ${v.firstCollapse.failed}, fell ${v.firstCollapse.fell}; unconverged ticks ${v.unconvergedTicks}`);
+  for (const r of v.cases) {
+    const crit = r.stress.critical ? `${r.stress.critical.key} engine ${r.stress.critical.engine} hand ${r.stress.critical.hand}` : '';
+    console.log(`  ${r.ok.state && r.ok.members ? 'ok  ' : 'MISS'} ${pad(r.case, 7)} predicted ${pad(r.predicted.state, 9)} u ${pad(r.predicted.u, 6)} measured ${pad(r.measured.state, 9)} broken ${pad(r.measured.broken, 4)} free ${pad(r.measured.free, 4)} drop ${pad(r.measured.maxDrop, 6)} | ${crit} | ratio ${r.stress.ratio ? `${r.stress.ratio.median} (${r.stress.ratio.p10}-${r.stress.ratio.p90})` : '-'}${r.measured.firstBroken.length ? ` | first: ${r.measured.firstBroken.slice(0, 4).join(', ')}` : ''}`);
+  }
+}
+
+export async function run(id, { configs, ticks, judgeOnly = false, specOnly = false }) {
+  const scenario = await import(`./scenarios/${id}.mjs`);
+  const { dir, spec } = writeScenario({ ...scenario, hand: scenario.hand?.() });
+  console.log(`${id}: ${spec.cases.length} cases, scene ${spec.scene}`);
+  if (specOnly) return { passed: true };
+  const verdicts = [];
+  for (const config of configs) {
+    const out = path.join(dir, `report-${config}.json`);
+    const report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks });
+    const v = judge(spec, report, config, CONFIGS[config].model);
+    v.sdk = report.physxRoot; v.wallSeconds = report.wallSeconds;
+    verdicts.push(v);
+    table(v);
+  }
+  const prior = existsSync(path.join(dir, 'verdict.json')) ? JSON.parse(readFileSync(path.join(dir, 'verdict.json'), 'utf8')) : {};
+  const merged = { ...prior, scenario: id, updated: new Date().toISOString(), configs: { ...(prior.configs ?? {}), ...Object.fromEntries(verdicts.map((v) => [v.config, v])) } };
+  writeFileSync(path.join(dir, 'verdict.json'), JSON.stringify(merged, null, 1));
+  // Held to the engineering prediction: must match it. The default stage is held to its own model (a regression check).
+  const passed = verdicts.every((v) => v.passed);
+  return { passed, verdicts };
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const ids = flag('--all') ? SCENARIOS : argv.filter((a, i) => !a.startsWith('--') && !(i > 0 && argv[i - 1].startsWith('--') && !['--all', '--judge-only', '--spec-only'].includes(argv[i - 1])));
+  const configs = (opt('--configs', 'default,section,rotation')).split(',');
+  const ticks = opt('--ticks') ? Number(opt('--ticks')) : undefined;
+  let failed = 0;
+  for (const id of ids) {
+    const r = await run(id, { configs, ticks, judgeOnly: flag('--judge-only'), specOnly: flag('--spec-only') });
+    if (!r.passed) failed++;
+  }
+  process.exitCode = failed ? 1 : 0;
+}
