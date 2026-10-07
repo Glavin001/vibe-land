@@ -110,7 +110,11 @@ function table(v) {
 
 export async function run(id, { configs, ticks, judgeOnly = false, specOnly = false }) {
   const scenario = await import(`./scenarios/${id}.mjs`);
-  const { dir, spec } = writeScenario({ ...scenario, hand: scenario.hand?.() });
+  // CALIB_VARIANT: the same scenario built another way (e.g. VIBE_REAL_CAPACITIES=1 CALIB_VARIANT=real-capacities),
+  // in its own out/<id>-<variant>/ and known-gaps entry.
+  const variant = process.env.CALIB_VARIANT;
+  if (variant) id = `${id}-${variant}`;
+  const { dir, spec } = writeScenario({ ...scenario, id, hand: scenario.hand?.() });
   console.log(`${id}: ${spec.cases.length} cases, scene ${spec.scene}`);
   if (specOnly) return { passed: true };
   const verdicts = [];
