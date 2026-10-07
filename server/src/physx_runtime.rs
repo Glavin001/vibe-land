@@ -162,6 +162,12 @@ fn coast(cmd: &mut bridge::VehicleCommands, resistance: Option<CoastResistance>,
     if let Some(resistance) = resistance { cmd.brake = resistance.brake(forward_speed); }
 }
 
+/// VIBE_PLAYER_SNAP_TO_GROUND=1: players snap down onto ground within
+/// MoveConfig::snap_to_ground (opt-in; read when a player's controller is made).
+fn player_snap_to_ground() -> bool {
+    std::env::var("VIBE_PLAYER_SNAP_TO_GROUND").is_ok_and(|v| v == "1")
+}
+
 fn coast_resistance_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("VIBE_VEHICLE_COAST_RESISTANCE").map_or(true, |v| v != "0"))
@@ -703,6 +709,12 @@ impl PhysxPhysicsArena {
             collision_group: GROUP_PLAYER,
             collision_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_VEHICLE | GROUP_CHUNK,
         })?;
+        // VIBE_PLAYER_SNAP_TO_GROUND=1: MoveConfig::snap_to_ground (0.2 m), as
+        // the Rapier controller has it -- a player walking down a stair stays
+        // on it instead of leaving each tread at walking speed. Off by default.
+        if player_snap_to_ground() {
+            self.world.set_player_snap_to_ground(Self::player_bridge_id(id), self.config.snap_to_ground)?;
+        }
         Ok(())
     }
 

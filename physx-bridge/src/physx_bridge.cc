@@ -151,6 +151,9 @@ struct Record {
   bool grounded = false;
   float player_step_offset = 0.0f;
   float player_radius = 0.0f;
+  // Snap to ground (set_player_snap_to_ground): how far a grounded player is
+  // pulled down after a move that left the ground; 0 = off (the default).
+  float player_snap = 0.0f;
 };
 
 bool finite(float value) { return std::isfinite(value); }
@@ -2859,11 +2862,37 @@ public:
     MaskQueryFilter callback(record.collision_mask, true, entity_id);
     const PxFilterData filter_data(record.collision_mask, 0, 0, 0);
     PxControllerFilters filters(&filter_data, &callback);
+    const bool was_grounded = record.grounded;
     const PxControllerCollisionFlags flags =
         record.controller->move(delta, 0.001f, elapsed_time, filters);
     record.player_velocity = pending_player_velocity_;
     record.grounded =
         flags.isSet(PxControllerCollisionFlag::eCOLLISION_DOWN);
+    // Snap to ground, as Rapier's character controller does it (the game's
+    // MoveConfig::snap_to_ground): a player on the ground whose move, not
+    // upward, carried it off the ground -- down a step, over a crest -- is
+    // pulled straight down onto ground within `player_snap`, and left where
+    // the move put it when there is none that near. Off unless set.
+    if (record.player_snap > 0.0f && was_grounded && !record.grounded &&
+        delta.y <= 0.0f) {
+      const PxExtendedVec3 before = record.controller->getPosition();
+      const PxControllerCollisionFlags down = record.controller->move(
+          PxVec3(0.0f, -record.player_snap, 0.0f), 0.001f, elapsed_time,
+          filters);
+      if (down.isSet(PxControllerCollisionFlag::eCOLLISION_DOWN)) {
+        record.grounded = true;
+      } else {
+        record.controller->setPosition(before);
+      }
+    }
+  }
+
+  void set_player_snap_to_ground(std::uint32_t entity_id, float distance) {
+    Record &record = find(entity_id);
+    require(record.controller != nullptr, "entity is not a capsule controller");
+    require(finite(distance) && distance >= 0.0f,
+            "snap distance must be finite and not negative");
+    record.player_snap = distance;
   }
 
   /// Dispatch the simulation. With GPU dynamics this only enqueues work and
@@ -4559,6 +4588,10 @@ void World::reset_vehicle(std::uint32_t entity_id, const FfiPose &pose) {
 void World::move_player(std::uint32_t entity_id, FfiVec3 displacement,
                         float elapsed_time) {
   impl_->move_player(entity_id, displacement, elapsed_time);
+}
+
+void World::set_player_snap_to_ground(std::uint32_t entity_id, float distance) {
+  impl_->set_player_snap_to_ground(entity_id, distance);
 }
 
 void World::step() { impl_->step(); }

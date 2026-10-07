@@ -82,6 +82,7 @@ public:
   void reset_vehicle(std::uint32_t entity_id, const FfiPose &pose);
   void move_player(std::uint32_t entity_id, FfiVec3 displacement,
                    float elapsed_time);
+  void set_player_snap_to_ground(std::uint32_t entity_id, float distance);
   void step();
   /// Dispatch the simulation without waiting; pair with end_step().
   void begin_step();

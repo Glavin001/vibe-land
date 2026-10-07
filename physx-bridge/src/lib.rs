@@ -1252,6 +1252,25 @@ impl World {
         }
     }
 
+    /// Snap to ground for a capsule player (0 = off, the default): after a
+    /// move that is not upward carries a grounded player off the ground, it
+    /// is pulled down onto ground within `distance` metres, or left where the
+    /// move put it when there is none that near (Rapier's `snap_to_ground`).
+    pub fn set_player_snap_to_ground(&mut self, entity_id: u32, distance: f32) -> Result<(), BridgeError> {
+        #[cfg(feature = "gpu")]
+        {
+            self.inner
+                .pin_mut()
+                .set_player_snap_to_ground(entity_id, distance)
+                .map_err(operation_error)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = (entity_id, distance);
+            Err(stub_unavailable())
+        }
+    }
+
     /// Dispatches the simulation without waiting for it.
     ///
     /// With GPU dynamics this only enqueues work, so the caller can run CPU
@@ -2848,6 +2867,7 @@ mod ffi {
             displacement: FfiVec3,
             elapsed_time: f32,
         ) -> Result<()>;
+        fn set_player_snap_to_ground(self: Pin<&mut World>, entity_id: u32, distance: f32) -> Result<()>;
         fn step(self: Pin<&mut World>) -> Result<()>;
         fn begin_step(self: Pin<&mut World>) -> Result<()>;
         fn end_step(self: Pin<&mut World>) -> Result<()>;

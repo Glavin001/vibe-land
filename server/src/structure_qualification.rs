@@ -342,6 +342,135 @@ mod tests {
     }
 
     /// The authoring lint over every structure of the city scene the server loads.
+    /// The game's own player walks a building's route: the pack in
+    /// VIBE_CITY_SCENE (one structure), its route the `route` of the
+    /// `.meta.json` beside it (VIBE_WALK_META overrides) -- feet points in the
+    /// pack's coordinates, e.g. a house's stair from the ground floor to the
+    /// upper floor and back. The production arena and player tick
+    /// (MoveConfig::default: the 0.35 m x 1.6 m capsule, 0.55 m step, 45
+    /// degree slope) under the app's stress settings, after
+    /// VIBE_QUALIFY_REST_TICKS (180) at rest. Each tick the player is steered
+    /// at the next point with walking input only (no jump, no drop after the
+    /// start), and the run fails on:
+    ///   - a point not reached within 15 s, or reached off the ground;
+    ///   - a move no walk makes: further across in a tick than the capsule's
+    ///     radius, or up more than the controller's step (a teleport);
+    ///   - a fall of more than one riser of the code (IRC R311.7.5.1, 196 mm)
+    ///     plus the contact offset: walking down a stair drops a riser at a
+    ///     time, and nothing else on a route should drop the player at all;
+    ///   - headroom under 2032 mm (IRC R311.7.2) over the feet, from a ray up
+    ///     the capsule's axis from just over its top, every tick;
+    ///   - any bond broken while walking.
+    /// Prints `route walk: {json}` (points, ticks, the least headroom, the
+    /// largest fall, the most airborne ticks in a row).
+    #[cfg(feature = "native-destruction")]
+    #[test]
+    #[ignore = "requires local GPU and the native-destruction SDK"]
+    fn route_walk() {
+        use crate::city_qa::walk_input;
+        use glam::Vec3;
+        // The movement's yaw (shared/src/movement.rs build_wish_dir): forward is (sin yaw, 0, cos yaw).
+        let heading = |from: Vec3, to: Vec3| (to.x - from.x).atan2(to.z - from.z);
+        let _guard = crate::physx_runtime::tests::gpu_test_guard();
+        std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+        const HEADROOM: f32 = 2.032; // IRC R311.7.2
+        const MAX_RISER: f32 = 0.196; // IRC R311.7.5.1
+        let scene = std::env::var("VIBE_CITY_SCENE").expect("VIBE_CITY_SCENE: the pack to walk");
+        let meta_path = std::env::var("VIBE_WALK_META").unwrap_or_else(|_| scene.trim_end_matches(".json").to_string() + ".meta.json");
+        let read = |p: &str| -> serde_json::Value { serde_json::from_slice(&std::fs::read(p).unwrap_or_else(|e| panic!("{p}: {e}"))).expect("json") };
+        let (pack, meta) = (read(&scene), read(&meta_path));
+        let route: Vec<(String, Vec3)> = meta["route"].as_array().expect("meta route").iter()
+            .map(|p| (p["name"].as_str().unwrap_or("?").to_string(), Vec3::new(p["at"][0].as_f64().unwrap() as f32, p["at"][1].as_f64().unwrap() as f32, p["at"][2].as_f64().unwrap() as f32))).collect();
+        assert!(route.len() >= 2, "a route of two points or more");
+        let config = vibe_netcode::movement::MoveConfig::default();
+        let (half, walk) = (config.capsule_half_segment + config.capsule_radius, config.walk_speed as f32);
+        let mut arena = crate::movement::PhysicsArena::new(config.clone(), vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu).expect("production arena");
+        crate::demo_world::seed_world_for_match(&mut arena, "city-default").expect("city world");
+        let mut city = crate::city::CityRuntime::open(60, arena.physx_world_mut()).expect("city opens");
+        arena.set_tolerate_rejected_steps(city.backend_name() == "native");
+        let gravity = vibe_netcode::movement::default_world_gravity();
+        let dt = 1.0 / 60.0;
+        let rest = std::env::var("VIBE_QUALIFY_REST_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(180u32);
+        let mut tick = 0u32;
+        for _ in 0..rest {
+            arena.step_vehicles_and_dynamics(dt);
+            let _ = city.step(tick, dt, gravity, arena.physx_world_mut());
+            tick += 1;
+        }
+        let broken_at_rest = city.stats().broken_bonds;
+        // Pack to world: where the stage put the pack's first chunk (its slab, fixed).
+        let c = &pack["scenario"]["nodes"][0]["centroid"];
+        let aim = arena.physx_world_mut().unwrap().native_chunk_aim(0, 0).expect("chunk 0");
+        assert!(aim.found, "chunk 0 on the stage");
+        let offset = Vec3::new(aim.center.x - c["x"].as_f64().unwrap() as f32, aim.center.y - c["y"].as_f64().unwrap() as f32, aim.center.z - c["z"].as_f64().unwrap() as f32);
+        let route: Vec<(String, Vec3)> = route.into_iter().map(|(n, p)| (n, p + offset)).collect();
+        // The player, standing at the first point (its position is the capsule's centre).
+        arena.spawn_player(1);
+        let start = route[0].1;
+        let yaw0 = heading(start, route[1].1);
+        let placed = arena.drop_player_from_camera(1, &vibe_land_shared::protocol::CityCameraDropCmd { position: [start.x, start.y + half + 0.02, start.z], yaw: yaw0, pitch: 0. });
+        assert!(placed, "the player placed at {}", route[0].0);
+        let feet = |arena: &crate::movement::PhysicsArena| { let s = arena.player_state(1).expect("player"); (Vec3::new(s.position.x as f32, s.position.y as f32 - half, s.position.z as f32), s.on_ground) };
+        // VIBE_WALK_MAX_FALL: a diagnostic override, to see a whole walk past its first long fall.
+        let max_fall = std::env::var("VIBE_WALK_MAX_FALL").ok().and_then(|v| v.parse().ok()).unwrap_or(MAX_RISER + config.collision_offset);
+        let mut falls: Vec<serde_json::Value> = Vec::new();
+        let (mut fastest, mut fastest_at, mut least_at) = (0f32, serde_json::Value::Null, serde_json::Value::Null);
+        let mut seq = 0u16;
+        let mut step = |arena: &mut crate::movement::PhysicsArena, city: &mut crate::city::CityRuntime, tick: &mut u32, input: vibe_land_shared::protocol::InputCmd| {
+            arena.simulate_player_tick(1, &input, dt);
+            arena.step_vehicles_and_dynamics(dt);
+            let _ = city.step(*tick, dt, gravity, arena.physx_world_mut());
+            *tick += 1;
+        };
+        // Settle onto the first point's floor.
+        for _ in 0..30 { step(&mut arena, &mut city, &mut tick, walk_input(seq, yaw0, 0., 0., 0.)); seq = seq.wrapping_add(1); }
+        let (mut at, grounded) = feet(&arena);
+        assert!(grounded && (at.y - start.y).abs() < 0.05, "standing at {}: feet {at:?}, on the ground {grounded}", route[0].0);
+        let (mut least_headroom, mut largest_fall, mut longest_air, mut air, mut fall_from) = (f32::INFINITY, 0f32, 0u32, 0u32, at.y);
+        let mut reached = vec![serde_json::json!({"name": route[0].0, "feet": [at.x, at.y, at.z], "tick": 0})];
+        let walk_start = tick;
+        for (name, goal) in route.iter().skip(1) {
+            let mut arrived = false;
+            for _ in 0..900 {
+                let flat = Vec3::new(goal.x - at.x, 0., goal.z - at.z).length();
+                let (_, grounded) = feet(&arena);
+                if flat < 0.2 && (at.y - goal.y).abs() < 0.25 && grounded { arrived = true; break; }
+                // Walking (the wish direction is normalised: any forward input is walking speed).
+                step(&mut arena, &mut city, &mut tick, walk_input(seq, heading(at, *goal), 0., 1., 0.));
+                seq = seq.wrapping_add(1);
+                let (now, grounded) = feet(&arena);
+                let across = Vec3::new(now.x - at.x, 0., now.z - at.z).length();
+                if across / dt > fastest { fastest = across / dt; fastest_at = serde_json::json!({"to": name, "from": [at.x, at.y, at.z], "at": [now.x, now.y, now.z], "grounded": grounded}); }
+                assert!(across <= config.capsule_radius, "{name}: moved {across:.3} m across in a tick at {now:?}");
+                assert!(now.y - at.y <= config.max_step_height + 0.01, "{name}: rose {:.3} m in a tick at {now:?}", now.y - at.y);
+                // A fall: from the highest point since last on the ground to here.
+                if !grounded { air += 1; longest_air = longest_air.max(air); }
+                let fall = (fall_from - now.y).max(0.);
+                largest_fall = largest_fall.max(fall);
+                assert!(fall <= max_fall, "{name}: fell {fall:.3} m at {now:?}");
+                if grounded && fall > MAX_RISER + config.collision_offset { falls.push(serde_json::json!({"to": name, "fall": fall, "at": [now.x, now.y, now.z]})); }
+                if grounded { fall_from = now.y; air = 0; } else { fall_from = fall_from.max(now.y); }
+                let world = arena.physx_world_mut().unwrap();
+                // From just over the capsule's top: a ray from inside it stops on the capsule itself.
+                let from = 2. * half + config.collision_offset + 0.005;
+                let up = world.native_raycast_chunk(vibe_land_physx_bridge::Vec3::new(now.x, now.y + from, now.z), vibe_land_physx_bridge::Vec3::new(0., 1., 0.), 4.0).expect("ray");
+                let headroom = if up.hit { up.distance + from } else { 4.0 + from };
+                if headroom < least_headroom { least_headroom = headroom; least_at = serde_json::json!({"to": name, "feet": [now.x, now.y, now.z], "chunk": if up.hit { serde_json::json!(up.chunk_id & 0xffff) } else { serde_json::Value::Null }}); }
+                assert!(headroom >= HEADROOM, "{name}: headroom {headroom:.3} m at {now:?} (chunk {})", up.chunk_id);
+                let broken = city.stats().broken_bonds;
+                assert_eq!(broken, broken_at_rest, "{name}: walking broke {} bonds", broken - broken_at_rest);
+                at = now;
+            }
+            assert!(arrived, "{name} not reached: feet {at:?}, goal {goal:?}");
+            reached.push(serde_json::json!({"name": name, "feet": [at.x, at.y, at.z], "tick": tick - walk_start}));
+        }
+        let summary = serde_json::json!({"passed": true, "points": reached.len(), "ticks": tick - walk_start, "seconds": (tick - walk_start) as f32 * dt,
+            "leastHeadroom": least_headroom, "leastHeadroomAt": least_at, "largestFall": largest_fall, "maxFall": max_fall, "fastestAcross": fastest, "fastestAt": fastest_at, "walkSpeed": walk, "fallsOverARiser": falls, "longestAirborneTicks": longest_air, "brokenAtRest": broken_at_rest,
+            "offset": [offset.x, offset.y, offset.z], "snapToGround": std::env::var("VIBE_PLAYER_SNAP_TO_GROUND").is_ok_and(|v| v == "1"), "capsule": {"radius": config.capsule_radius, "height": 2. * half, "step": config.max_step_height, "slopeDegrees": config.max_slope_radians.to_degrees()},
+            "reached": reached});
+        eprintln!("route walk: {summary}");
+    }
+
     #[test]
     #[ignore = "reads the city scene asset"]
     fn lint_city_structures() {
