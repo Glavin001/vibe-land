@@ -283,7 +283,12 @@ class Explicit:
             x = np.where(Y > 0, Y / ym, 1.0)
         return np.sqrt(lam)
 
-    def run(self, T, dt, record=(0.5e-3, 1e-3, 2e-3, 4e-3, 8e-3, 16.67e-3), sweeps=4):
+    def run(self, T, dt, record=(0.5e-3, 1e-3, 2e-3, 4e-3, 8e-3, 16.67e-3), sweeps=4, levels=None, elastic=False, energy_every=0):
+        """levels: per link L >= 0 (multi-rate: a joint fires on the finest steps n with 2^L | n, its
+        relative displacement since its last firing from the nodes' displacement accumulators, d =
+        B^T (u_n - u_last), u += dt v every finest step; its force held between firings). None: every
+        joint every step (the GPU step's arithmetic). elastic: no fracture or yield (stability runs).
+        energy_every: record E_dev = 1/2 v^T M v + 1/2 sum (J - J0)^2 / k every that many steps."""
         P = self.P; nl = P.nl; nn = P.nn; dty = self.dtype
         k = self.k.astype(dty); Mi = self.Mi.astype(dty); B = self.B.astype(dty); Bt = self.Bt.astype(dty)
         J0 = np.where((P.alive0 & P.joint & self.inpatch)[:, None], P.J0, 0.0).astype(dty)
@@ -291,7 +296,10 @@ class Explicit:
         live = P.alive0 & P.joint & self.inpatch
         slip = P.slip_before.copy()
         v = np.zeros(6 * nn, dty); v[6 * self.imp:6 * self.imp + 3] = P.v0
-        broke_at = {}; Pc_tot = np.zeros((len(self.contacts), 3)); plastic_work = 0.0; brittle_energy = 0.0
+        if getattr(P, 'v_init', None) is not None: v = P.v_init.astype(dty).copy()
+        broke_at = {}; Pc_tot = np.zeros((len(self.contacts), 3)); plastic_work = 0.0; brittle_energy = 0.0; dead = 0.0
+        u_acc = np.zeros(6 * nn); s_last = np.zeros((nl, 6)); fired = 0; edev = []
+        Mtrue = P.M.tocsr(); kinv = np.where(k > 0, 1.0 / np.where(k > 0, k, 1.0), 0.0)
         snaps = {}; rec = list(record); steps = int(np.ceil(T / dt))
         Ks = np.where(k > 0, k, 1.0)
         ev_steps = 0
@@ -335,9 +343,20 @@ class Explicit:
                     v = v + Mi @ (self.Bc[i] @ d)
             Pc_tot += Pc
             # bonds: trial elastic increment, then brittle break / ductile return
-            e = (Bt @ v).reshape(nl, 6)
-            Jt = J - dt * k * e
-            idx = np.where(live)[0]
+            if levels is None:
+                e = (Bt @ v).reshape(nl, 6)
+                Jt = J - dt * k * e
+                idx = np.where(live)[0]
+                dead -= dt * float(np.sum(J0[idx] * e[idx]))
+            else:
+                u_acc += dt * v
+                n = s + 1; fire = live & ((n % (1 << levels)) == 0)
+                idx = np.where(fire)[0]; fired += len(idx)
+                Bu = (Bt @ u_acc).reshape(nl, 6)
+                dd = Bu[idx] - s_last[idx]; s_last[idx] = Bu[idx]
+                Jt = J.copy(); Jt[idx] = J[idx] - k[idx] * dd
+                dead -= float(np.sum(J0[idx] * dd))
+            if elastic: idx = idx[:0]
             u = util_vec(self.F[idx], Jt[idx] + (Jv[idx] if Jv is not None else 0.0))
             brit = idx[(u >= 1 - P.band) & ~P.ductile[idx]]
             duc = idx[(u > 1) & P.ductile[idx]]
@@ -356,6 +375,9 @@ class Explicit:
                 brittle_energy += float(np.sum(0.5 * (J[brit] - 0) ** 2 / Ks[brit] * (k[brit] > 0)))
                 live[brit] = False; J[brit] = 0.0
                 for l in brit: broke_at.setdefault(int(l), t)
+            if energy_every and s % energy_every == 0:
+                dj = np.where(live[:, None], J - J0, 0.0)
+                edev.append((t, 0.5 * float(v @ (Mtrue @ v)) + 0.5 * float(np.sum(dj * dj * kinv))))
             while rec and t >= rec[0] - 1e-12:
                 snaps[rec.pop(0)] = dict(broken=sorted(broke_at), v=v.copy(), J=J.copy(), live=live.copy(), Pc=Pc_tot.copy())
             if not np.all(np.isfinite(v)):
@@ -364,7 +386,7 @@ class Explicit:
         for sn in snaps.values():
             lf = P.alive0 & P.joint; lf[self.inpatch] = sn['live'][self.inpatch]; sn['live'] = lf
         return dict(broke_at=broke_at, v=v, J=J, live=live_full, Pc=Pc_tot, snaps=snaps, steps=steps, ev_steps=ev_steps,
-                    plastic_work=plastic_work, brittle_energy=brittle_energy)
+                    plastic_work=plastic_work, brittle_energy=brittle_energy, dead=dead, fired=fired, edev=edev)
 
 
 def debris(P, live, v):
