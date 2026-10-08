@@ -283,38 +283,71 @@ class Explicit:
             x = np.where(Y > 0, Y / ym, 1.0)
         return np.sqrt(lam)
 
-    def run(self, T, dt, record=(0.5e-3, 1e-3, 2e-3, 4e-3, 8e-3, 16.67e-3), sweeps=4, levels=None, elastic=False, energy_every=0):
-        """levels: per link L >= 0 (multi-rate: a joint fires on the finest steps n with 2^L | n, its
-        relative displacement since its last firing from the nodes' displacement accumulators, d =
-        B^T (u_n - u_last), u += dt v every finest step; its force held between firings). None: every
-        joint every step (the GPU step's arithmetic). elastic: no fracture or yield (stability runs).
-        energy_every: record E_dev = 1/2 v^T M v + 1/2 sum (J - J0)^2 / k every that many steps."""
+    def run(self, T, dt, record=(0.5e-3, 1e-3, 2e-3, 4e-3, 8e-3, 16.67e-3), sweeps=4, levels=None, elastic=False, energy_every=0, books=False):
+        """levels: per link L >= 0, multi-rate (asynchronous) steps in the AVI form (Lew, Marsden, Ortiz &
+        West 2003): joint j's period is H_j = 2^L_j dt. It fires on the finest steps n with 2^L_j | n (and
+        every joint on the last step): its relative displacement since its last firing from the nodes'
+        displacement accumulators (u += dt v every finest step), d = B^T (u_n - u_last), J -= k d, then
+        its law. Its force reaches its nodes as one impulse H_j B (J - J0) at the next finest step (the
+        kick that opens its period; the window's last period is cut at the window's end). Nodes and rows
+        step every finest step. levels 0 everywhere is the uniform step. (A force held over the period
+        and applied dt B (J - J0) every finest step is not symplectic: one element's period map has
+        det 1 + (1 - c) (omega H)^2, c = (N + 1) / 2N, and grows.)
+        None: every joint every step (the GPU step's arithmetic). elastic: no fracture or yield (stability
+        runs). energy_every: record E_dev = 1/2 v^T M v + 1/2 sum (J - J0)^2 / k every that many steps
+        (only on steps where every joint has fired). books: the energy books on those steps, FP64 (see
+        the return value's 'books')."""
         P = self.P; nl = P.nl; nn = P.nn; dty = self.dtype
         k = self.k.astype(dty); Mi = self.Mi.astype(dty); B = self.B.astype(dty); Bt = self.Bt.astype(dty)
-        J0 = np.where((P.alive0 & P.joint & self.inpatch)[:, None], P.J0, 0.0).astype(dty)
+        inp = P.alive0 & P.joint & self.inpatch
+        J0 = np.where(inp[:, None], P.J0, 0.0).astype(dty)
         J = J0.copy()
-        live = P.alive0 & P.joint & self.inpatch
+        live = inp.copy()
         slip = P.slip_before.copy()
         v = np.zeros(6 * nn, dty); v[6 * self.imp:6 * self.imp + 3] = P.v0
         if getattr(P, 'v_init', None) is not None: v = P.v_init.astype(dty).copy()
         broke_at = {}; Pc_tot = np.zeros((len(self.contacts), 3)); plastic_work = 0.0; brittle_energy = 0.0; dead = 0.0
-        u_acc = np.zeros(6 * nn); s_last = np.zeros((nl, 6)); fired = 0; edev = []
-        Mtrue = P.M.tocsr(); kinv = np.where(k > 0, 1.0 / np.where(k > 0, k, 1.0), 0.0)
-        snaps = {}; rec = list(record); steps = int(np.ceil(T / dt))
+        return_drop = 0.0; contact_diss = 0.0; law_shadow = 0.0; yielded = set(); per_step = []
+        u_acc = np.zeros(6 * nn, dty); s_last = np.zeros((nl, 6), dty); fired = 0; edev = []; book = []
+        Mtrue = P.M.tocsr(); kinv = np.where(k > 0, 1.0 / np.where(k > 0, k, 1.0), 0.0).astype(np.float64)
+        J0d = J0.astype(np.float64)
+        ke = lambda x: 0.5 * float(x.astype(np.float64) @ (Mtrue @ x.astype(np.float64)))
+        def energy(H):
+            # The step's shadow energy, on a step where every joint has just fired: 1/2 v^T M v' + sum_live
+            # 1/2 |J|^2_k^-1 - f0 . u, f0 = -B J0 (every in-patch joint's rest force), v' = v + M^-1 B (H (J - J0))
+            # the velocity after the next kicks (H each joint's period). Symplectic Euler (one rate) conserves it
+            # exactly on a linear elastic system (leapfrog's 1/2 v_{n-1/2} . M v_{n+1/2} + U(x_n)); 1/2 v^T M v
+            # + U alone is off by 1/2 h^2 |B^T v|^2_k, the staggering, not an error.
+            Jd = np.where(live[:, None], J, 0.0).astype(np.float64); vd = v.astype(np.float64)
+            vn = vd + self.Mi @ (self.B @ (H[:, None] * (Jd - J0d)).reshape(-1))
+            return 0.5 * float(vd @ (Mtrue @ vn)) + 0.5 * float(np.sum(Jd * Jd * kinv)) + float(np.sum(J0d * (self.Bt @ u_acc.astype(np.float64)).reshape(nl, 6)))
+        Hk = (np.where(inp, (np.int64(1) << np.asarray(levels, np.int64)) * dt, 0.0) if levels is not None else np.where(inp, dt, 0.0)).astype(np.float64)
+        E0 = energy(Hk) if books else 0.0
+        snaps = {}; rec = list(record); steps = int(np.ceil(T / dt - 1e-9))
+        multi = levels is not None
+        if multi:
+            per = (np.int64(1) << np.asarray(levels, np.int64)); pmax = int(per[inp].max()) if inp.any() else 1
+            kick = np.where(inp, np.minimum(per, steps) * dt, 0.0).astype(dty)   # every joint fired at t = 0 (J = J0: no force)
         Ks = np.where(k > 0, k, 1.0)
         ev_steps = 0
         for s in range(steps):
-            t = (s + 1) * dt
+            t = (s + 1) * dt; n = s + 1
             Jl = np.where(live[:, None], J, 0.0)
-            f = B @ (Jl - J0).reshape(-1)
             Jv = None
-            if self.damping:   # stiffness-proportional (Rayleigh beta) damping: a dashpot beta k beside each live bond
-                Jv = -self.damping * k * (Bt @ v).reshape(nl, 6) * live[:, None]
-                f = f + B @ Jv.reshape(-1)
-            v = v + dt * (Mi @ f)
+            v_pre = v.astype(np.float64) if books else None
+            if multi:
+                v = v + Mi @ (B @ (kick[:, None] * (Jl - J0)).reshape(-1))
+            else:
+                f = B @ (Jl - J0).reshape(-1)
+                if self.damping:   # stiffness-proportional (Rayleigh beta) damping: a dashpot beta k beside each live bond
+                    Jv = -self.damping * k * (Bt @ v).reshape(nl, 6) * live[:, None]
+                    f = f + B @ Jv.reshape(-1)
+                v = v + dt * (Mi @ f)
             if self.S is not None:   # absorbing boundary, implicit per node: (I + dt M^-1 C) v = v*
                 v = self.S(dt, live) @ v
             # contacts: Moreau impulse per substep, Gauss-Seidel over the rows, Coulomb cone
+            ke_before = ke(v) if books else 0.0
+            v_after_kick = v.astype(np.float64) if books else None
             Pc = np.zeros((len(self.contacts), 3))
             if self.jacobi:
                 # The GPU step: every row from the same velocities, each with its nodes' inverse
@@ -341,22 +374,32 @@ class Explicit:
                         if tn > lim: trial[1:] *= lim / tn
                     d = trial - old; Pc[i] = trial
                     v = v + Mi @ (self.Bc[i] @ d)
+            if books:
+                # The rows' change of the shadow energy: Delta KE - 1/2 a . M c, a this step's joint kick, c the
+                # rows' velocity change (exact for one rate: E~_{n+1} - E~_n = that on a linear elastic system).
+                c = v.astype(np.float64) - v_after_kick
+                contact_diss += ke_before - ke(v) + 0.5 * float((v_after_kick - v_pre) @ (Mtrue @ c))
             Pc_tot += Pc
+            u_acc += dt * v
             # bonds: trial elastic increment, then brittle break / ductile return
-            if levels is None:
+            if not multi:
                 e = (Bt @ v).reshape(nl, 6)
                 Jt = J - dt * k * e
-                idx = np.where(live)[0]
+                idx = np.where(live)[0]; per_step.append(len(idx))
                 dead -= dt * float(np.sum(J0[idx] * e[idx]))
+                at_sync = True
             else:
-                u_acc += dt * v
-                n = s + 1; fire = live & ((n % (1 << levels)) == 0)
-                idx = np.where(fire)[0]; fired += len(idx)
+                fire = inp & (((n % per) == 0) | (n == steps))
+                fi = np.where(fire)[0]
                 Bu = (Bt @ u_acc).reshape(nl, 6)
-                dd = Bu[idx] - s_last[idx]; s_last[idx] = Bu[idx]
-                Jt = J.copy(); Jt[idx] = J[idx] - k[idx] * dd
-                dead -= float(np.sum(J0[idx] * dd))
+                dd = Bu[fi] - s_last[fi]; s_last[fi] = Bu[fi]
+                Jt = J.copy(); Jt[fi] = J[fi] - k[fi] * dd
+                lv = live[fi]; idx = fi[lv]; fired += len(idx); per_step.append(len(idx))
+                dead -= float(np.sum(J0[idx] * dd[lv]))
+                kick = np.zeros(nl, dty); kick[fi] = (np.minimum(per[fi], steps - n) * dt).astype(dty)
+                at_sync = n % pmax == 0 or n == steps
             if elastic: idx = idx[:0]
+            J_trial = Jt.copy() if books else None
             u = util_vec(self.F[idx], Jt[idx] + (Jv[idx] if Jv is not None else 0.0))
             brit = idx[(u >= 1 - P.band) & ~P.ductile[idx]]
             duc = idx[(u > 1) & P.ductile[idx]]
@@ -366,7 +409,8 @@ class Explicit:
                 dpl = (Jt[duc] - Jy) / Ks[duc]
                 slip[duc] += np.linalg.norm(dpl[:, :3], axis=1)
                 plastic_work += float(np.sum(np.abs(Jy * dpl)))
-                Jt[duc] = Jy
+                return_drop += 0.5 * float(np.sum((Jt[duc].astype(np.float64) ** 2 - Jy.astype(np.float64) ** 2) * kinv[duc]))
+                Jt[duc] = Jy; yielded.update(int(x) for x in duc)
                 over = duc[slip[duc] > P.slip_limit[duc]]
                 brit = np.concatenate([brit, over])
             J = Jt
@@ -375,9 +419,21 @@ class Explicit:
                 brittle_energy += float(np.sum(0.5 * (J[brit] - 0) ** 2 / Ks[brit] * (k[brit] > 0)))
                 live[brit] = False; J[brit] = 0.0
                 for l in brit: broke_at.setdefault(int(l), t)
-            if energy_every and s % energy_every == 0:
+            if books and len(idx):
+                # The law's change of the shadow energy (fracture and the radial return): Delta U + 1/2 (B^T v) .
+                # H Delta J, the second term the staggering's (the next kicks carry Delta J).
+                Hl = Hk if multi else np.full(nl, dt)
+                dJ = np.where(live[idx, None], J[idx], 0.0).astype(np.float64) - J_trial[idx].astype(np.float64)
+                ch = idx[np.abs(dJ).sum(1) > 0]
+                if len(ch):
+                    Jn = np.where(live[ch, None], J[ch], 0.0).astype(np.float64); Jo = J_trial[ch].astype(np.float64)
+                    e = (self.Bt @ v.astype(np.float64)).reshape(nl, 6)[ch]
+                    law_shadow -= 0.5 * float(np.sum((Jn * Jn - Jo * Jo) * kinv[ch])) + 0.5 * float(np.sum(Hl[ch, None] * e * (Jn - Jo)))
+            if energy_every and s % energy_every == 0 and at_sync:
                 dj = np.where(live[:, None], J - J0, 0.0)
                 edev.append((t, 0.5 * float(v @ (Mtrue @ v)) + 0.5 * float(np.sum(dj * dj * kinv))))
+            if books and at_sync:
+                E = energy(Hk); book.append((t, E, E + law_shadow + contact_diss - E0))
             while rec and t >= rec[0] - 1e-12:
                 snaps[rec.pop(0)] = dict(broken=sorted(broke_at), v=v.copy(), J=J.copy(), live=live.copy(), Pc=Pc_tot.copy())
             if not np.all(np.isfinite(v)):
@@ -386,7 +442,8 @@ class Explicit:
         for sn in snaps.values():
             lf = P.alive0 & P.joint; lf[self.inpatch] = sn['live'][self.inpatch]; sn['live'] = lf
         return dict(broke_at=broke_at, v=v, J=J, live=live_full, Pc=Pc_tot, snaps=snaps, steps=steps, ev_steps=ev_steps,
-                    plastic_work=plastic_work, brittle_energy=brittle_energy, dead=dead, fired=fired, edev=edev)
+                    plastic_work=plastic_work, brittle_energy=brittle_energy, dead=dead, fired=fired if multi else steps * int(inp.sum()),
+                    edev=edev, books=book, E0=E0, return_drop=return_drop, contact_diss=contact_diss, law_shadow=law_shadow, yielded=sorted(yielded), per_step=per_step)
 
 
 def debris(P, live, v):
