@@ -227,6 +227,14 @@ fn apply_app_defaults() {
         ("BLAST_STRESS_INCREMENTAL_MOTION", "1"),
         ("PX_DESTRUCTION_INCREMENTAL_TOPOLOGY", "1"),
         ("BLAST_STRESS_BALANCED_OPERATOR", "1"),
+        // No busy keep-alive in the app: the bridge's server default keeps a
+        // threadgroup of compute permanently in flight to hold the GPU's clock
+        // between ticks (physx_bridge.cc), but a desktop app shares the GPU with
+        // WindowServer. On 2026-10-08 the app on Vibe Town (high profile)
+        // starved WindowServer for 40 s twice and its watchdog logged the owner
+        // out; the app renders every frame, which keeps the GPU clocked anyway.
+        // The 250 us heartbeat stays (the bridge's other default).
+        ("CUMETAL_GPU_KEEPALIVE_BUSY", "0"),
     ] {
         if std::env::var_os(name).is_none() {
             std::env::set_var(name, value);

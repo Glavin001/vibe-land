@@ -132,10 +132,17 @@ case "$SCENE" in
       VIBE_CITY_FLEET_SLOTS="${VIBE_CITY_FLEET_SLOTS:-$(cat "$pack.slots")}" \
       VIBE_CITY_SPAWN_X=-120 VIBE_CITY_SPAWN_Z=-90 ;;
   town)
-    pack="$ROOT/structures/vibe-town/out/vibe-town"
-    stale=0
-    for source in "$ROOT"/structures/vibe-town/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
-    [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vibe-town/build-town.mjs"
+    # VIBE_TOWN_PACK: another build of the town, e.g. the high-fidelity profile's
+    # (scripts/fidelity/packs.sh high: .../vibe-town-crush-real); built by
+    # scripts/fidelity/build-packs.sh, so only the default is rebuilt here.
+    pack="${VIBE_TOWN_PACK:-$ROOT/structures/vibe-town/out/vibe-town}"
+    if [ -z "${VIBE_TOWN_PACK:-}" ]; then
+      stale=0
+      for source in "$ROOT"/structures/vibe-town/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
+      [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vibe-town/build-town.mjs"
+    else
+      [ -f "$pack.json" ] || { echo "VIBE_TOWN_PACK: $pack.json missing (scripts/fidelity/build-packs.sh high)" >&2; exit 1; }
+    fi
     # Twenty-two cars (the builder's .slots, with headings): eight at the
     # street end of Elm Park's driveways, two in the Market Quarter's car park,
     # a monster truck at North Street's west end for chases, and eleven parked
@@ -228,8 +235,13 @@ launch() {
   local entry="$1"; shift
   cd "$BUNDLE_DIR"
   # The same environment the play server runs the city with
-  # (scripts/perf/play-server.sh), under the machine's GPU lock.
-  exec "$ROOT/scripts/perf/gpu-run.sh" native-city env \
+  # (scripts/perf/play-server.sh), under the machine's GPU lock, and under the
+  # WindowServer guard (scripts/ops/ws-guard.sh): stopped if the desktop stops
+  # answering for 2 s, before macOS's 40 s watchdog logs the user out
+  # (2026-10-08, twice). WS_GUARD=0 runs without it.
+  local guard=("$ROOT/scripts/ops/ws-guard.sh")
+  [ "${WS_GUARD:-1}" = 0 ] && guard=()
+  exec ${guard[@]+"${guard[@]}"} "$ROOT/scripts/perf/gpu-run.sh" native-city env \
     VIBE_PHYSICS_BACKEND=physx_gpu RUST_LOG="${RUST_LOG:-info}" \
     CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache-vehicles" \
     VIBE_DESTRUCTION_ASSET_DIR="$ROOT/destruction/assets/scenes" \
