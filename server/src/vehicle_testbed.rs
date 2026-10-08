@@ -566,6 +566,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     let (mut shot_prev, mut ground_j, mut ground_at_sample, mut drop_at_sample, mut energy_y0): (Option<(Vector3<f32>, f32)>, f32, f32, f32, f32) = (None, 0., 0., 0., 0.);
     // The structure's own balance window (see below), and the impactor's losses after it.
     let (mut window, mut off_house, mut ground_after_from, mut ground_after): (Option<Value>, u32, Option<u32>, f32) = (None, 0, None, 0.);
+    // The impactor's losses before it first touched the struck structure (J, ticks).
+    let mut pre_contact = (0f32, 0u32);
     let probe_target = trial["target"].as_array().map(|t| Vector3::new(t[0].as_f64().unwrap() as f32, t[1].as_f64().unwrap() as f32, t[2].as_f64().unwrap() as f32));
     let heading_of = |f: Vector3<f32>| f.x.atan2(f.z);
     // VIBE_TESTBED_EARLY_END=1: end the trial once its outcome is decided --
@@ -901,7 +903,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                 probe.get_or_insert_with(|| wall_matrix::Probe::new(geometry.mass as f32, 0., trial["layer"].as_f64().unwrap_or(0.3) as f32, 0.));
                 Some((after.p, after.v, heading0, (after.p + after.forward * front - probe_target.unwrap_or(start.p)).dot(&heading0)))
             } else if let (Some(pid), Some((target, dir))) = (projectile, shot) {
-                if probe_pid != Some(pid) { probe = None; probe_last = None; probe_pid = Some(pid); energy_since = None; }
+                if probe_pid != Some(pid) { probe = None; probe_last = None; probe_pid = Some(pid); energy_since = None; shot_prev = None; }
                 arena.snapshot_dynamic_bodies().into_iter().find(|b| b.0 == pid).map(|b| {
                     let p = Vector3::new(b.1[0], b.1[1], b.1[2]);
                     if probe.is_none() {
@@ -942,6 +944,15 @@ fn run(r: &Run, meta: &Value) -> Value {
                 if !driving {
                     let g = vibe_netcode::movement::GRAVITY as f32;
                     if energy_since == Some(tick) { energy_y0 = shot_prev.map_or(p.y, |q| q.1); }
+                    // Before first contact with the struck structure: a tick that costs the
+                    // impactor more than the window's own "outside" threshold (0.5% of its
+                    // KE) touched something else first (grade, a kerb, terrain). The trial
+                    // then measures that contact too: it is mis-aimed (preContact).
+                    if let (None, Some((pv, py))) = (energy_since, shot_prev) {
+                        let before = 0.5 * pr.mass * pv.norm_squared() + pr.mass * g * py;
+                        let after = 0.5 * pr.mass * v.norm_squared() + pr.mass * g * p.y;
+                        if before - after > 0.005 * 0.5 * pr.mass * pv.norm_squared() { pre_contact.0 += before - after; pre_contact.1 += 1; }
+                    }
                     if let (Some(start), Some((pv, py))) = (energy_since, shot_prev) {
                         let before = 0.5 * pr.mass * pv.norm_squared() + pr.mass * g * py;
                         let after = 0.5 * pr.mass * v.norm_squared() + pr.mass * g * p.y;
@@ -1229,6 +1240,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         out["probe"] = pr.summary(strength, DT);
         if let Some(p) = physics.take() { out["physics"] = p; }
         out["impactorPath"] = json!(impactor_path);
+        out["preContact"] = json!({"lossJ": pre_contact.0, "ticks": pre_contact.1});
         // Cost per impact tick: the stage's step time over the structure's window
         // (first contact to its close, else 1.5 s), for the impact-arm comparison.
         if let Some(from) = energy_since {

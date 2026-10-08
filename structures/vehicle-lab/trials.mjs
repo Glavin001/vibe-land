@@ -205,7 +205,8 @@ export const TRIALS = [
     attack: { kind: 'shot', projectile: 'cannonball', at: 0.5, target: [122, 1.4, 20.1], from: 180, slope: 0.02, distance: 30 },
     why: 'a cannonball through a brick-veneer house: in at the front, on through it' },
   { id: 'meteor-framed-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
-    attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 2.0, 20.1], from: 180, slope: 0.3, distance: 140 },
+    // Aimed 2.1 m up: the 2 m meteor's underside clears grade at the brick face (wall-matrix.mjs METEOR_CLEARANCE).
+    attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 2.1, 20.1], from: 180, slope: 0.3, distance: 140 },
     why: 'a meteor through a brick-veneer house: it goes through' },
   // The meteor against the structure before anything else (owner, 2026-10-08):
   // into the roof first, descending at 45 degrees (the roof spans y 2.6-3.9 m
