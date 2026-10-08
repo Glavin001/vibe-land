@@ -99,17 +99,22 @@ function nearestNode(pack, target) {
 export const METEOR_RADIUS = 2.0, METEOR_CLEARANCE = 0.1;
 // A near-level meteor (the default slope) must also stay clear of grade through its whole
 // passage, not only at the face: the cases judge its exit speed and the floor
-// (momentum-floor.mjs) counts the structure alone. From the struck face to where the probe
-// reads its exit -- its trailing point past the layer by its own diameter, the centre
-// layer + 3 R further along -- it descends slope (layer + 3 R); and a contact the
-// narrowphase finds a tick late is up to its descent in a tick, v sin(theta) dt, into what
-// it meets. So its underside at the face clears grade by slope (layer + 3 R) + v sin(theta) dt
-// (meteor.rs: 140 m/s; a tick 1/60 s). A steep authored slope (a roof, the stone house from
-// the street) lands by design and keeps METEOR_CLEARANCE at the face; so does the
-// `land` trial below, which keeps the ground contact tested.
-export const METEOR_SPEED = 140, TICK = 1 / 60;
-export function meteorPassageClearance(slope, layer) {
-  return slope * (layer + 3 * METEOR_RADIUS) + METEOR_SPEED * (slope / Math.hypot(1, slope)) * TICK;
+// (momentum-floor.mjs) counts the structure alone. The shot is ballistic through the aim
+// (vehicle_testbed.rs: launched along the chord from `distance` out, plus g t / 2 upward, t =
+// distance / v), so it arrives descending at slope + g distance / (2 v^2) -- 0.0675 for the
+// default 0.05 from 70 m (rep-c6: 9.45 m/s down at 139.4; the launch slope alone, 0.05, left the
+// veneer wall's meteor landing on the paving 6 m past the face). From the struck face to where
+// the probe reads its exit -- its trailing point past the layer by its own diameter, the centre
+// layer + 3 R further along -- it descends that slope times the run plus g (run / v)^2 / 2; and
+// a contact the narrowphase finds a tick late is up to its descent in a tick, v sin(theta) dt,
+// into what it meets. Its underside at the face clears grade by their sum (meteor.rs: 140 m/s;
+// a tick 1/60 s; g the world's, 9.81). A steep authored slope (a roof, the stone house from the
+// street) lands by design and keeps METEOR_CLEARANCE at the face; so does the `land` trial
+// below, which keeps the ground contact tested.
+export const METEOR_SPEED = 140, TICK = 1 / 60, GRAVITY = 9.81, METEOR_DISTANCE = 70;
+export function meteorPassageClearance(slope, layer, distance = METEOR_DISTANCE) {
+  const arrival = slope + GRAVITY * distance / (2 * METEOR_SPEED * METEOR_SPEED), run = layer + 3 * METEOR_RADIUS;
+  return arrival * run + 0.5 * GRAVITY * (run / METEOR_SPEED) ** 2 + METEOR_SPEED * (arrival / Math.hypot(1, arrival)) * TICK;
 }
 
 /** One trial: `impactor` at `target`'s `point`, `angle` degrees off square. */
@@ -121,7 +126,7 @@ function trial(pack, target, impactorId, angle, point = 'centre', extra = {}) {
     // Near-level (the default slope): clear of grade through the passage, unless the
     // trial is the landing (extra.land: METEOR_CLEARANCE at the face, it meets the ground).
     const nearLevel = target.slope === undefined && target.meteorSlope === undefined && !extra.land;
-    const clearance = nearLevel ? meteorPassageClearance(0.05, target.layer ?? 0.3) : METEOR_CLEARANCE;
+    const clearance = nearLevel ? meteorPassageClearance(0.05, target.layer ?? 0.3, target.distance?.meteor ?? METEOR_DISTANCE) : METEOR_CLEARANCE;
     aim[1] = Math.max(aim[1], +(METEOR_RADIUS + clearance).toFixed(3));
   }
   const from = (target.face + ANGLES[angle]) % 360;

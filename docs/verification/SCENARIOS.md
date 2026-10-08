@@ -224,12 +224,17 @@ bond graph without them (`frontRearJoined`).
   structure alone. So their underside must stay above grade from the struck face to
   where the probe reads the exit. That point is the trailing point past the layer by
   the meteor's own diameter, with the centre `layer + 3R` further along.
-  - Over that run the meteor descends `slope (layer + 3R)`.
+  - The shot is ballistic through the aim (launched along the chord from `distance`
+    out, plus `g t / 2` upward), so it arrives descending at
+    `slope + g distance / (2 v^2)`: 0.0675 for the default 0.05 from 70 m.
+  - Over that run the meteor descends `arrival (layer + 3R) + g ((layer + 3R) / v)^2 / 2`.
   - A contact the narrowphase finds a tick late is also up to a tick's descent,
     `v sin(theta) dt`, into what it meets.
-  - So the underside clears grade at the face by `slope (layer + 3R) + v sin(theta) dt`
-    (`wall-matrix.mjs` `meteorPassageClearance`). For slope 0.05, a 0.25 m wall,
-    R 2 m and 140 m/s, that is 0.43 m: an aim of 2.43 m, where it was 2.1.
+  - So the underside clears grade at the face by their sum
+    (`wall-matrix.mjs` `meteorPassageClearance`). For slope 0.05 from 70 m, a 0.25 m
+    wall, R 2 m and 140 m/s, that is 0.59 m: an aim of 2.59 m, where it was 2.1.
+  - The first version used the launch slope alone (0.43 m). The veneer wall's meteor
+    then landed on the paving 6 m past the face and was thrown up (rep-c6, 2026-10-08).
   - Aimed 0.1 m over grade, the 2 m sphere met the paving and the wall's footing
     within its passage. The compliant impact step showed it (IMPACT_STEP_PLAN.md,
     compliant impact contacts): those exits measured the ground contact, not the wall.
