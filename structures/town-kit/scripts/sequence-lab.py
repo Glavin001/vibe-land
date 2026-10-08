@@ -397,6 +397,177 @@ def dynamic(S, live0, J0, g, removed, rebearing, gap, T=0.4, safety=0.8):
                                     'order': [(round(t * 1e3, 2), name(b), round(bd[b]['centroid']['x'], 2), round(bd[b]['centroid']['z'], 2)) for t, b in order[:40]]})
 
 
+# ------------------------------------------------------------------ the engine's law (C10)
+# Joint damping (--law stage): a dashpot on each joint at its own frequency,
+# c_q = 2 zeta sqrt(k_q m_q), m_q = 1 / W_qq (W = B^T M^-1 B over the joint's two
+# chunks), zeta the material's damping ratio: 0.015 for timber with mechanical
+# joints (EN 1995-2:2004 6.4(2)). The house is timber framed; its veneer ties and
+# board screws are mechanical joints too.
+ZETA_TIMBER_MECHANICAL = 0.015
+BAND = 2e-3   # a joint is at capacity at utilisation >= 1 - band (the explicit step's capacityBand, the oracle's)
+
+
+def lowest_omega(S, Minv, bonds, nodes_mask=None):
+    """The lowest natural frequency (rad/s) of the structure held by `bonds` (shift-invert
+    Lanczos on K = B diag(k) B^T against M over the free dofs that some bond reaches)."""
+    R2 = np.einsum('bij,bjk->bik', S.R, S.R)
+    kd = np.zeros((S.m, 6, 6)); kd[:, :3, :3] = np.eye(3) * S.k[:, None, None]; kd[:, 3:, 3:] = R2 * S.k[:, None, None]; kd[~bonds] = 0
+    K = (S.B @ sp.block_diag(list(kd), format='csr') @ S.B.T).tocsc()
+    dof = (Minv > 0) & (np.asarray(abs(S.B[:, np.repeat(bonds, 6)]).sum(1)).ravel() > 0)
+    if nodes_mask is not None: dof &= np.repeat(nodes_mask, 6)
+    if dof.sum() < 8: return np.inf
+    try:
+        ev = spla.eigsh(K[dof][:, dof], k=1, M=sp.diags(1 / Minv[dof]), sigma=0, which='LM', return_eigenvectors=False)
+        return float(np.sqrt(abs(ev[0])))
+    except Exception:
+        return np.inf
+
+
+def dynamic_seq(S, live0, J0, g, removed, gap, T=0.4, safety=0.8, zeta=ZETA_TIMBER_MECHANICAL, slide='seat',
+                handback=False, rebearing=True, tick=1 / 60):
+    """The candidate engine law for C10: explicit dynamics as dynamic(), with
+      - re-bearing contacts graded as the stage grades them (PxgDestructionRebearing.cuh):
+        compression to the bearing capacity (crushing breaks), shear V + twist by friction
+        (mu C on the stage's shear measure, the slip permanent), rocking capped where the
+        fasteners' tension line T = |M0|/d0 + |M1|/d1 - C reaches zero (the contact turns
+        about its edge: nothing stored);
+      - slide 'seat': a contact is lost (breaks) when its accumulated slip leaves the bearing
+        patch: the patch is the faces' overlap, of half-widths d1 along e1 and d0 along e2
+        (the reaches its rocking line uses), and two such rectangles translated by s overlap
+        iff |s.e1| < 2 d1 and |s.e2| < 2 d0, so the seat is lost at a slip of the patch's full
+        width along it ('permanent': never; 'break': at the first slip, the static law);
+      - joint dashpots (zeta, above); symplectic Euler with damping is stable for
+        omega h <= 2 (sqrt(1 + zeta^2) - zeta), so h = safety x that / omega_max;
+      - the hand-back (c): the run is settled at the first tick when no event (a break, a
+        bearing joint's fasteners failing, a seat lost) has happened for a full period
+        2 pi / omega_1 of the anchored remainder's slowest motion, and the static verdict on
+        the current topology breaks nothing (no joint past fatal, no contact crushed or
+        sliding; its lifts and closes are its active set settling, not breaks). handback=False records that time and runs on (the long reference).
+    The books: E = KE + strain + the dead load's potential; dissipated = what the breaks
+    released + slip work + dashpot work; E + dissipated never exceeds E0 but by round-off."""
+    nf = int(S.free.sum()); fr = np.nonzero(S.free)[0]
+    Minv = np.zeros(6 * nf); I = inertia(S)
+    for k, i in enumerate(fr):
+        Minv[6 * k:6 * k + 3] = 1 / S.mass[i]; Minv[6 * k + 3:6 * k + 6] = 1 / I[i]
+    for i in removed:
+        if S.row[i] >= 0: Minv[6 * S.row[i]:6 * S.row[i] + 6] = 0
+    R2 = np.einsum('bij,bjk->bik', S.R, S.R); R2inv = np.linalg.pinv(R2)
+    Bt = S.B.T.tocsr(); alive = live0.copy(); sol = Solver(S); bd = S.s['bonds']
+    def kmul(D):
+        out = np.empty_like(D); out[:, :3] = S.k[:, None] * D[:, :3]; out[:, 3:] = S.k[:, None] * np.einsum('bij,bj->bi', R2, D[:, 3:]); return out
+    def strainv(Jc):
+        return 0.5 * ((Jc[:, :3] ** 2).sum(1) + np.einsum('bi,bij,bj->b', Jc[:, 3:], R2inv, Jc[:, 3:])) / S.k
+    kq = np.zeros((S.m, 6)); kq[:, :3] = S.k[:, None]; kq[:, 3:] = S.k[:, None] * np.einsum('bii->bi', R2)
+    Wq = np.asarray(S.B.multiply(S.B).T @ Minv).reshape(-1, 6)
+    c = np.where(Wq > 0, 2 * zeta * np.sqrt(kq / np.where(Wq > 0, Wq, 1)), 0.0)
+    x = np.random.default_rng(1).standard_normal(6 * nf) * (Minv > 0)
+    for _ in range(120):
+        D = (Bt @ x).reshape(-1, 6) * alive[:, None]; y = Minv * (S.B @ kmul(D).reshape(-1))
+        lam_ = np.linalg.norm(y) / max(np.linalg.norm(x), 1e-30); x = y / max(np.linalg.norm(y), 1e-30)
+    wmax = np.sqrt(lam_ * 1.05); dt = safety * 2 * (np.sqrt(1 + zeta * zeta) - zeta) / wmax
+    steps = int(np.ceil(T / dt)); per_tick = max(1, int(round(tick / dt)))
+    print(f'dynamic (stage law): omega_max {wmax:.3g} rad/s, zeta {zeta}, dt {dt * 1e6:.2f} us, {steps} substeps for {T} s, slide {slide}')
+    J = J0.copy(); J[~alive] = 0; v = np.zeros(6 * nf); u = np.zeros(6 * nf)
+    contact = np.zeros(S.m, bool); slip = np.zeros((S.m, 3)); n = S.normal
+    gam = np.where(S.hasSec, S.area / np.where(S.Zt > 0, S.Zt, 1), 3 * np.sqrt(2) / np.sqrt(np.maximum(S.area, 1e-12)))
+    ktw = S.k * np.einsum('bi,bij,bj->b', n, R2, n)
+    d0 = np.where(S.d0 > 0, S.d0, np.sqrt(S.area) / 2); d1 = np.where(S.d1 > 0, S.d1, np.sqrt(S.area) / 2)
+    E0 = float(strainv(J)[alive].sum()); released = slipWork = dashWork = 0.0; worstGain = 0.0
+    broken = []; order = []; kinds = collections.Counter(); t0 = time.time()
+    lastEvent = 0.0; omega1 = None; handbackAt = None; checks = []
+    # The joints' forces on the nodes for the next substep (the kernel's wr): a bond's J and its
+    # dashpot, a contact's projection P; and P alone (the contacts' transmitted force, for the books).
+    Ptot = J * alive[:, None]; P = np.zeros_like(J)
+    def project(cm):
+        """Contacts cm: the trial J projected on the contact set; the slip is permanent (J follows it)."""
+        nonlocal slipWork
+        Pc = np.zeros((int(cm.sum()), 6)); idx = np.nonzero(cm)[0]
+        if not len(idx): return Pc, idx
+        Jc = J[idx]; nn_ = n[idx]; lin = Jc[:, :3]; ln = (lin * nn_).sum(1); C = np.maximum(ln, 0); closed = ln > 0
+        tang = lin - ln[:, None] * nn_; V = np.linalg.norm(tang, axis=1)
+        ang = Jc[:, 3:]; an = (ang * nn_).sum(1); m0 = (ang * S.e1[idx]).sum(1); m1 = (ang * S.e2[idx]).sum(1)
+        s_ = V + gam[idx] * np.abs(an); sc = np.where(s_ > MU * C, MU * C / np.maximum(s_, 1e-30), 1.0)
+        rock = np.abs(m0) / d0[idx] + np.abs(m1) / d1[idx]; bsc = np.where(rock > C, C / np.maximum(rock, 1e-30), 1.0)
+        sl = closed & (sc < 1)
+        if sl.any():
+            # The radial return's plastic part: the slip (m) and its work (J) at the capped force.
+            dsl = (1 - sc)[:, None] * tang / S.k[idx, None]; slip[idx[sl]] += dsl[sl]
+            slipWork += float(((sc * V) * np.linalg.norm(dsl, axis=1))[sl].sum() + ((sc * np.abs(an)) * (1 - sc) * np.abs(an) / np.maximum(ktw[idx], 1e-30))[sl].sum())
+            J[idx[sl], :3] = (ln[:, None] * nn_ + sc[:, None] * tang)[sl]
+            J[idx[sl], 3:] -= ((1 - sc) * an)[sl, None] * nn_[sl]
+        Pc[:, :3] = ln[:, None] * nn_ + sc[:, None] * tang
+        Pc[:, 3:] = (bsc * m0)[:, None] * S.e1[idx] + (bsc * m1)[:, None] * S.e2[idx] + (sc * an)[:, None] * nn_
+        Pc[~closed] = 0
+        return Pc, idx
+    for step in range(steps):
+        t = (step + 1) * dt
+        acc = Minv * (S.B @ Ptot.reshape(-1) - g)
+        v += dt * acc; u += dt * v
+        D = (Bt @ v).reshape(-1, 6); J -= dt * kmul(D) * alive[:, None]
+        # Bonds: graded on the whole force (spring and dashpot), at capacity within the band.
+        damped = alive & ~contact
+        Fd = -(c * D) * damped[:, None]; dashWork += dt * float((c * D * D)[damped].sum())
+        tot = (J + Fd) * damped[:, None]
+        fatal, N, Vv, crush = S.stresses(tot)
+        hit = damped & (fatal >= 1 - BAND)
+        conv = hit & S.bearing & (crush < 1 - BAND) if rebearing else np.zeros(S.m, bool)
+        hit &= ~conv; contact |= conv
+        # Contacts (and the joints whose fastenings just failed): the projection, crushing on it, the seat.
+        P[:] = 0; Pc, idx = project(alive & contact); P[idx] = Pc
+        crushed = np.zeros(S.m, bool); crushed[idx] = S.stresses(P)[3][idx] >= 1 - BAND
+        off = np.zeros(S.m, bool)
+        if slide == 'seat': off = alive & contact & ((np.abs((slip * S.e1).sum(1)) >= 2 * d1) | (np.abs((slip * S.e2).sum(1)) >= 2 * d0))
+        elif slide == 'break' and len(idx): off[idx] = (np.linalg.norm(slip[idx], axis=1) > 0)
+        gone = hit | crushed | off
+        if conv.any() or gone.any():
+            lastEvent = t; omega1 = None
+            kinds['fastenings'] += int(conv.sum())
+        if gone.any():
+            released += float(strainv(J)[gone & ~contact].sum() + strainv(P)[gone & contact].sum())
+            for b in np.nonzero(gone)[0]:
+                k = 'fatal' if hit[b] else ('crushed' if crushed[b] else 'seat'); kinds[k] += 1; order.append((t, int(b), k))
+            alive[gone] = False; broken += list(np.nonzero(gone)[0]); J[gone] = 0; P[gone] = 0
+        Ptot = np.where(contact[:, None], P, tot) * alive[:, None]
+        if (step + 1) % per_tick == 0 or step == steps - 1:
+            ke = 0.5 * float(np.sum(v * v / np.where(Minv > 0, Minv, np.inf)))
+            E = ke + float(strainv(J)[alive & ~contact].sum() + strainv(P)[alive & contact].sum()) + float(u @ g)
+            worstGain = max(worstGain, E + released + slipWork + dashWork - E0)
+            if handbackAt is None:
+                closedc = contact & alive & ((P[:, :3] * n).sum(1) > 0)
+                held = alive & (~contact | closedc)
+                if omega1 is None:
+                    keep = sol.anchored(held); omega1 = lowest_omega(S, Minv, held, keep[S.free])
+                period = 2 * np.pi / omega1 if np.isfinite(omega1) else 0.0
+                if t - lastEvent >= period:
+                    Js, zs, on, keep = sol.solve(held, g)
+                    fs, Ns, Vs, cs = S.stresses(Js)
+                    lnS = (Js[:, :3] * n).sum(1)
+                    lifts = on & contact & (lnS < 0)
+                    slides = on & contact & (lnS > 0) & (Vs > MU * lnS)
+                    over = on & ~contact & (fs >= 1); crushS = on & contact & (cs >= 1)
+                    lifted = alive & contact & ~closedc
+                    closes = np.zeros(S.m, bool)
+                    if lifted.any():
+                        _, Nw, _, _ = S.stresses(sol.wouldbe(zs, np.nonzero(lifted)[0])); closes = lifted & (Nw < 0)
+                    # The hand-back's test is the static verdict's breaks (a joint past fatal, a contact
+                    # crushed or sliding: the static law breaks both); lifts and closes are its active
+                    # set settling (counted, not a break).
+                    changes = int(over.sum() + crushS.sum() + slides.sum())
+                    checks.append((round(t, 3), round(period, 3), changes, int(lifts.sum() + closes.sum())))
+                    if changes == 0:
+                        handbackAt = t
+                        print(f'hand-back at {t * 1e3:.0f} ms (no event for {(t - lastEvent) * 1e3:.0f} ms >= 2 pi / omega_1 = {period * 1e3:.0f} ms; the static verdict breaks nothing)')
+                        if handback: steps = step + 1; break
+    name = lambda b: S.types[bd[b]['node0']] + '|' + S.types[bd[b]['node1']]
+    late = [o for o in order if handbackAt is not None and o[0] > handbackAt]
+    return summary(S, broken, gap, {'mode': 'dynamic', 'law': 'stage', 'zeta': zeta, 'slide': slide, 'substeps': steps, 'dtMicroseconds': round(dt * 1e6, 3),
+                                    'simulated': round(steps * dt, 4), 'seconds': round(time.time() - t0, 1), 'contacts': int(contact.sum()), 'events': dict(kinds),
+                                    'energyStartJ': round(E0, 3), 'releasedByBreaksJ': round(released, 3), 'slipWorkJ': round(slipWork, 3), 'dashpotWorkJ': round(dashWork, 3),
+                                    'worstEnergyGainJ': worstGain, 'handbackMs': None if handbackAt is None else round(handbackAt * 1e3, 1),
+                                    'breaksAfterHandback': len(late), 'lastBreakMs': round(order[-1][0] * 1e3, 2) if order else None, 'handbackChecks': checks[-12:],
+                                    'order': [(round(t * 1e3, 2), name(b), round(bd[b]['centroid']['x'], 2), round(bd[b]['centroid']['z'], 2), k) for t, b, k in order]})
+
+
 # ------------------------------------------------------------------ set-ups
 def match_removed(scene, case, dz, tol=0.005):
     """Nodes of the intact house that the case removed: the intact nodes with no node of the
@@ -425,7 +596,11 @@ def main():
     p.add_argument('--mode', choices=['cascade', 'ramp', 'dynamic'], default='ramp')
     p.add_argument('--setup', choices=['removal', 'asbuilt'], default='removal')
     p.add_argument('--rebearing', action='store_true'); p.add_argument('--json')
-    p.add_argument('--T', type=float, default=0.4, help='dynamic: seconds simulated'); p.add_argument('--safety', type=float, default=0.8, help='dynamic: substep as this fraction of 2 / omega_max')
+    p.add_argument('--T', type=float, default=0.4, help='dynamic: seconds simulated')
+    p.add_argument('--law', choices=['study', 'stage'], default='study', help="dynamic: the study's contact law (dynamic()) or the engine's candidate (dynamic_seq: stage-graded contacts, seat loss, joint dashpots, hand-back)")
+    p.add_argument('--zeta', type=float, default=ZETA_TIMBER_MECHANICAL, help='--law stage: joint damping ratio (0: undamped)')
+    p.add_argument('--slide', choices=['seat', 'permanent', 'break'], default='seat', help='--law stage: when a sliding contact is lost')
+    p.add_argument('--handback', action='store_true', help='--law stage: stop at the hand-back (else record it and run on to T)'); p.add_argument('--safety', type=float, default=0.8, help='dynamic: substep as this fraction of 2 / omega_max')
     a = p.parse_args()
     scene = json.load(open(a.scene)); mats = scene['defaults']['solver']['materials']
     dz, gap = CASES[a.case]
@@ -454,6 +629,7 @@ def main():
         live = ~cut
         if a.mode == 'cascade': out = cascade(S, live, g, a.rebearing, gap)
         elif a.mode == 'ramp': out = ramp(S, live, g + fR, -fR, a.rebearing, gap)
+        elif a.law == 'stage': out = dynamic_seq(S, live, J0, g, removed, gap, a.T, safety=a.safety, zeta=a.zeta, slide=a.slide, handback=a.handback, rebearing=a.rebearing)
         else: out = dynamic(S, live, J0, g, removed, a.rebearing, gap, a.T, safety=a.safety)
     out.update(case=a.case, setup=a.setup, rebearing=a.rebearing, wall=round(time.time() - t0, 1))
     print(json.dumps(out, indent=1, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
