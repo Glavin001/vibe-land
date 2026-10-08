@@ -42,10 +42,10 @@ export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
 # capability). These remain for the single-feature regression tests.
 export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/install/garage-clean}
 export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/install/garage-clean}
-export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/build/garage-clean/package}
+export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/build/clean-package}
 # The PhysX destruction ctest gate's package tree (fix/mac-ctest-baseline; the hifi
 # tree once integration/high-fidelity merges it).
-export DESTRUCTION_CTEST_TREE=${VERIFY_DESTRUCTION_CTEST_TREE:-/Users/glavin/Development/PhysX/.claude/worktrees/ctest-triage/out/build/triage-package}
+export DESTRUCTION_CTEST_TREE=${VERIFY_DESTRUCTION_CTEST_TREE:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/build/clean-package}
 export IMPACT_BUILD=${VERIFY_IMPACT_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/build/impact-e-tests}
 t_start=$(date +%s)
 failed=0
