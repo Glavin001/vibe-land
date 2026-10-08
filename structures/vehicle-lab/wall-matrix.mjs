@@ -126,7 +126,9 @@ function trial(pack, target, impactorId, angle, point = 'centre', extra = {}) {
   }
   const from = (target.face + ANGLES[angle]) % 360;
   const id = `wm-${target.id}-${impactorId}-${angle}${point === 'centre' ? '' : `-${point}`}${extra.suffix ?? ''}${extra.land ? '-land' : ''}`;
-  const base = { id, probe: true, target: aim, layer: target.layer, matrix: { target: target.id, group: target.group, impactor: impactorId, angle, point, chunk: node && { index: node.i, type: node.type, material: node.material, mass: node.mass } } };
+  // pitched: the struck face is a pitched roof, whose normal lifts what it stops (the probe's
+  // rebound audit, wall_matrix.rs, leaves the struck layer's ticks to the other checks there).
+  const base = { id, probe: true, target: aim, layer: target.layer, ...(target.slope !== undefined ? { pitched: true } : {}), matrix: { target: target.id, group: target.group, impactor: impactorId, angle, point, chunk: node && { index: node.i, type: node.type, material: node.material, mass: node.mass } } };
   if (imp.truck) {
     // Start far enough back to reach the speed, square on to the bearing.
     // At 7.5 m/s^2 (the monster's tune) 30 m/s takes 60 m: 90 m out.

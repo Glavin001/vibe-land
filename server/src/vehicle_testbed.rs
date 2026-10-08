@@ -994,7 +994,9 @@ fn run(r: &Run, meta: &Value) -> Value {
                             else { (crate::city::city_ball_mass_kg(), crate::city::city_ball_radius_m()) };
                         // Steel balls and rock meteors (physx_runtime BALL_STEEL / METEOR_ROCK modulus).
                         let modulus = if a["projectile"] == "meteor" { 60e9 } else { 210e9 };
-                        probe = Some(wall_matrix::Probe::new(mass, radius, trial["layer"].as_f64().unwrap_or(0.3) as f32, modulus));
+                        let mut pr = wall_matrix::Probe::new(mass, radius, trial["layer"].as_f64().unwrap_or(0.3) as f32, modulus);
+                        pr.pitched = trial["pitched"].as_bool().unwrap_or(false);
+                        probe = Some(pr);
                     }
                     (p, Vector3::new(b.4[0], b.4[1], b.4[2]), dir, (p - target).dot(&dir))
                 })

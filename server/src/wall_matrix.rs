@@ -165,6 +165,9 @@ pub struct Probe {
     pub radius: f32,
     /// Depth of the struck layer behind the aim point (m).
     pub layer: f32,
+    /// The struck face is a pitched roof (the trial's `pitched`): its normal lifts what it
+    /// stops, so the rebound audit leaves the struck layer's ticks out.
+    pub pitched: bool,
     /// The impactor's Young's modulus (Pa); 0 for a car (no Hertz contact).
     pub modulus: f32,
     pub trace: Vec<[f32; 9]>,
@@ -180,7 +183,7 @@ pub struct Probe {
 }
 
 impl Probe {
-    pub fn new(mass: f32, radius: f32, layer: f32, modulus: f32) -> Self { Self { mass, radius, layer, modulus, trace: Vec::new(), touched: HashMap::new(), anchored_after: HashMap::new(), energy: Vec::new() } }
+    pub fn new(mass: f32, radius: f32, layer: f32, modulus: f32) -> Self { Self { mass, radius, layer, pitched: false, modulus, trace: Vec::new(), touched: HashMap::new(), anchored_after: HashMap::new(), energy: Vec::new() } }
 
     pub fn summary(&self, strength: &Strength, dt: f32) -> Value {
         let t = &self.trace;
@@ -250,11 +253,12 @@ impl Probe {
         // ground (contact removing g dt each tick) exactly meets it. The most any tick
         // exceeded it (m/s), less the f32 rounding of the two speeds it compares (eps |v|
         // each, a few roundings: 4 eps (|v before| + |v after|)): energy from nowhere when
-        // > 0, no allowance beyond that. Only ticks clear of the struck layer (at_layer: a
-        // roof's or a sill's slope may lift it): there the lab's only contact is level ground.
+        // > 0, no allowance beyond that. Every tick from first contact, the struck layer's too (a
+        // late ground contact there is what this catches), except a pitched roof's (its normal
+        // lifts what it stops: the scenario's other checks judge it).
         let rebound_excess = {
             let e = std::env::var("VIBE_WORLD_RESTITUTION").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.1);
-            (first..t.len()).filter(|&k| !at_layer(k)).map(|k| {
+            (first..t.len()).filter(|&k| !(self.pitched && at_layer(k))).map(|k| {
                 let (before, after) = (t[k - 1][3], t[k][3]);
                 let rounding = 4. * f32::EPSILON * (t[k - 1][4].abs() + t[k][4].abs());
                 (after - before + G * dt) - (1. + e) * (-before + G * dt).max(0.) - rounding
