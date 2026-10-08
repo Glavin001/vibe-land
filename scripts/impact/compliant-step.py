@@ -553,9 +553,31 @@ def run(case, args):
     return out
 
 
+def write_boxes(capture, pack, path):
+    """Each capture chunk's box as the stage's PxDestructionChunkBox (centre, half extents,
+    rotation x y z w; cluster frame, float32): its pack collider's bounds about the node's
+    centroid (a cuboid's own; a hull's bounding box), identity rotation (the packs' colliders
+    are axis-aligned). A chunk the pack does not have (a vehicle's): an empty box."""
+    C = impc.Capture(capture); S = json.loads(pathlib.Path(pack).read_text())['scenario']
+    P = np.array([[n['centroid'][k] for k in 'xyz'] for n in S['nodes']])
+    dist, idx = cKDTree(P).query(C.chunks['position'].astype(float))
+    out = np.zeros((C.n, 10), np.float32); out[:, 9] = 1.0; found = 0
+    for c in range(C.n):
+        if dist[c] > 1e-3: continue
+        k = int(idx[c]); col = S['nodeColliders'][k]; cen = P[k]
+        if col['kind'] == 'cuboid':
+            lo = -np.array([col['halfExtents'][q] for q in 'xyz']); hi = -lo
+        else:
+            V = np.array(S['shapeLibrary'][col['shape']]['points'], float).reshape(-1, 3); lo, hi = V.min(0), V.max(0)
+        out[c, 0:3] = cen + 0.5 * (lo + hi); out[c, 3:6] = 0.5 * (hi - lo); found += 1
+    pathlib.Path(path).write_bytes(out.tobytes())
+    print(f'{path}: {found} of {C.n} chunk boxes', flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--case', required=True, action='append')
+    ap.add_argument('--write-boxes', help="write the capture's chunk boxes (PxDestructionChunkBox) for the GPU replay (IMPACT_BOXES) and exit")
+    ap.add_argument('--case', action='append')
     ap.add_argument('--capture', default=str(DEFAULT_CAPTURE)); ap.add_argument('--pack', default=str(DEFAULT_PACK))
     ap.add_argument('--meta', default=str(DEFAULT_META))
     ap.add_argument('--rows', default='compliant', choices=['compliant', 'rigid'])
@@ -569,6 +591,7 @@ def main():
     ap.add_argument('--speed', type=float, default=None); ap.add_argument('--dt-us', type=float, default=None)
     ap.add_argument('--fp32', action='store_true'); ap.add_argument('--json'); ap.add_argument('--verbose', action='store_true')
     a = ap.parse_args()
+    if a.write_boxes: return write_boxes(a.capture, a.pack, a.write_boxes)
     res = []
     for case in a.case:
         o = run(case, a); res.append(o)

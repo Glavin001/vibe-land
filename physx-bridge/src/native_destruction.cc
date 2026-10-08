@@ -777,6 +777,22 @@ void NativeDestruction::create_destructible(
       }
       native_require(shape != nullptr, "invalid or failed chunk geometry");
       shape->setLocalPose(PxTransform(native_px(n.centroid)));
+#ifdef PX_DESTRUCTION_CHUNK_BOXES
+      {
+        // Its collider's bounds about the centroid: a cuboid's own, a hull's box.
+        PxVec3 lo(0.0f), hi(0.0f);
+        if (n.geom_kind == 0) { hi = native_px(n.half_extents); lo = -hi; }
+        else if (!n.convex_points.empty()) {
+          lo = hi = native_px(n.convex_points[0]);
+          for (const FfiVec3 &p : n.convex_points) { const PxVec3 q = native_px(p); lo = lo.minimum(q); hi = hi.maximum(q); }
+        }
+        if (s.boxes.size() < s.nodes.size()) s.boxes.resize(s.nodes.size());
+        PxDestructionChunkBox box;
+        box.center = native_px(n.centroid) + (lo + hi) * 0.5f;
+        box.halfExtents = (hi - lo) * 0.5f;
+        s.boxes[base + i] = box;
+      }
+#endif
       // word3's top bit marks this as a stage-owned chunk: the filter shader
       // drops contact notifications for those pairs, because the stage reads
       // the impulses on the GPU and the CPU callback has nothing to add.
@@ -1266,6 +1282,10 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.clusters = s.clusters.data();
   desc.clusterCount = static_cast<PxU32>(s.clusters.size());
   desc.chunkMassProperties = s.properties.data();
+#ifdef PX_DESTRUCTION_CHUNK_BOXES
+  s.boxes.resize(s.nodes.size());
+  desc.chunkBoxes = s.boxes.data();
+#endif
   desc.materials = s.materials.data();
   desc.materialCount = static_cast<PxU32>(s.materials.size());
 #if PX_DESTRUCTION_SCENE_VERSION >= 22
