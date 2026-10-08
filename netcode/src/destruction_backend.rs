@@ -104,6 +104,12 @@ pub struct StressSolverSettings {
     /// Empty, or parallel to `materials`: a joint's shear over normal stiffness
     /// (VIBE_SHEAR_STIFFNESS; FIDELITY_AUDIT D11); 0 or 1 isotropic.
     pub shear_stiffness_ratio: Vec<f32>,
+    /// Empty, or parallel to `materials`: each material's surface (static and
+    /// dynamic friction, restitution), its own PxMaterial with
+    /// VIBE_SURFACE_MATERIALS=1; empty: the world's material.
+    pub surface_static_friction: Vec<f32>,
+    pub surface_dynamic_friction: Vec<f32>,
+    pub surface_restitution: Vec<f32>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -138,6 +144,9 @@ impl Default for StressSolverSettings {
             shear_friction: Vec::new(),
             shear_capacity_limit: Vec::new(),
             shear_stiffness_ratio: Vec::new(),
+            surface_static_friction: Vec::new(),
+            surface_dynamic_friction: Vec::new(),
+            surface_restitution: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,
