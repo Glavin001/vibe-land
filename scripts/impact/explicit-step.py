@@ -52,7 +52,7 @@ def cone_metric(W, Ps, mu):
     (argmin (P - Ps)^T W (P - Ps) / 2): it never adds kinetic energy, where scaling the tangential
     part alone can (W couples normal and tangential on an off-centre contact). The GPU's search:
     the boundary P = l d(t), d = (-1, mu cos t, mu sin t), l = max(0, d^T W Ps / d^T W d); t by a
-    16-point scan of the circle from Ps's tangential direction, refined by 24 golden-section steps."""
+    16-point scan of the circle from Ps's tangential direction, refined by safeguarded Newton."""
     tn = np.hypot(Ps[1], Ps[2])
     if Ps[0] <= 0 and tn <= mu * -Ps[0]: return Ps.copy()
     WP = W @ Ps
@@ -68,12 +68,28 @@ def cone_metric(W, Ps, mu):
         t = t0 + 2 * np.pi * k / 16; v = value(t)[0]
         if v < best: best, tb = v, t
     if tb is None: return np.zeros(3)
-    a, b = tb - 2 * np.pi / 16, tb + 2 * np.pi / 16
+    # The best direction refined (the GPU's, PhysX perf/explicit-step): on the boundary the value is
+    # -N^2 / (2 D), N = d^T W Ps, D = d^T W d; R = N^2 / D is maximal where F = 2 N' D - N D' = 0 (N > 0).
+    # Safeguarded Newton on the offset u from the scan's best, bracketed in the scan's interval about it
+    # (which the golden section before it assumed too); steps that leave the bracket or meet F' >= 0 bisect.
+    st = 2 * np.pi / 16; a, b, u = -st, st, 0.0
     for _ in range(24):
-        c, e = b - 0.618034 * (b - a), a + 0.618034 * (b - a)
-        if value(c)[0] < value(e)[0]: b = e
-        else: a = c
-    t = 0.5 * (a + b)
+        t = tb + u; c, s = np.cos(t), np.sin(t)
+        d = np.array([-1.0, mu * c, mu * s]); e = np.array([0.0, -mu * s, mu * c]); f = np.array([0.0, -mu * c, -mu * s])
+        N, N1, N2 = d @ WP, e @ WP, f @ WP; D = d @ W @ d; D1 = e @ W @ d + d @ W @ e; D2 = f @ W @ d + 2 * (e @ W @ e) + d @ W @ f
+        if not (N > 0 and D > 0):
+            if u > 0: b = u
+            else: a = u
+            un = 0.5 * (a + b)
+        else:
+            F = 2 * N1 * D - N * D1; F1 = 2 * N2 * D + N1 * D1 - N * D2
+            if F > 0: a = u
+            else: b = u
+            un = u - F / F1 if F1 < 0 else 0.5 * (a + b)
+            if not (a < un < b): un = 0.5 * (a + b)
+        done = abs(un - u) <= 4 * np.finfo(np.float32).eps * st; u = un
+        if done: break
+    t = tb + u
     if value(t)[0] < best: tb = t
     _, l, d = value(tb)
     return l * d
