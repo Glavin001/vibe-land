@@ -3,7 +3,8 @@
 # after changing PhysX or Blast sources, then refresh the artifact manifest the
 # bridge verifies every library against.
 #
-#   scripts/perf/rebuild-garage-sdk.sh            # ~3-4 min with GPU source changes
+#   scripts/perf/rebuild-garage-sdk.sh            # call it directly: it takes a shared GPU
+#                                                 # slot only for its install's warm gate
 #   PHYSX_SRC=../PhysX/.claude/worktrees/x GARAGE_SDK_NAME=garage-x scripts/perf/rebuild-garage-sdk.sh
 #                                                 # a branch in its own worktree, built in its own
 #                                                 # tree and installed beside the default SDK
@@ -52,7 +53,10 @@ if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
   mv "$LINK" "$dest"; ln -s "$(basename "$dest")" "$LINK"
   echo "moved the unversioned install to $dest"
 fi
-python3 -B tools/scripts/build-destruction-sdk.py "${OPTS[@]}" --stage sdk --install
+# Only this stage touches the GPU (the Metal pipeline warm gate in its install
+# step, a few seconds): it alone takes a shared slot. The gpu stage above only
+# compiles, so the script runs unwrapped (call it directly, not under gpu-run).
+VIBE_GPU_SHARED=1 "$ROOT/scripts/perf/gpu-run.sh" "sdk-${NAME}-install" python3 -B tools/scripts/build-destruction-sdk.py "${OPTS[@]}" --stage sdk --install
 cp out/sdk-artifacts.json "$VERSIONED/sdk-artifacts.json"
 # Repoint $LINK in one rename (a relative link, so the tree can move).
 ln -sfn "$(basename "$VERSIONED")" "$LINK.next" && python3 -c 'import os,sys;os.replace(sys.argv[1],sys.argv[2])' "$LINK.next" "$LINK"

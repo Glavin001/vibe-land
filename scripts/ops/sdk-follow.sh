@@ -5,7 +5,7 @@
 # scripts/fidelity/branches.tsv and scripts/ops/sdk-follow.tsv (build-only). When one is not in integration/high-fidelity
 # (the hifi worktree), it merges each such branch there and rebuilds and installs
 # the versioned SDK (scripts/perf/rebuild-garage-sdk.sh: garage-hifi@<rev> behind
-# the garage-hifi link) through gpu-run.sh on a shared slot. A branch that moves
+# the garage-hifi link); it holds a shared GPU slot only for the install's warm gate. A branch that moves
 # again during a build is picked up by the next check, so a burst of commits costs
 # one more build, not one per commit. In-flight runs keep the revision they started
 # on; new runs start at most one build behind (about 5-10 min).
@@ -73,8 +73,8 @@ while true; do
       if [ $ok = 1 ]; then
         rev=$(git -C "$SRC" rev-parse --short=9 HEAD)
         build=$ROOT/target/ops/sdk-follow-build-$rev.log
-        if VIBE_GPU_SHARED=1 "$ROOT/scripts/perf/gpu-run.sh" sdk-follow env VIBE_GPU_SHARED=1 PHYSX_SRC="$SRC" GARAGE_SDK_NAME="$NAME" \
-             "$ROOT/scripts/perf/rebuild-garage-sdk.sh" > "$build" 2>&1; then
+        # The rebuild takes a GPU slot only for its install's warm gate (rebuild-garage-sdk.sh).
+        if PHYSX_SRC="$SRC" GARAGE_SDK_NAME="$NAME" "$ROOT/scripts/perf/rebuild-garage-sdk.sh" > "$build" 2>&1; then
           say "rebuilt $rev with $(IFS=,; echo "${merged[*]}")"
           failed_at=""
         else
