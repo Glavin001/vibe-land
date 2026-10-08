@@ -57,6 +57,8 @@ one() {
       --skip lab,town,wire,walk,node > "$d/rest.log" 2>&1
   else
     [ -f "$d/$c.json" ] && return 0
+    # A label is reused across output directories: never copy an earlier run's report.
+    rm -f "$ROOT/target/vehicle-testbed/$label.json"
     (arm_env "$arm" && cd "$ROOT" && env VIBE_CITY_SCENE="$LAB" VIBE_TESTBED_META="$out/$arm/lab.meta.json" VIBE_TESTBED_CARS=monster \
       VIBE_TESTBED_TRIALS="$c\$" VIBE_TESTBED_SCENE=lab VIBE_TESTBED_LABEL="$label" "$GPU_RUN" "$label" "$ROOT/$bin" vehicle_testbed --ignored --nocapture --test-threads=1) \
       > "$d/$c.log" 2>&1 || echo "[repeats] $arm $c r$k: test bed exited non-zero ($d/$c.log)"
