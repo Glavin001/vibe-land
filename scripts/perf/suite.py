@@ -255,6 +255,10 @@ def gpu_cmd(label: str, cmd: list[str], shared: bool) -> tuple[list[str], dict]:
 
 def run_logged(cmd: list[str], env: dict, cwd: Path, logfile: Path, timeout: float) -> tuple[int, float, float]:
     """(rc, seconds holding the GPU, seconds waiting for it)."""
+    # Inside the suite's one exclusive hold, each job's gpu-run must see it, or it
+    # queues for the very lock its parent holds (a deadlock: job_env strips VIBE_*).
+    if os.environ.get("VIBE_GPU_HELD"):
+        env = {**env, "VIBE_GPU_HELD": os.environ["VIBE_GPU_HELD"]}
     t0 = time.time()
     with open(logfile, "w") as f:
         try:
