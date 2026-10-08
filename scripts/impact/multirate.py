@@ -10,24 +10,21 @@
 PATCH.exd: an explicit patch as its window starts, written by the PhysX capture replay
 (IMPACT_EXPLICIT_DUMP=PREFIX; PREFIX-p<p>.exd, with PREFIX-p<p>.gpu, the GPU window's outcome).
 
-The scheme (explicit-step.py run(levels=...)): every joint j gets a level L_j, the largest L with
-2^L h0 omega~_j <= 0.9 x 2, i.e. omega~_j <= omega / 2^L for h0 = 0.9 x 2 / omega (the window's
-bound), where omega~_j^2 = lambda_max(k^1/2 B_j^T (deg M^-1) B_j k^1/2) is the joint's element
-frequency on split masses (each node's inverse mass times its live-joint count: by the element
-eigenvalue theorem the assembled lambda_max is at most the largest such element's, so each joint
-is stable on its own period). Joint j fires on the finest steps n with 2^L_j | n: its relative
-displacement since its last firing from the nodes' displacement accumulators (u += h0 v each finest
-step), then its law (trial, fracture, radial return); its force is held between firings. Rows and
-nodes step every finest step.
+The scheme (explicit-step.py run(levels=...)): every joint j gets a level L_j and fires on the finest
+steps n with 2^L_j | n: its relative displacement since its last firing from the nodes' displacement
+accumulators (u += h0 v every finest step), then its law; its force reaches its nodes as one impulse
+2^L_j h0 B (J - J0) at the next step (AVI form). Rows and nodes step every finest step. Levels:
+--rules cw (per-node Collatz-Wielandt prefix sums on exFinish's iterate), split (split-mass element
+theorem), element (the notes' omega_j on full masses: not rigorous per subsystem); node_levels() is
+a node partition's (for its work fraction only).
 
-The gate, per patch, against the uniform reference (every joint every step, h0) and that
-reference's own spread (the same at h0 / 2):
-  broken joints' Jaccard, the impactors' momentum change, the energy invariant (fracture + plastic
-  <= impactors' KE loss + the joints' elastic energy at rest + the dead load's work), locality
-  (median / max distance of the broken joints from the first contact), the break times' shift
-  (quantisation to a joint's period), and stability: elastic runs (no fracture or yield) over
-  --long-ticks ticks, E_dev = 1/2 v^T M v + 1/2 sum (J - J0)^2 / k, no growth (a resonance of
-  commensurate steps, Fong, Darve & Lew 2008, would grow).
+The gates, per patch: the linearised window's spectral radius over a coarsest period (--radius);
+the shadow-energy books (exactly 0 for the uniform step; long runs, full and elastic, over
+--long-ticks); fidelity against the uniform step's own h vs h/2 spread (broken and yielded sets,
+dp, KE, fracture, plastic, distance from the impact lines) and the break-time shift.
+
+Result (2026-10-08, PhysX docs/destruction/EXPLICIT_PERF_NOTES.md): the AVI levels resonate (rho - 1
+up to 0.61 per coarsest period on a lab patch with every level's subsystem within its CFL); not kept.
 """
 import argparse, importlib.util, json, pathlib, sys
 import numpy as np
@@ -156,7 +153,7 @@ def levels_from_omegas(w, live, omega, cap):
     return L
 
 
-def cw_levels(X, P, omega, cap, products=8):
+def cw_levels(X, P, omega, cap, products=8, nodal=False):
     """Levels from the window's own bound (the GPU's exFinish: Collatz-Wielandt on L >= |S|, S = M^-1/2 K M^-1/2,
     lumped to translation and rotation per node), rigorous per level: for every L the joints of level >= L
     form a subsystem whose largest frequency is at most omega / 2^L, so each level's period 2^L h0 meets the
@@ -195,6 +192,12 @@ def cw_levels(X, P, omega, cap, products=8):
         if not ym > 0: break
         x = np.where(Y > 0, Y / ym, 1.0)
     lam_full, x = best
+    if nodal:   # each chunk node's own row of L at x = 1 (lumped Gershgorin of S): a bound for every principal
+        # subsystem containing the node (the same x for all its rows; the global iterate's quotients all tend
+        # to rho(L) and say nothing local)
+        x1 = np.ones((nn, 2)); Y = np.einsum('iab,ib->ia', Ld, x1)
+        for (l, i), (j, Lo) in off.items(): Y[i] += Lo @ x1[j]
+        return np.max(Y, axis=1), lam_full
     q = {}
     for (l, i), Lown in own.items():
         y = Lown @ x[i]
@@ -214,6 +217,21 @@ def cw_levels(X, P, omega, cap, products=8):
     for l in np.where(live)[0]:
         L[l] = min(allow[(l, i)] for i in ends[l] if i >= 0) if any(i >= 0 for i in ends[l]) else cap
     return L, np.sqrt(lam_full)
+
+
+def node_levels(X, P, omega, cap):
+    """A nodal partition (Belytschko-style subcycling, Smolinski 1992, Gravouil-Combescure 2001): node i steps
+    at 2^L h0 where its own Collatz-Wielandt quotient (L x)_i / x_i <= omega^2 / 4^L (a principal subsystem's
+    bound is at most its rows' largest quotient); a joint runs at the finer of its two nodes' rates. Returns
+    (node levels, joint levels)."""
+    q, _ = cw_levels(X, P, omega, cap, nodal=True); lam = omega * omega
+    Ln = np.zeros(P.nn, np.int64)
+    for i in range(P.nn):
+        while Ln[i] < cap and q[i] <= lam / 4.0 ** (Ln[i] + 1): Ln[i] += 1
+    live = P.alive0 & P.joint & X.inpatch; L = np.zeros(P.nl, np.int64)
+    for l in np.where(live)[0]:
+        e = [i for i in X.ends[l] if i >= 0]; L[l] = min(Ln[i] for i in e) if e else cap
+    return Ln, L
 
 
 def subsystem_omegas(X, P, L, iters=300):
