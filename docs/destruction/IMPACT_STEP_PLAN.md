@@ -15,6 +15,57 @@ No engine code changed and no GPU was used. The prototype is CPU-only (NumPy, FP
 
 This is still one capture. The meteor and the truck need impact-level dumps from a GPU replay.
 
+## Status (2026-10-08, implementation): what the lab showed
+
+Steps 1-3 of §6 were carried out. Findings that change the plan:
+
+1. **The far damage is the static verdict's, and its cause is a warm start, not the dead load.**
+   - **Lab** (step arm B, high profile, PhysX garage-impact 3426f54f7, 3 repeats per shot,
+     `scripts/impact/repeat-trials.sh`):
+     - Cannonball: collapsed 3 of 3. 2,628-2,785 house bonds broke, 96-97% of them by the static
+       verdict. One corrected pass alone broke 2,466-2,672.
+     - Truck: the static verdict made 96% of the breaks.
+     - Meteor into the front: local in every repeat, the step decided almost all of its breaks.
+   - **Mechanism** (captures of the collapse pass and the pass before it,
+     `PX_DESTRUCTION_IMPACT_CAPTURE_STATIC`):
+     - The trial pass's static inputs carry the impactor's rigid stop. For the cannonball that is
+       4.6e7 N on a 2 kg brick; for the truck, 3.5e6 N of depenetration from its released rows.
+     - The corrected pass's loads are dead weight only (sum |load| 2.28e7 N, weight 2.29e7 N).
+     - Its 64-iteration elastic solve starts from the trial's solution, under loads it no longer
+       has. It is unconverged (residual 1.1e7 N) and its verdict breaks 2,466.
+     - The same loads, solved to convergence, break nothing.
+   - **Reproducer:** PhysX `destruction_gpu_impact_static_handoff_{cannon,truck}`.
+2. **The fixes are in the handoff, not in the static verdict's material law:**
+   - **Contact routing** (`PX_DESTRUCTION_IMPACT_ROUTE`, rule 2 of §1).
+     - The reproducer's corrected pass breaks 0 joints on the cannonball, against 2,610 unrouted.
+     - On the truck it breaks 12 joints against 3,053 unrouted; its own loads, converged, break 21.
+   - **Contact bounds per impactor body** (`PX_DESTRUCTION_IMPACT_BOUND_IMPACTOR`), instead of per
+     struck cluster.
+   - **The corrected pass's elastic solve warm-started from the tick's start**
+     (`PX_DESTRUCTION_CORRECTED_WARM_START`). It is opt-in and a general fix: every profile has a
+     corrected pass.
+     - Unrouted, it gives the cannonball its own loads' verdict, 0.
+     - It does not fix the truck, whose corrected pass still carries depenetration loads (2,692
+       either way). Routing is needed too.
+3. **Ductile yield in the static verdict (rule 1 of §1) is left out.**
+   - With routing, neither collapse needs it: the corrected loads, converged, break 0 (cannonball)
+     and 21 (truck).
+   - Where a static cascade does remain, ductile yield makes it worse. The roof meteor's damaged
+     house under its dead load:
+     - the brittle cascade, every round converged, breaks 682;
+     - the secant ductile yield of §1 forms a plastic mechanism and breaks 1,126, with 1,042 more
+       yielded.
+     - That is genuine plastic collapse of what the meteor left of the roof frame, not an artefact
+       of the verdict.
+   - The offline +938 / +14 result of §1 came from E's 35-break pattern, not from what the lab
+     produces.
+4. **The explicit step (§4) is implemented** as method 2, `PX_DESTRUCTION_IMPACT_EXPLICIT`
+   (arm `high-explicit`).
+   - **Against `explicit-step.py --fp32` on the cannonball dump:** the broken set's Jaccard is
+     1.000. The impactor's Δp is within 0.09% at 32 µs and within 0.18% at the production substep.
+   - **Substep:** the smaller Gershgorin bound of M⁻¹K and M⁻¹ᐟ²KM⁻¹ᐟ² is rigorous. It gives 49 µs
+     against the true 64 µs, where M⁻¹K alone gives 32 µs.
+
 ## Summary
 
 1. **Most of the lab's far damage is not decided by the impact step. It comes from the static
