@@ -14,9 +14,11 @@ the shot's target, or for a drive the house's front face at the car's lane.
 import json, math, os, sys, collections
 
 root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-label = sys.argv[1]
+args = [a for a in sys.argv[1:] if not a.startswith('--json=')]
+json_out = next((a[7:] for a in sys.argv[1:] if a.startswith('--json=')), None)
+label = args[0]
 report = json.load(open(f'{root}/target/vehicle-testbed/{label}.json'))
-pack = json.load(open(sys.argv[2] if len(sys.argv) > 2 else report['scene']))
+pack = json.load(open(args[1] if len(args) > 1 else report['scene']))
 meta = json.load(open(report['scene'].replace('.json', '.meta.json')))
 sc = pack['scenario']; groups = sc['nodeGroups']; types = sc['nodeTypes']
 names = [m['name'] for m in pack['defaults']['solver']['materials']]
@@ -42,6 +44,7 @@ def hit_point(trial):
 
 print(f'{label}: framed-house {total} joints')
 print(f"{'trial':26s} {'broken':>7s} {'>4 m':>6s} {'>8 m':>6s} {'frame':>11s} {'roof':>9s} {'skin':>6s} {'far m':>6s}  top materials")
+summary = {}
 for run in report['runs']:
     tid = run.get('trial'); trial = trials.get(tid, {})
     pairs = [tuple(p) for p in run.get('sceneBrokenPairs', []) if groups[p[0]].startswith('framed-house')]
@@ -54,5 +57,11 @@ for run in report['runs']:
     skin = sum(1 for p in pairs if p in mat and any(s in names[mat[p][0]] for s in SKIN_MATS))
     far4 = sum(1 for x in d if x > 4); far8 = sum(1 for x in d if x > 8)
     top = collections.Counter(names[mat[p][0]] for p in pairs if p in mat).most_common(4)
+    a = run.get('attack') or {}
+    summary[tid] = {'broken': len(pairs), 'total': total, 'far4': far4, 'far8': far8, 'frame': frame, 'frameTotal': frame_total,
+        'roof': roof, 'roofTotal': roof_total, 'farthest': round(max(d) if d else 0, 1), 'pastTarget': a.get('pastTarget'),
+        'maxZ': run.get('maxZ'), 'impactSpeed': run.get('impactSpeed'), 'crushed': run.get('crushedChunks'), 'failedSteps': run.get('failedSteps')}
     print(f"{tid:26s} {len(pairs):7d} {far4:6d} {far8:6d} {frame:5d}/{frame_total:<5d} {roof:4d}/{roof_total:<4d} {skin:6d} {max(d) if d else 0:6.1f}  "
           + ', '.join(f'{k} {v}' for k, v in top))
+
+if json_out: json.dump(summary, open(json_out, 'w'), indent=1)
