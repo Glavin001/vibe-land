@@ -222,7 +222,7 @@ tell a load from the time step.
    - Rigid rows punch the block out in one substep (MN), so the panel never feels it. Their
      locality is the artefact above.
    - Reading: authoring and expectation, not the contact. The free-standing wall's flexural
-     capacity is about 10x below its punching capacity. Not insensitive to the crater radius:
+     capacity is about 10x below its punching capacity. Insensitive to the crater radius:
      crater from the ball's own radius gives 15 of 19.
 2. **The 100 kg ball into the stone house stops.**
    - Stone has no crush law in the packs, so its contact yields at its compressive strength,
