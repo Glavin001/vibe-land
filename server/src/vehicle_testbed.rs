@@ -146,7 +146,10 @@ struct Damage {
 /// VIBE_TESTBED_AUDIT=1: read the car back every tick and explain each break.
 fn auditing() -> bool { std::env::var_os("VIBE_TESTBED_AUDIT").is_some() }
 
-fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, damage: &mut Damage, geometry: &crate::vehicle_assets::PreparedGeometry, accel_g: f32) {
+/// `front_z`: the car's leading point along world z at the tick's start (its
+/// pose plus its hull's forward extent along its heading), for the audit's
+/// first-contact penetration (NaN: not known).
+fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, damage: &mut Damage, geometry: &crate::vehicle_assets::PreparedGeometry, accel_g: f32, front_z: f32) {
     // The breaking step's stress input on both chunks of a bond, by source
     // (kN: prepared -- gravity, rotation, Vehicle2's wheel loads --,
     // constraint, contact): the native solve report, when auditing.
@@ -207,7 +210,7 @@ fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, da
                 damage.balance.push(json!({"tick": tick, "accelG": accel_g, "massKg": mass,
                     "dynamicsKN": ((mass * accel_g as f64 * vibe_netcode::movement::GRAVITY as f64) / 1e2).round() / 10.,
                     "preparedKN": n(p), "constraintKN": n(k), "contactKN": n(t), "contactAbsKN": (t_abs / 1e2).round() / 10., "allKN": n(all),
-                    "contactVecKN": t.map(|x| (x / 1e2).round() / 10.)}));
+                    "contactVecKN": t.map(|x| (x / 1e2).round() / 10.), "frontZ": if front_z.is_finite() { json!((front_z * 1e3).round() / 1e3) } else { Value::Null }}));
             }
         }
     }
@@ -510,7 +513,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     };
     for _ in 0..SETTLE_TICKS { step(&mut arena, &mut city, &mut tick, None); }
     let mut damage = Damage { broken: BTreeMap::new(), parts_off: BTreeSet::new(), wheel_mask: 15, last: HashMap::new(), last_wheels: Vec::new(), audits: Vec::new(), at_capacity: Vec::new(), balance: Vec::new(), body_mass: [0.; 2] };
-    read_damage(&mut arena, id, tick, &mut damage, geometry, 0.);
+    read_damage(&mut arena, id, tick, &mut damage, geometry, 0., f32::NAN);
     let settled_broken = damage.broken.len();
     let scene_before = scene_broken(&mut arena, r.scene);
     // The struck structure: the brick-veneer house for its trials, a wall-matrix
@@ -1074,7 +1077,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                 }
             }
         }
-        if k % SAMPLE_EVERY == 0 || auditing() { read_damage(&mut arena, id, tick, &mut damage, geometry, accel_g); }
+        if k % SAMPLE_EVERY == 0 || auditing() { read_damage(&mut arena, id, tick, &mut damage, geometry, accel_g, s.p.z + s.forward.z * front); }
         if tracing && (k % 6 == 0 || auditing()) {
             let spin = [after.w.x, after.w.y, after.w.z].map(|w| (w * 100.).round() / 100.);
             trace.push(json!([k, (speed * 100.).round() / 100., (after.p.z * 100.).round() / 100., (after.p.y * 1000.).round() / 1000., after.jounce.map(|j| if j.is_finite() { (j * 1000.).round() / 1000. } else { -1. }), damage.broken.len(), damage.parts_off.len(), damage.wheel_mask, after.on_road, (after.p.x * 100.).round() / 100., spin, (accel_g * 10.).round() / 10.]));
@@ -1090,7 +1093,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                 && fall_ticks.is_some_and(|f| k >= last_break + f) { ended_early = Some(k); break; }
         }
     }
-    read_damage(&mut arena, id, tick, &mut damage, geometry, 0.);
+    read_damage(&mut arena, id, tick, &mut damage, geometry, 0., f32::NAN);
     let end = car_state(&mut arena, id);
     // Where the projectile ended, in the car's frame (x right, y up, z forward).
     let projectile_end_world = projectile.and_then(|pid| arena.snapshot_dynamic_bodies().into_iter().find(|b| b.0 == pid)).map(|b| Vector3::new(b.1[0], b.1[1], b.1[2]));
@@ -1130,7 +1133,7 @@ fn run(r: &Run, meta: &Value) -> Value {
             path += ((p.x - last.x).powi(2) + (p.z - last.z).powi(2)).sqrt();
             last = p;
         }
-        read_damage(&mut arena, id, tick, &mut damage, geometry, 0.);
+        read_damage(&mut arena, id, tick, &mut damage, geometry, 0., f32::NAN);
         // Net displacement driven (a car rocking on the spot covers path, not ground).
         let net = ((last.x - from.x).powi(2) + (last.z - from.z).powi(2)).sqrt();
         drive_away = json!({"metres": net, "path": path, "seconds": (reverse + forward) as f32 * DT, "settled": quiet >= 30});

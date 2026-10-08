@@ -2600,6 +2600,20 @@ public:
     actor->setContactReportThreshold(contact_report_threshold_);
     actor->setSolverIterationCounts(dynamic_solver_position_iterations(),
                                     dynamic_solver_velocity_iterations());
+    // VIBE_VEHICLE_SPECULATIVE_CCD=1: speculative contacts on the car. Its
+    // shapes' contact offset is 2 mm, so a car closing at v meets a surface
+    // only once it is inside it: at 20 m/s (0.33 m a tick) its front starts
+    // the first contact tick 0.26 m deep in a wall (physx-bridge/tests/
+    // vehicle_contact_load.rs), and the solver's position correction adds its
+    // depenetration push to the stop. Speculative CCD widens the car's contact
+    // generation by how far it moves this step, so the contact is found at
+    // the gap and the solve stops the car at the face. A per-body flag of the
+    // discrete GPU pipeline (the stage forbids only scene CCD).
+    static const bool speculative = [] {
+      const char *raw = std::getenv("VIBE_VEHICLE_SPECULATIVE_CCD");
+      return raw != nullptr && raw[0] == '1';
+    }();
+    if (speculative) actor->setRigidBodyFlag(PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD, true);
     require(finite(desc.angular_damping) && desc.angular_damping >= 0.0f,
             "vehicle angular damping must be non-negative");
     actor->setAngularDamping(desc.angular_damping);
@@ -2681,7 +2695,16 @@ public:
         require(position.isFinite(), "vehicle part pose is nonfinite");
         shape->setLocalPose(PxTransform(position+center,rotation));
         shape->setRestOffset(0.0f);
-        shape->setContactOffset(0.002f);
+        // VIBE_VEHICLE_CONTACT_OFFSET (m; what-if, default 2 mm): a contact
+        // offset of at least v dt lets the narrowphase find a surface the car
+        // will reach within the tick, so the solve stops it at the face
+        // instead of meeting it 0.26 m deep at 20 m/s (vehicle_contact_load).
+        static const float offset = [] {
+          const char *raw = std::getenv("VIBE_VEHICLE_CONTACT_OFFSET");
+          const float v = raw ? std::strtof(raw, nullptr) : 0.0f;
+          return v > 0.002f ? v : 0.002f;
+        }();
+        shape->setContactOffset(offset);
         configure_shape(*shape, entity_id, record.collision_group, record.collision_mask);
         shape->userData = reinterpret_cast<void *>(static_cast<std::uintptr_t>(part.part_index) + 1u);
       }

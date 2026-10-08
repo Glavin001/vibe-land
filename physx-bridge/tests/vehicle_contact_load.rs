@@ -140,19 +140,32 @@ fn setup(y: f32, wall_z: f32, speed: f32, wall: Wall) -> World {
 }
 
 /// One tick: the external load the trial solve graded the car against (N),
-/// and the force its measured momentum change needs (N).
-struct Tick { load_n: f32, needed_n: f32 }
+/// the force its measured momentum change needs (N), and how deep the car's
+/// front sat in the wall's face at the tick's start (m; negative: a gap).
+struct Tick { load_n: f32, needed_n: f32, depth_m: f32 }
+
+/// The car's front (its chassis box's leading face, z + 1.3) against the
+/// wall's struck face (the static box's 0.25 m half thickness, the blocks'
+/// 0.125 m): positive is penetration at the start of a tick.
+fn front_depth(world: &World, wall_z: f32, wall: Wall) -> f32 {
+    let face = wall_z - if matches!(wall, Wall::Static) { 0.25 } else { 0.125 };
+    world.vehicle_snapshots().unwrap()[0].pose.position.z + 1.3 - face
+}
 
 /// Throw the car at `speed` into the wall and return each tick's summed
 /// external load (contact and constraint) and the force its measured momentum
 /// change needs.
 fn throw(speed: f32, wall: Wall) -> (Vec<Tick>, f32) {
-    let mut world = setup(30., 3.5, speed, wall);
+    let wall_z = 3.5;
+    let mut world = setup(30., wall_z, speed, wall);
     let mass: f32 = 920.;
     let mut out = Vec::new();
     for k in 0..90 {
         let before = world.vehicle_snapshots().unwrap()[0].linear_velocity;
-        world.step().unwrap();
+        let depth = front_depth(&world, wall_z, wall);
+        if let Err(e) = world.step() {
+            panic!("{speed} m/s into a {wall:?} wall, tick {k}: {e:?}; the stage's status {:?}", world.native_last_status().map(|s| (s.error, s.stress_topology_error)));
+        }
         let status = world.native_tick().unwrap();
         assert_eq!(status.error, 0);
         let after = world.vehicle_snapshots().unwrap()[0].linear_velocity;
@@ -175,7 +188,7 @@ fn throw(speed: f32, wall: Wall) -> (Vec<Tick>, f32) {
         // The car falls freely: its momentum change is gravity's and the contact's.
         let dv = v(after.x - before.x, after.y - before.y + G * DT, after.z - before.z);
         let needed = mass * (dv.x * dv.x + dv.y * dv.y + dv.z * dv.z).sqrt() / DT;
-        out.push(Tick { load_n: (sum.x * sum.x + sum.y * sum.y + sum.z * sum.z).sqrt(), needed_n: needed });
+        out.push(Tick { load_n: (sum.x * sum.x + sum.y * sum.y + sum.z * sum.z).sqrt(), needed_n: needed, depth_m: depth });
     }
     (out, mass)
 }
@@ -183,7 +196,12 @@ fn throw(speed: f32, wall: Wall) -> (Vec<Tick>, f32) {
 #[test]
 #[ignore = "requires the native-destruction GPU SDK"]
 fn a_cars_graded_load_is_the_impulse_that_changed_its_momentum() {
+    // Every wall runs before the verdict, so one failing wall does not hide the others.
+    let mut failures = Vec::new();
+    // CONTACT_LOAD_WALLS=Breakable,Static (diagnosis): only those walls.
+    let only = std::env::var("CONTACT_LOAD_WALLS").ok();
     for (speed, wall) in [(20.0f32, Wall::Breakable), (20.0, Wall::Stage), (5.0, Wall::Stage), (20.0, Wall::Static)] {
+        if let Some(only) = &only { if !only.split(',').any(|w| w == format!("{wall:?}")) { continue; } }
         let (ticks, mass) = throw(speed, wall);
         println!("{speed} m/s into a {wall:?} wall");
         let hit: Vec<(usize, &Tick)> = ticks.iter().enumerate().filter(|(_, t)| t.load_n > 0.05 * mass * G || t.needed_n > 0.05 * mass * G).collect();
@@ -193,7 +211,7 @@ fn a_cars_graded_load_is_the_impulse_that_changed_its_momentum() {
         let mut worst = 0f32;
         for (k, t) in &hit {
             let ratio = t.load_n / t.needed_n.max(0.05 * mass * G);
-            println!("{speed:4.1} m/s tick {k:2}: graded load {:9.1} kN, momentum change needs {:9.1} kN, ratio {ratio:6.2}", t.load_n / 1e3, t.needed_n / 1e3);
+            println!("{speed:4.1} m/s tick {k:2}: graded load {:9.1} kN, momentum change needs {:9.1} kN, ratio {ratio:6.2}, front {:+.3} m in the face at the tick's start", t.load_n / 1e3, t.needed_n / 1e3, t.depth_m);
             // Tolerance: 10% (the solver's FP32 impulses against the velocity
             // difference) and a quarter of the car's weight (one tick's gravity
             // sampled against a contact that starts or ends mid-tick).
@@ -202,6 +220,7 @@ fn a_cars_graded_load_is_the_impulse_that_changed_its_momentum() {
         }
         let under = hit.iter().map(|(_, t)| t.load_n / t.needed_n.max(0.05 * mass * G)).fold(f32::MAX, f32::min);
         println!("{speed} m/s, {wall:?}: worst ratio past tolerance {worst:.2}, least {under:.2}");
-        assert!(worst == 0.0, "{speed} m/s, {wall:?} wall: the car's joints were graded against {worst:.2}x the load that changed its momentum");
+        if worst != 0.0 { failures.push(format!("{speed} m/s, {wall:?} wall: the car's joints were graded against {worst:.2}x the load that changed its momentum")); }
     }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
 }
