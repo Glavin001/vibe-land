@@ -162,9 +162,18 @@ scripts/verify/impact-arms.sh --arms step --truth scripts/verify/ground-truth   
   - **held:** nothing holds past its capacity (no infinite wall, no partial
     hold).
 
-  Locality is recorded (each broken bond's distance from the impact line), not
-  gated. Its physics criterion is that every break is the bond's own verdict,
-  which the held gate and the at-rest gate cover. A trial that fails stays out
+  A driving trial (the truck into the house) has no shot terms: the test bed
+  records its probe but no energy terms or bond ids. Its gates are **enters**
+  (the car's middle gets past the face it first struck), **slows** (it leaves
+  slower than it came, its momentum into the structure) and **held**. A
+  `shots` run whose probe mass is not the shot's own (test beds before the
+  per-shot mass fell back to the cannonball's 10.65 t) is refused: the gates
+  read that mass.
+
+  Locality is recorded (each broken bond's distance from the impact line, and
+  the house's summary: frame still anchored, roof members down, breaks by
+  distance), not gated. Its physics criterion is that every break is the
+  bond's own verdict, which the held gate and the at-rest gate cover. A trial that fails stays out
   of the cache. It goes to the impact solve's owner as a bug in C.
 - **The cache.** Each passing trial is written to
   `scripts/verify/ground-truth/<trial>.json` and committed. It holds:
@@ -189,6 +198,33 @@ scripts/verify/impact-arms.sh --arms step --truth scripts/verify/ground-truth   
   same place when their centroids lie within the larger of their contact sizes
   (sqrt of the bond area). It reports the F1 of matching each set into the
   other.
+
+#### Provenance of the cache
+
+The cache in `scripts/verify/ground-truth/` is from one arm C run. Its trials
+must be rerun when any part of this key changes.
+
+| | |
+| --- | --- |
+| Run | `scripts/verify/acceptance.sh high-oracle target/verify/impact-arms-gt/high-oracle --skip veneer,lab,town,wire,walk,node`, 2026-10-08 04:30-06:06, test bed only, GPU shared slot |
+| SDK | `garage-hifi`, PhysX `integration/high-fidelity` `ddcf616bb`, clean; provenance check passed at the start of the run |
+| Packs | `vehicle-lab-crush.json` sha256 `554e93d90b46...`, its meta alongside (both built 02:45, before the run) |
+| Flags | arm C (`scripts/fidelity/arms/oracle.env`): `VIBE_IMPACT_CAPACITY=1`, `PX_DESTRUCTION_IMPACT_ITERATIONS=131072`, `PX_DESTRUCTION_IMPACT_EVAL_ITERATIONS=1000000`, FP32, correction limit 1, `PX_DESTRUCTION_ALLOW_UNCONVERGED=1` |
+| Cached | `cannonball-framed-house`, `meteor-framed-house-upper`, `framed-house` and `framed-house-corner` (the last two driving trials: gates and house summary, no bond ids) |
+| Not cached | `meteor-framed-house-roof`: fails energy (56% of KE unaccounted) and held (partial hold). At first contact the corrected pass bounded 0 of 29 contact rows, so the meteor was stopped as if by a rigid roof (1159 to 517 MJ in one tick against 2.9 MJ of fracture and crush). This is a fault in C, not in the authoring. `smallshots-framed-house`: probe mass 10.65 t, not 100 kg (test bed fixed after this run) |
+| Stale since | PhysX `feat/impact-capacity` moved to `eec73d370` (the impact step and its log) at 05:53, so the provenance check refuses `ddcf616bb` for new runs. A fresh SDK changes `sdkRevision`, and the comparison then refuses this cache until C is rerun (or `VERIFY_ALLOW_TRUTH_MISMATCH=1` is set) |
+
+One run has a known flaw. In `meteor-framed-house-upper` the meteor reaches
+grade 1.4 m past the back face (centre y 1.90 m, radius 2.0 m, tick 213),
+while it still overlaps the back wall. The structure window therefore closes
+at the exit (tick 216) rather than at that ground contact. Of the 101 MJ lost
+in the window, 86 MJ is the ground tick: friction with
+μ ≈ Δv_along/Δv_up = 5.4/10.6 ≈ 0.5. The house's own ticks (209-212) lose
+about 15 MJ against 15.4 MJ of fracture and crush, so the balance closes even
+without the ground tick. The trial's premise ("leaves by the back wall before
+it reaches grade") does not hold: the meteor touches grade with its centre
+1.44 m past the back face, inside its own 2.0 m radius. That is an authoring
+issue in the trial's aim, not in the engine.
 
 ### Provenance
 
