@@ -38,6 +38,8 @@ struct Scene {
     markers: bool,
     /// Player 1 walks forward, turning slowly, as a client holding W would.
     walking: bool,
+    /// Demolition rounds fired per tick (the server's default is 8).
+    demolish_per_tick: usize,
 }
 
 /// The clock C++'s steady_clock reads on macOS, so CUMETAL_TRACE_COMMITS lines
@@ -66,7 +68,7 @@ impl Scene {
         };
         city.add_client(1);
         arena.set_tolerate_rejected_steps(true);
-        Self { arena, city, tick: 0, markers: false, walking: false }
+        Self { arena, city, tick: 0, markers: false, walking: false, demolish_per_tick: 1 }
     }
 
     /// One server tick's physics and destruction, in the server's order.
@@ -85,7 +87,7 @@ impl Scene {
         self.city.pre_step(self.arena.physx_world_mut());
         let (_, dyn_ms) = self.arena.step_vehicles_and_dynamics(DT);
         let city_started = Instant::now();
-        self.city.drain_demolition(1, self.arena.physx_world_mut());
+        self.city.drain_demolition(self.demolish_per_tick, self.arena.physx_world_mut());
         let _ = self.city.step(
             self.tick,
             DT,
@@ -515,6 +517,72 @@ fn perf_bench() {
         scene.markers = false;
         eprintln!("METEOR {{\"first_launch_tick\":{first},\"second_launch_tick\":{}}}", first + 434);
         report("meteor_pair", &ticks);
+    }
+
+    // steady-tick harness (private): the city bench's per-building attack
+    // (three cannonballs, a roof meteor, the footing demolished at 8 rounds a
+    // tick), every tick measured, then a window with the rubble disturbed by
+    // rolling balls. Ticks are classified afterwards from TICK lines.
+    // VIBE_PERF_RUBBLE_BUILDINGS caps the buildings (default 6),
+    // VIBE_PERF_WRECK_AFTER_TICKS the after window (default 600).
+    if wanted("city_wreck") {
+        let env_u32 = |name: &str, default: u32| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default);
+        let (_, manifest, _) = crate::city::manifest_asset().expect("city manifest");
+        let mut buildings: Vec<_> = vibe_land_destruction::buildings::enumerate(manifest)
+            .into_iter().filter(|b| b.chunks >= 20).collect();
+        buildings.sort_by_key(|b| b.id);
+        buildings.truncate(env_u32("VIBE_PERF_RUBBLE_BUILDINGS", 6) as usize);
+        let mut scene = Scene::city();
+        scene.run(120);
+        scene.demolish_per_tick = 8;
+        let mut meteor_rng = crate::meteor::Rng::new(0x5eed);
+        let gravity = { let g = vibe_netcode::movement::default_world_gravity(); Vec3::new(g[0], g[1], g[2]) };
+        scene.markers = std::env::var("VIBE_PERF_MARKERS").is_ok();
+        let mut attack = Vec::new();
+        for (i, b) in buildings.iter().enumerate() {
+            let height = b.top - b.bottom;
+            let centre = Vec3::new(b.centre[0], 0.0, b.centre[2]);
+            let outward = { let flat = Vec3::new(centre.x, 0.0, centre.z); if flat.length() > 1.0 { flat.normalize() } else { Vec3::X } };
+            let from = centre + outward * (b.radius + 10.0) + Vec3::new(0.0, 1.6, 0.0);
+            for k in 0..3 {
+                let aim = centre + Vec3::new(0.0, b.bottom.max(0.0) + height * (0.2 + 0.25 * k as f32), 0.0);
+                scene.cannonball(from, aim);
+                attack.extend(scene.run(60));
+            }
+            let tuning = crate::meteor::MeteorTuning::from_env();
+            let launch = crate::meteor::plan(Vec3::new(b.centre[0], b.top, b.centre[2]), gravity, &tuning, &mut meteor_rng);
+            let _ = scene.arena.launch_meteor(
+                nalgebra::Vector3::new(launch.start.x, launch.start.y, launch.start.z),
+                nalgebra::Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z),
+                tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks);
+            attack.extend(scene.run(240));
+            let wedge = if i % 2 == 0 { 0.0 } else { 50.0 };
+            scene.city.set_demolition_shape((i as f32 * 137.0) % 360.0, wedge, 0.25);
+            let world = scene.arena.physx_world_mut();
+            let below = b.bottom.max(0.0) + (height * 0.3).clamp(2.0, 8.0);
+            scene.city.demolish_supports([b.centre[0], b.centre[2]], b.radius + 1.0, below, 48, world);
+            attack.extend(scene.run(300));
+        }
+        report("wreck_attack", &attack);
+        let (_, at) = target();
+        let mut after = Vec::new();
+        for t in 0..env_u32("VIBE_PERF_WRECK_AFTER_TICKS", 600) {
+            if t % 10 == 0 {
+                let b = &buildings[(t as usize / 10) % buildings.len()];
+                let k = (t / 10) as f32;
+                let (x, z) = (b.centre[0] - 6.0 + (k * 1.7) % 12.0, b.centre[2] - b.radius - 6.0);
+                let _ = at;
+                scene.world().launch_dynamic_ball(LaunchedBallDesc {
+                    entity_id: 0x3400_0000 | t, user_id: t,
+                    pose: Pose { position: BridgeVec3::new(x, 0.6, z), rotation: Quat::IDENTITY },
+                    radius: 0.5, mass: 40.0, linear_velocity: BridgeVec3::new(0.0, 0.0, 6.0),
+                    collision_group: u32::MAX, collision_mask: u32::MAX,
+                }).expect("ball");
+            }
+            after.extend(scene.run(1));
+        }
+        scene.markers = false;
+        report("wreck_after", &after);
     }
 
     if wanted("rubble_sleep") {
