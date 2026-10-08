@@ -8,6 +8,5 @@ physx	perf/rotation-convergence	section rotation's solve convergence (VIBE_SECTI
 physx	feat/section-rotational-stiffness	rotational stiffness from the real section (VIBE_SECTION_ROTATION)
 physx	fix/crush-in-correction	crush in the correction pass (VIBE_NATIVE_CRUSH)
 physx	fix/mac-ctest-baseline	the destruction ctest gate on CuMetal
-physx	perf/cumetal-depfiles	per-source header dependencies for CuMetal kernels (a one-header edit rebuilds only its kernels)
 vibe-land	perf/rotation-convergence	the bridge side of rotation convergence
 vibe-land	fix/impact-convergence	the impact solve's convergence work and its oracles

@@ -2,7 +2,7 @@
 # Keep the high-fidelity SDK on every PhysX feature branch's head:
 #   scripts/ops/sdk-follow.sh [--once] [--interval 60]
 # Every interval (60 s) it reads the heads of the PhysX branches in
-# scripts/fidelity/branches.tsv. When one is not in integration/high-fidelity
+# scripts/fidelity/branches.tsv and scripts/ops/sdk-follow.tsv (build-only). When one is not in integration/high-fidelity
 # (the hifi worktree), it merges each such branch there and rebuilds and installs
 # the versioned SDK (scripts/perf/rebuild-garage-sdk.sh: garage-hifi@<rev> behind
 # the garage-hifi link) through gpu-run.sh on a shared slot. A branch that moves
@@ -33,8 +33,9 @@ if [ -f "$lock" ] && kill -0 "$(cat "$lock")" 2>/dev/null && [ "$(cat "$lock")" 
 fi
 echo $$ > "$lock"; trap 'rm -f "$lock"' EXIT
 say() { echo "$(date +%H:%M:%S) $*" | tee -a "$LOG"; }
-# The PhysX branches the high profile needs (the first name of an a|b pair).
-branches() { awk -F'\t' '$1=="physx"{split($2,a,"|"); print a[1]}' "$ROOT/scripts/fidelity/branches.tsv"; }
+# The PhysX branches the high profile needs (the first name of an a|b pair), and
+# the build-only ones (scripts/ops/sdk-follow.tsv: not provenance, never "stale").
+branches() { awk -F'\t' '$1=="physx"{split($2,a,"|"); print a[1]}' "$ROOT/scripts/fidelity/branches.tsv" "$ROOT/scripts/ops/sdk-follow.tsv"; }
 failed_at=""   # the branch heads a conflict or failed build was seen at: retry only when they move
 say "following $(branches | paste -sd, -) into $INTEGRATION ($SRC), installing $NAME@<rev>"
 while true; do
