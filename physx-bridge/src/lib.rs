@@ -627,6 +627,12 @@ pub struct DestructibleSettings {
     /// Empty, or parallel to `materials`: 1 for a fastened bearing joint,
     /// graded by its fasteners once the contact opens (section bending).
     pub bearing_joint: Vec<f32>,
+    /// Empty, or parallel to `materials`: 1 where a fastener group sets the
+    /// joint's section whatever its contact patch's shape (a wheel's stud
+    /// circle: client/src/vehicles/real-joint-capacity.mjs
+    /// applyWheelMountSection): bending from `bend_gyration` / `bend_section`,
+    /// twist from `twist_gyration` / `twist_reach` (section bending).
+    pub fastener_group: Vec<f32>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -663,6 +669,7 @@ impl Default for DestructibleSettings {
             bend_gyration: Vec::new(),
             bend_section: Vec::new(),
             bearing_joint: Vec::new(),
+            fastener_group: Vec::new(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -2531,6 +2538,8 @@ mod ffi {
         bend_section: Vec<f32>,
         /// Empty, or parallel to `materials`: 1 for a fastened bearing joint.
         bearing_joint: Vec<f32>,
+        /// Empty, or parallel to `materials`: 1 where a fastener group sets the section.
+        fastener_group: Vec<f32>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -3462,6 +3471,7 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
             bend_gyration: value.bend_gyration,
             bend_section: value.bend_section,
             bearing_joint: value.bearing_joint,
+            fastener_group: value.fastener_group,
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,

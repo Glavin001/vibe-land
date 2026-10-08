@@ -18,7 +18,7 @@ import { mergeLightChunks, MIN_CHUNK_KG } from './chunk-merge.mjs';
 import { admitBonds, trueBondStiffness } from './bond-admission.mjs';
 import { massBudget, budgetScales, bondScale, MASS_BUDGET_VERSION } from './mass-budget.mjs';
 import { ROAD_WHEEL } from './reality.mjs';
-import { realJointCapacitiesEnabled, applySectionBound, applyDuctility, vehicleJointsBrittle, REAL_JOINT_CAPACITY_VERSION } from './real-joint-capacity.mjs';
+import { realJointCapacitiesEnabled, applySectionBound, applyDuctility, applyWheelMountSection, vehicleJointsBrittle, REAL_JOINT_CAPACITY_VERSION } from './real-joint-capacity.mjs';
 
 let submittedConfiguration;
 async function main() {
@@ -104,6 +104,8 @@ catch (error) {
  if (realJoints) {
    const changed = applySectionBound(parts, bonds);
    process.stderr.write(`real joint capacities: ${changed.length} of ${bonds.length} joints bounded by their members' sections\n`);
+   const mountsChanged = applyWheelMountSection(bonds);
+   process.stderr.write(`real joint capacities: ${mountsChanged.length} wheel mounts on their stud circles\n`);
    const ductile = vehicleJointsBrittle() ? [] : applyDuctility(parts, bonds);
    process.stderr.write(`real joint capacities: ${ductile.length} metal joints ductile\n`);
  }

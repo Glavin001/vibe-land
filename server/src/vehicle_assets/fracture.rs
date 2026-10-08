@@ -23,6 +23,22 @@ pub struct NativeVehicleAssembly {
     /// 0 brittle (`DestructibleSettings::ductile_slip`). Empty when no joint
     /// of the asset is ductile, so assets without it register as before.
     pub ductile_slip: Vec<f32>,
+    /// Empty, or parallel to `materials`: a fastener group's section (a
+    /// wheel's stud circle; `AssetBondStrength::fastener_group`), as the
+    /// stage's `fastener_group`, `bend_gyration`, `bend_section`,
+    /// `twist_gyration` and `twist_reach` tables. Empty when no joint has one.
+    pub fastener: FastenerTables,
+}
+
+/// Per-material fastener-group tables (`DestructibleSettings`), parallel to the materials.
+#[cfg(feature = "native-destruction")]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FastenerTables {
+    pub group: Vec<f32>,
+    pub bend_gyration: Vec<f32>,
+    pub bend_section: Vec<f32>,
+    pub twist_gyration: Vec<f32>,
+    pub twist_reach: Vec<f32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -50,6 +66,21 @@ pub struct AssetBondStrength {
     /// client/src/vehicles/real-joint-capacity.mjs (`applyDuctility`).
     #[serde(default)]
     pub ductile_slip: f64,
+    /// 1: a fastener group sets the joint's section, whatever its contact
+    /// patch (a wheel's stud circle, real-joint-capacity.mjs
+    /// `applyWheelMountSection`): bending S = A bend_section about both axes in
+    /// the bond plane with stiffness radius bend_gyration, twist S_t = A
+    /// twist_gyration^2 / twist_reach (m). 0 (absent): the patch's section.
+    #[serde(default)]
+    pub fastener_group: f64,
+    #[serde(default)]
+    pub bend_gyration: f64,
+    #[serde(default)]
+    pub bend_section: f64,
+    #[serde(default)]
+    pub twist_gyration: f64,
+    #[serde(default)]
+    pub twist_reach: f64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -153,6 +184,7 @@ impl PreparedGeometry {
         let vector = |v: [f64; 3]| bridge::Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32);
         let mut materials = Vec::new();
         let mut slips: Vec<f32> = Vec::new();
+        let mut groups: Vec<[f32; 5]> = Vec::new();
         let parts = self
             .parts
             .iter()
@@ -216,13 +248,17 @@ impl PreparedGeometry {
                     residual_area_fraction: s.residual_area_fraction as f32,
                 };
                 let slip = s.ductile_slip as f32;
-                let material_index = materials
-                    .iter()
-                    .zip(&slips)
-                    .position(|(m, &d)| m == &material && d == slip)
+                let group = if s.fastener_group > 0.0 {
+                    [1.0, s.bend_gyration as f32, s.bend_section as f32, s.twist_gyration as f32, s.twist_reach as f32]
+                } else {
+                    [0.0; 5]
+                };
+                let material_index = (0..materials.len())
+                    .position(|k| materials[k] == material && slips[k] == slip && groups[k] == group)
                     .unwrap_or_else(|| {
                         materials.push(material);
                         slips.push(slip);
+                        groups.push(group);
                         materials.len() - 1
                     });
                 bridge::ChunkBondDesc {
@@ -237,12 +273,19 @@ impl PreparedGeometry {
             })
             .collect();
         let ductile_slip = if slips.iter().any(|&d| d > 0.0) { slips } else { Vec::new() };
+        let fastener = if groups.iter().any(|g| g[0] > 0.0) {
+            let column = |k: usize| groups.iter().map(|g| g[k]).collect();
+            FastenerTables { group: column(0), bend_gyration: column(1), bend_section: column(2), twist_gyration: column(3), twist_reach: column(4) }
+        } else {
+            FastenerTables::default()
+        };
         Ok(NativeVehicleAssembly {
             parts,
             shapes,
             bonds,
             materials,
             ductile_slip,
+            fastener,
         })
     }
 
@@ -419,6 +462,11 @@ impl PreparedGeometry {
                 || !(0.0..=1.0).contains(&s.residual_area_fraction)
                 || !s.ductile_slip.is_finite()
                 || s.ductile_slip < 0.0
+                || ![s.fastener_group, s.bend_gyration, s.bend_section, s.twist_gyration, s.twist_reach]
+                    .iter()
+                    .all(|v| v.is_finite() && *v >= 0.0)
+                || (s.fastener_group > 0.0
+                    && !(s.bend_gyration > 0.0 && s.bend_section > 0.0 && s.twist_gyration > 0.0 && s.twist_reach > 0.0))
             {
                 return Err(fail("invalid strength/material properties"));
             }
@@ -633,6 +681,33 @@ mod tests {
         assert_eq!(native.ductile_slip[native.bonds[0].material as usize], 0.017);
         assert_eq!(native.ductile_slip[native.bonds[1].material as usize], 0.0);
         asset.bonds[0].strength.ductile_slip = -1.0;
+        assert!(asset.validate_fracture_layout().is_err());
+    }
+
+    /// A wheel's stud circle (real-joint-capacity.mjs applyWheelMountSection)
+    /// reaches the stage as fastener tables parallel to the materials, its own
+    /// material; an asset without one sends none, and a group without its radii
+    /// is refused.
+    #[cfg(feature = "native-destruction")]
+    #[test]
+    fn native_conversion_carries_fastener_groups_parallel_to_materials() {
+        let mut asset = functional_assembly();
+        assert_eq!(asset.native_fracture_assembly().unwrap().fastener, FastenerTables::default());
+        let r = 0.1675;
+        let s = &mut asset.bonds[0].strength;
+        (s.fastener_group, s.bend_gyration, s.bend_section, s.twist_gyration, s.twist_reach) = (1.0, r * 1.5f64.sqrt(), 0.75 * r, r, r);
+        let native = asset.native_fracture_assembly().unwrap();
+        assert_eq!(native.materials.len(), 2);
+        let (k, other) = (native.bonds[0].material as usize, native.bonds[1].material as usize);
+        assert_ne!(k, other);
+        for table in [&native.fastener.group, &native.fastener.bend_gyration, &native.fastener.bend_section, &native.fastener.twist_gyration, &native.fastener.twist_reach] {
+            assert_eq!(table.len(), native.materials.len());
+            assert_eq!(table[other], 0.0);
+        }
+        assert_eq!(native.fastener.group[k], 1.0);
+        assert_eq!(native.fastener.bend_section[k], (0.75 * r) as f32);
+        assert_eq!(native.fastener.twist_reach[k], r as f32);
+        asset.bonds[0].strength.twist_reach = 0.0;
         assert!(asset.validate_fracture_layout().is_err());
     }
 

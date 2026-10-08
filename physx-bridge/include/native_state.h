@@ -174,6 +174,9 @@ struct NativeDestruction::State {
   std::vector<float> bend_gyration, bend_section;
   // Per material (global index): 1 for a fastened bearing joint.
   std::vector<float> bearing_joint;
+  // Per material (global index): 1 where a fastener group sets the section
+  // (bend_* and twist_* above), whatever the contact patch's shape.
+  std::vector<float> fastener_group;
 #endif
   /// (structure, authored bond index) per stage bond, in stage order.
   std::vector<std::pair<std::uint32_t, std::uint32_t>> bond_ids;

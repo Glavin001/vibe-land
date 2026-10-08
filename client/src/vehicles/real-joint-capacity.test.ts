@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyDuctility, applySectionBound, memberSection, YIELD_RATIO } from './real-joint-capacity.mjs';
+import { applyDuctility, applySectionBound, applyWheelMountSection, memberSection, WHEEL_MOUNT, YIELD_RATIO } from './real-joint-capacity.mjs';
 import { jointMaterials } from './strength-profile.mjs';
 
 const box = (x: number, y: number, z: number) => ({ position: [0, 0, 0], vertices: [[0, 0, 0], [x, y, z]] });
@@ -49,6 +49,31 @@ describe('real joint capacities (section bound)', () => {
     // Glass is brittle: no slip, its yield band kept.
     expect(glazed.strength.ductileSlip).toBeUndefined();
     expect(glazed.strength.tensionElastic).toBeLessThan(glazed.strength.tensionFatal);
+  });
+  it('a wheel mount is its stud circle: ten M22x1.5 10.9 on 335 mm, 33.3 cm2, about 0.44 MN m in bending', () => {
+    // The mass budget made the mount 54 cm2; the studs are counted, A_s 333 mm2 each (ISO 898-1).
+    const wheel = { a: 'w', b: 'h', area: 54e-4, attachment: 'wheel-mount', strength: { ...jointMaterials.stud } };
+    const weld = { a: 'a', b: 'b', area: 0.01, strength: { ...steel } };
+    expect(applyWheelMountSection([wheel, weld])).toEqual([wheel]);
+    expect(wheel.area).toBeCloseTo(10 * 333e-6, 9);
+    expect(weld.strength).toEqual(steel);
+    const r = WHEEL_MOUNT.pitchRadiusM, s = wheel.strength;
+    // Ten studs at y_i = r (1 + cos theta_i) from the tilt edge: S = A sum y^2 / (n y_max).
+    const y = Array.from({ length: 10 }, (_, i) => r * (1 + Math.cos(2 * Math.PI * i / 10)));
+    expect(s.bendSection).toBeCloseTo(y.reduce((n, v) => n + v * v, 0) / (10 * Math.max(...y)), 9);
+    expect(s.bendGyration).toBeCloseTo(Math.sqrt(y.reduce((n, v) => n + v * v, 0) / 10), 9);
+    expect(s.twistGyration).toBe(r);
+    expect(s.twistReach).toBe(r);
+    expect(s.fastenerGroup).toBe(1);
+    // At R_m: 435 kN m, above the ~0.37 MN m Vehicle2's corner puts on a front hub at 10 m/s
+    // (SCENARIOS.md) and below the plastic group moment (0.9 f_ub A_s sum y = 522 kN m).
+    const moment = s.tensionFatal * wheel.area * s.bendSection;
+    expect(moment / 1e3).toBeCloseTo(435, -1);
+    expect(moment).toBeGreaterThan(0.37e6);
+    expect(moment).toBeLessThan(0.9 * 1040e6 * 333e-6 * y.reduce((n, v) => n + v, 0));
+    // Ductile from one stud's A_s (ISO 898-1 10.9: 9% on 5.65 sqrt(S)).
+    applyDuctility([], [wheel]);
+    expect(wheel.strength.ductileSlip).toBeCloseTo(0.09 * 5.65 * Math.sqrt(333e-6), 6);
   });
   it('with the stage static ductility, metal joints yield at f_y / f_u of their capacity (S355, 10.9, 6061-T6)', () => {
     const before = process.env.PX_DESTRUCTION_STATIC_DUCTILE;

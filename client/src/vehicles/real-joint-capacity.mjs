@@ -34,7 +34,7 @@ import { jointMaterials } from './strength-profile.mjs';
 export const realJointCapacitiesEnabled = () => (globalThis.process?.env?.VIBE_REAL_VEHICLE_JOINTS ?? '0') === '1';
 /** VIBE_VEHICLE_JOINTS_BRITTLE=1 (A/B only): real capacities without applyDuctility, as before 2026-10-08. */
 export const vehicleJointsBrittle = () => (globalThis.process?.env?.VIBE_VEHICLE_JOINTS_BRITTLE ?? '0') === '1';
-export const REAL_JOINT_CAPACITY_VERSION = vehicleJointsBrittle() ? 'section-bound-1' : (globalThis.process?.env?.PX_DESTRUCTION_STATIC_DUCTILE ?? '0') === '1' ? 'section-bound-4-yield' : 'section-bound-3-ductile';
+export const REAL_JOINT_CAPACITY_VERSION = (vehicleJointsBrittle() ? 'section-bound-1' : (globalThis.process?.env?.PX_DESTRUCTION_STATIC_DUCTILE ?? '0') === '1' ? 'section-bound-4-yield' : 'section-bound-3-ductile') + '-mount-1';
 
 /** Density of each structural category's material (kg/m3). */
 export const DENSITY = Object.freeze({
@@ -131,6 +131,54 @@ export const staticDuctility = () => (globalThis.process?.env?.PX_DESTRUCTION_ST
 export const PROPORTIONAL_GAUGE = 5.65;
 /** Studs per wheel mount the measured interface stands for (strength-profile.mjs: ten M22 studs, 38 cm2). */
 export const STUDS_PER_MOUNT = 10;
+
+/**
+ * A wheel's mount is its stud circle, not its contact patch
+ * (docs/verification/SCENARIOS.md: the square patch of the mount's area graded
+ * it at 69 kN m against the ~0.37 MN m Vehicle2's corner puts on a front hub
+ * at 10 m/s, and every wall trial lost all four wheels).
+ * - The studs: ten M22x1.5, property class 10.9, on a 335 mm pitch circle --
+ *   the heavy commercial hub (ISO 4107, ten-stud 335 mm PCD; strength-profile.mjs
+ *   `stud`: R_m 1040 MPa, ISO 898-1). Their section is their tensile stress
+ *   area, A_s 333 mm2 each for M22x1.5 (ISO 898-1, fine thread), 33.3 cm2 for
+ *   the ten: a counted fastener section, so it takes no mass-budget scale
+ *   (mass-budget.mjs scales a bond's area with the mass it joins: it made the
+ *   mount 54 cm2).
+ * - Bending: a clamped flange under a moment opens at the far side and tilts
+ *   on its interface's edge (VDI 2230-1:2015 5.3.2, eccentric loading of an
+ *   opening joint), at least as far out as the stud circle's tangent: stud i
+ *   at y_i = r (1 + cos theta_i) from it. Graded at the most loaded stud
+ *   (elastic, as the stage grades a fastener group): S = A sum y_i^2 / (n y_max)
+ *   = A (3/2 r^2) / (2 r) = 0.75 A r; the stiffness radius sqrt(sum y_i^2 / n)
+ *   = r sqrt(3/2). At R_m that is 1040 MPa x 33.3 cm2 x 0.126 m = 435 kN m
+ *   (393 kN m at R_p0.2), against the plastic group moment with the tilt edge
+ *   at 0.17-0.20 m, 0.9 f_ub A_s sum y_i = 520-620 kN m (EN 1993-1-8 Table 3.4).
+ * - Twist: every stud at r: polar radius of gyration r, S_t = A r (the farthest
+ *   stud is at r).
+ * - Shear and tension keep the group's area: V and N share the ten studs.
+ */
+export const WHEEL_MOUNT = Object.freeze({ studs: 10, stressAreaM2: 333e-6, pitchRadiusM: 0.335 / 2 });
+
+/**
+ * Give each wheel mount its stud circle's section: area n A_s (no mass-budget
+ * scale), and the fastener group's bending and twist (the stage's per-material
+ * fastener section: bendGyration, bendSection = g^2 / y_max, twistGyration,
+ * twistReach; fastenerGroup 1: the group sets the section whatever the contact
+ * patch's shape). Run before applyDuctility (it reads one stud's section from
+ * the area). Returns the mounts changed.
+ */
+export function applyWheelMountSection(bonds) {
+  const { studs, stressAreaM2, pitchRadiusM: r } = WHEEL_MOUNT;
+  const changed = [];
+  for (const bond of bonds) {
+    if (bond.attachment !== 'wheel-mount') continue;
+    bond.area = studs * stressAreaM2;
+    bond.strength = { ...bond.strength, fastenerGroup: 1, bendGyration: r * Math.sqrt(1.5), bendSection: 0.75 * r, twistGyration: r, twistReach: r };
+    bond.realCapacity = { version: REAL_JOINT_CAPACITY_VERSION, wheelMount: { ...WHEEL_MOUNT } };
+    changed.push(bond);
+  }
+  return changed;
+}
 
 /**
  * Make each metal joint ductile: its ultimate slip from the section that

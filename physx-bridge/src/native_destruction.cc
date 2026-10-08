@@ -449,6 +449,13 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
     native_require(settings.bearing_joint.empty() || settings.bearing_joint.size() == settings.materials.size(),
                    "bearing joint table must be empty or parallel to the materials");
     s.bearing_joint.push_back(settings.bearing_joint.empty() ? 0.0f : settings.bearing_joint[index]);
+    native_require(settings.fastener_group.empty() || (settings.fastener_group.size() == settings.materials.size() &&
+                                                        settings.bend_gyration.size() == settings.materials.size() &&
+                                                        settings.bend_section.size() == settings.materials.size() &&
+                                                        settings.twist_gyration.size() == settings.materials.size() &&
+                                                        settings.twist_reach.size() == settings.materials.size()),
+                   "a fastener group table needs the bend and twist tables, all parallel to the materials");
+    s.fastener_group.push_back(settings.fastener_group.empty() ? 0.0f : settings.fastener_group[index]);
     ++index;
     s.materials.push_back(out);
   }
@@ -476,7 +483,7 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
       for (const PxShape *shape : e->second) vibe_bond_section::append_vertices(*shape, v);
     return vertices.emplace(chunk, std::move(v)).first->second;
   };
-  std::size_t found = 0, fastened = 0, bearing = 0;
+  std::size_t found = 0, fastened = 0, bearing = 0, grouped = 0;
   std::vector<double> depths, ratios;
   for (std::size_t i = bond_base; i < s.bonds.size(); ++i) {
     const auto &b = s.bonds[i];
@@ -504,6 +511,27 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
       s.sections[i].bendModulus0 = s.sections[i].bendModulus1 = b.area * s.bend_section[b.material];
     }
 #endif
+    // A fastener group that sets the joint's section whatever its contact
+    // patch (a wheel's stud circle: client/src/vehicles/real-joint-capacity.mjs
+    // applyWheelMountSection; its patch is a square of the studs' area, or an
+    // overlap of hulls that are not the flange): bending S = A g^2 / reach
+    // about both axes in the bond plane, twist S_t = A g_p^2 / reach_p, and
+    // (section rotation) the group's stiffness radii.
+    if (b.material < s.fastener_group.size() && s.fastener_group[b.material] > 0.0f &&
+        s.bend_section[b.material] > 0.0f && s.twist_gyration[b.material] > 0.0f && s.twist_reach[b.material] > 0.0f) {
+      const PxVec3 n = b.normal.getNormalized();
+      const PxVec3 axis = (PxAbs(n.x) < 0.9f ? PxVec3(1.0f, 0.0f, 0.0f) : PxVec3(0.0f, 1.0f, 0.0f)).cross(n).getNormalized();
+      auto &section = s.sections[i];
+      section.axis = r.found ? section.axis : axis;
+      section.bendModulus0 = section.bendModulus1 = b.area * s.bend_section[b.material];
+      const float gp = s.twist_gyration[b.material];
+      section.twistModulus = b.area * gp * gp / s.twist_reach[b.material];
+#if defined(VIBE_PHYSX_HAS_SECTION_ROTATION)
+      section.gyration0 = section.gyration1 = s.bend_gyration[b.material];
+      section.polarGyration = gp;
+#endif
+      ++grouped;
+    }
 #if defined(VIBE_PHYSX_HAS_BEARING_JOINTS)
     // A fastened joint whose members bear on each other (town-kit
     // bearingJoint): graded by its fasteners once the contact opens at the
@@ -529,9 +557,9 @@ void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::
                "[destruction] sections: structure %u (base %u): %zu of %zu bonds from chunk geometry, "
                "the rest a square patch of their area; shallow depth p10 %.3f median %.3f m; "
                "geometric/authored area p10 %.2f median %.2f p90 %.2f; %zu twist on their fasteners, "
-               "%zu bearing joints\n",
+               "%zu bearing joints, %zu fastener groups\n",
                structure_id, base, found, s.bonds.size() - bond_base, pct(depths, 0.1), pct(depths, 0.5),
-               pct(ratios, 0.1), pct(ratios, 0.5), pct(ratios, 0.9), fastened, bearing);
+               pct(ratios, 0.1), pct(ratios, 0.5), pct(ratios, 0.9), fastened, bearing, grouped);
 }
 #endif
 
