@@ -18,7 +18,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { shotPhysics, jaccard } from './shot-physics.mjs';
-import { currentKey, keyMismatch } from './ground-truth.mjs';
+import { currentKey, keyMismatch, compatibleWith } from './ground-truth.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args.splice(i, 2)[1] : d; };
@@ -81,7 +81,9 @@ if (truthDir) {
     const f = path.join(truthDir, `${trial}.json`);
     if (!existsSync(f)) { console.log(`[arms] no ground truth for ${trial} (${f})`); continue; }
     const t = JSON.parse(readFileSync(f, 'utf8'));
-    const diff = keyMismatch(t.key, now);
+    const diff = keyMismatch(t.key, now, t.compatible);
+    const admitted = now.sdkRevision !== t.key.sdkRevision && !diff.some((d) => d.startsWith('sdkRevision')) ? compatibleWith(t, now.sdkRevision) : null;
+    if (admitted) console.log(`[arms] ground truth for ${trial} ran on ${t.key.sdkRevision.slice(0, 9)}; ${now.sdkRevision.slice(0, 9)} is on its compatible list: ${admitted.reason} (${admitted.diff.files.length} files checked)`);
     if (diff.length) {
       console.log(`[arms] ground truth for ${trial} is keyed to another SDK or scene: ${diff.join('; ')}`);
       if (process.env.VERIFY_ALLOW_TRUTH_MISMATCH !== '1') { console.log('[arms] refusing to compare (VERIFY_ALLOW_TRUTH_MISMATCH=1 compares anyway)'); process.exit(1); }

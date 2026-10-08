@@ -190,7 +190,12 @@ scripts/verify/impact-arms.sh --arms step --truth scripts/verify/ground-truth   
   - the run's flags.
 
   Recording refuses a run whose SDK is not the one installed, or whose pack is
-  newer than the run. The comparison refuses a cache whose key differs from
+  newer than the run. A later SDK can be admitted for an entry explicitly:
+  `ground-truth.mjs compat --to REV --reason TEXT` records the revision, the
+  reason and the diff checked (the files changed since the cached revision and
+  the function each hunk is in) in the entry's `compatible` list. The
+  comparison accepts that revision, and says why, for that entry only. The
+  packs must still match. The comparison refuses a cache whose key differs from
   the current SDK or packs (`VERIFY_ALLOW_TRUTH_MISMATCH=1` compares anyway
   and says so). It warns when an arm compared ran on another SDK.
 - **Same place.** The Jaccard index on bond ids is strict: a neighbouring
@@ -212,7 +217,7 @@ must be rerun when any part of this key changes.
 | Flags | arm C (`scripts/fidelity/arms/oracle.env`): `VIBE_IMPACT_CAPACITY=1`, `PX_DESTRUCTION_IMPACT_ITERATIONS=131072`, `PX_DESTRUCTION_IMPACT_EVAL_ITERATIONS=1000000`, FP32, correction limit 1, `PX_DESTRUCTION_ALLOW_UNCONVERGED=1` |
 | Cached | `cannonball-framed-house`, `meteor-framed-house-upper`, `framed-house` and `framed-house-corner` (the last two driving trials: gates and house summary, no bond ids) |
 | Not cached | `meteor-framed-house-roof`: fails energy (56% of KE unaccounted) and held (partial hold). At first contact the corrected pass bounded 0 of 29 contact rows, so the meteor was stopped as if by a rigid roof (1159 to 517 MJ in one tick against 2.9 MJ of fracture and crush). This is a fault in C, not in the authoring. `smallshots-framed-house`: probe mass 10.65 t, not 100 kg (test bed fixed after this run) |
-| Stale since | PhysX `feat/impact-capacity` moved to `eec73d370` (the impact step and its log) at 05:53, so the provenance check refuses `ddcf616bb` for new runs. A fresh SDK changes `sdkRevision`, and the comparison then refuses this cache until C is rerun (or `VERIFY_ALLOW_TRUTH_MISMATCH=1` is set) |
+| Compatible | `0696c5fae` (integration merging `feat/impact-capacity` `3426f54f7`), recorded with `ground-truth.mjs compat`. Its 5 changed files are the impact step's code (method 1 only), `recordRest` (launched only for method 1) and `breaksBySource` (a log counter in otherwise unused slots). Arm C's ADMM path is unchanged |
 
 One run has a known flaw. In `meteor-framed-house-upper` the meteor reaches
 grade 1.4 m past the back face (centre y 1.90 m, radius 2.0 m, tick 213),
