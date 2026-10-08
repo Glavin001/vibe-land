@@ -58,11 +58,13 @@ one() {
   fi
   echo "[arms] $arm $trial r$k: $(( $(date +%s) - t0 )) s"
 }
-if [ "$one_run" = 1 ]; then one "${one_args[@]}"; exit $?; fi
+source "$ROOT/scripts/ops/gpu-workers.sh"
+# A job holds a worker token (gpu-workers.sh: a second only while nobody else waits for the GPU).
+if [ "$one_run" = 1 ]; then worker_take "$out"; one "${one_args[@]}"; s=$?; worker_give; exit $s; fi
 if [ "$judge_only" = 0 ]; then
   # --jobs workers (default 2), each run its own shared-slot GPU job (gpu-run.sh
   # caps the machine at 3, so other agents still get one).
-  rm -f "$out/.refused"
+  rm -f "$out/.refused"; export GPU_WORKERS_TOP=$$
   for k in $(seq 1 "$repeats"); do for trial in ${trials//,/ }; do for arm in ${arms//,/ }; do echo "$arm $trial $k"; done; done; done \
     | xargs -P "$jobs" -L 1 "$0" --one-out "$out" --one
   [ -f "$out/.refused" ] && exit 1

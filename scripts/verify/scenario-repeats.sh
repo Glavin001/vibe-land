@@ -60,7 +60,9 @@ one() {
   fi
   echo "[repeats] $arm $c r$k: $(( $(date +%s) - t0 )) s"
 }
-if [ "$one_run" = 1 ]; then one "${one_args[@]}"; exit $?; fi
+source "$ROOT/scripts/ops/gpu-workers.sh"
+# A job holds a worker token (gpu-workers.sh: a second only while nobody else waits for the GPU).
+if [ "$one_run" = 1 ]; then worker_take "$out"; one "${one_args[@]}"; s=$?; worker_give; exit $s; fi
 if [ "$judge_only" = 0 ]; then
   for arm in ${arms//,/ }; do
     mkdir -p "$out/$arm"
@@ -69,6 +71,7 @@ if [ "$judge_only" = 0 ]; then
   bin=$( (arm_env "${arms%%,*}" && cd "$ROOT" && cargo test --release -p web-fps-server --features native-destruction --lib --no-run 2>&1) \
     | sed -n 's/.*Executable unittests src\/lib.rs (\(.*\))/\1/p' | tail -1)
   [ -n "$bin" ] || { echo "[repeats] the test bed did not build"; exit 1; }
+  export GPU_WORKERS_TOP=$$
   # --jobs workers (default 2), each run its own shared-slot GPU job (gpu-run.sh caps
   # the machine at 3); the jobs call this script back with --one.
   for k in $(seq 1 "$repeats"); do
