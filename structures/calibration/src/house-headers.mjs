@@ -56,7 +56,8 @@ export function frontWall(pack, nodeWalls) {
     if (last && Math.abs(lo[0] - last.x1) < 1e-3) last.x1 = +hi[0].toFixed(3); else headers.push({ x0: +lo[0].toFixed(3), x1: +hi[0].toFixed(3) });
   }
   return {
-    uprights: studs.filter((e) => e.y1 > 2.5), jacks: studs.filter((e) => e.type === 'jack-stud'), headers,
+    // Full-height uprights stand on the bottom plate (a cripple over a lintel is the header's, not the wall's).
+    uprights: studs.filter((e) => e.y1 > 2.5 && e.y0 < 0.3), jacks: studs.filter((e) => e.type === 'jack-stud'), headers,
     x0: +plates[0][0][0].toFixed(3), x1: +plates.at(-1)[1][0].toFixed(3),
     // The kit's cuts across the plate: where the stage checks its bending.
     cuts: plates.slice(0, -1).map((p) => +p[1][0].toFixed(3)),

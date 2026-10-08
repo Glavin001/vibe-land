@@ -245,7 +245,10 @@ export function buildVeneerHouse(options={}){
   let cuts=[[w.u0,w.u1]];for(const o of w.openings.filter(o=>o.kind==='door'))cuts=cuts.flatMap(([a,c])=>o.u1<=a||o.u0>=c?[[a,c]]:[[a,o.u0],[o.u1,c]].filter(([p,q])=>q-p>EPS));
   // A lintel under 0.45 m of the top plate is built up solid to it: cripples that short
   // would be 0.4 kg chunks between 9 kg plates and lintels (lint: mass contrast).
-  function headerDepth(o){return yTP-o.y1<=S.solidHeader?yTP-o.y1:Math.min(S.header,yTP-o.y1);}
+  // Revision 2: the 2 / 190 x 45 lintel with cripple studs on it to the plate (AS 1684.2 'jack studs'
+  // over a lintel; IRC R602.7 cripples), not blocked solid: the plate bears on cripples, which are
+  // pinned at both ends, so plate and lintel do not become one glued beam.
+  function headerDepth(o){return yTP-o.y1<=S.solidHeader&&C.revision<2?yTP-o.y1:Math.min(S.header,yTP-o.y1);}
   const busy=[...w.openings.map(o=>[o.u0-2*W,o.u1+2*W]),...(w.junctions??[]).map(j=>[j.u-j.width/2,j.u+j.width/2])];
   const grid=[];for(let u=w.u0;u<w.u1-2*W-EPS;u+=S.spacing)grid.push(u);grid.push(w.u1-W);
   for(const u of grid){
@@ -270,7 +273,7 @@ export function buildVeneerHouse(options={}){
   const plate=(type,a,c,ya,yb)=>{const pieceId=b.pieceId++,seams=[a];for(let u=w.u0+S.spacing/2+2.4;u<c-1.2;u+=2.4){const f=free(u);if(f>seams.at(-1)+1.2&&f<c-1.2)seams.push(f);}seams.push(c);
    for(let i=0;i<seams.length-1;i++)add(type,seams[i],seams[i+1],ya,yb,{pieceId,along:99});};
   for(const [a,c] of cuts)plate('bottom-plate',a,c,w.y0,yBP);
-  if(C.revision>=2)chunkedPlate(w,add,upright,yTP,w.top);else plate('top-plate',w.u0,w.u1,yTP,w.top);
+  if(C.revision>=2&&C.plateBays!==false)chunkedPlate(w,add,upright,yTP,w.top);else if(C.revision>=2){const pieceId=b.pieceId++;add("top-plate",w.u0,w.u1,yTP,w.top,{pieceId,along:2.4,material:MAT.plate});}else plate('top-plate',w.u0,w.u1,yTP,w.top);
  }
 
  /**
