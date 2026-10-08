@@ -33,6 +33,9 @@ NAME=${GARAGE_SDK_NAME:-garage-multihull}
 LINK="$SRC/out/install/$NAME"
 REV=$(git -C "$SRC" rev-parse --short=9 HEAD)
 VERSIONED="$LINK@$REV"
+# A rebuild of the same revision (a touched file, a changed build rule) never
+# installs over a version that exists: it may be the one live runs have open.
+n=1; while [ "${GARAGE_SDK_STAGE:-all}" != gpu ] && [ -e "$VERSIONED" ]; do VERSIONED="$LINK@$REV.$n"; n=$((n + 1)); done
 OPTS=(--preset macos-cumetal --generator 'Unix Makefiles' --jobs 8
   --build-root "$SRC/out/build/$NAME" --install-prefix "$VERSIONED"
   --cumetal-rigid-demo --cumetal-explicit-aggregate-root --cumetal-explicit-motion-root
