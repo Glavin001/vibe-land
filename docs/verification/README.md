@@ -312,6 +312,16 @@ any high-fidelity case.
   A rebuild never rewrites a file a live run has open. The three newest
   versions are kept. An older one is pruned only when `lsof +D` shows no
   process using it.
+- **Following the branches.** `scripts/ops/sdk-follow.sh` runs detached under
+  nohup, one instance, with every exit logged. Every 60 s it merges each moved
+  PhysX branch into integration/high-fidelity. It reads the branches from
+  `branches.tsv`, plus the build-only ones in `scripts/ops/sdk-follow.tsv`.
+  It then rebuilds and installs the versioned SDK, so a new run starts at most
+  one build behind. A conflict or a failed build is logged and never resolved
+  by the script. CuMetal kernels carry per-source header dependencies (PhysX
+  `perf/cumetal-depfiles`), so a one-kernel commit rebuilds and installs in
+  about 45 s. Before, every header edit recompiled all 57 kernels, about
+  4.5 min.
 - **Feature branches.** An integration branch's head can itself lag the
   feature branches it merges. `scripts/fidelity/branches.tsv` lists the
   branches the high profile depends on, in one place. For each:
