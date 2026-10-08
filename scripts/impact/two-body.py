@@ -155,8 +155,8 @@ class Model:
         self.B = sp.csr_matrix((vals, (rows, cols)), shape=(6 * nn, 6 * nl)); self.Bt = self.B.T.tocsr()
         self.k = np.array([j['k'] for j in self.joints]).reshape(nl, 6)
         self.F = np.array([j['F'] for j in self.joints]).reshape(nl, 9)
-        self.ductile = np.array([j['slip'] > 0 for j in self.joints])
-        self.limit = np.array([j['slip'] for j in self.joints])
+        self.ductile = np.array([j['slip'] > 0 for j in self.joints], dtype=bool)
+        self.limit = np.array([j['slip'] for j in self.joints], dtype=float)
         # rows: their 3 force components only
         self.Bc = []
         r_, c_, v_ = [], [], []
@@ -270,7 +270,7 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
     if h is None:
         om = model.omega_max(); h = 0.9 * 2.0 / om
     steps = int(np.ceil(T / h - 1e-9)); h = T / steps
-    body = np.array([j['a'] for j in model.joints]); body = np.array([model.nodes[a]['body'] for a in body])
+    body = np.array([model.nodes[j['a']]['body'] for j in model.joints], dtype=object)
     # the split joint operators (implicit, SMS)
     def split_W(mask):
         deg = np.zeros(nn)
@@ -284,7 +284,7 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
         return Ws
     imp = np.zeros(nl, bool); A = None
     if implicit:
-        imp = (body == implicit) & np.array([model.nodes[j['b']]['body'] == implicit for j in model.joints])
+        imp = np.array([model.nodes[j['a']]['body'] == implicit and model.nodes[j['b']]['body'] == implicit for j in model.joints], dtype=bool)
         Ws = split_W(imp); A = np.zeros((nl, 6, 6))
         if hybrid:
             # a joint explicitly stable at h (its own frequency, from its split inverse masses, within
@@ -717,6 +717,18 @@ def ball_truck(real_joints=False, mass=10650.0, speed=60.0, ticks=1, compliant=F
     return m, dict(car='truck', ids=ids, meta=meta, speed=speed, mass=sum(p['mass'] for p in meta['parts']), wheels=wheels, ball=ball, ball_mass=mass)
 
 
+def hertz_scene(m=10.0, R=0.1, E=210e9, v=1.0):
+    """A steel sphere (m, R) at v into a steel block a billion times heavier: one compliant row with
+    the sphere's single contact point (sigma 0) and its radius as the Hertz radius (contact_law.hertz_check;
+    the GPU replay's Hertz case). Its rebound and contact against Hertz's closed form."""
+    mdl = Model()
+    ball = mdl.node('car', 'sphere', m, np.eye(3) * 0.4 * m * R * R, (0, 0, -R), v=(0, 0, v))
+    plate = mdl.node('wall', 'plate', 1e9, np.eye(3) * 1e9, (0, 0, 1.0))
+    t = dict(Estar=1.0 / (1.0 / E + 1.0 / E), sigma=0.0, Rh=R, face=10.0, sec=np.inf)
+    mdl.row(plate, ball, (0, 0, 0), (0, 0, 1), 0.0, gap=0.0, tyre=t)
+    return mdl, dict(car='car', wheels=[], chassis=ball, speed=v, mass=m, dead_stop=m * v / DT)
+
+
 def wheels_off(model, live, info):
     """Wheel chunks no longer in the chassis's component (part 0: the authored chassis anchor)."""
     lab = components(model, live)
@@ -737,8 +749,8 @@ def report(model, R, info, args):
                 rows_on_car += sign * (r['R'].T @ R['P'][i])
     graded = np.linalg.norm(rows_on_car) / DT; needed = mc * np.linalg.norm(dv) / DT
     nl = len(model.joints)
-    car_j = np.array([model.nodes[j['a']]['body'] == car for j in model.joints])
-    broken = np.array([not R['live'][l] for l in range(nl)])
+    car_j = np.array([model.nodes[j['a']]['body'] == car for j in model.joints], dtype=bool)
+    broken = np.array([not R['live'][l] for l in range(nl)], dtype=bool)
     off = wheels_off(model, R['live'], info)
     out = dict(scene=args.scene, speed=info['speed'], real_joints=bool(getattr(args, 'real_joints', False)), fp32=args.fp32,
                nodes=len(model.nodes), joints=nl, rows=len(model.rows), h_us=R['h'] * 1e6, substeps=R['steps'], cpu_s=R['wall'],
@@ -772,7 +784,7 @@ def report(model, R, info, args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--scene', default='fixture', choices=['fixture', 'truck-wall', 'ball-truck'])
+    ap.add_argument('--scene', default='fixture', choices=['fixture', 'truck-wall', 'ball-truck', 'hertz'])
     ap.add_argument('--speed', type=float, default=None)
     ap.add_argument('--real-joints', action='store_true', help='the truck with VIBE_REAL_VEHICLE_JOINTS capacities')
     ap.add_argument('--fp32', action='store_true')
@@ -794,6 +806,7 @@ def main():
     a = ap.parse_args()
     Model.TENSOR = a.tensor_inertia
     if a.scene == 'fixture': model, info = fixture(a.speed or 20.0)
+    elif a.scene == 'hertz': model, info = hertz_scene(v=a.speed or 1.0)
     elif a.scene == 'truck-wall': model, info = truck_wall(a.speed or 21.7, a.real_joints, reach=(a.speed or 21.7) * DT * a.ticks, wheel_contacts=a.wheel_contacts, compliant=a.compliant)
     else: model, info = ball_truck(a.real_joints, speed=a.speed or 60.0, ticks=a.ticks, compliant=a.compliant)
     if a.brittle:
