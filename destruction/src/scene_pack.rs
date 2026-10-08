@@ -880,6 +880,22 @@ pub fn bearing_tables(json: &[u8]) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
     (get("bearingElasticModulus"), get("bendGyration"), get("bendSection"), get("bearingJoint"))
 }
 
+/// Each material's Mohr-Coulomb shear (FIDELITY_AUDIT C11; town-kit
+/// materials.mjs): `shearFriction`, the friction coefficient mu of its joints,
+/// and `shearCapacityLimit` (Pa), the cap on f_v0 + mu sigma_c (EN 1996-1-1
+/// 3.6.2: f_vk = f_vk0 + 0.4 sigma_d <= 0.065 f_b). Read by the native stage
+/// under VIBE_MOHR_COULOMB_SHEAR. Empty when the pack authors none; 0 where a
+/// material has none (0 cap: uncapped).
+pub fn shear_friction_tables(json: &[u8]) -> (Vec<f32>, Vec<f32>) {
+    let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Default::default() };
+    let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Default::default() };
+    if !materials.iter().any(|m| m["shearFriction"].as_f64().unwrap_or(0.0) > 0.0) {
+        return Default::default();
+    }
+    let get = |k: &str| materials.iter().map(|m| m[k].as_f64().unwrap_or(0.0).max(0.0) as f32).collect();
+    (get("shearFriction"), get("shearCapacityLimit"))
+}
+
 /// Each material's impact-solve modulus (Pa), `materials[].impactElasticModulus`
 /// (town-kit: a wall tie's axial stiffness), where its `elasticModulus` is a
 /// concession for gravity load sharing. Empty when the pack authors none.

@@ -566,41 +566,81 @@ By cause:
       With impact capacity off it crushes 15 chunks, as far as 3.24 m from the
       point struck. That is not local (the bound is 1.4 m, proposed).
 
-### Studless houses: should the two-storey house without ground-floor front studs collapse?
+### Studless houses: what the two-storey house does without its ground-floor front studs
 
-The acceptance check `studless-houses-collapse` expects each studless variant
-to break at least 2% of its bonds at rest. The 2% is "4x the at-rest gate"
-(qualify-veneer-houses.mjs), not a derivation. For the variant
-`veneer-house--no-ground-front-studs`, the load path decides the answer:
+Re-derived 2026-10-08 (house author). Numbers come from the high-profile
+pack's own masses, the CPU oracle (`structures/town-kit/scripts/stress-share.py`
+and `static-cascade.py`) and the kit's cited capacities.
 
-- **What is left over the gap.** With the ground floor's front studs gone, the
-  upper storey's front wall can carry its load only as a deep beam spanning the
-  9.9 m between the side walls. Its top plate is the compression chord; its
-  bottom plate, the rim joist and the ground floor's top plate are the tension
-  chord, 2.6 m below (the lever arm). The brick veneer stands on its own
-  footing and carries only itself: its ties transfer no floor load by design.
-- **The demand.** Everything above the ground floor in the front half of the
-  house, except the veneer, is 50.2 kN (the pack's masses). Uniform over the
-  span: M = W L / 8 = 62 kN m, so the chord force is 24 kN, and each end
-  reaction is 25 kN into the corners.
-- **The pack's capacity.** The chords are authored as continuous timber. Their
-  chunk joints along the span carry 97-566 kN in tension (stud-timber over the
-  member's section), far above 24 kN. As authored, the upper storey bridges the
-  gap, and the house stands. Measured on high: 0.45% broken with re-bearing,
-  0.84% without, under the 2% "collapse" share either way.
-- **A real house.** Lumber comes in 4.8-6 m lengths, so a 9.9 m plate is lap
-  spliced. The double top plate's splice is nailed (IRC R602.3.2: eight 16d
-  nails each side), about 12 kN ultimate, and the rim joist is butted at the
-  joists. A real tension chord gives at about half the demand, and the upper
-  storey comes down over the gap.
+Two variants are qualified. Each gets its own expectation.
 
-So the expectation "collapses" is right for a real house. The model stands
-because the authoring has no plate splices. The row is recorded as a known
-gap (AUTHORING) in `acceptance-expected.tsv`, measured 0.45%. The fix belongs
-in the town kit: plate and rim splices with their nailing. Separately, the 2%
-share should give way to a load-path test (members that lost their path and
-fell, as `house.collapsedMembers` does on the test bed), once qualification
-records it.
+**`veneer-house--no-ground-front-studs` (as built): stands.**
+
+- **The demand.** In the intact house, the ground floor's front studs other
+  than the junction stud carry 28.3 kN down to their bottom plate (oracle).
+  That is the load which needs a new path once they are gone. The earlier
+  50.2 kN was everything above the ground floor in the front half. Half of
+  that load reaches the centre wall through the joists and rafters, which
+  span front to centre.
+- **What is left: two paths, either one enough.**
+  - **The junction stud stays.** `withoutStuds` keeps it, since it carries
+    the partition. At x -1.8 it supports the front wall, so the upper
+    storey spans 6.66 m and 3.06 m, not 9.9 m.
+    - Over 6.66 m: M = w L^2/8 = 5.07 kN/m x 6.66^2 / 8 = 28 kN m. The chord
+      force over the 2.6 m lever arm is 10.8 kN, and 9.1 kN at the splices
+      near x 0.
+    - In high-profile packs the chords are spliced
+      (docs/calibration/house-headers.md "Splices"): the top plate at
+      9.7 kN (8-16d, IRC R602.3.2) and the rim at 6.4 kN (2-20d), 16 kN
+      together. So u = 0.57-0.67.
+  - **The brick ties.** The upper frame carries 153 ties: 136 to its studs
+    and 17 to the rim.
+    - A corrugated tie slides at about 0.4 kN (Choi & LaFave 2004). That
+      gives 61 kN against 28 kN, so u = 0.46.
+    - Its in-plane stiffness is about 0.02 kN/mm (BS EN 845-1
+      movement-tolerant ties: ~0.2 kN at 10 mm), so sharing 28 kN over 153
+      ties costs about 9 mm of sag.
+    - The veneer under them is 90 mm brick on its own footing. The extra
+      2.9 kN/m at the tie line, 95 mm off its centre, leaves the face in
+      0.08 MPa net tension, under masonry's flexural tensile strength
+      (EN 1996-1-1 f_xk1 0.1-0.4 MPa).
+    - The ties are made flexible, not free, so they do carry floor load
+      once the frame sags. The earlier assumption that they carry none "by
+      design" was the error.
+- **The prediction: stands.** Local joints at the gap may break (cripples,
+  sill trimmers, board screws), under the collapse share.
+  - Oracle, junction stud kept: 21 bonds broken, frame 100% anchored. The
+    ties carry 10 kN; the chords carry under 2 kN, because the ties are the
+    stiffer path.
+  - Measured on high with re-bearing: 0.45% (before the splices) and 0.64%
+    (with them).
+  - The check is `studless-upper-storey-stands`: broken under the 2%
+    collapse share.
+
+**`veneer-house--frame-no-ground-front-studs` (new): collapses.**
+
+This variant is the frame alone (no brick, no board), with the ground
+floor's front studs and junction studs out.
+
+- **What it removes.** It takes out both of the paths above: the ties go
+  with the veneer and the junction stud is gone. It also removes the deep
+  beam's web: a stud wall without sheathing or board has no in-plane shear
+  resistance beyond its nails' racking, so plate and rim do not act as
+  chords of one beam.
+- **What carries the front line over the 9.7 m between the side walls:**
+  - **The rim** (2 / 240 x 45 plies with the flooring, 262 mm deep): M_Rk =
+    2 f_m,k b h^2 / 6 = 24.7 kN m. Against M = W L / 8 = 29.2 kN x 9.72 / 8 =
+    35.5 kN m pinned it has u = 1.44, and 0.96 against W L / 12 clamped. Its
+    corner laps (2 nails) are pins, so pinned governs.
+  - **The floor joists cannot cantilever.** The front and back halves only
+    butt over the centre wall.
+- **The prediction: collapses.** Oracle static cascade: 921 of 2,085 bonds
+  broken. The check is `studless-houses-collapse`: broken >= 2%.
+
+The 2% is still `qualify-veneer-houses.mjs`'s share, not a derivation. The
+derivations above decide each variant's side of it. A load-path test
+(members fallen, as the test bed's `house.collapsedMembers`) should replace
+it once qualification records one.
 
 ## Regression tests (`scripts/verify/regressions.tsv`)
 
@@ -643,7 +683,8 @@ the profile's SDK and packs, then judges.
 | shots-through-house | test bed `smallshots-framed-house`, `cannonball-framed-house`, `meteor-framed-house` | three 100 kg balls between the studs: through, under 1% of the bonds. Cannonball: through, 4-10%, roof and frame hold, nothing broken more than 8 m away. Meteor: through the house, 12-20% (the oracle's ~490 of 3,084); its roof and frame are measured only (its path takes supports) |
 | crush-only-where-hit | test bed `rest`, `near-miss`, `knock-mirror`, cannonball; qualification; textbook crush-locality | no crush without a hit; a crush on a hit (high); crushed chunks within 1.4 m of the point struck (textbook, high) |
 | houses-stand-and-converge | qualification of the veneer houses | PASS (<= 10% unconverged, <= 0.5% broken) |
-| studless-houses-collapse | qualification of the no-front-studs variants | >= 2% of bonds broken (`COLLAPSE_SHARE`) |
+| studless-houses-collapse | qualification of the no-front-studs variants and the bare frame without its ground floor's front and junction studs | >= 2% of bonds broken (`COLLAPSE_SHARE`) |
+| studless-upper-storey-stands | qualification of the two-storey without its ground floor's front studs, as built | < 2% of bonds broken (it stands on the junction stud and the brick ties) |
 | roof-drawn-where-physics-has-it | `wire_chunk_poses` | worst <= 1 mm |
 | stairs-walkable | `walk_route.py` (with `--snap` in high) | the walk passes |
 | car-coasts-ride-height | test bed `coast`, `knock-mirror(-driving)`, `debris-wheel`, `near-miss` | criteria.mjs |

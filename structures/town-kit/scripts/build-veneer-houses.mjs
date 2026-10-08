@@ -5,7 +5,11 @@
 //   <key>--frame.json          brick veneer and gypsum board removed
 //   <key>--no-front-studs.json the front wall's studs (studs, king, jack, cripple) removed, every storey's
 //   <key>--no-ground-front-studs.json  (two storeys) the ground floor's front studs only: the upper
-//                              storey is left to bridge the gap
+//                              storey is left to bridge the gap (it does: the junction stud stays and
+//                              the brick ties hold it; docs/verification/README.md "Studless houses")
+//   <key>--frame-no-ground-front-studs.json  (two storeys) the frame alone (no brick, no board), the
+//                              ground floor's front studs and junction studs out: nothing but the
+//                              spliced chords and the rim over 9.7 m, which fail: it comes down
 // written to out/veneer-houses/, each validated, with the authored graph's
 // numbers (stress-convergence checklist: bond areas, stiffness spread, mass
 // contrast across a bond).
@@ -13,7 +17,7 @@
 import {mkdirSync,writeFileSync} from 'node:fs';
 import path from 'node:path';
 import {KIT} from '../src/dependencies.mjs';
-import {buildVeneerHouse,withoutSkin,withoutStuds} from '../src/veneer-houses.mjs';
+import {buildVeneerHouse,withoutSkin,withoutStuds,SKIN_TYPES} from '../src/veneer-houses.mjs';
 import {validate} from '../src/validate.mjs';
 
 // VIBE_CRUSH=1: the same houses with chunk crushing authored, in out/veneer-houses-crush.
@@ -38,7 +42,8 @@ export function graphStats(pack){
 export function variants(storeysCount){
  const {pack,metadata}=buildVeneerHouse({storeys:storeysCount}),key=pack.key;
  return [[key,pack],[`${key}--frame`,withoutSkin(pack)],[`${key}--no-front-studs`,withoutStuds(pack,metadata,storeysCount>1?['front-0','front-1']:'front')],
-  ...(storeysCount>1?[[`${key}--no-ground-front-studs`,withoutStuds(pack,metadata,['front-0'])]]:[])].map(([name,p])=>({name,pack:p,metadata}));
+  ...(storeysCount>1?[[`${key}--no-ground-front-studs`,withoutStuds(pack,metadata,['front-0'])],
+   [`${key}--frame-no-ground-front-studs`,withoutStuds(withoutSkin(pack),{nodeWalls:metadata.nodeWalls.filter((_,i)=>!SKIN_TYPES.includes(pack.scenario.nodeTypes[i]))},['front-0'],{junctions:true})]]:[])].map(([name,p])=>({name,pack:p,metadata}));
 }
 
 if(import.meta.url===`file://${process.argv[1]}`){

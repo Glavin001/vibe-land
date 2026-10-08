@@ -168,6 +168,18 @@ struct NativeDestruction::State {
   /// Each bond's cross-section from its chunks' geometry (bond_section.h),
   /// parallel to `bonds`; filled only under VIBE_SECTION_BENDING=1.
   std::vector<physx::PxDestructionBondSection> sections;
+#ifdef PX_DESTRUCTION_CHUNK_BOXES
+  // Each chunk's box (its collider's bounds, cluster frame): the impact step's own
+  // contact geometry within a tick (PxDestructionStressDesc::chunkBoxes). A chunk
+  // without one (a vehicle part) keeps an empty box.
+  std::vector<physx::PxDestructionChunkBox> boxes;
+#if PX_DESTRUCTION_CHUNK_BOXES >= 2
+  // Per chunk face (6 c + f): the chunks continuing the material across it at rest
+  // (mark_internal_faces), and their CSR form for the stage.
+  std::vector<std::vector<std::uint32_t>> face_neighbours;
+  std::vector<std::uint32_t> face_begin, face_list;
+#endif
+#endif
   // Per material (global index): a fastener group's twist radius of gyration
   // and farthest fastener (m), 0 where the material twists on its patch.
   std::vector<float> twist_gyration, twist_reach;

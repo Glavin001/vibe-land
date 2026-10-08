@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -158,6 +159,15 @@ static bool native_rebearing() {
   static const bool value = native_env_f32("VIBE_REBEARING", 0.0f) != 0.0f;
   return value;
 }
+/// VIBE_MOHR_COULOMB_SHEAR=1 (SDKs with PX_DESTRUCTION_MOHR_COULOMB_SHEAR;
+/// FIDELITY_AUDIT C11): an intact joint's shear strength grows with the
+/// compression across it, f_v0 + mu sigma_c up to its cap (EN 1996-1-1 3.6.2:
+/// f_vk = f_vk0 + 0.4 sigma_d <= f_vlt), mu and the cap per material (the
+/// pack's shearFriction, shearCapacityLimit). Off: the authored mu is ignored.
+static bool native_mohr_coulomb_shear() {
+  static const bool value = native_env_f32("VIBE_MOHR_COULOMB_SHEAR", 0.0f) != 0.0f;
+  return value;
+}
 /// VIBE_STRENGTH_SHORT_TERM=1: see append_materials.
 static bool native_short_term_strength() {
   static const bool value = native_env_f32("VIBE_STRENGTH_SHORT_TERM", 0.0f) != 0.0f;
@@ -214,6 +224,92 @@ static float native_stabilization_threshold() {
 }
 namespace vibe_land::physx_bridge {
 namespace {
+
+#if PX_DESTRUCTION_CHUNK_BOXES >= 2
+/// A structure's internal chunk faces (PxDestructionChunkBox::internalFaces): face f
+/// of box A (2 k: its -axis k face, 2 k + 1: its +axis k face) is internal when the
+/// material continues across it -- the boxes that start at or before its plane and
+/// reach past it cover the whole face (the union of their rectangles on it, exact by
+/// coordinate compression). Flush paving slabs and floor pieces then meet at seams,
+/// not edges (the internal-edge problem). Boxes are compared in the structure's frame
+/// (all its chunks' boxes are axis-aligned there; a rotated box is left alone); a hull's
+/// box is its bounds, as the impact step's contact geometry takes it.
+/// Coincidence tolerance: each face coordinate is a pack value rounded to 1e-6 m
+/// (town-kit geometry.mjs round: +-0.5e-6 for the centroid, +-0.5e-6 for the half
+/// extent) carried through about three float roundings (the centroid, the collider's
+/// mid-point, the half extent: <= 3 ulp(L) <= 3 FLT_EPSILON L at coordinates of
+/// magnitude L); two faces: tol = 2e-6 + 6 FLT_EPSILON L.
+void mark_internal_faces(std::vector<PxDestructionChunkBox> &boxes,
+                         std::vector<std::vector<std::uint32_t>> &neighbours,
+                         std::size_t base, std::size_t count) {
+  struct Box { PxVec3 lo, hi; };
+  std::vector<Box> b(count);
+  std::vector<std::uint32_t> order;
+  order.reserve(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    const PxDestructionChunkBox &x = boxes[base + i];
+    const bool axis = x.rotation.x == 0.0f && x.rotation.y == 0.0f && x.rotation.z == 0.0f;   // (the bridge's boxes: identity)
+    if (!axis || !(x.halfExtents.minElement() > 0.0f)) continue;
+    b[i] = {x.center - x.halfExtents, x.center + x.halfExtents};
+    order.push_back(static_cast<std::uint32_t>(i));
+  }
+  std::sort(order.begin(), order.end(), [&](std::uint32_t l, std::uint32_t r) { return b[l].lo.x < b[r].lo.x; });
+  const auto mag = [](const Box &x) { return std::max(x.lo.abs().maxElement(), x.hi.abs().maxElement()); };
+  struct Rect { float u0, u1, v0, v1; std::uint32_t by; };
+  std::vector<std::vector<Rect>> cover(6 * count);
+  // B continues the material across face f of A: it starts at or before the face's plane and
+  // reaches past it; its rectangle on the face, if any.
+  const auto across = [&](std::uint32_t a, std::uint32_t c, float tol) {
+    const Box &A = b[a], &B = b[c];
+    for (int k = 0; k < 3; ++k) {
+      const int u = (k + 1) % 3, v = (k + 2) % 3;
+      const float u0 = std::max(A.lo[u], B.lo[u]), u1 = std::min(A.hi[u], B.hi[u]);
+      const float v0 = std::max(A.lo[v], B.lo[v]), v1 = std::min(A.hi[v], B.hi[v]);
+      if (!(u1 - u0 > tol) || !(v1 - v0 > tol)) continue;
+      if (B.lo[k] <= A.hi[k] + tol && B.hi[k] > A.hi[k] + tol) cover[6 * a + 2 * k + 1].push_back({u0, u1, v0, v1, c});
+      if (B.hi[k] >= A.lo[k] - tol && B.lo[k] < A.lo[k] - tol) cover[6 * a + 2 * k].push_back({u0, u1, v0, v1, c});
+    }
+  };
+  for (std::size_t x = 0; x < order.size(); ++x) {
+    const std::uint32_t a = order[x];
+    for (std::size_t y = x + 1; y < order.size(); ++y) {
+      const std::uint32_t c = order[y];
+      const float tol = 2e-6f + 6.0f * FLT_EPSILON * std::max(mag(b[a]), mag(b[c]));
+      if (b[c].lo.x > b[a].hi.x + tol) break;
+      bool near = true;
+      for (int k = 0; k < 3 && near; ++k) near = b[c].lo[k] <= b[a].hi[k] + tol && b[a].lo[k] <= b[c].hi[k] + tol;
+      if (!near) continue;
+      across(a, c, tol);
+      across(c, a, tol);
+    }
+  }
+  for (const std::uint32_t a : order) {
+    const Box &A = b[a];
+    const float tol = 2e-6f + 6.0f * FLT_EPSILON * mag(A);
+    for (int f = 0; f < 6; ++f) {
+      const std::vector<Rect> &r = cover[6 * a + f];
+      if (r.empty()) continue;
+      const int k = f / 2, u = (k + 1) % 3, v = (k + 2) % 3;
+      // The face's area the rectangles' union covers (cells between their edges).
+      std::vector<float> us{A.lo[u], A.hi[u]}, vs{A.lo[v], A.hi[v]};
+      for (const Rect &q : r) { us.push_back(q.u0); us.push_back(q.u1); vs.push_back(q.v0); vs.push_back(q.v1); }
+      std::sort(us.begin(), us.end()); us.erase(std::unique(us.begin(), us.end()), us.end());
+      std::sort(vs.begin(), vs.end()); vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+      double covered = 0.0;
+      for (std::size_t i = 0; i + 1 < us.size(); ++i) for (std::size_t j = 0; j + 1 < vs.size(); ++j) {
+        const float cu = 0.5f * (us[i] + us[i + 1]), cv = 0.5f * (vs[j] + vs[j + 1]);
+        for (const Rect &q : r) if (cu >= q.u0 && cu <= q.u1 && cv >= q.v0 && cv <= q.v1) {
+          covered += double(us[i + 1] - us[i]) * double(vs[j + 1] - vs[j]); break; }
+      }
+      const double w = double(A.hi[u] - A.lo[u]), h = double(A.hi[v] - A.lo[v]);
+      if (covered < w * h - 2.0 * (w + h) * tol) continue;   // (its edges within tol of the cover's)
+      boxes[base + a].internalFaces |= 1u << f;
+      std::vector<std::uint32_t> &n = neighbours[6 * (base + a) + f];
+      for (const Rect &q : r) n.push_back(static_cast<std::uint32_t>(base + q.by));
+    }
+  }
+}
+#endif
 
 double now_ms() {
   using clock = std::chrono::steady_clock;
@@ -457,6 +553,14 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
                                                         settings.twist_reach.size() == settings.materials.size()),
                    "a fastener group table needs the bend and twist tables, all parallel to the materials");
     s.fastener_group.push_back(settings.fastener_group.empty() ? 0.0f : settings.fastener_group[index]);
+    native_require(settings.shear_friction.empty() || (settings.shear_friction.size() == settings.materials.size() &&
+                                                        settings.shear_capacity_limit.size() == settings.materials.size()),
+                   "shear friction tables must be empty or parallel to the materials");
+#if defined(VIBE_PHYSX_HAS_MOHR_COULOMB_SHEAR)
+    // Mohr-Coulomb joint shear (the stage zeroes mu unless its switch is on).
+    out.shearFriction = settings.shear_friction.empty() ? 0.0f : std::max(0.0f, settings.shear_friction[index]);
+    out.shearCapacityLimit = settings.shear_capacity_limit.empty() ? 0.0f : std::max(0.0f, settings.shear_capacity_limit[index]);
+#endif
     ++index;
     s.materials.push_back(out);
   }
@@ -806,6 +910,26 @@ void NativeDestruction::create_destructible(
       }
       native_require(shape != nullptr, "invalid or failed chunk geometry");
       shape->setLocalPose(PxTransform(native_px(n.centroid)));
+#ifdef PX_DESTRUCTION_CHUNK_BOXES
+      {
+        // Its collider's bounds about the centroid: a cuboid's own, a hull's box.
+        PxVec3 lo(0.0f), hi(0.0f);
+        if (n.geom_kind == 0) { hi = native_px(n.half_extents); lo = -hi; }
+        else if (!n.convex_points.empty()) {
+          lo = hi = native_px(n.convex_points[0]);
+          for (const FfiVec3 &p : n.convex_points) { const PxVec3 q = native_px(p); lo = lo.minimum(q); hi = hi.maximum(q); }
+        }
+        if (s.boxes.size() < s.nodes.size()) s.boxes.resize(s.nodes.size());
+        PxDestructionChunkBox box;
+        box.center = native_px(n.centroid) + (lo + hi) * 0.5f;
+        box.halfExtents = (hi - lo) * 0.5f;
+#ifdef PX_DESTRUCTION_CHUNK_BOX_EXACT
+        // A cuboid's box is its collider; a hull's is only its bounds.
+        if (n.geom_kind == 0) box.internalFaces = PX_DESTRUCTION_CHUNK_BOX_EXACT;
+#endif
+        s.boxes[base + i] = box;
+      }
+#endif
       // word3's top bit marks this as a stage-owned chunk: the filter shader
       // drops contact notifications for those pairs, because the stage reads
       // the impulses on the GPU and the CPU callback has nothing to add.
@@ -896,6 +1020,11 @@ void NativeDestruction::create_destructible(
                  structure_id, cpu_hulls, hulls);
   }
 
+#if PX_DESTRUCTION_CHUNK_BOXES >= 2
+  if (s.boxes.size() < s.nodes.size()) s.boxes.resize(s.nodes.size());
+  s.face_neighbours.resize(6 * s.nodes.size());
+  mark_internal_faces(s.boxes, s.face_neighbours, base, nodes.size());
+#endif
   s.append_bonds(structure_id, base, bonds, settings, false);
 }
 
@@ -995,6 +1124,17 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
     mass.inertia[3]=props.inertiaTensor[1][0];mass.inertia[4]=props.inertiaTensor[2][0];mass.inertia[5]=props.inertiaTensor[2][1];
     s.properties.push_back(mass);
     s.chunks.push_back({hulls[i][0],structure_id,i,0,PX_INVALID_U32,0});
+#ifdef PX_DESTRUCTION_CHUNK_BOXES
+    {
+      // Its hulls' bounds in the vehicle's actor frame (its cluster's): the impact step's
+      // own contact geometry for a body striking the vehicle (a dynamic struck island's
+      // window re-finds its rows as the striker crosses it). Bounds only: not exact.
+      PxBounds3 bounds=PxBounds3::empty();
+      for (auto *shape : hulls[i]) {PxBounds3 g;if (PxGeometryQuery::computeGeomBounds(g, shape->getGeometry(), shape->getLocalPose())) bounds.include(g);}
+      if (s.boxes.size() < s.nodes.size()) s.boxes.resize(s.nodes.size());
+      if (!bounds.isEmpty()) {PxDestructionChunkBox box;box.center=bounds.getCenter();box.halfExtents=bounds.getExtents();s.boxes[s.nodes.size()-1]=box;}
+    }
+#endif
     for (PxU32 h=0;h<hulls[i].size();++h) {
       auto *shape=hulls[i][h];shape->acquireReference();
       auto filter=shape->getSimulationFilterData();filter.word3|=kNativeChunkFilterBit;shape->setSimulationFilterData(filter);
@@ -1297,6 +1437,26 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.clusters = s.clusters.data();
   desc.clusterCount = static_cast<PxU32>(s.clusters.size());
   desc.chunkMassProperties = s.properties.data();
+#ifdef PX_DESTRUCTION_CHUNK_BOXES
+  s.boxes.resize(s.nodes.size());
+  desc.chunkBoxes = s.boxes.data();
+#if PX_DESTRUCTION_CHUNK_BOXES >= 2
+  s.face_neighbours.resize(6 * s.nodes.size());
+  s.face_begin.assign(1, 0u);
+  s.face_list.clear();
+  for (const auto &n : s.face_neighbours) {
+    s.face_list.insert(s.face_list.end(), n.begin(), n.end());
+    s.face_begin.push_back(static_cast<std::uint32_t>(s.face_list.size()));
+  }
+  desc.chunkFaceNeighbourBegin = s.face_begin.data();
+  desc.chunkFaceNeighbours = s.face_list.empty() ? nullptr : s.face_list.data();
+  {
+    std::size_t faces = 0;
+    for (const auto &box : s.boxes) faces += static_cast<std::size_t>(__builtin_popcount(box.internalFaces & 0x3fu));
+    std::fprintf(stderr, "[destruction] chunk boxes: %zu internal faces (flush neighbours continue the material: seams, not edges)\n", faces);
+  }
+#endif
+#endif
   desc.materials = s.materials.data();
   desc.materialCount = static_cast<PxU32>(s.materials.size());
 #if PX_DESTRUCTION_SCENE_VERSION >= 22
@@ -1373,6 +1533,16 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   }
 #else
   native_require(!native_rebearing(), "VIBE_REBEARING needs a PhysX SDK with PX_DESTRUCTION_REBEARING (PhysX feat/rebearing)");
+#endif
+#if defined(VIBE_PHYSX_HAS_MOHR_COULOMB_SHEAR)
+  // The stage reads its switch at configuration.
+  if (native_mohr_coulomb_shear()) {
+    setenv("PX_DESTRUCTION_MOHR_COULOMB_SHEAR", "1", 1);
+    std::fprintf(stderr, "[destruction] Mohr-Coulomb shear: on (an intact joint resists f_v0 + mu sigma_c)\n");
+  }
+#else
+  native_require(!native_mohr_coulomb_shear(),
+                 "VIBE_MOHR_COULOMB_SHEAR needs a PhysX SDK with PX_DESTRUCTION_MOHR_COULOMB_SHEAR (PhysX feat/mohr-coulomb-shear)");
 #endif
   // One trial evaluation plus one corrected rigid pass. Zero would leave the
   // stage in its diagnostic mode, where any membership-changing verdict is

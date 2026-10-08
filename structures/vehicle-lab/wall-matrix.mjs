@@ -97,15 +97,35 @@ function nearestNode(pack, target) {
 // sphere ploughs the ground first: wm-masonry-meteor-0 lost 130 MJ (12% of its
 // KE) to terrain for 4 evaluations before it reached the wall.
 export const METEOR_RADIUS = 2.0, METEOR_CLEARANCE = 0.1;
+// A near-level meteor (the default slope) must also stay clear of grade through its whole
+// passage, not only at the face: the cases judge its exit speed and the floor
+// (momentum-floor.mjs) counts the structure alone. From the struck face to where the probe
+// reads its exit -- its trailing point past the layer by its own diameter, the centre
+// layer + 3 R further along -- it descends slope (layer + 3 R); and a contact the
+// narrowphase finds a tick late is up to its descent in a tick, v sin(theta) dt, into what
+// it meets. So its underside at the face clears grade by slope (layer + 3 R) + v sin(theta) dt
+// (meteor.rs: 140 m/s; a tick 1/60 s). A steep authored slope (a roof, the stone house from
+// the street) lands by design and keeps METEOR_CLEARANCE at the face; so does the
+// `land` trial below, which keeps the ground contact tested.
+export const METEOR_SPEED = 140, TICK = 1 / 60;
+export function meteorPassageClearance(slope, layer) {
+  return slope * (layer + 3 * METEOR_RADIUS) + METEOR_SPEED * (slope / Math.hypot(1, slope)) * TICK;
+}
 
 /** One trial: `impactor` at `target`'s `point`, `angle` degrees off square. */
 function trial(pack, target, impactorId, angle, point = 'centre', extra = {}) {
   const imp = IMPACTORS[impactorId];
   const node = nearestNode(pack, target);
   const aim = hitPoint(target, point, node);
-  if (imp.attack === 'meteor' && !target.town) aim[1] = Math.max(aim[1], +(METEOR_RADIUS + METEOR_CLEARANCE).toFixed(3));
+  if (imp.attack === 'meteor' && !target.town) {
+    // Near-level (the default slope): clear of grade through the passage, unless the
+    // trial is the landing (extra.land: METEOR_CLEARANCE at the face, it meets the ground).
+    const nearLevel = target.slope === undefined && target.meteorSlope === undefined && !extra.land;
+    const clearance = nearLevel ? meteorPassageClearance(0.05, target.layer ?? 0.3) : METEOR_CLEARANCE;
+    aim[1] = Math.max(aim[1], +(METEOR_RADIUS + clearance).toFixed(3));
+  }
   const from = (target.face + ANGLES[angle]) % 360;
-  const id = `wm-${target.id}-${impactorId}-${angle}${point === 'centre' ? '' : `-${point}`}${extra.suffix ?? ''}`;
+  const id = `wm-${target.id}-${impactorId}-${angle}${point === 'centre' ? '' : `-${point}`}${extra.suffix ?? ''}${extra.land ? '-land' : ''}`;
   const base = { id, probe: true, target: aim, layer: target.layer, matrix: { target: target.id, group: target.group, impactor: impactorId, angle, point, chunk: node && { index: node.i, type: node.type, material: node.material, mass: node.mass } } };
   if (imp.truck) {
     // Start far enough back to reach the speed, square on to the bearing.
@@ -220,6 +240,10 @@ export function matrix(pack, set = 'all') {
     for (const t of ['veneer-stud', 'veneer-corner', 'veneer-window', 'veneer-door', 'veneer-base', 'veneer-side', 'veneer-roof', 'masonry-base', 'masonry-end', 'brick-house-corner', 'stone-house', 'stone-house-upper', 'pile'])
       for (const i of ['cannonball', 'meteor', 'ball100']) out.push(trial(pack, T[t], i, '0'));
     for (const t of ['veneer', 'masonry', 'brick-house']) out.push(trial(pack, T[t], 'ball100', '0'), trial(pack, T[t], 'ball1000', '0'));
+    // The meteor landing at the masonry wall's foot (its underside 0.1 m over grade at the
+    // face, descending into the paving and the footing within its passage): the ground
+    // contact, kept tested now that the square-on shots clear grade.
+    out.push(trial(pack, T.masonry, 'meteor', '0', 'centre', { land: true }));
     // A wall already hit once.
     for (const t of ['veneer', 'masonry']) out.push(trial(pack, T[t], 'ball1000', '0', 'centre', { repeat: true, suffix: '-again' }));
   }

@@ -195,6 +195,20 @@ export async function expectation(sc) {
       if (perp - half <= perimeter && along + half >= -r && along - half <= t + r) member = Math.max(member, sz.x, sz.y, sz.z);
     }
     out.local = { r, t, perimeter, member, reach: perimeter + member };
+    // A free-standing unreinforced masonry panel (targets[].locality 'panel', SCENARIOS.md
+    // "Local"): its yield lines end only on its supports and free edges, so the reach is the
+    // struck panel itself -- its farthest point from the line.
+    const T = DATA.targets[c.trial?.matrix?.target ?? sc.target];
+    if (T?.locality === 'panel') {
+      let panel = 0;
+      for (let i = 0; i < P.scenario.nodes.length; i += 1) {
+        if (!P.scenario.nodeGroups[i].startsWith(c.group) || !(P.scenario.nodes[i].mass > 0)) continue;
+        const q = P.scenario.nodes[i].centroid, sz = P.scenario.nodeSizes[i];
+        const rel = [q.x - aim[0], q.y - aim[1], q.z - aim[2]], along = rel[0] * dir[0] + rel[1] * dir[1] + rel[2] * dir[2];
+        panel = Math.max(panel, Math.hypot(rel[0] - along * dir[0], rel[1] - along * dir[1], rel[2] - along * dir[2]) + 0.5 * Math.hypot(sz.x, sz.y, sz.z));
+      }
+      out.local = { ...out.local, kind: 'panel', punching: out.local.reach, reach: panel };
+    }
   }
   if (sc.expect?.outcome === 'either' || (out.outcome === 'either' && sc.intent)) out.outcome = sc.intent ? sc.intent.split(':')[0] : 'either';
   if (!out.outcome) out.outcome = sc.expect?.outcome;
@@ -265,10 +279,22 @@ function judgeOne(ex, run, others) {
     // passage; those after it (debris, aftermath) are reported apart.
     const far = ex.local.reach, during = h.lineDistancesDuring ?? h.lineDistances, after = h.lineDistancesAfter ?? [];
     const beyond = during.filter((d) => d > far).length, beyondAfter = after.filter((d) => d > far).length;
-    row('damage local (bonds broken beyond r + 2t + member from the line, during the passage)', `0 beyond ${f(far, 2)} m (r ${f(ex.local.r, 2)} + 2t ${f(2 * ex.local.t, 2)} + member ${f(ex.local.member, 2)})`, `${beyond} of ${during.length}`, e.local === 'reported' ? null : beyond === 0);
+    if (ex.local.kind === 'panel')
+      row('damage local (bonds broken beyond the struck panel from the line, during the passage: yield lines end at its supports and free edges)', `0 beyond ${f(far, 2)} m (the panel; punching reach r + 2t + member ${f(ex.local.punching, 2)})`, `${beyond} of ${during.length}`, e.local === 'reported' ? null : beyond === 0);
+    else row('damage local (bonds broken beyond r + 2t + member from the line, during the passage)', `0 beyond ${f(far, 2)} m (r ${f(ex.local.r, 2)} + 2t ${f(2 * ex.local.t, 2)} + member ${f(ex.local.member, 2)})`, `${beyond} of ${during.length}`, e.local === 'reported' ? null : beyond === 0);
     if (h.lineDistancesAfter) row('bonds broken beyond that reach after the passage (debris, aftermath: reported)', 'reported', `${beyondAfter} of ${after.length}`, null);
   }
   if (e.stands && h?.roofMembers) row('stands (roof members down > 0.5 m)', `${ROOF_DOWN}`, `${h.roofMembersDown} of ${h.roofMembers}`, e.stands === 'reported' ? null : h.roofMembersDown <= ROOF_DOWN);
+  // A landing (expect.rebound): the meteor meets grade, and may leave it upward at no more
+  // than the contact's restitution of its descent (the world's e 0.1; Hibbeler, Dynamics,
+  // 15.4: a rigid floor). Faster is energy the contact made: a late contact pushed out, or a
+  // kinematic edge's ramp (physx-bridge/tests/infinite_wall.rs meteor_rebound_off_ground).
+  // Judged per tick by wall_matrix.rs impactorReboundExcess: the upward change, gravity
+  // removed, past (1 + e) times the descent the contact met, net of the speeds' f32 rounding.
+  if (e.rebound && pr) {
+    const vn = Math.max(0, -(pr.impactorUpIn ?? 0));
+    row('rebound off the ground (m/s past (1 + e) the descent, gravity removed: none)', `<= 0 (e ${e.rebound}, v_n ${f(vn, 2)})`, f(pr.impactorReboundExcess, 2), pr.impactorReboundExcess != null && pr.impactorReboundExcess <= 0);
+  }
   if (e.broken) {
     const n = h?.broken ?? Object.values(run.sceneBroken ?? {}).reduce((a, b) => a + b, 0);
     row('struck target breaks', '>= 1 bond', n, n >= 1);

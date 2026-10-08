@@ -66,21 +66,68 @@ def row_force(t, d):
     return F + 4.0 / 3.0 * E * np.sqrt(R) * (d2 ** 1.5 - d1 ** 1.5) + 2.0 * E * fc * (d - d2)
 
 
-def compliant_impulse(W, g, d, row, mu, h, theta=1.0):
+def crush_of(mat):
+    """(onset, plateau) for a material record with the stage's fields (capPressure, cohesion,
+    frictionSlope, crushEnergy, compressionFatalLimit). The onset: the uniaxial crush stress of its
+    own crush law, min(c / (1 - s / 3), 3 p_cap) (q = sigma, p = sigma / 3; the cone never for
+    s >= 3). The plateau: its crush energy density (J/m^3 = Pa: the work per crushed volume is the
+    plateau stress, Gibson & Ashby, Cellular Solids, 1997, ch. 5), at most the onset. A material with
+    no crush law (capPressure 0) does not crush, as the stage's own crush law has it
+    (extStressCrushStep): its compressive limit is its joints' (a material's fatal limits grade the
+    bonds made of it), not the body's -- the kernel's crushLaw."""
+    c, s, cap = float(mat['cohesion']), float(mat['frictionSlope']), float(mat['capPressure'])
+    if cap > 0:
+        cone = c / (1.0 - s / 3.0) if s < 3.0 and c > 0 else np.inf
+        on = min(cone, 3.0 * cap)
+        return on, min(float(mat['crushEnergy']), on)
+    return np.inf, np.inf
+
+
+def crater_row(row, crush, R=None):
+    """The row while its struck side crushes: a flat punch of the crater's radius, a^2 = 2 R d at the
+    whole intrusion d = crush['d_tot'] (a plastic indentation's truncated cap, Johnson 1985 sec. 6.3;
+    the elastic Hertz radius is sqrt(R d)), at most the face. R the row's relative curvature."""
+    R = row['Rh'] if R is None else R
+    return dict(row, sigma=max(row['sigma'], min(row['face'], np.sqrt(2.0 * R * max(crush['d_tot'], 0.0)))))
+
+
+def compliant_impulse(W, g, d, row, mu, h, theta=1.0, crush=None):
     """One compliant row's impulse over h: P_N = min(0, -k h (d + h g_N) / (1 + theta k h^2 W_NN))
     (k at depth d: row_k; theta 1 backward Euler, the kernel's), then the tangential impulse that
     stops the slip given P_N, clipped to mu |P_N|. W the row's 3 x 3 (split) inverse mass, g its
-    relative motion (g_N > 0 closing). A tyre (a 'p' law) pushes with its force at d."""
+    relative motion (g_N > 0 closing). A tyre (a 'p' law) pushes with its force at d.
+
+    crush (optional; the struck side's crush, scripts/impact/compliant-step.py): a dict with 'on',
+    'pl' (crush_of), 'crushing' (sticky), 'd_tot' (the whole intrusion). Crushing, the row is the
+    crater's flat punch (crater_row). The normal force reaching 'on' x pi a^2 starts the crush; while
+    crushing it is at most 'pl' x pi a^2 (the tangential within mu of it). Sets crush['a'], ['F'].
+    Without crush (None) the law is unchanged."""
     W = np.asarray(W, float); g = np.asarray(g, float)
+    if crush is not None and crush.get('crushing'): row = crater_row(row, crush, crush.get('R'))
     if 'k' in row or 'Estar' in row:
         # its force at the substep's end, F(d) + k(d) h g+ (linearised at d; g+ = g_N + W_NN P_N)
         kc = row_k(row, d); PN = min(0.0, -h * (row_force(row, d) + kc * h * g[0]) / (1.0 + theta * kc * h * h * W[0, 0]))
     else:
         PN = -tyre_force(row, d) * h
+    if crush is not None and 'Estar' in row:
+        a = min(row['face'], max(row['sigma'], np.sqrt(row['Rh'] * max(d, 0.0))))
+        A = np.pi * a * a; F = -PN / h
+        if not crush.get('crushing') and A > 0 and F >= crush['on'] * A: crush['crushing'] = True
+        if crush.get('crushing') and F > crush['pl'] * A: PN = -crush['pl'] * A * h
+        crush['a'] = a; crush['F'] = -PN / h; crush['Estar'] = row['Estar']
     PT = -np.linalg.solve(W[1:, 1:], g[1:] + W[1:, 0] * PN)
     n = np.linalg.norm(PT); lim = mu * -PN
     if n > lim: PT *= lim / n
     return np.array([PN, PT[0], PT[1]])
+
+
+def crush_advance(crush, d_el, gN, h):
+    """After the substep's impulses (gN the row's closing rate after them): the intrusion past the
+    elastic depth F / (2 a E*) is crushed. Returns the crushed depth increment; its work is crush['F']
+    times it (the striker's)."""
+    if not crush.get('crushing') or not crush.get('a', 0) > 0: return 0.0
+    dn = d_el + h * gN; dy = crush['F'] / (2.0 * crush['a'] * crush['Estar'])
+    return max(0.0, dn - dy)
 
 
 def row_step(Wtrue_NN, k, eps):

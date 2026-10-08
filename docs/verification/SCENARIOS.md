@@ -134,6 +134,37 @@ bond graph without them (`frontRearJoined`).
   veneer wall gets 4.1 m, against 2.1 m before. It comes out smaller for the
   meteor into the masonry wall: 3.0 m, against 5.5 m before.
 
+  **Free-standing unreinforced masonry walls: the reach is the struck panel**
+  (`targets.masonry.locality: "panel"`; 2026-10-08).
+  - **Where r + 2t + l holds.** It is a punching reach: it holds where punching
+    governs, i.e. where the joints around the struck area fail before the panel
+    can bend. That is so for slabs and framed walls (EN 1992-1-1 6.4), which is
+    why it stays for the framed houses.
+  - **How an unreinforced masonry panel fails out of plane.** By a yield-line
+    mechanism. EN 1996-1-1 6.3.1 designs laterally loaded panels with Annex E's
+    bending moment coefficients, which are Johansen yield-line solutions with the
+    orthogonal strength ratio mu = f_xk1 / f_xk2. A mechanism's yield lines end
+    only on the panel's supported or free edges: its segments rotate about the
+    supports. So once the mechanism governs, cracks run from the struck area to
+    the panel's boundary.
+  - **Drop-weight tests show the same.** Gilbert, Hobbs and Molyneaux, Int. J.
+    Impact Eng. 27 (2002) 231-251 and 253-275: impacted unreinforced walls crack
+    along such lines across the panel, not in a punching cone.
+  - **Which one governs here.** The lab's free wall (7 x 2.5 x 0.25 m, one
+    supported edge, its base) resists 12-45 kN out of plane. That is the targets
+    table: f_xk1 0.1-0.4 MPa with its weight's restoring moment. The punching
+    perimeter of a struck 0.5 m block is its four joints at 125 kN in shear,
+    about 0.5 MN. The mechanism therefore governs by about 10x.
+  - **What the compliant contact shows.** The impact step with compliant contacts
+    (IMPACT_STEP_PLAN.md, compliant impact contacts, CPU stage) loads the struck
+    block to that perimeter over about 2 ms, and the top courses then fail at their
+    flexural capacity (0.6 MPa x S = 3.1 kN m per joint) up to 3.1 m from the line.
+    The lab shows the same. At 10 m/s, a 129 kN contact cracks the wall to 3.4 m
+    and punches nothing.
+  - **The gate.** No bond broken beyond the struck panel. Its reach is the panel's
+    farthest point from the line: 4.0 m for the shots at its centre, 3.8-4.3 m
+    for the others. The punching reach is still printed beside it.
+
   **Stopgap (2026-10-08): only breaks during the passage count.** Debris
   thrown through the house can break a joint wherever it lands, and that is
   real. The test bed cannot yet say which impactor broke a bond, so it splits
@@ -197,6 +228,27 @@ bond graph without them (`frontRearJoined`).
   formula, and those are marked.
 - **Terrain.** The ground is a rigid floor (FIDELITY_AUDIT E10), so hits at
   grade (`veneer-base`, `masonry-base`) are not in the matrix.
+- **Meteors clear grade through their passage (2026-10-08).** The square-on meteors
+  are judged on their exit speed, and the floor (`momentum-floor.mjs`) counts the
+  structure alone. So their underside must stay above grade from the struck face to
+  where the probe reads the exit. That point is the trailing point past the layer by
+  the meteor's own diameter, with the centre `layer + 3R` further along.
+  - Over that run the meteor descends `slope (layer + 3R)`.
+  - A contact the narrowphase finds a tick late is also up to a tick's descent,
+    `v sin(theta) dt`, into what it meets.
+  - So the underside clears grade at the face by `slope (layer + 3R) + v sin(theta) dt`
+    (`wall-matrix.mjs` `meteorPassageClearance`). For slope 0.05, a 0.25 m wall,
+    R 2 m and 140 m/s, that is 0.43 m: an aim of 2.43 m, where it was 2.1.
+  - Aimed 0.1 m over grade, the 2 m sphere met the paving and the wall's footing
+    within its passage. The compliant impact step showed it (IMPACT_STEP_PLAN.md,
+    compliant impact contacts): those exits measured the ground contact, not the wall.
+  - Steep authored slopes (the roof, the stone house from the street) land by design
+    and keep the 0.1 m clearance at the face.
+- **The landing stays tested.** `meteor-lands-at-masonry-wall`
+  (`wm-masonry-meteor-0-land`) is the old aim. It lands on the paving and the
+  footing within its passage, and is judged on its rebound: at most `e v_n` up (the
+  world's restitution 0.1; `infinite_wall` `meteor_rebound_off_ground` on flat
+  ground and paving).
 - **The Vibe Town house and bus shelter.** The wall matrix's town-house aim misses the house
   (`townTarget` aims at the group's bounding face, which for the house is not its wall and for the open-fronted shelter is open air; both cases were "untouched" in
   the 2026-10-07 town run). It is left out until the aim is fixed.
