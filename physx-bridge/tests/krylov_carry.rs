@@ -11,15 +11,12 @@
 //! 1. The answer is the same. At rest, the carried solve's bond stresses
 //!    match a cold solve converged at 4096 iterations, and it converges in no
 //!    more ticks than the restarted solve.
-//! 2. A changing load disables it. A ball dropped on the converged beam's tip
-//!    (stiffer joints and a 4096 cap here, so both runs converge on every
-//!    tick and meet the ball from the same warm forces)
-//!    changes the load; on its contact tick the carried run's solve must
-//!    follow the restarted run's (the same residual after its first
-//!    iteration: a projected steepest-descent step, where a carried solve
-//!    would take a polynomial step), because the carry declines a load that
-//!    moved by more than the solve tolerance. At rest before the ball the
-//!    carry must have engaged, or the comparison proves nothing.
+//! 2. A changing load disables it. Tick 2 starts from the same warm forces in
+//!    a carried and a restarted run (tick 1 is cold in both). Under a static
+//!    load its first step differs (the carry engaged: a polynomial step
+//!    continuing the recurrence); with a ball landing on the tip it must be
+//!    the restarted run's projected steepest-descent step, because the carry
+//!    declines a load that moved by more than the solve tolerance.
 //!
 //! The carry mode is read once per process, so each run is a child process
 //! of this test binary (KRYLOV_CHILD).
@@ -38,14 +35,11 @@ const GROUP_CHUNK: u32 = 1 << 5;
 const SEGMENTS: usize = 12;
 const LENGTH: f32 = 0.3; // each segment
 const JOINT: f32 = 0.03; // the square joint patch between segments (m)
-// The ball test needs both runs converged before the ball lands (the same
-// warm start), so its joints are stiffer: the restarted run converges too.
-const STIFF_JOINT: f32 = 0.08;
 
 /// One run: prints `TICK k iterations reason h0 h1` per tick (the beam's solve
 /// report) and `ROW bond normal bend shear` for the final bond stresses.
 fn child(mode: &str, cap: u32, ticks: u32) {
-    let joint = if mode == "ball" { STIFF_JOINT } else { JOINT };
+    let joint = JOINT;
     stage_env::product();
     std::env::set_var("VIBE_SECTION_BENDING", "1");
     std::env::set_var("VIBE_SECTION_ROTATION", "1");
@@ -102,12 +96,7 @@ fn child(mode: &str, cap: u32, ticks: u32) {
     world.step().unwrap();
     world
         .native_configure(NativeConfig {
-            // The ball run stops on the force test only (a residual
-            // tolerance FP32 never reaches): each solve then ends on a PCG
-            // step, so a carry state exists on the contact tick and only the
-            // load test can decline it. (A solve that converges by the
-            // residual test restarts its successor anyway.)
-            max_iterations: cap, tolerance: if mode == "ball" { 1e-7 } else { 1e-3 }, force_tolerance: 1e-3, warm_start: true,
+            max_iterations: cap, tolerance: 1e-3, force_tolerance: 1e-3, warm_start: true,
             damage_rate: 2.0, bend_gain_max: 3.0, fibre_bending: true,
             reserved_contact_pairs: 64, preserve_unchanged_contact_pairs: true,
             gpu_island_repair: true, verdict_sample_ticks: 1,
@@ -115,12 +104,13 @@ fn child(mode: &str, cap: u32, ticks: u32) {
         .unwrap();
     world.native_set_stress_solve_report(1).unwrap();
     for k in 0..ticks {
-        if mode == "ball" && k == 60 {
-            // 40 kg dropped from 0.4 m above the tip.
+        if mode == "ball" && k == 0 {
+            // 40 kg released 5 mm above the tip: it lands in the first ticks,
+            // while the beam's solve is still converging.
             world
                 .add_dynamic_sphere(DynamicSphereDesc {
                     entity_id: 900, user_id: 900,
-                    pose: Pose { position: Vec3::new((SEGMENTS as f32 - 0.5) * LENGTH, 5.0 + 0.05 + 0.1 + 0.4, 0.0), rotation: Quat::IDENTITY },
+                    pose: Pose { position: Vec3::new((SEGMENTS as f32 - 0.5) * LENGTH, 5.0 + 0.05 + 0.1 + 0.005, 0.0), rotation: Quat::IDENTITY },
                     radius: 0.1, mass: 40.0, collision_group: GROUP_CHUNK, collision_mask: GROUP_CHUNK,
                 })
                 .unwrap();
@@ -199,34 +189,20 @@ fn carried_solve_matches_cold_solve() {
 #[test]
 #[ignore = "requires a native GPU destruction SDK with PX_DESTRUCTION_SECTION_ROTATIONAL_STIFFNESS"]
 fn changing_load_disables_the_carry() {
-    // A 4096 cap: both runs converge on every tick, so they meet the ball
-    // from the same warm forces, and the carry still has a state to carry.
-    let carried = run("ball", 4096, 120, "1");
-    let restarted = run("ball", 4096, 120, "0");
-    // At rest the carry engages: some solve before the ball differs.
-    let engaged = (2..60).any(|k| {
-        let (a, b) = (carried.ticks[k], restarted.ticks[k]);
-        (a.3 - b.3).abs() > 0.1 * a.3.abs().max(b.3.abs())
-    });
-    assert!(engaged, "the carry never engaged at rest (the test would prove nothing)");
-    // Both runs converge at rest before the ball (tick 60), so they start
-    // its contact from the same warm forces; the contact is the first tick
-    // after it whose starting residual jumps.
-    for (name, r) in [("carried", &carried), ("restarted", &restarted)] {
-        assert!(r.ticks[40..60].iter().all(|t| t.1 == 1 || t.1 == 6), "{name}: not converged before the ball");
-    }
-    let onset = (61..restarted.ticks.len())
-        .find(|&k| restarted.ticks[k].2 > 100.0 * restarted.ticks[59].2.max(1e-30))
-        .expect("the ball never loaded the beam");
-    println!("ball contact from tick {onset}");
-    // The contact tick itself: both runs start it from forces converged at
-    // rest, so a restarted solve is the same solve in both. (Later ticks
-    // start from forces that each run converged to within its tolerance by
-    // its own path, and their residuals differ by that much.)
-    for k in onset..onset + 1 {
-        let (a, b) = (carried.ticks[k], restarted.ticks[k]);
-        println!("  tick {k}: carried h0 {:.4e} h1 {:.4e}; restarted h0 {:.4e} h1 {:.4e}", a.2, a.3, b.2, b.3);
-        let close = |x: f64, y: f64| (x - y).abs() <= 1e-2 * x.abs().max(y.abs());
-        assert!(close(a.2, b.2) && close(a.3, b.3), "tick {k}: the carried run did not restart under a changing load");
-    }
+    // Tick 1 is a cold solve in every run, so tick 2 starts from the same
+    // warm forces in a carried and a restarted run, and its first step tells
+    // them apart: a projected steepest-descent step restarted, a polynomial
+    // step continuing the recurrence when carried.
+    let close = |x: f64, y: f64| (x - y).abs() <= 1e-2 * x.abs().max(y.abs());
+    let k = 1; // tick 2
+    let (carried, restarted) = (run("static", 16, 3, "1"), run("static", 16, 3, "0"));
+    let (a, b) = (carried.ticks[k], restarted.ticks[k]);
+    println!("static load, tick 2: carried h0 {:.4e} h1 {:.4e}; restarted h0 {:.4e} h1 {:.4e}", a.2, a.3, b.2, b.3);
+    assert!(close(a.2, b.2), "tick 2 did not start from the same warm forces");
+    assert!(!close(a.3, b.3), "the carry did not engage under a static load (the test would prove nothing)");
+    // A ball landing on the tip changes the load: the carry declines it.
+    let (carried, restarted) = (run("ball", 16, 3, "1"), run("ball", 16, 3, "0"));
+    let (a, b) = (carried.ticks[k], restarted.ticks[k]);
+    println!("ball landing, tick 2: carried h0 {:.4e} h1 {:.4e}; restarted h0 {:.4e} h1 {:.4e}", a.2, a.3, b.2, b.3);
+    assert!(close(a.2, b.2) && close(a.3, b.3), "the carried run did not restart under a changing load");
 }
