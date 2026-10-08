@@ -252,6 +252,52 @@ load needs no stud-to-plate tie-down in N1-N2 wind. It is reported as an
 engine gap: unilateral re-bearing of bearing joints whose fasteners have
 failed.
 
+## Re-bearing (C9), measured 2026-10-08
+
+PhysX feat/rebearing (SDK garage-rebearing 402e7eb58, which carries
+integration/high-fidelity ccfb4ebed), `VIBE_REBEARING=1`, now in the high
+profile. A bearing joint whose fasteners fail stays as a unilateral contact:
+compression to its bearing capacity (its material's, f_c,90,k for timber),
+shear by friction only (mu 0.23, EN 1995-2:2004 Table 6.2, sawn softwood
+parallel to the grain), no tension. It lifts off when the solve pulls it and
+re-bears when the solve's displacement presses its chunks together; it breaks
+only by crushing, by sliding (|V| > mu C), or when what it held has no path
+left to a support (that region splits, as before).
+
+`run.mjs house-headers --configs high`, 600 ticks, 64 iterations, FP32,
+correction limit 1, the same SDK with the flag off and on (the stage is not
+deterministic run to run: 3-4 runs each). "Frame beyond" counts frame joints
+broken more than one stud bay (0.6 m) outside the knocked-out bay.
+
+| Case | Off: broken (frame beyond) | On: broken (frame beyond) |
+|---|---|---|
+| intact | 0, 0, 0 | 0, 0, 0, 0 |
+| bay1 | 0, 0, 0 | 0, 0, 0 (one early run: 343, the roof over the bay) |
+| bay2 | 2 (a cripple-to-lintel joint), x3 | 1 skin screw, x4: no frame joint (was the MISS) |
+| truck | 25 (6), 101 (6), 1,868 (204) | 11 (1), x4 |
+| truck-door | 1,708 (170), 2,031 (206), 2,295 (277) | 2,573 (371), 2,216 (279), 2,335 (256), 2,583 |
+
+Re-bearing does what C9 asked: the joints beyond the gap that the plate lifts
+off no longer break, so truck is local in every run and bay2 holds. It does
+not stop truck-door. There, the plate over the 4.3 m gap and the joints at
+and beyond both ends of it (the door header's king and jack, the next
+opening's cripples, jacks and headers) all fail in ticks 1-3 together: from
+one elastic snapshot each, which is C10. With re-bearing the per-joint verdicts
+are never harsher (a contact breaks only where the fastened joint already
+had), but the remains stay attached longer and the collapse that follows is
+about as large (+20% on these runs, within the spread of the off runs' 1,708-2,295).
+The calibration's verdict is unchanged (`either`: the plate alone is past its
+strength over the gap); the hand calculation's local answer needs C10's
+sequence as well.
+
+At rest (`qualify_structures.py`, the high packs): veneer-bungalow--frame and
+veneer-house--frame 0.00% broken (0.17% / 0.18% off); the as-built houses
+0.00% either way, and with the flag off the SDK reproduces the base SDK's
+qualification exactly (unconverged shares and median residuals equal to the
+digit). The studless variants still collapse (10% broken); the two-storey with
+only its ground-floor front studs out breaks 0.45% (0.84% off), below the
+acceptance's 2% collapse share either way.
+
 ## Reproduce
 
 ```sh
