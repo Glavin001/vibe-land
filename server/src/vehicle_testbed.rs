@@ -520,6 +520,9 @@ fn run(r: &Run, meta: &Value) -> Value {
     let (mut shot_past, mut shot_speed_end) = (f32::NEG_INFINITY, 0f32);
     let mut trace = Vec::new();
     let tracing = std::env::var_os("VIBE_TESTBED_TRACE").is_some();
+    // The impactor's trajectory under the probe: [tick, x, y, z, vx, vy, vz]
+    // (the shot's body, or the car's), for the ground-truth cache.
+    let mut impactor_path: Vec<[f32; 7]> = Vec::new();
     // `probe`: the infinite-wall probe (wall_matrix.rs; structures/vehicle-lab/wall-matrix.mjs).
     // VIBE_TESTBED_PROBE=1: the probe on every trial (scripts/verify/acceptance.sh:
     // the energy, momentum and pass-through physics of the house shots).
@@ -870,6 +873,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                     (p, Vector3::new(b.4[0], b.4[1], b.4[2]), dir, (p - target).dot(&dir))
                 })
             } else { None };
+            if let Some((p, v, _, _)) = state { impactor_path.push([tick as f32, p.x, p.y, p.z, v.x, v.y, v.z]); }
             if let (Some((p, v, dir, past)), Some(pr)) = (state, probe.as_mut()) {
                 let status = city.native_tick_view().map(|(s, _, _)| s).unwrap_or_default();
                 let speed = v.norm();
@@ -1161,6 +1165,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     if let (Some(strength), Some(pr)) = (strength.as_ref(), probe.as_ref()) {
         out["probe"] = pr.summary(strength, DT);
         if let Some(p) = physics.take() { out["physics"] = p; }
+        out["impactorPath"] = json!(impactor_path);
         // Cost per impact tick: the stage's step time over the structure's window
         // (first contact to its close, else 1.5 s), for the impact-arm comparison.
         if let Some(from) = energy_since {

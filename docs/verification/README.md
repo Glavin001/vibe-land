@@ -143,6 +143,53 @@ Neither arm is physically right on these shots:
 
 The record is in `target/verify/impact-arms/impact-arms.txt`.
 
+### Ground truth (the cached arm C)
+
+Arm C is slow (seconds per impact tick), so it runs once per SDK and scene, and
+the faster arms are compared against its cache.
+
+```bash
+scripts/verify/impact-arms.sh --arms oracle --trials T1,T2,... DIR     # run C
+node scripts/verify/ground-truth.mjs record --run DIR/high-oracle --pack P --meta M --trials T1,T2,...
+scripts/verify/impact-arms.sh --arms step --truth scripts/verify/ground-truth   # B against the cache
+```
+
+- **The gates.** C counts as ground truth for a trial only when it passes the
+  owner's physical gates:
+  - **through:** a shot whose KE exceeds its path work gets at least 1 m past
+    the point struck;
+  - **energy:** for shots, the balance closes over the structure's window;
+  - **held:** nothing holds past its capacity (no infinite wall, no partial
+    hold).
+
+  Locality is recorded (each broken bond's distance from the impact line), not
+  gated. Its physics criterion is that every break is the bond's own verdict,
+  which the held gate and the at-rest gate cover. A trial that fails stays out
+  of the cache. It goes to the impact solve's owner as a bug in C.
+- **The cache.** Each passing trial is written to
+  `scripts/verify/ground-truth/<trial>.json` and committed. It holds:
+  - the broken bonds with their distances from the line, and the gone chunks;
+  - the gates and the metrics: KE, path work, past, momentum, peak force, and
+    the energy terms over the window;
+  - the stage's cost per impact tick;
+  - the impactor's path: [tick, position, velocity] at every probe tick.
+
+  The raw run, and failing trials too, go to `target/verify/ground-truth/`.
+- **The key.** Each cache file carries a key:
+  - the SDK and its source revision, taken from the run's own provenance log;
+  - the pack's and meta's SHA-256;
+  - the run's flags.
+
+  Recording refuses a run whose SDK is not the one installed, or whose pack is
+  newer than the run. The comparison refuses a cache whose key differs from
+  the current SDK or packs (`VERIFY_ALLOW_TRUTH_MISMATCH=1` compares anyway
+  and says so). It warns when an arm compared ran on another SDK.
+- **Same place.** The Jaccard index on bond ids is strict: a neighbouring
+  joint counts as a miss. The same-place score counts two broken joints as the
+  same place when their centroids lie within the larger of their contact sizes
+  (sqrt of the bond area). It reports the F1 of matching each set into the
+  other.
+
 ### Provenance
 
 `scripts/fidelity/provenance.sh PROFILE` checks that the SDK and the packs are
