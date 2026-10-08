@@ -219,6 +219,27 @@ bond graph without them (`frontRearJoined`).
   formula, and those are marked.
 - **Terrain.** The ground is a rigid floor (FIDELITY_AUDIT E10), so hits at
   grade (`veneer-base`, `masonry-base`) are not in the matrix.
+- **Meteors clear grade through their passage (2026-10-08).** The square-on meteors
+  are judged on their exit speed, and the floor (`momentum-floor.mjs`) counts the
+  structure alone. So their underside must stay above grade from the struck face to
+  where the probe reads the exit. That point is the trailing point past the layer by
+  the meteor's own diameter, with the centre `layer + 3R` further along.
+  - Over that run the meteor descends `slope (layer + 3R)`.
+  - A contact the narrowphase finds a tick late is also up to a tick's descent,
+    `v sin(theta) dt`, into what it meets.
+  - So the underside clears grade at the face by `slope (layer + 3R) + v sin(theta) dt`
+    (`wall-matrix.mjs` `meteorPassageClearance`). For slope 0.05, a 0.25 m wall,
+    R 2 m and 140 m/s, that is 0.43 m: an aim of 2.43 m, where it was 2.1.
+  - Aimed 0.1 m over grade, the 2 m sphere met the paving and the wall's footing
+    within its passage. The compliant impact step showed it (IMPACT_STEP_PLAN.md,
+    compliant impact contacts): those exits measured the ground contact, not the wall.
+  - Steep authored slopes (the roof, the stone house from the street) land by design
+    and keep the 0.1 m clearance at the face.
+- **The landing stays tested.** `meteor-lands-at-masonry-wall`
+  (`wm-masonry-meteor-0-land`) is the old aim. It lands on the paving and the
+  footing within its passage, and is judged on its rebound: at most `e v_n` up (the
+  world's restitution 0.1; `infinite_wall` `meteor_rebound_off_ground` on flat
+  ground and paving).
 - **The Vibe Town house and bus shelter.** The wall matrix's town-house aim misses the house
   (`townTarget` aims at the group's bounding face, which for the house is not its wall and for the open-fronted shelter is open air; both cases were "untouched" in
   the 2026-10-07 town run). It is left out until the aim is fixed.

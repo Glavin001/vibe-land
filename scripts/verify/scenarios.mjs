@@ -285,6 +285,14 @@ function judgeOne(ex, run, others) {
     if (h.lineDistancesAfter) row('bonds broken beyond that reach after the passage (debris, aftermath: reported)', 'reported', `${beyondAfter} of ${after.length}`, null);
   }
   if (e.stands && h?.roofMembers) row('stands (roof members down > 0.5 m)', `${ROOF_DOWN}`, `${h.roofMembersDown} of ${h.roofMembers}`, e.stands === 'reported' ? null : h.roofMembersDown <= ROOF_DOWN);
+  // A landing (expect.rebound): the meteor meets grade, and may leave it upward at no more
+  // than the contact's restitution of its descent, e v_n (the world's e 0.1; Hibbeler,
+  // Dynamics, 15.4: a rigid floor). Faster is energy the contact made: a late contact pushed
+  // out, or a kinematic edge's ramp (physx-bridge/tests/infinite_wall.rs meteor_rebound_off_ground).
+  if (e.rebound && pr) {
+    const vn = Math.max(0, -(pr.impactorUpIn ?? 0)), bound = e.rebound * vn;
+    row('rebound off the ground (m/s up, at most e v_n + 1)', `<= ${f(bound, 2)} (e ${e.rebound} x v_n ${f(vn, 2)})`, f(pr.impactorUpMax, 2), (pr.impactorUpMax ?? 0) <= bound + 1.0);
+  }
   if (e.broken) {
     const n = h?.broken ?? Object.values(run.sceneBroken ?? {}).reduce((a, b) => a + b, 0);
     row('struck target breaks', '>= 1 bond', n, n >= 1);
