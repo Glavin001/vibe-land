@@ -36,7 +36,18 @@ stale() { # stale <lockdir>: its owner process has exited
 }
 
 held=""
-release() { [ -n "$held" ] && rm -rf "$held"; }
+# While a job waits for the GPU it is listed in queue/ (pid label since kind
+# started), and once admitted its lock holds info (cwd, PHYSX_ROOT, command), so
+# scripts/ops/gpu-watch.py can say who waits on whom and spot stale SDKs.
+mkdir -p "$DIR/queue"
+QUEUED="$DIR/queue/$$"
+kind=$([ "${VIBE_GPU_SHARED:-0}" = 1 ] && echo shared || echo exclusive)
+echo "$$ $label $(date +%s) $kind $(started $$)" > "$QUEUED"
+claimed() { # claimed <lockdir>: record what runs there, leave the queue
+  printf 'cwd=%s\nphysx_root=%s\ncmd=%s\n' "$PWD" "${PHYSX_ROOT:-}" "$*" > "$1/info"
+  rm -f "$QUEUED"
+}
+release() { rm -f "$QUEUED"; [ -n "$held" ] && rm -rf "$held"; }
 trap release EXIT
 trap 'release; exit 130' INT TERM
 
@@ -47,7 +58,7 @@ if [ "${VIBE_GPU_SHARED:-0}" = 1 ]; then
     for i in $(seq 1 "$SLOTS"); do
       slot="$DIR/slot-$i"
       if mkdir "$slot" 2>/dev/null; then
-        echo "$$ $label $(date +%H:%M:%S) $(started $$)" > "$slot/owner"; held=$slot; break
+        echo "$$ $label $(date +%H:%M:%S) $(started $$)" > "$slot/owner"; held=$slot; claimed "$slot" "$@"; break
       fi
       stale "$slot" && rm -rf "$slot"
     done
@@ -82,5 +93,6 @@ else
     [ "$busy" = 0 ] && break
     sleep 2
   done
+  claimed "$LOCK" "$@"
 fi
 "$@"
