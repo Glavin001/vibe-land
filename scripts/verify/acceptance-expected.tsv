@@ -18,8 +18,5 @@ runtime	shots-through-house	cannonball: frame holds (frame chunks still anchored
 runtime	shots-through-house	cannonball: damage local (bonds broken > 8 m from the hit)	612 of 2991	the whole veneer house comes down from one hit (runtime)
 runtime	shots-through-house	meteor: bonds broken in the house (share, oracle band)	3067 of 3084 (99.4%)	the whole veneer house comes down from one hit (runtime)
 runtime	crush-only-where-hit	crushes are where the projectile hit (positions)	not recorded	no harness records crush positions in the lab (textbook crush-locality covers a wall)
-runtime	studless-houses-collapse	veneer-house--no-ground-front-studs: collapses (bonds broken at rest)	0.84%	without only the ground floor front studs the two-storey stands (0.84%)
 runtime	stairs-walkable	route walk: up and down the stair	fails: FAIL  down-upper-flight: fell 0.242 m at Vec3(0.13733491, 2.7154164, -2.0747907)	without ground snap the player falls 0.24 m going down the upper flight (high profile snaps)
 runtime	turning-slalom-avoidance	slalom and avoidance on the GPU (scripts/turning-lab.sh slalom|avoid)	not gated	no automated gate for slalom and avoidance (turning-lab is a film)
-# high (2026-10-08, re-bearing on, c984ca41): the house without ground-floor front studs stands; derivation in docs/verification/README.md "Studless houses"
-high	studless-houses-collapse	veneer-house--no-ground-front-studs: collapses (bonds broken at rest)	0.45%	AUTHORING: the front plates and rim joist are continuous timber over 9.9 m (chunk joints 97-566 kN in tension), so the upper storey bridges the gap as a deep beam (chord force 24 kN); real plates are lap-spliced (IRC R602.3.2 nailing, ~12 kN ultimate), which fail, and the house would come down

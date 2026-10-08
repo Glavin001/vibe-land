@@ -80,7 +80,8 @@ if want veneer; then
   python3 "$ROOT/scripts/perf/qualify_structures.py" "$veneer"/veneer-bungalow.json "$veneer"/veneer-house.json \
     "$veneer"/veneer-bungalow--frame.json "$veneer"/veneer-house--frame.json \
     "$veneer"/veneer-bungalow--no-front-studs.json "$veneer"/veneer-house--no-front-studs.json \
-    "$veneer"/veneer-house--no-ground-front-studs.json --json "$out/qualify-veneer.json" > "$out/qualify-veneer.log" 2>&1
+    "$veneer"/veneer-house--no-ground-front-studs.json "$veneer"/veneer-house--frame-no-ground-front-studs.json \
+    --json "$out/qualify-veneer.json" > "$out/qualify-veneer.log" 2>&1
   mark qualify-veneer "$([ -f "$out/qualify-veneer.json" ] && echo ok || echo failed)"
 fi
 if want lab; then

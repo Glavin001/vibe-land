@@ -725,5 +725,8 @@ export function withoutNodes(pack,drop){
 }
 /** The frame alone: brick veneer and gypsum board (walls and ceilings) removed. */
 export const withoutSkin=pack=>withoutNodes(pack,i=>SKIN_TYPES.includes(pack.scenario.nodeTypes[i]));
-/** A wall's load-bearing studs (studs, king, jack and cripple studs) removed; `wall` a name or a list (each storey's). */
-export const withoutStuds=(pack,metadata,wall='front')=>{const walls=new Set([wall].flat());return withoutNodes(pack,i=>STUDS.has(pack.scenario.nodeTypes[i])&&pack.scenario.nodeTypes[i]!=='junction-stud'&&walls.has(metadata.nodeWalls[i]));};
+/**
+ * A wall's load-bearing studs (studs, king, jack and cripple studs) removed; `wall` a name or a list (each
+ * storey's). `junctions`: its junction studs too (where a partition meets it; they carry the wall as well).
+ */
+export const withoutStuds=(pack,metadata,wall='front',{junctions=false}={})=>{const walls=new Set([wall].flat());return withoutNodes(pack,i=>STUDS.has(pack.scenario.nodeTypes[i])&&(junctions||pack.scenario.nodeTypes[i]!=='junction-stud')&&walls.has(metadata.nodeWalls[i]));};

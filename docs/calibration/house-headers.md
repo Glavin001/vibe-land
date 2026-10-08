@@ -411,9 +411,16 @@ Checks (high profile, garage-hifi 3536ce049 with re-bearing):
        are flexible, not free: at 10 mm a real tie holds about 0.2 kN (the
        kit's WALL_TIE data). So the house sags onto its brick, and whether
        it then comes down is a question of tie capacity, not of the chord.
-  3. The expectation "collapses" therefore needs re-deriving, with the ties
-     and the junction stud in the load path, before it is a gate. I have
-     changed neither the ties nor the variant to force it.
+  3. Re-derived in docs/verification/README.md "Studless houses". As built,
+     the variant stands (check `studless-upper-storey-stands`, < 2%). The new
+     `veneer-house--frame-no-ground-front-studs` (bare frame, junction studs
+     out too) collapses, because the rim alone spans 9.7 m at u 1.44
+     (`studless-houses-collapse`, >= 2%). Measured 2026-10-08:
+
+     | Variant | high | runtime |
+     |---|---|---|
+     | as built | 0.62% | 0.84% |
+     | bare frame, junction studs out | 40.95% | 3.26% |
 
 ## Reproduce
 
