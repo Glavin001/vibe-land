@@ -1,6 +1,9 @@
 #!/bin/bash
 # Run the acceptance scenarios' harnesses for one engine profile, then judge.
-#   scripts/verify/acceptance.sh runtime|high [OUTDIR] [--skip testbed,veneer,town,wire,walk,node]
+#   scripts/verify/acceptance.sh runtime|high|high-ARM [OUTDIR] [--skip testbed,veneer,town,wire,walk,node]
+# high-ARM: a named variant of high (scripts/fidelity/arms, select.sh), e.g. the
+# impact arms high-static, high-step, high-oracle. VERIFY_TRIALS overrides the
+# test bed's trial list (comma-separated ids).
 # The scenario list and criteria are data in scripts/verify/acceptance.mjs.
 # Correctness runs share the GPU (VIBE_GPU_SHARED=1): every GPU harness goes
 # through scripts/perf/gpu-run.sh's admission (the test bed, qualification and
@@ -11,21 +14,20 @@
 # packs (scripts/fidelity/build-packs.sh high).
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-profile=${1:?usage: acceptance.sh runtime|high [OUTDIR] [--skip a,b]}
+profile=${1:?usage: acceptance.sh runtime|high|high-ARM [OUTDIR] [--skip a,b]}
 out=${2:-$ROOT/target/verify/acceptance-$profile}
 skip=""
 [ "${3:-}" = --skip ] && skip=${4:-}
 mkdir -p "$out"
 rm -f "$out/acceptance.jsonl"
-case $profile in
-  runtime) source "$ROOT/scripts/fidelity/runtime.env" ;;
-  high) source "$ROOT/scripts/fidelity/high.env"; [ -f "$ROOT/target/fidelity/high/structures/vehicle-lab/out/vehicle-lab-crush.json" ] || "$ROOT/scripts/fidelity/build-packs.sh" high ;;
-esac
+source "$ROOT/scripts/fidelity/select.sh" "$profile" || exit 2
+profile=$VIBE_FIDELITY_PROFILE
+[ "$fidelity_base" = high ] && { [ -f "$ROOT/target/fidelity/high/structures/vehicle-lab/out/vehicle-lab-crush.json" ] || "$ROOT/scripts/fidelity/build-packs.sh" high; }
 source "$ROOT/scripts/fidelity/check.sh" --degrade
 # Provenance: a stale or dirty SDK, or packs older than their sources, would
 # measure yesterday's engine (high: refused; runtime: reported).
-"$ROOT/scripts/fidelity/provenance.sh" "$profile" | tee "$out/provenance.log" || { echo "[acceptance] refused: see $out/provenance.log"; exit 1; }
-eval "$("$ROOT/scripts/fidelity/packs.sh" "$profile")"
+"$ROOT/scripts/fidelity/provenance.sh" "$fidelity_base" | tee "$out/provenance.log" || { echo "[acceptance] refused: see $out/provenance.log"; exit 1; }
+eval "$("$ROOT/scripts/fidelity/packs.sh" "$fidelity_base")"
 export VIBE_GPU_SHARED=1
 sdk=$(basename "$PHYSX_ROOT")
 export CARGO_TARGET_DIR=$ROOT/target/verify-server-$sdk
@@ -61,9 +63,9 @@ mark() { # name status
 t0=$(date +%s)
 
 if want testbed; then
-  trials=framed-house,house,cannonball-framed-house,meteor-framed-house,smallshots-framed-house,rest,near-miss,knock-mirror,coast,debris-wheel,drift
+  trials=${VERIFY_TRIALS:-framed-house,house,cannonball-framed-house,meteor-framed-house,meteor-framed-house-roof,meteor-framed-house-upper,smallshots-framed-house,rest,near-miss,knock-mirror,coast,debris-wheel,drift}
   label=verify-acceptance-$profile
-  (cd "$ROOT" && VIBE_CITY_SCENE="$lab" VIBE_TESTBED_META="${lab%.json}.meta.json" \
+  (cd "$ROOT" && VIBE_TESTBED_PROBE=1 VIBE_CITY_SCENE="$lab" VIBE_TESTBED_META="${lab%.json}.meta.json" \
     WATCH="$ROOT/target/vehicle-testbed/$label.log" watched "$out/testbed.log" scripts/vehicle-testbed.sh --build monster --trials "$trials" --label "$label" --report-only)
   cp "$ROOT/target/vehicle-testbed/$label.json" "$out/testbed.json" 2>/dev/null
   cp "$ROOT/target/vehicle-testbed/$label-verdict.json" "$out/testbed-verdict.json" 2>/dev/null
@@ -90,7 +92,7 @@ fi
 if want wire; then
   for t in a_studless_house_collapsing_is_drawn_where_the_server_has_it a_cannonball_hit_is_drawn_where_the_server_has_it; do
     extra=()
-    [ "$profile" = high ] && [ "$t" = a_studless_house_collapsing_is_drawn_where_the_server_has_it ] && extra=(VIBE_WIRE_POSE_PACK="$veneer/veneer-house--no-front-studs.json")
+    [ "$fidelity_base" = high ] && [ "$t" = a_studless_house_collapsing_is_drawn_where_the_server_has_it ] && extra=(VIBE_WIRE_POSE_PACK="$veneer/veneer-house--no-front-studs.json")
     if (cd "$ROOT" && /Users/glavin/Development/vibe-land/scripts/perf/gpu-run.sh "verify-wire" env ${extra[@]+"${extra[@]}"} cargo test -q --release -p web-fps-server --features native-destruction --lib "wire_chunk_poses::$t" -- --ignored --exact --nocapture --test-threads=1) > "$out/wire-$t.log" 2>&1
     then mark "wire-$t" "ok: $(grep -m1 -iE 'worst' "$out/wire-$t.log" | cut -c1-120)"
     else mark "wire-$t" "fails: $(grep -m1 -E 'panicked|worst' -A1 "$out/wire-$t.log" | tr '\n' ' ' | cut -c1-200)"; fi
@@ -104,4 +106,4 @@ if want town; then
   mark qualify-town "$([ -f "$out/qualify-town.json" ] && echo ok || echo failed)"
 fi
 echo "[acceptance] harnesses took $(( $(date +%s) - t0 )) s"
-node "$ROOT/scripts/verify/acceptance.mjs" judge "$profile" "$out"
+node "$ROOT/scripts/verify/acceptance.mjs" judge "$fidelity_base" "$out"

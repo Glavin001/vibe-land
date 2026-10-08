@@ -20,7 +20,7 @@
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 tier=${1:-quick}
-only=textbook,regressions,acceptance,flagmatrix
+only=textbook,regressions,acceptance,scenarios,flagmatrix
 [ "$tier" = quick ] && only=textbook,regressions
 [ "${2:-}" = --only ] && only=${3:?}
 want() { [[ ",$only," == *",$1,"* ]]; }
@@ -182,6 +182,18 @@ if want acceptance; then
     sig=$(bug_signals "$out/acceptance-$p"/*.log "$ROOT/target/vehicle-testbed/verify-acceptance-$p.log")
     [ -n "$sig" ] && { echo "[verify] acceptance $p: IMPACT BUG SIGNALS: $(echo "$sig" | tr '\n' ' ')"; failed=1; }
     echo "[verify] acceptance $p: $(grep -c '"status":"PASS"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) pass, $(grep -c '"status":"KNOWN-GAP"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) known gaps, $(grep -c '"status":"FAIL"' "$out/acceptance-$p/acceptance.jsonl" 2>/dev/null) failing"
+  done
+fi
+
+if want scenarios; then
+  # The scenario-outcome matrix (docs/verification/SCENARIOS.md): gated in the
+  # high-fidelity profile, reported in runtime.
+  for p in runtime high; do
+    HIGH_PHYSX_ROOT=${VERIFY_HIGH_PHYSX_ROOT:-} "$ROOT/scripts/verify/scenarios.sh" "$p" > "$out/scenarios-$p.log" 2>&1
+    st=$?
+    cp -R "$ROOT/target/verify/scenarios-$p" "$out/" 2>/dev/null
+    echo "[verify] scenarios $p: $(tail -1 "$out/scenarios-$p.log")"
+    [ "$p" = high ] && [ $st != 0 ] && failed=1
   done
 fi
 

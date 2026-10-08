@@ -2645,6 +2645,15 @@ impl CityRuntime {
         }
     }
 
+    /// The chunks the native stage crushed on the last observed tick (ids per
+    /// structure), for energy accounting; empty off the native backend.
+    pub fn native_crushed_chunks(&self) -> Vec<(u32, u32)> {
+        match &self.backend {
+            CityBackend::Native(backend) => backend.crushes().iter().map(|c| (c.structure_id, c.chunk_id)).collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// This tick's generic bridge spans (see NamedSpan); empty off physx.
     pub fn extra_spans(&self) -> Vec<vibe_land_destruction::types::NamedSpan> {
         match &self.backend {

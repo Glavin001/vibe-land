@@ -64,7 +64,8 @@ impl GarageDestruction {
         }).collect();
         world.native_attach().map_err(|e| e.to_string())?;
         world.native_register_vehicle(entity, structure, &asset.parts, &asset.bonds,
-            bridge::DestructibleSettings { materials: asset.materials, ..Default::default() })
+            // Ductile joints (steel: yield, then slip to rupture) where the asset authors them.
+            bridge::DestructibleSettings { materials: asset.materials, ductile_slip: asset.ductile_slip, ..Default::default() })
             .map_err(|e| e.to_string())?;
         Ok(Self { entity, structure, external: false, rig, wheel_parts, origin_height: geometry.origin_height,
             neutral_jounce: geometry.neutral_jounce, configured: false, broken_bonds: 0, rejected_steps: 0, failed_steps: 0, detached_count: 0,

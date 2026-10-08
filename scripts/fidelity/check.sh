@@ -16,8 +16,9 @@ need() { # flag macro
 need VIBE_SECTION_BENDING PX_DESTRUCTION_SECTION_BENDING
 need VIBE_SECTION_ROTATION PX_DESTRUCTION_SECTION_ROTATIONAL_STIFFNESS
 need VIBE_IMPACT_CAPACITY PX_DESTRUCTION_IMPACT_CAPACITY
+need VIBE_IMPACT_STEP PX_DESTRUCTION_IMPACT_STEP
 need VIBE_NATIVE_CRUSH PX_DESTRUCTION_CRUSH_CORRECTION
-echo "[fidelity] profile ${VIBE_FIDELITY:-runtime} on SDK ${PHYSX_ROOT:-unset}"
+echo "[fidelity] profile ${VIBE_FIDELITY_PROFILE:-${VIBE_FIDELITY:-runtime}} on SDK ${PHYSX_ROOT:-unset}"
 if [ ${#missing[@]} -eq 0 ]; then
   echo "[fidelity] every enabled capability is in this SDK"
   return 0 2>/dev/null || exit 0

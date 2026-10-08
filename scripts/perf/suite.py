@@ -466,6 +466,23 @@ def summarise(run_dir: Path) -> dict:
     return out
 
 
+def declared_env(specs: list[str], profiles: list[str]) -> dict:
+    """--env [PROFILE:]KEY=VAL ... as {profile: {KEY: VAL}}. Live jobs only:
+    the high profile's impact replays run PhysX's replay binary, whose
+    environment is its own."""
+    out = {p: {} for p in profiles}
+    for spec in specs:
+        target, _, kv = spec.rpartition(":") if ":" in spec.split("=", 1)[0] else ("", "", spec)
+        key, sep, value = kv.partition("=")
+        if not sep or not key:
+            sys.exit(f"--env {spec}: expected [PROFILE:]KEY=VAL")
+        if target and target not in out:
+            sys.exit(f"--env {spec}: profile {target} is not in this run ({','.join(profiles)})")
+        for p in ([target] if target else profiles):
+            out[p][key] = value
+    return out
+
+
 def comparability(report: dict, base: dict) -> list[str]:
     """What differs between the arms besides the code under test: a delta
     across different packs, captures or tiers describes another workload."""
@@ -481,6 +498,11 @@ def comparability(report: dict, base: dict) -> list[str]:
         bh = (b.get("captures") or {}).get(n)
         if bh and bh != h:
             notes.append(f"capture {n} differs from the baseline's")
+    for p in sorted(set(a.get("env") or {}) | set(b.get("env") or {})):
+        mine, theirs = (a.get("env") or {}).get(p, {}), (b.get("env") or {}).get(p, {})
+        for k in sorted(set(mine) | set(theirs)):
+            if mine.get(k) != theirs.get(k):
+                notes.append(f"{p}: declared env {k}={mine.get(k, '(unset)')} vs baseline {theirs.get(k, '(unset)')}")
     if report.get("shared_gpu") or base.get("shared_gpu"):
         notes.append("an arm ran on a shared GPU: timings indicative only")
     return notes
@@ -538,6 +560,10 @@ def table(report: dict) -> str:
              f"{fmt(report.get('wall_seconds'), 0)} s timed on the GPU (+{fmt(report.get('warmup_seconds'), 0)} s warm-up, "
              f"{fmt(report.get('lock_wait_seconds'), 0)} s waiting for the lock)"
              + ("  [SHARED GPU: timings indicative only]" if report.get("shared_gpu") else "")]
+    declared = {p: e for p, e in ((report.get("fingerprint") or {}).get("env") or {}).items() if e}
+    if declared:
+        lines.append("declared env (--env): " + "; ".join(f"{p} " + " ".join(f"{k}={v}" for k, v in sorted(e.items()))
+                                                          for p, e in sorted(declared.items())))
     for profile in sorted(report["profiles"], key=lambda p: p != report.get("headline")):
         prof = report["profiles"][profile]
         sc = prof.get("score")
@@ -640,6 +666,10 @@ def main() -> None:
     ap.add_argument("--capture", action="store_true", help="make the impact captures the high-fidelity replays use")
     ap.add_argument("--replay-runs", type=int, default=None, help="runs of each impact replay per rep (default 1: each is a whole impact tick's solve, 2-12 s)")
     ap.add_argument("--timeout", type=float, default=900)
+    ap.add_argument("--env", action="append", default=[], metavar="[PROFILE:]KEY=VAL",
+                    help="an environment variable for every live job (or only PROFILE's), recorded in the report's "
+                         "fingerprint; the suite otherwise strips VIBE_*, PX_*, BLAST_*, TOWN_KIT* and CUMETAL_* from "
+                         "the caller, so this is the only way an A/B arm differs by a flag. Repeatable.")
     ap.add_argument("--checkout-packs", action="store_true", help="this checkout's packs instead of the frozen ones "
                     "(an authoring change; --save-baseline then freezes them)")
     ap.add_argument("--shared", action="store_true", help="share the GPU (VIBE_GPU_SHARED=1): for developing the suite; timings only indicative")
@@ -699,6 +729,7 @@ def main() -> None:
         rbin = replay_binary(penv.get("high", {})) if "high" in penv else None
         if any(replays.values()) and not rbin:
             sys.exit("no destruction_impact_capture_replay (set PERF_SUITE_REPLAY_BIN)")
+        declared = declared_env(args.env, profiles)
         fingerprint = {"git": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
                        "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
                        "sdk": {p: sdk_fingerprint(Path(penv[p]["PHYSX_ROOT"])) for p in profiles},
@@ -707,10 +738,11 @@ def main() -> None:
                        "packs_frozen": all(j["pack_frozen"] for p in profiles for j in all_by_profile[p]),
                        "captures": {n: c.get("sha") for n, c in manifest.items()},
                        "replay_binary": str(rbin) if rbin else None,
+                       "env": declared,
                        "host": os.uname().nodename}
         work = {"label": args.label, "tier": tier, "reps": reps, "profiles": profiles, "binaries": binaries,
                 "profile_env": penv, "headline": spec.get("headline", "high"), "created": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "extra_env": {p: ({"PX_DESTRUCTION_IMPACT_LOG": "1"} if p == "high" else {}) for p in profiles},
+                "extra_env": {p: {**({"PX_DESTRUCTION_IMPACT_LOG": "1"} if p == "high" else {}), **declared[p]} for p in profiles},
                 "warmups": warmups, "jobs": jobs, "all_jobs": all_by_profile, "replays": replays, "replay_binary": str(rbin) if rbin else None,
                 "replay_runs": args.replay_runs or 1, "timeout": args.timeout, "fingerprint": fingerprint,
                 "build_seconds": time.monotonic() - t_build, "shared": args.shared}

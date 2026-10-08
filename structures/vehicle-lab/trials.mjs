@@ -104,7 +104,7 @@ export const TRIALS = [
     why: 'floored into 30 m of loose rubble from 50 m out (about 20 m/s at the first pieces), as a player drives through what a blast left' },
   { id: 'rubble', at: 'lane/rubble', start: -20, drive: { kind: 'cruise', speed: 6 }, seconds: 10, goal: 16,
     why: 'over a 1 m heap of wall blocks and slabs at 22 km/h' },
-  { id: 'wall', at: 'lane/wall', start: -30, drive: { kind: 'floor' }, seconds: 8, impactZ: 20, driveAway: { reverse: 1.5, seconds: 3 },
+  { id: 'wall', at: 'lane/wall', start: -30, drive: { kind: 'floor' }, seconds: 8, impactZ: 20, driveAway: { reverse: 1.5, seconds: 3 }, struck: 'wall',
     why: 'floored from 50 m out (a Vibe Town street is 48 m from the next) into a masonry wall: the wall breaks, the car is damaged and drives on' },
   { id: 'house', at: 'lane/house', start: -30, drive: { kind: 'floor' }, seconds: 8, impactZ: 20, driveAway: { reverse: 1.5, seconds: 3 },
     why: 'floored from 50 m out into a one-storey house' },
@@ -207,6 +207,17 @@ export const TRIALS = [
   { id: 'meteor-framed-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
     attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 2.0, 20.1], from: 180, slope: 0.3, distance: 140 },
     why: 'a meteor through a brick-veneer house: it goes through' },
+  // The meteor against the structure before anything else (owner, 2026-10-08):
+  // into the roof first, descending at 45 degrees (the roof spans y 2.6-3.9 m
+  // over z 20.1-27.9); and into the upper front wall on a 3% descent whose
+  // 2 m-radius rock clears grade until it leaves by the back wall (centre 2.6 m
+  // at the face, ~2.35 m at z 27.9).
+  { id: 'meteor-framed-house-roof', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
+    attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 3.6, 24.0], from: 180, slope: 1.0, distance: 140 },
+    why: 'a meteor descending at 45 degrees strikes the roof first and goes into the house' },
+  { id: 'meteor-framed-house-upper', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
+    attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 2.6, 20.1], from: 180, slope: 0.03, distance: 140 },
+    why: 'a meteor into the upper front wall on a trajectory that leaves by the back wall before it reaches grade' },
   // The study of how a hit fails the veneer house (structures/town-kit/scripts/
   // impact-study.py): the truck into its front-left corner (centred on the
   // corner line, x 119: half on the front wall's end and corner studs), and
@@ -221,6 +232,12 @@ export const TRIALS = [
     why: 'three 100 kg balls through the brick skin between studs: the skin breaks, the frame does not' },
   { id: 'cannonball', at: 'pad/cannonball', drive: { kind: 'park' }, seconds: 6, attack: { kind: 'cannonball', at: 1 }, driveAway: { seconds: 3 },
     why: "the city cannonball into the parked car's side at body height: partly destroyed, still drivable" },
+  // Lesser balls of the cannonball's steel at its 60 m/s, the same way in
+  // (docs/verification/SCENARIOS.md): 100 kg (r 0.146 m) and 1 t (r 0.31 m).
+  ...[['ball100-truck', 100], ['ball1000-truck', 1000]].map(([id, mass]) => ({
+    id, at: 'pad/cannonball', drive: { kind: 'park' }, seconds: 6, attack: { kind: 'cannonball', at: 1, mass }, driveAway: { seconds: 3 },
+    why: `a ${mass} kg steel ball at 60 m/s into the parked car's side: what it passes through goes, the rest drives on unless it was cut in two`,
+  })),
   { id: 'meteor', at: 'pad/meteor', drive: { kind: 'park' }, seconds: 8, attack: { kind: 'meteor', at: 1 },
     why: "the city meteor on the parked car: very destroyed" },
   { id: 'drift', at: 'pad/drift', drive: { kind: 'drift', speed: 15, seconds: 1.2 }, seconds: 8,

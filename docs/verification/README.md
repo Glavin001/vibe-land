@@ -75,6 +75,71 @@ The bridge refuses a flag its SDK lacks. Against another SDK, `check.sh
   rotation-only garage-multihull);
 - `high-fidelity(no-rotation)`: run without section rotation.
 
+### Variants of high ("arms")
+
+A named variant is high plus a small file of the flags it changes
+(`scripts/fidelity/arms/ARM.env`). `scripts/fidelity/select.sh NAME` resolves
+`runtime`, `high` or `high-ARM` (or `high` with `VIBE_FIDELITY_ARM=ARM`), and
+records the full name in `VIBE_FIDELITY_PROFILE`. `profile.sh`,
+`acceptance.sh` and `scenarios.sh` take any of these names. Packs and
+provenance are the base profile's, since the arms change only runtime flags.
+
+The impact arms compare how a hit is turned into broken bonds:
+
+| Arm | Name | Flags | Role |
+|---|---|---|---|
+| A | `high-static` | `VIBE_IMPACT_CAPACITY=0` | static solve only |
+| B | `high-step` | `VIBE_IMPACT_STEP=1`, `VIBE_IMPACT_CAPACITY=0` | static plus the linear impact step (the candidate) |
+| C | `high-oracle` | `VIBE_IMPACT_CAPACITY=1`, `PX_DESTRUCTION_IMPACT_ITERATIONS=131072`, `PX_DESTRUCTION_IMPACT_EVAL_ITERATIONS=1000000` | the ADMM impact solve at its correctness budget: the reference |
+
+```bash
+scripts/verify/impact-arms.sh                       # A, B, C on the shots, then the table
+scripts/verify/impact-arms.sh --arms static,oracle  # a subset
+scripts/verify/impact-arms.sh --judge-only          # re-tabulate existing runs
+```
+
+Each arm runs `acceptance.sh high-ARM` on the test bed's shots (the
+cannonball, the meteor, the meteor into the roof and into the upper wall), one
+GPU job at a time. `impact-arms.mjs` then prints one row per shot and arm:
+
+- **past:** metres past the point struck. FAIL when KE exceeds the path work
+  and the shot did not get through.
+- **broken, Jaccard:** the house bonds broken, and the Jaccard index of that
+  set against arm C's.
+- **locality:** the p90 distance of the broken bonds from the shot line (the
+  pack's bond centroids), and the share beyond 4 m of it.
+- **energy:** what is unaccounted over the structure's window, as a percentage
+  of KE (closes within -10% and contact + 10%).
+- **momentum:** the impulse delivered to the structure, and whether anything
+  held past its capacity.
+- **cost:** the stage's step time per tick over the window, mean and max
+  (`impactCost` in the test-bed report).
+
+It also takes test-bed reports directly, so the scenario matrix's arms can be
+compared the same way:
+`impact-arms.mjs --pack P --meta target/verify/scenarios-high-ARM/lab.meta.json --trials ... static=.../scenarios-high-static/lab.json oracle=...`.
+
+An arm that cannot run says why: B is skipped until the bridge reads
+`VIBE_IMPACT_STEP`, and `check.sh` drops it on an SDK without
+`PX_DESTRUCTION_IMPACT_STEP`. Once B exists and agrees with C on this table,
+`high.env` takes B's flags and C stays as the reference arm.
+
+**First comparison (2026-10-08, garage-hifi 9e5d201f5, B not merged yet).**
+Neither arm is physically right on these shots:
+- **A (static)** gets every shot through, but breaks 3,072-3,096 of the
+  house's 3,113 bonds. Every shot brings the whole house down: 37-61% of the
+  broken bonds are more than 4 m from the shot line, and the Jaccard index
+  against C is 0.02-0.14. Its stage cost is 59-94 ms per tick on average,
+  with a maximum of 144-253 ms.
+- **C (ADMM at the correctness budget)** stops every shot at the face. It
+  breaks 62-443 bonds, all local. But 94-99% of the impactor's energy is
+  unaccounted over the structure's window. The probe reports a partial hold,
+  or an infinite wall on the roof shot: a peak of 722 MN against 2.7 MN of
+  capacity held. Its stage cost is 1.5-13.7 s per tick on average, with a
+  maximum of 15-32 s.
+
+The record is in `target/verify/impact-arms/impact-arms.txt`.
+
 ### Provenance
 
 `scripts/fidelity/provenance.sh PROFILE` checks that the SDK and the packs are
@@ -356,6 +421,103 @@ the profile's SDK and packs, then judges.
 | turning-slalom-avoidance | test bed `drift`; the film unit tests | criteria.mjs; unit tests |
 | vibe-town-qualifies | qualification of the town pack | no FAIL, FALLS, CRUSH or ERROR |
 
+**Owner gate (hard, high fidelity):** "the cannon ball should go through the
+building".
+
+- The cannonball and the meteor must pass the target (`pastTarget` >= 1 m).
+- The check is marked `hard`, so it is never a known gap.
+
+**Physics-derived criteria for the shots.** The owner asked for "physically
+accurate destruction", not a damage percentage.
+
+- The test bed records `probe` and `physics` (`VIBE_TESTBED_PROBE=1`,
+  `server/src/vehicle_testbed.rs`, `wall_matrix.rs` `Strength::path_work`,
+  `fracture_work`, `crush_work`).
+- Each criterion uses the engine's own joint model. The damage shares (and the
+  oracle's bands, 4-10% and so on) are reported, never gated.
+
+1. **Pass-through.** The straight path through the house (a sphere of the
+   shot's radius swept 12 m from the face) has a work to cut:
+   - **W_f:** the fracture work of every bond of the chunks it sweeps. A brittle
+     joint releases F^2/2k at capacity F = f A, with k = E A / max(d, sqrt A).
+     A ductile one does F times its ultimate slip.
+   - **W_c:** the crush work of those chunks (crushEnergy times volume).
+   - **The carry loss:** the kinetic energy lost carrying their mass m_p as a
+     plug (perfectly inelastic): KE m_p/(m+m_p).
+
+   If KE > W_f + W_c + KE m_p/(m+m_p), the projectile **must** get through
+   (`pastTarget` >= 1 m). The plug is the whole swept mass, so the path work is
+   an upper bound and the trigger is conservative. Below it, a stop is
+   physically allowed and reported.
+2. **Energy closes.** The impactor's KE loss, plus the potential energy the
+   fragments released, minus the fragments' translational KE, must equal the
+   dissipation the engine models. That dissipation is:
+   - the fracture work of the house bonds that broke;
+   - the crush work of the house chunks that are gone;
+   - the contact loss, at most (1 - e^2) times the carry loss above.
+
+   **Tolerance:** 10% of the impactor's KE, for fragment rotation (not
+   measured) and the 3-tick sampling. Unaccounted energy above that is "energy
+   vanished".
+
+   **The structure's window.** The balance is closed over the structure's own
+   window (the probe's `physics.window`). It runs from the impactor's first
+   contact with the structure to whichever comes first:
+   - its exit (3 ticks touching nothing of the structure);
+   - its first contact outside the structure: a tick off the structure that
+     costs it more than 0.5% of its contact KE (grade, terrain, other bodies);
+   - 1.5 s.
+
+   The window records the impactor's KE loss and drop, the fragments' KE and
+   released PE, and the fracture and crush work at its close. What the impactor
+   loses after it (`afterWindowJ`) is reported, never charged to the structure.
+   The meteor trials are aimed so the structure comes first:
+   - `meteor-framed-house-roof` descends at 45 degrees into the roof;
+   - `meteor-framed-house-upper` enters the upper front wall on a 3% descent
+     and leaves by the back wall above grade.
+
+   Each is judged on penetration (>= 1 m past the point struck, hard in high),
+   pass-through against path work, closure over the window, and momentum
+   through what held. The meteor into a vehicle is not judged yet: the probe's
+   joint model (the scene pack's bonds) does not hold a car's joints, so its
+   path work and dissipation cannot be computed. The original
+   `meteor-framed-house` (into the lower wall and the slab) stays as the
+   whole-run case.
+
+   Without a window (older probe output), the balance falls back to the whole
+   run with two more terms (the ground term is reported separately):
+
+   - **The impactor's own drop** (m g dh over the window), on the supply side.
+   - **Ground contact.** The impactor's mechanical-energy loss, ½ m |v|^2 + m g y,
+     summed over the window's ticks on which it touches no house chunk. That
+     covers the floor slab, grade and kerbs: static, anchored, or outside the
+     house's graph. It includes the inelastic normal loss ½ m Δv_n^2 and the
+     friction and rolling work there.
+   - **Why the ground term exists.** A meteor that ploughs into the slab (about
+     113 MJ normal plus about 187 MJ of friction in one tick) and then rolls on
+     terrain was otherwise charged to the house. A tick on which it touches both
+     the house and the ground is charged to the house.
+   - **Terrain.** It offers no penetration resistance (FIDELITY_AUDIT E10). That
+     gap stays recorded.
+3. **Momentum through what held** (the probe's `peakForceN`, `heldCapacityN`).
+   The impulse the impactor lost per tick (dp/dt) went into the struck chunks.
+   - If they all stayed on the anchored body, the bonds carrying them must have
+     held a force <= their capacity (`touchedCapacityN`, including their
+     weight).
+   - A force past the capacity of what held is an **infinite wall** (all held)
+     or a **partial hold**, and fails. The anchors' reaction is not read
+     directly, so this check is the momentum criterion.
+4. **Locality as physics.** A bond breaks only when its own verdict exceeds
+   capacity. The high profile has no sub-fatal section loss
+   (`VIBE_STRENGTH_SHORT_TERM`, tested by `fidelity_audit::sub_fatal_damage_law`),
+   and the at-rest gate shows nothing breaks without the hit. Criterion 3 shows
+   nothing holds past capacity.
+   - **Independent reference:** with `VERIFY_ORACLE_DIR` holding the impact
+     oracle's broken set for the same graph and hit
+     (`<shot>-framed-house.json`, `brokenIds`, `spread`), the judge reports the
+     Jaccard index and the counts. It is labelled a reference, not ground
+     truth.
+
 `structures/vehicle-lab/criteria.mjs` has only lower bounds ("house damaged >=
 20"), so a hit that destroys the whole house passes it. The bands above come
 from the impact oracle (`structures/town-kit/scripts/impact-study.py`,
@@ -383,6 +545,13 @@ Two behaviours have no automated gate yet:
   CUDA error 2) is also rerun and reported ENV.
 - PhysX's own ctests never receive the `PX_DESTRUCTION_ALLOW_UNCONVERGED`
   backstop: their strict tests pin it.
+
+## Scenario-outcome matrix
+
+Every impactor and target pair, with the real-world outcome derived from
+impact engineering, is in [SCENARIOS.md](SCENARIOS.md). The pairs are data in
+`scripts/verify/scenarios.json`, run by `scripts/verify/scenarios.sh PROFILE`,
+and part of `correctness.sh full` (gated in high, reported in runtime).
 
 ## Reusing the scenarios (performance suite)
 

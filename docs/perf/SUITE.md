@@ -10,6 +10,7 @@ scripts/perf/suite.sh --quick                     # ~75 s on the GPU; compares w
 scripts/perf/suite.sh                             # standard tier, ~97 s on the GPU; compares with suite-baseline.json
 scripts/perf/suite.sh --reps 3 --save-baseline    # record scripts/perf/suite-baseline.json
 scripts/perf/suite.sh --compare RUN/report.json   # against another run instead of the baseline
+scripts/perf/suite.sh --env BLAST_STRESS_CARRY_KRYLOV=0 ...   # an engine flag for every live job (high:KEY=VAL for one profile)
 scripts/perf/suite.sh --report RUN_DIR            # re-read a run (no GPU)
 scripts/perf/suite.sh --shared ...                # develop on a shared GPU (timings indicative only)
 scripts/perf/suite.sh --capture                   # (once) the impact captures the high profile replays
@@ -19,6 +20,17 @@ Other SDKs: `HIGH_PHYSX_ROOT=<install>` and `RUNTIME_PHYSX_ROOT=<install>`
 (read by `scripts/fidelity/{high,runtime}.env`). `--profiles high` runs one
 profile. Runs land in `target/perf-suite/runs/<stamp>-<label>/`
 (`report.txt`, `report.json`, `logs/`, `plans/`).
+
+**Flags in an A/B.** Every job's environment is built from the profile
+(`scripts/fidelity/<profile>.env`) and the scene: the suite strips `VIBE_*`,
+`PX_*`, `BLAST_*`, `TOWN_KIT*` and `CUMETAL_*` from the caller, so
+`BLAST_X=0 scripts/perf/suite.sh` and `BLAST_X=1 scripts/perf/suite.sh` time
+the same build twice (this hid the Krylov-carry A/B, 2026-10-07). Declare a
+flag with `--env [PROFILE:]KEY=VAL`: it reaches every live job of that profile,
+is recorded in the report's fingerprint (`fingerprint.env`) and printed under
+the run's header, and a comparison names every declared variable that differs
+from the other arm. The high profile's impact replays run PhysX's replay
+binary, which does not take these.
 
 ## Scenarios
 

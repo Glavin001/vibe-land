@@ -45,6 +45,12 @@ export const TARGETS = [
   // through the one-storey across it first, so balls from 9 m, meteors steeply.
   { id: 'stone-house', name: 'two-storey stone house wall', group: 'house@street-1', aim: [98.85, 1.31, 2.01], face: 270, along: 'z', layer: 0.3,
     distance: { ball: 9, meteor: 40 }, meteorSlope: 0.6 },
+  // Its upper storey (brick, y 3.0-5.6): a meteor at 4.4 m (its bottom 2.4 m
+  // up) shot near-level from the street meets the structure first and leaves
+  // through the far side above grade (docs/verification/SCENARIOS.md: the
+  // owner's meteor-through-upper-wall, 2026-10-08).
+  { id: 'stone-house-upper', name: 'two-storey house, upper brick wall', group: 'house@street-1', aim: [98.85, 4.4, 0.0], face: 270, along: 'z', layer: 0.3,
+    distance: { ball: 9, meteor: 9 }, meteorSlope: 0.05 },
   // The rubble pile (lane rubble, x 16): loose pieces, nothing anchored.
   { id: 'pile', name: 'rubble pile', group: 'debris', aim: [16, 0.5, 4.0], face: 180, along: 'x', layer: 3 },
 ];
@@ -56,6 +62,7 @@ export const IMPACTORS = {
   ball100: { attack: 'cannonball', mass: 100 },    // 100 kg steel (r 0.146 m) at 60 m/s: the impact study's
   ball1000: { attack: 'cannonball', mass: 1000 },  // 1 t steel (r 0.31 m) at 60 m/s
   truck10: { truck: 10 }, truck20: { truck: 20 },  // the monster truck (5 t) at 10 and 20 m/s
+  truck30: { truck: 30 },                          // and at its top speed (30 m/s, client/src/vehicles/reality.mjs)
 };
 
 const ANGLES = { 0: 0, 30: 30, 60: 60, glancing: 78 };
@@ -93,7 +100,8 @@ function trial(pack, target, impactorId, angle, point = 'centre', extra = {}) {
   const base = { id, probe: true, target: aim, layer: target.layer, matrix: { target: target.id, group: target.group, impactor: impactorId, angle, point, chunk: node && { index: node.i, type: node.type, material: node.material, mass: node.mass } } };
   if (imp.truck) {
     // Start far enough back to reach the speed, square on to the bearing.
-    const speed = imp.truck, run = speed > 15 ? 55 : 30;
+    // At 7.5 m/s^2 (the monster's tune) 30 m/s takes 60 m: 90 m out.
+    const speed = imp.truck, run = speed > 25 ? 90 : speed > 15 ? 55 : 30;
     const b = (from * Math.PI) / 180;
     const heading = (from + 180) % 360;
     const start = [aim[0] + Math.sin(b) * run, aim[2] + Math.cos(b) * run];
@@ -200,7 +208,7 @@ export function matrix(pack, set = 'all') {
   if (want('points')) for (const t of ['veneer', 'masonry']) for (const i of ['cannonball', 'ball100', 'meteor']) for (const p of ['seam', 'joint']) out.push(trial(pack, T[t], i, '0', p));
   // Every other target, square on.
   if (want('targets')) {
-    for (const t of ['veneer-stud', 'veneer-corner', 'veneer-window', 'veneer-door', 'veneer-base', 'veneer-side', 'veneer-roof', 'masonry-base', 'masonry-end', 'brick-house-corner', 'stone-house', 'pile'])
+    for (const t of ['veneer-stud', 'veneer-corner', 'veneer-window', 'veneer-door', 'veneer-base', 'veneer-side', 'veneer-roof', 'masonry-base', 'masonry-end', 'brick-house-corner', 'stone-house', 'stone-house-upper', 'pile'])
       for (const i of ['cannonball', 'meteor', 'ball100']) out.push(trial(pack, T[t], i, '0'));
     for (const t of ['veneer', 'masonry', 'brick-house']) out.push(trial(pack, T[t], 'ball100', '0'), trial(pack, T[t], 'ball1000', '0'));
     // A wall already hit once.
@@ -208,7 +216,7 @@ export function matrix(pack, set = 'all') {
   }
   // The truck: two speeds square on, 30 and 60 degrees, a corner, a window.
   if (want('truck')) {
-    for (const t of ['veneer', 'masonry', 'brick-house']) for (const i of ['truck10', 'truck20']) out.push(trial(pack, T[t], i, '0'));
+    for (const t of ['veneer', 'masonry', 'brick-house']) for (const i of ['truck10', 'truck20', 'truck30']) out.push(trial(pack, T[t], i, '0'));
     for (const a of ['30', '60']) out.push(trial(pack, T.veneer, 'truck20', a));
     for (const t of ['veneer-corner', 'veneer-window', 'veneer-door']) out.push(trial(pack, T[t], 'truck20', '0'));
   }
