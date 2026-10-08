@@ -45,6 +45,12 @@ export const TARGETS = [
   // through the one-storey across it first, so balls from 9 m, meteors steeply.
   { id: 'stone-house', name: 'two-storey stone house wall', group: 'house@street-1', aim: [98.85, 1.31, 2.01], face: 270, along: 'z', layer: 0.3,
     distance: { ball: 9, meteor: 40 }, meteorSlope: 0.6 },
+  // Its upper storey (brick, y 3.0-5.6): a meteor at 4.4 m (its bottom 2.4 m
+  // up) shot near-level from the street meets the structure first and leaves
+  // through the far side above grade (docs/verification/SCENARIOS.md: the
+  // owner's meteor-through-upper-wall, 2026-10-08).
+  { id: 'stone-house-upper', name: 'two-storey house, upper brick wall', group: 'house@street-1', aim: [98.85, 4.4, 0.0], face: 270, along: 'z', layer: 0.3,
+    distance: { ball: 9, meteor: 9 }, meteorSlope: 0.05 },
   // The rubble pile (lane rubble, x 16): loose pieces, nothing anchored.
   { id: 'pile', name: 'rubble pile', group: 'debris', aim: [16, 0.5, 4.0], face: 180, along: 'x', layer: 3 },
 ];
@@ -202,7 +208,7 @@ export function matrix(pack, set = 'all') {
   if (want('points')) for (const t of ['veneer', 'masonry']) for (const i of ['cannonball', 'ball100', 'meteor']) for (const p of ['seam', 'joint']) out.push(trial(pack, T[t], i, '0', p));
   // Every other target, square on.
   if (want('targets')) {
-    for (const t of ['veneer-stud', 'veneer-corner', 'veneer-window', 'veneer-door', 'veneer-base', 'veneer-side', 'veneer-roof', 'masonry-base', 'masonry-end', 'brick-house-corner', 'stone-house', 'pile'])
+    for (const t of ['veneer-stud', 'veneer-corner', 'veneer-window', 'veneer-door', 'veneer-base', 'veneer-side', 'veneer-roof', 'masonry-base', 'masonry-end', 'brick-house-corner', 'stone-house', 'stone-house-upper', 'pile'])
       for (const i of ['cannonball', 'meteor', 'ball100']) out.push(trial(pack, T[t], i, '0'));
     for (const t of ['veneer', 'masonry', 'brick-house']) out.push(trial(pack, T[t], 'ball100', '0'), trial(pack, T[t], 'ball1000', '0'));
     // A wall already hit once.

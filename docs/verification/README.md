@@ -456,6 +456,13 @@ Two behaviours have no automated gate yet:
 - PhysX's own ctests never receive the `PX_DESTRUCTION_ALLOW_UNCONVERGED`
   backstop: their strict tests pin it.
 
+## Scenario-outcome matrix
+
+Every impactor and target pair, with the real-world outcome derived from
+impact engineering, is in [SCENARIOS.md](SCENARIOS.md). The pairs are data in
+`scripts/verify/scenarios.json`, run by `scripts/verify/scenarios.sh PROFILE`,
+and part of `correctness.sh full` (gated in high, reported in runtime).
+
 ## Reusing the scenarios (performance suite)
 
 - Textbook structures are data. `VERIFY_DUMP=dir cargo test ... --test textbook`

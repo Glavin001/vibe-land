@@ -126,13 +126,14 @@ export function pathLayers(P, group, aim, dir, hu, hw, length) {
     if (L) L.along = [...(L.along ?? []), n]; else layers.unshift({ d0: n.d0, d1: n.d0, nodes: [], along: [n] });
   }
   return layers.map((L) => {
+    const alongMass = (L.along ?? []).reduce((a, n) => a + n.mass, 0);
     L.nodes = [...L.nodes, ...(L.along ?? []).map((n) => ({ ...n, kind: n.kind === 'timber' ? 'timber' : 'other' }))];
     const m = (k) => L.nodes.filter((n) => n.kind === k).reduce((a, n) => a + n.mass, 0);
     const mass = L.nodes.reduce((a, n) => a + n.mass, 0), chunkMass = L.nodes.reduce((a, n) => a + n.chunkMass, 0);
     const kind = ['brick', 'stone', 'concrete', 'timber', 'other'].sort((a, b) => m(b) - m(a))[0];
     // Timber: the work to break each member it crosses in bending (EN 338 C24 mean).
     const work = L.nodes.filter((n) => n.kind === 'timber').reduce((a, n) => a + timberBendingWork(n.dims[0], n.dims[1], Math.max(n.dims[2], 0.3)).work, 0);
-    return { d0: L.d0, thickness: L.d1 - L.d0, mass, chunkMass, kind, work, names: [...new Set(L.nodes.map((n) => n.name))].slice(0, 4) };
+    return { d0: L.d0, thickness: L.d1 - L.d0, mass, alongMass, chunkMass, kind, work, names: [...new Set(L.nodes.map((n) => n.name))].slice(0, 4) };
   });
 }
 
@@ -165,7 +166,8 @@ export async function expectation(sc) {
     out.layers = layers;
     const R = DATA.targets[sc.target]?.resistanceN ?? [0, 0];
     const nominal = exitThrough(I, layers, 1, (L) => L.mass, (R[0] + R[1]) / 2);
-    const weak = exitThrough(I, layers, 0.8, (L) => L.mass, R[0]), strong = exitThrough(I, layers, 1.25, (L) => L.mass, R[1]);
+    // The weak end: members lying along the path pushed aside, not carried.
+    const weak = exitThrough(I, layers, 0.8, (L) => L.mass - L.alongMass, R[0]), strong = exitThrough(I, layers, 1.25, (L) => L.mass, R[1]);
     const chunky = exitThrough(I, layers, 1, (L) => L.chunkMass, R[1]);
     out.exit = { nominal: nominal.exitSpeed, low: Math.min(chunky.exitSpeed, strong.exitSpeed), high: weak.exitSpeed, perLayer: nominal.layers };
     if (I.vehicle) {
@@ -207,6 +209,20 @@ function judgeOne(ex, run, others) {
       through = pr.pastMax > need; measured = `${f(pr.pastMax, 2)} m past the face (through > ${f(need, 2)}), v ${f(pr.vIn)} -> ${f(pr.vOut)} m/s`;
     } else if (pr && !pr.contact) { through = true; measured = 'no contact recorded'; }
     else if (run.attack?.pastTarget != null) { through = run.attack.pastTarget >= (ex.case?.layer ?? 0.3) + 2 * I.radius; measured = `${f(run.attack.pastTarget, 2)} m past`; }
+    // A shot whose sphere is below grade at the struck layer meets the ground with
+    // the structure (FIDELITY_AUDIT E10): measured, not judged (the owner, 2026-10-08:
+    // meteor scenarios are judged from first contact with the structure).
+    const atGrade = !I.vehicle && ex.case?.aim && ex.case.aim[1] - I.radius < 0;
+    const steep = (ex.case?.trial?.attack?.slope ?? 0) >= 0.5;
+    if (steep && pr?.contact) {
+      // From above: through = still moving down into the house one roof depth past first contact.
+      const row = (pr.window ?? []).find((w) => w.past >= (run.layer ?? 0.5));
+      through = !!row && row.v > 0; measured = row ? `${f(row.past, 2)} m past first contact at ${f(row.v)} m/s` : 'never a roof depth past';
+    }
+    if (through !== undefined) {
+      const want = e.outcome === 'stopped' ? false : true;
+      if (atGrade) { row('outcome', `${ex.outcome} (at grade: entangled with the ground, E10)`, measured, null); through = undefined; }
+    }
     if (through !== undefined) {
       const want = e.outcome === 'stopped' ? false : true;
       const derivation = ex.force?.resistance ? `F ${f(ex.force.F / 1e3, 0)} kN vs ${ex.force.resistance.map((x) => f(x / 1e3, 0)).join('-')} kN` : ex.exit ? `exit ${f(ex.exit.low)}-${f(ex.exit.high)} m/s` : '';
@@ -218,7 +234,9 @@ function judgeOne(ex, run, others) {
   const drop = (ex.case?.trial?.attack?.slope ?? 0) * (ex.pathLength ?? ex.case?.layer ?? 0);
   const belowGrade = !I.vehicle && ex.case?.aim && ex.case.aim[1] - drop - I.radius < 0;
   if (e.exit && ex.exit && pr?.contact) {
-    const v = pr.vExit ?? (ex.case?.trial?.attack ? (pr.vAtPast ?? []).find((x) => x[0] >= 8)?.[1] : null);
+    const steep = (ex.case?.trial?.attack?.slope ?? 0) >= 0.5;
+    const v = steep ? (pr.window ?? []).find((w) => w.past >= (run.layer ?? 0.5))?.v
+      : ex.pathLength ? (pr.vAtPast ?? []).find((x) => x[0] >= ex.pathLength)?.[1] : pr.vExit;
     const lo = Math.max(0, ex.exit.low - EXIT_TOL * I.speed), hi = ex.exit.high + EXIT_TOL * I.speed;
     row('exit speed (m/s)', `${f(ex.exit.nominal)} [${f(lo)}-${f(hi)}] (Recht-Ipson over ${ex.layers.length} layers)${belowGrade ? ' (below grade: E10, measured)' : ''}`, v == null ? 'never past' : f(v), belowGrade ? null : v != null && v >= lo && v <= hi);
   }
@@ -250,7 +268,9 @@ function judgeOne(ex, run, others) {
       const x = sw.endInAttackFrame?.[0] ?? run.attack?.endInCarFrame?.[0];
       row('the ball passes through the car', `ends beyond its far side (x < -${f(1.12 + I.radius, 2)} m)`, `x ${f(x, 2)} m`, x != null && x < -(1.12 + I.radius));
     }
-    const cut = sw && (!sw.frontRearJoined || (sw.wheelsCut ?? sw.wheelsSwept) > 0);
+    // Only a projectile that cuts through the car (sweptOff scenarios) can take a wheel by
+    // passing through it; a slow lump that strikes a tyre bounces off it.
+    const cut = V.sweptOff && sw && (!sw.frontRearJoined || (sw.wheelsCut ?? sw.wheelsSwept) > 0);
     if (V.wheelsKept) row('wheels kept', cut ? 'measured (its path took a wheel or cut the car)' : `${V.wheelsKept}`, 4 - run.wheelsLost, cut ? null : 4 - run.wheelsLost >= V.wheelsKept);
     if (V.drives && run.driveAway) {
       const m = run.driveAway.metres, expected = V.drives === true || (V.drives === 'unless-cut' && !cut);
