@@ -257,7 +257,7 @@ def tyre_force(t, d):
 
 
 def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, DT), J0=None, sweeps=1, quiet=False,
-        implicit=None, iters=1, sms=None, theta=1.0):
+        implicit=None, iters=1, sms=None, theta=1.0, row_theta=1.0, hybrid=False):
     """The window. Returns the trace and the books.
 
     implicit: a body name (or None). Its joints (both ends in it) are integrated linearly
@@ -301,6 +301,13 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
     if implicit:
         imp = (body == implicit) & np.array([model.nodes[j['b']]['body'] == implicit for j in model.joints])
         Ws = split_W(imp); A = np.zeros((nl, 6, 6))
+        if hybrid:
+            # a joint explicitly stable at h (its own frequency, from its split inverse masses, within
+            # the symplectic bound 0.9 x 2 / h) stays explicit; only the stiffer ones are implicit
+            for l in np.where(imp)[0]:
+                w2 = np.max(np.real(np.linalg.eigvals(np.diag(model.k[l]) @ Ws[l])))
+                if np.sqrt(max(w2, 0.0)) * h <= 0.9 * 2.0: imp[l] = False
+            nimp = int(imp.sum())
         for l in np.where(imp)[0]:
             Kd = np.diag(model.k[l]); A[l] = np.linalg.solve(np.eye(6) + theta * h * h * Kd @ Ws[l], h * Kd)
     Ms = None; mu = None; sms_iters = []; sms_ke = 0.0
@@ -379,7 +386,7 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
         v = v + h * apply_inv(f)
         # contacts: Moreau, Jacobi from the same velocities, speculative over each row's gap;
         # a tyre's row its pressure law until the rim bears
-        ke_before = KE(v)
+        ke_before = KE(v); vrow = v.copy()
         dv = np.zeros_like(v); Ps = np.zeros((nr, 3))
         for i in range(nr):
             r = model.rows[i]
@@ -388,9 +395,10 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
             tyre = r.get('tyre')
             if tyre is not None and gap[i] <= 0 and depth[i] < tyre['sec']:
                 if 'k' in tyre:
-                    # a linear contact spring, backward Euler: its force at the substep's end,
-                    # k (d + h g+), g+ the closing rate after the impulse (unconditionally stable)
-                    kc = tyre['k']; PN = min(0.0, -kc * h * (depth[i] + h * g[0]) / (1.0 + kc * h * h * W[0, 0]))
+                    # a linear contact spring, implicit (theta 1: backward Euler, its force at the substep's
+                    # end k (d + h g+); theta 1/2: the trapezoidal rule, d advanced by the mean of the closing
+                    # rates g, g+ before and after the impulse). Unconditionally stable.
+                    kc = tyre['k']; PN = min(0.0, -kc * h * (depth[i] + h * g[0]) / (1.0 + row_theta * kc * h * h * W[0, 0]))
                 else:
                     PN = -tyre_force(tyre, depth[i]) * h
                 # friction: the sticking tangential impulse, within mu |P_N|
@@ -410,7 +418,9 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
         for i in range(nr):
             gn = float(np.asarray(model.Bc[i].T @ v.astype(float)).ravel()[0])
             if gap[i] > 0: gap[i] = max(gap[i] - gn * h, 0.0)
-            elif model.rows[i].get('tyre') is not None: depth[i] = max(depth[i] + gn * h, 0.0)
+            elif model.rows[i].get('tyre') is not None:
+                gb = float(np.asarray(model.Bc[i].T @ vrow.astype(float)).ravel()[0]) if row_theta < 1 else gn
+                depth[i] = max(depth[i] + (row_theta * gn + (1 - row_theta) * gb) * h, 0.0)
         # implicit joints: each by itself, backward Euler on its two (split) nodes
         if implicit:
             for _ in range(iters):
@@ -439,8 +449,35 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
     U = float(np.sum(0.5 * np.where(live[:, None], J.astype(float) ** 2 / Ks, 0.0)))
     return dict(h=h, steps=steps, wall=time.time() - t0, v=v, v0=v0, live=live, broke_at=broke_at, slip=slip, yielded=yielded,
                 P=Ptot, Pmax=Pmax, KE0=KE0, KE=KE(v), U0=U0, U=U, plastic=plastic, fracture=fracture, contact=contact_work,
-                dead=dead_work, peak_util=peak_util, trace=trace, J=J, sms_iters=float(np.mean(sms_iters)) if sms_iters else 0.0,
+                dead=dead_work, peak_util=peak_util, trace=trace, J=J, implicit_joints=int(imp.sum()), sms_iters=float(np.mean(sms_iters)) if sms_iters else 0.0,
                 sms_ke=sms_ke)
+
+
+H_CAP = 50e-6   # the coordinator's cap on the implicit car's step (s)
+
+
+def contact_step(model, omega_explicit, theta, eps):
+    """The substep of an implicit car window, from the contact physics. Each compliant row is an
+    oscillator of stiffness k and effective mass m = 1 / W_NN (the two chunks' inverse masses at the
+    point, along the normal): its contact lasts tau = pi sqrt(m / k). The trapezoidal rule integrates
+    an oscillator of frequency w with relative period error (w h)^2 / 12 (Newmark's average
+    acceleration: Hughes, The Finite Element Method, 1987, sec. 9.3; backward Euler's is (w h)^2 / 3
+    to the same order), so a period error of at most eps needs h <= sqrt(c eps) / w = sqrt(c eps) tau / pi
+    (c 12 trapezoidal, 3 backward Euler). The explicit rest of the patch keeps its own bound 0.9 x 2 /
+    omega, and the step is capped at H_CAP."""
+    c = 12.0 if theta <= 0.5 else 3.0
+    taus = []
+    for r, Wt in zip(model.rows, model.Wtrue):
+        t = r.get('tyre')
+        if t is None: continue
+        k = t['k'] if 'k' in t else tyre_force(t, t['sec']) / t['sec']    # a tyre: its secant to the rim
+        taus.append(np.pi * np.sqrt(1.0 / Wt[0, 0] / k))
+    hs = [H_CAP]
+    if taus: hs.append(np.sqrt(c * eps) * min(taus) / np.pi)
+    if omega_explicit > 0: hs.append(0.9 * 2.0 / omega_explicit)
+    h = min(hs)
+    return h, (f"shortest contact {min(taus) * 1e6:.0f} us -> {np.sqrt(c * eps) * min(taus) / np.pi * 1e6:.1f} us at {eps * 100:.0f}% period error; " if taus else '') + \
+              (f"explicit bound {0.9 * 2 / omega_explicit * 1e6:.1f} us; " if omega_explicit > 0 else '') + f"cap {H_CAP * 1e6:.0f} us -> h {h * 1e6:.1f} us"
 
 
 def body_momentum(model, v, body):
@@ -721,6 +758,9 @@ def main():
     ap.add_argument('--wheel-contacts', action='store_true', help="the driven wheels' hulls meet the wall (the stage excludes them)")
     ap.add_argument('--implicit', action='store_true', help="the car's joints linearly implicit (block Jacobi, split masses) at the struck body's explicit step")
     ap.add_argument('--compliant', action='store_true', help="the car's rigid rows as elastic flat contacts (Johnson's punch), not rigid")
+    ap.add_argument('--accuracy', type=float, default=0.02, help="the implicit window's period error target on the shortest contact (the gate's spread)")
+    ap.add_argument('--hybrid', action='store_true', help='only the joints explicitly unstable at h are implicit')
+    ap.add_argument('--row-theta', type=float, default=1.0, help='compliant rows: 1 backward Euler (dissipative), 0.5 trapezoidal')
     ap.add_argument('--theta', type=float, default=1.0, help='implicit joints: 1 backward Euler, 0.5 the trapezoidal rule')
     ap.add_argument('--iters', type=int, default=1, help='implicit joint sweeps a substep')
     ap.add_argument('--sms', type=float, default=None, help="selective mass scaling of the car's joints to this frequency (rad/s)")
@@ -747,13 +787,18 @@ def main():
         if a.sms: om = max(om, a.sms)
     else:
         om = model.omega_max()
-    if not a.dt_us and not om > 0: sys.exit('nothing explicit bounds the step (no struck structure): give --dt-us')
-    h = a.dt_us * 1e-6 if a.dt_us else 0.9 * 2.0 / om
+    if a.implicit and not a.dt_us:
+        h, why = contact_step(model, om, a.row_theta, a.accuracy)
+        print(f"step from the contacts: {why}")
+    else:
+        if not a.dt_us and not om > 0: sys.exit('nothing explicit bounds the step (no struck structure): give --dt-us')
+        h = a.dt_us * 1e-6 if a.dt_us else 0.9 * 2.0 / om
     print(f"omega_max {om:.4g} rad/s -> h {h * 1e6:.2f} us{' (the struck body; the car implicit)' if a.implicit else ''}{f' (SMS to {a.sms:.3g})' if a.sms else ''}")
     R = run(model, T=DT * a.ticks, h=h, dtype=np.float32 if a.fp32 else np.float64, J0=J0,
             record=tuple(t * 1e-3 for t in (1, 2, 4, 8)) + tuple(DT * (k + 1) for k in range(a.ticks)),
-            implicit=car if a.implicit else None, iters=a.iters, sms=(car, a.sms) if a.sms else None, theta=a.theta)
+            implicit=car if a.implicit else None, iters=a.iters, sms=(car, a.sms) if a.sms else None, theta=a.theta, row_theta=a.row_theta, hybrid=a.hybrid)
     out = report(model, R, info, a)
+    out['implicit_joints'] = R['implicit_joints']; print(f"  implicit joints {R['implicit_joints']}")
     out['omega_max'] = om; out['integrator'] = 'implicit' if a.implicit else ('sms' if a.sms else 'explicit')
     if a.sms:
         out['sms_pcg_iterations'] = R['sms_iters']; out['sms_ke_fraction_max'] = R['sms_ke']
