@@ -44,6 +44,12 @@ def main():
     ap.add_argument('--release-crushed', action='store_true',
                     help="remove the trial's stop by chunks the crush law crushed this tick from the impactor's load "
                          "(as the coupled rows' are): the stage pays their crush energy apart (payCrushEnergy)")
+    ap.add_argument('--base-load', type=int, nargs='*', default=[],
+                    help="diagnostic: these chunks take their base load (pb) at the full level too, dropping the trial's "
+                         "load on them (e.g. a depenetration impulse left as a load, oracle-loads.py)")
+    ap.add_argument('--impactor-momentum', action='store_true',
+                    help="the impactor's load is its momentum before the tick, m v / dt (linear; its angular load as dumped), "
+                         "in place of the trial's end momentum plus the coupled pairs' reported contact impulses")
     a = ap.parse_args()
     d = ol.load(a.dump)
     rb = open(a.dump[:-4] + '.ramp.bin', 'rb').read()
@@ -57,6 +63,10 @@ def main():
     links = np.frombuffer(rb, np.float32, 2 * nl, 32 + 72 * nn).astype(np.float64).reshape(nl, 2)
     slip_limit, slip_before = links[:, 0], links[:, 1]
     index = {int(c): i for i, c in enumerate(d['node_chunk'])}
+    cpath = pathlib.Path(a.dump[:-4] + '.centroids.bin'); hit = cen = None
+    if cpath.exists():
+        cb = cpath.read_bytes(); mb = int(np.frombuffer(cb, np.uint32, 1, 0)[0])
+        hit = np.frombuffer(cb, np.float32, 3, 4).astype(np.float64); cen = np.frombuffer(cb, np.float32, 3 * mb, 16).astype(np.float64).reshape(mb, 3)
     # The contact rows: the uncoupled ones' trial forces stay in the impactor's load.
     rr = open(a.dump[:-4] + '.rows.bin', 'rb').read(); nrows = int(np.frombuffer(rr, np.uint32, 1, 0)[0])
     for i in range(nrows):
@@ -70,6 +80,13 @@ def main():
             pf_fix = np.zeros(6); pf_fix[:3] += load; pf_fix[3:] -= torque
             d.setdefault('pf_fix', []).append((n, pf_fix))
     for n, fix in d.get('pf_fix', []): pf[6 * n:6 * n + 6] += fix
+    for c in a.base_load:
+        n = int(np.where(d['node_chunk'] == c)[0][0]); print(f"  chunk {c}: full-level load {pf[6 * n:6 * n + 3]} -> its base load {pb[6 * n:6 * n + 3]}")
+        pf[6 * n:6 * n + 6] = pb[6 * n:6 * n + 6]
+    if a.impactor_momentum:
+        n = [k for k in range(d['nn']) if d['node_tensor'][k]][0]
+        before = pf[6 * n:6 * n + 3].copy(); pf[6 * n:6 * n + 3] = vel / (d['node_f'][n, 0] * d['dt'])
+        print(f"  the impactor's linear load: {before} -> {pf[6 * n:6 * n + 3]} N (m v / dt, v = {vel} m/s)")
     if d.get('pf_fix'): print(f"  released {len(d['pf_fix'])} crushed rows' stops from the impactor's load")
     # B (node rows by link columns) and the blocks per link for B^T u.
     rows, cols, vals = [], [], []
@@ -156,7 +173,8 @@ def main():
         if newly: prob = build(alive)
         imp = [i for i in range(nn) if d['node_tensor'][i]]
         vend = [u[6 * n:6 * n + 3] * dt for n in imp]
-        print(f"  solve {solves} (round {rounds}): level {level} lambda {lam:.4g}: {status}, objective {value:.6g}, {len(newly)} broken, {time.time() - t0:.1f} s;"
+        far = '' if cen is None or not newly else f" (median {np.median([np.linalg.norm(cen[int(d['link_u'][l, 0])] - hit) for l in newly]):.1f} m from the hit)"
+        print(f"  solve {solves} (round {rounds}): level {level} lambda {lam:.4g}: {status}, objective {value:.6g}, {len(newly)} broken{far}, {time.time() - t0:.1f} s;"
               f" impactor end velocity {' '.join(f'({v[0]:.2f} {v[1]:.2f} {v[2]:.2f})' for v in vend)} m/s", flush=True)
         if rounds >= max_rounds: print(f"  the round budget ({max_rounds}) is spent: E fails the evaluation here"); break
         if newly: continue
@@ -166,6 +184,14 @@ def main():
     for l in C_:
         F = d['B'][l, :36].reshape(6, 6) @ J[l]; total += F[:3] * dt
     print(f"  broken in this ramp: {len(broken)} joints: {sorted(int(d['link_u'][l, 0]) for l, _ in broken)}")
+    cpath = pathlib.Path(a.dump[:-4] + '.centroids.bin')
+    if cpath.exists() and broken:
+        cb = cpath.read_bytes(); m = int(np.frombuffer(cb, np.uint32, 1, 0)[0])
+        hit = np.frombuffer(cb, np.float32, 3, 4).astype(np.float64); cen = np.frombuffer(cb, np.float32, 3 * m, 16).astype(np.float64).reshape(m, 3)
+        dist = np.array([np.linalg.norm(cen[int(d['link_u'][l, 0])] - hit) for l, _ in broken])
+        bins = [(0, 1), (1, 2), (2, 4), (4, 8), (8, 1e9)]
+        print(f"  their distance from the first contact point: median {np.median(dist):.2f} m, max {dist.max():.2f} m; "
+              + ', '.join(f"{lo}-{hi if hi < 1e9 else ''} m: {int(((dist >= lo) & (dist < hi)).sum())}" for lo, hi in bins))
     print(f"  contact impulse on the struck chunks: ({total[0]:.5g} {total[1]:.5g} {total[2]:.5g}) N s, |.| {np.linalg.norm(total):.5g}")
     for n in [i for i in range(nn) if d['node_tensor'][i]]:
         m = 1.0 / d['node_f'][n, 0]; v = u[6 * n:6 * n + 3] * dt
