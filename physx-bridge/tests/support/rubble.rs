@@ -120,6 +120,11 @@ pub struct Outcome {
     pub finals: Vec<(String, [f32; 3], [f32; 4])>,
     /// Debris hibernation counters at the end (zero when it was off).
     pub hibernation: HibernationStats,
+    /// Share of bodies whose position did not change at all over the last
+    /// second (asleep, frozen, or held still by stabilization), and how many
+    /// were frozen at the end.
+    pub unmoved_last_s: f32,
+    pub frozen_at_end: usize,
 }
 
 pub fn run(fixture: &Fixture, ticks: u32) -> Outcome {
@@ -235,6 +240,8 @@ pub fn run_with(fixture: &Fixture, ticks: u32, hibernate: bool) -> Outcome {
     let mut keeper_trace: Vec<[f32; 3]> = Vec::new();
     let mut awake_at_end = 0;
     let mut finals = Vec::new();
+    let mut second_ago: std::collections::HashMap<u32, [f32; 3]> = std::collections::HashMap::new();
+    let mut unmoved_last_s = 0.0f32;
     for tick in 0..ticks {
         world.step().expect("step");
         world.native_tick().expect("native tick");
@@ -254,7 +261,15 @@ pub fn run_with(fixture: &Fixture, ticks: u32, hibernate: bool) -> Outcome {
                 );
             }
         }
+        if tick + 61 == ticks {
+            second_ago = rows.iter().map(|r| (r.entity_id, [r.position.x, r.position.y, r.position.z])).collect();
+        }
         if tick + 1 == ticks {
+            let still = rows
+                .iter()
+                .filter(|r| second_ago.get(&r.entity_id) == Some(&[r.position.x, r.position.y, r.position.z]))
+                .count();
+            unmoved_last_s = still as f32 / rows.len().max(1) as f32;
             awake_at_end = awake;
             for r in rows.iter() {
                 let name = fixture.bodies[r.structure_id as usize].name.clone();
@@ -278,7 +293,19 @@ pub fn run_with(fixture: &Fixture, ticks: u32, hibernate: bool) -> Outcome {
         max_turned_deg = max_turned_deg.max((2.0 * dot.min(1.0).acos()).to_degrees());
     }
     let hibernation = world.native_hibernation_stats().expect("hibernation stats");
-    Outcome { all_asleep_tick, awake_at_end, keeper_path_m, keeper_net_m, max_moved_m, max_turned_deg, finals, hibernation }
+    let frozen_at_end = world.native_frozen_entities().expect("frozen").len();
+    Outcome {
+        all_asleep_tick,
+        awake_at_end,
+        keeper_path_m,
+        keeper_net_m,
+        max_moved_m,
+        max_turned_deg,
+        finals,
+        hibernation,
+        unmoved_last_s,
+        frozen_at_end,
+    }
 }
 
 pub fn report(name: &str, outcome: &Outcome) {

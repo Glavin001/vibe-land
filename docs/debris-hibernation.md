@@ -5,6 +5,18 @@ locally, just before something would move them. A rubble pile stops being one
 contact island that a few rocking chunks keep simulating, and a disturbance
 wakes only what it reaches.
 
+**It is not sleep.** PhysX sleep is the engine's, per contact island, judged
+on velocity, and undone by any touch. Hibernation is a separate, long-lived
+state for debris piles, meant to keep extensive rubble cheap for the whole
+match:
+- it is per body;
+- it is judged on pose (the body has not moved);
+- it is undone only by something that would move the body: momentum,
+  lost support, a query, or a fracture.
+
+A frozen body is neither awake nor asleep to PhysX: it is outside the island
+system. Nothing here changes how PhysX sleeps anything else.
+
 - **Enable:** `VIBE_CITY_NATIVE_HIBERNATE=1` (server), or
   `World::native_set_hibernation`. It is off by default.
 - **Optional:** `VIBE_CITY_NATIVE_HIBERNATE_WAKE_DV` (m/s, default 0.31).
@@ -58,7 +70,7 @@ below).
 |---|---|
 | approach | A mover's swept bounds reach it, and it would receive v·n·m/(m+M) > `wake_dv` along the contact normal. The contact normal is the bounds' separating axis, not the line of centres. The struck body becomes a predicted mover carrying that velocity, so a hit through a packed pile thaws the chain until the momentum runs out. `wake_dv` = √(2·μ·g·1 cm), the speed below which a body sliding to a stop moves less than about a centimetre. |
 | support | It rests on the top face of a body moving faster than `wake_dv`. |
-| push | A slow body that is not at rest touches it. |
+| push | A slow body touching it drifts into it: the mean of its pose windows moves toward it faster than 5 mm/s, within 60° of the contact normal. Rocking in place, however wide, is not a push. |
 | vehicle | An awake vehicle touches it. |
 | query | `wake_bodies_near` (shots, blasts). |
 | topology | The stage changes its cluster. |
@@ -156,6 +168,59 @@ What would have to change before it pays:
 2. The pre-step thaw scan must cost O(awake bodies near frozen ones), not
    O(awake).
 3. The bottom-up and no-structure rules limit coverage until resting loads exist.
+
+## Why the pile never sleeps, and why hibernation stirred it (2026-10-05)
+
+Measured on the settled 5×5 city (`pile-short-g5`), with the motion trace
+reporting each body's actual displacement beside its reported velocity
+(`VIBE_CITY_NATIVE_MOTION_TRACE=1`). Medians over the last 20 s:
+
+| Arm | Bodies unmoved over 1 s | Net drift p50 / p90 / p99 | Reported speed p50 |
+|---|---|---|---|
+| Production (stabilization on, 4/1 PGS) | 90% | 0.00 / 0.12 / 13 mm/s | 14.5 mm/s |
+| GPU island repair off | 93% | 0.00 / 0.00 / 2.3 mm/s | 14.4 mm/s |
+| Stabilization off | 0% | 2.5 / 13.7 / 49 mm/s | 23.4 mm/s |
+| Stabilization off, 16/4 iterations | 1% | 1.1 / 7.3 / 32 mm/s | 15.0 mm/s |
+| Stabilization off, TGS | 0% | 2.5 / 10.4 / 34 mm/s | 66.6 mm/s |
+| Hibernation on (push by contact) | 23% | 2.3 / 35 / 177 mm/s | 19.6 mm/s |
+
+- **The reported velocity is not motion.** Stabilization stops integrating a
+  settled body but leaves its velocity (`integration.cuh`: the pose update
+  sits behind `if (!freeze)`). A body can report −15 mm/s for seconds while
+  its height does not change by 0.001 mm. So velocity cannot judge rest;
+  pose can.
+- **The solver does under-converge.** Without stabilization the pile creeps.
+  More iterations halve the creep; TGS does not help. Stabilization is what
+  stops the pile, and it stays on.
+- **The pile still never sleeps,** because PhysX sleeps whole contact islands
+  and the remaining ~10% that shift slightly keep the still 90% awake. This is
+  the case hibernation exists for.
+- **The earlier "creep" was hibernation's own churn.** The 10–12 mm drift per
+  window in the hibernation trace above (the "City-scale result" section) came
+  from runs with hibernation on. On the same pile without it, the rest test
+  fails for only 6% of bodies once the pile settles.
+- **The push rule caused it:** 7,887 of ~10,600 thaws. It thawed whatever a
+  rocking body touched, and each thawed body resettled and rocked its
+  neighbours. The rule now needs directed drift; this is tested on a
+  189-body pile cut from that city
+  (`a_settled_city_pile_hibernates_without_being_stirred`, fixture
+  `city-pile-r10.txt`, cut by `scripts/perf/rubble-sleep/cut_fixture.py`).
+
+### Plan
+
+1. **Bridge rules (now):** pose-based freeze and directed-drift push. Then
+   re-measure coverage, churn and tick time against production.
+2. **GPU stage (next), as an opt-in pile mode of the destruction scene.**
+   - Rest from stabilization's per-body frozen flag: a frame counter in the
+     integration kernel.
+   - Thaw from the solver's own contact impulses on frozen bodies, applied
+     in the same tick by the correction pass, like a fracture.
+   - Batched transactions; compatibility with GPU island repair.
+
+   The bridge policy is then the reference: same freezes and thaws on the
+   fixture tests. Cost scales with what changes, not with awake bodies.
+3. **Later:** frozen piles keep loading the floors under them; frozen
+   regions merged into one collider.
 
 ## Limits and known gaps
 

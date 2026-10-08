@@ -28,8 +28,13 @@
 //     the chain it reaches, and stops where the delivered velocity runs out;
 //   * support: it rests on the top face of a body that is moving faster than
 //     `wake_dv`, in any direction (what holds it up is going);
-//   * push: a slow body that is not at rest (moved beyond the rest envelope in
-//     this window) is touching it;
+//   * push: a slow body touching it is drifting into it: the mean of its pose
+//     windows moves toward the frozen body faster than kPushDriftMps. A body
+//     rocking in place, however widely, has no drift and pushes nothing.
+//     (Pushing by contact alone thawed whatever a rocker touched, and the
+//     thawed bodies resettled and stirred the pile: on the settled 5x5 city
+//     it caused three quarters of all thaws and left 23% of the awake pile
+//     still, against 90% without hibernation.)
 //   * a driven vehicle touches it;
 //   * a shot or blast queries its neighbourhood (`thaw_near`);
 //   * the stage changes its cluster (a fracture thaws it inside the step).
@@ -67,6 +72,28 @@ constexpr float kMoverMarginM = 0.05f;
 /// both horizontal axes. Less is an edge or a corner graze, which carries no
 /// weight to speak of.
 constexpr float kMinFaceM = 0.05f;
+/// A slow body pushes what it touches when its pose drifts toward it faster
+/// than this (m/s): over three times the rest test's limit (3 mm per 2 s
+/// window), so a body still settling inside its envelope does not count.
+constexpr float kPushDriftMps = 0.005f;
+
+/// How fast a body's mean position is drifting (m/s), from its rest windows:
+/// the window in progress against the last closed one once the current one
+/// is a quarter full, otherwise the last two closed windows. Zero when there
+/// is no history yet. Rocking in place averages out; a slide does not.
+PxVec3 drift_velocity(const NativeBody::RestTrack &r) {
+  constexpr float kTickS = 1.0f / 60.0f;
+  if (r.windows >= 1 && r.samples >= kRestWindowTicks / 4) {
+    const PxVec3 current = r.sum / static_cast<float>(r.samples);
+    // Window centres are (window + samples) / 2 ticks apart.
+    const float seconds = 0.5f * static_cast<float>(kRestWindowTicks + r.samples) * kTickS;
+    return (current - r.means[0]) / seconds;
+  }
+  if (r.windows >= 2) {
+    return (r.means[0] - r.means[1]) / (static_cast<float>(kRestWindowTicks) * kTickS);
+  }
+  return PxVec3(0.0f);
+}
 
 /// How a mover meets a frozen body, from their bounds. The contact normal is
 /// the axis along which the mover's current bounds are most separated from
@@ -394,8 +421,13 @@ std::uint32_t NativeDestruction::State::thaw(const std::vector<Key> &keys,
   cause += count;
   thawed_last_step += count;
   if (hibernation_trace() && count != 0) {
-    std::fprintf(stderr, "[hibernate] tick %llu thawed %u (cause total %llu, frozen now %u)\n",
-                 static_cast<unsigned long long>(tick_index), count,
+    const char *name = &cause == &thaw_approach  ? "approach"
+                       : &cause == &thaw_support ? "support"
+                       : &cause == &thaw_push    ? "push"
+                       : &cause == &thaw_query   ? "query"
+                                                 : "request";
+    std::fprintf(stderr, "[hibernate] tick %llu thawed %u %s (cause total %llu, frozen now %u)\n",
+                 static_cast<unsigned long long>(tick_index), count, name,
                  static_cast<unsigned long long>(cause), frozen_bodies);
   }
   return count;
@@ -421,6 +453,8 @@ void NativeDestruction::thaw_for_movers(const std::vector<HibernationMover> &ext
     float mass;
     bool always;
     bool pushing;
+    /// Drift direction of a pushing body (unit), see drift_velocity.
+    PxVec3 drift;
   };
   std::vector<Mover> queue;
   queue.reserve(external.size() + s.awake_keys.size() + s.rounds.size());
@@ -428,7 +462,7 @@ void NativeDestruction::thaw_for_movers(const std::vector<HibernationMover> &ext
     queue.push_back({PxBounds3(PxVec3(m.min[0], m.min[1], m.min[2]),
                                PxVec3(m.max[0], m.max[1], m.max[2])),
                      PxVec3(m.velocity[0], m.velocity[1], m.velocity[2]), m.mass, m.always,
-                     false});
+                     false, PxVec3(0.0f)});
   }
   for (const Key &key : s.awake_keys) {
     const auto it = s.bodies.find(key);
@@ -442,18 +476,19 @@ void NativeDestruction::thaw_for_movers(const std::vector<HibernationMover> &ext
     }
     // Cheap tests first: most awake debris is too slow to thaw anything, and
     // bounds and mass are only worth reading for a body that could.
-    const NativeBody::RestTrack &r = body.rest;
-    const bool pushing = r.samples != 0 && (r.hi - r.lo).magnitude() > kRestEnvelopeM;
+    const PxVec3 drift = drift_velocity(body.rest);
+    const bool pushing = drift.magnitude() > kPushDriftMps;
     const PxVec3 velocity = actor.getLinearVelocity();
     if (!pushing && velocity.magnitude() <= s.hibernation.wake_dv) {
       continue;
     }
-    queue.push_back({actor.getWorldBounds(), velocity, actor.getMass(), false, pushing});
+    queue.push_back({actor.getWorldBounds(), velocity, actor.getMass(), false, pushing,
+                     pushing ? drift.getNormalized() : PxVec3(0.0f)});
   }
   for (const NativeRound &round : s.rounds) {
     if (round.actor != nullptr) {
       queue.push_back({round.actor->getWorldBounds(), round.actor->getLinearVelocity(),
-                       round.actor->getMass(), false, false});
+                       round.actor->getMass(), false, false, PxVec3(0.0f)});
     }
   }
 
@@ -504,13 +539,16 @@ void NativeDestruction::thaw_for_movers(const std::vector<HibernationMover> &ext
         const bool contact = frozen.frozen_bounds.intersects(touching);
         if (delivered > wake) {
           approach.insert(key);
-          queue.push_back({frozen.frozen_bounds, meet.normal * delivered, frozen_mass, false, false});
+          queue.push_back({frozen.frozen_bounds, meet.normal * delivered, frozen_mass, false, false,
+                           PxVec3(0.0f)});
         } else if (contact && meet.rests_on_it && speed > wake) {
           // It rests on a body that is moving: its support is going, whatever
           // the direction of the motion. "On" means across the mover's top
           // face, not merely touching it.
           support.insert(key);
-        } else if (contact && mover.pushing) {
+        } else if (contact && mover.pushing && mover.drift.dot(meet.normal) > 0.5f) {
+          // Drifting into it (within 60 degrees of the contact normal), not
+          // past or away from it.
           push.insert(key);
         }
       }

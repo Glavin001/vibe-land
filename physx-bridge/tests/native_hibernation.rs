@@ -1063,6 +1063,58 @@ fn rubble_neighbourhoods_hibernate() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// Hibernation must not stir a settled pile. On the settled 5x5 city
+/// (2026-10-05, pile-short-g5) 90% of the awake bodies did not move at all
+/// over a second without hibernation, and 23% with it: a thaw on mere
+/// contact with a rocking body (three quarters of all thaws) woke bodies that
+/// then resettled and rocked their neighbours in turn, so only ~8% of the
+/// pile ever stayed frozen.
+///
+/// The fixture is that pile, cut from the city's encoder tape 50 s after the
+/// meteors (scripts/perf/rubble-sleep/cut_fixture.py), so every body starts
+/// where the city left it. Over 20 s:
+/// - with hibernation, at least as many bodies end the last second unmoved
+///   as without it (frozen ones count as unmoved: they are);
+/// - most of the pile is frozen by then;
+/// - nothing is still thawing at the end, and no body was frozen more than
+///   twice.
+#[test]
+fn a_settled_city_pile_hibernates_without_being_stirred() {
+    use support::rubble::{load, run_with};
+    let name = "city-pile-r10.txt";
+    let fixture = load(name);
+    let bodies = fixture.bodies.len();
+    let baseline = run_with(&fixture, 1200, false);
+    let outcome = run_with(&fixture, 1200, true);
+    let h = outcome.hibernation;
+    eprintln!(
+        "CITY_PILE {bodies} bodies: unmoved over the last second {:.1}% without hibernation, {:.1}% with; \
+frozen at the end {} ({:.1}%); {h:?}",
+        100.0 * baseline.unmoved_last_s,
+        100.0 * outcome.unmoved_last_s,
+        outcome.frozen_at_end,
+        100.0 * outcome.frozen_at_end as f32 / bodies as f32,
+    );
+    let mut failures = Vec::new();
+    if outcome.unmoved_last_s + 0.02 < baseline.unmoved_last_s {
+        failures.push(format!(
+            "hibernation stirred the pile: {:.1}% unmoved, {:.1}% without it",
+            100.0 * outcome.unmoved_last_s,
+            100.0 * baseline.unmoved_last_s
+        ));
+    }
+    if (outcome.frozen_at_end as f32) < 0.5 * bodies as f32 {
+        failures.push(format!("only {} of {bodies} bodies frozen at the end", outcome.frozen_at_end));
+    }
+    if h.thawed_last_step != 0 {
+        failures.push(format!("still thawing at the end: {h:?}"));
+    }
+    if h.froze_total > 2 * bodies as u64 {
+        failures.push(format!("{} freezes for {bodies} bodies: freezing cycles ({h:?})", h.froze_total));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 fn span(world: &World, name: &str) -> f64 {
     world.native_stats().expect("stats");
     world.take_destruction_spans().into_iter().find(|s| s.name == name).map_or(0.0, |s| s.value)
