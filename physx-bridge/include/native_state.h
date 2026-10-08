@@ -171,6 +171,12 @@ struct NativeDestruction::State {
   // contact geometry within a tick (PxDestructionStressDesc::chunkBoxes). A chunk
   // without one (a vehicle part) keeps an empty box.
   std::vector<physx::PxDestructionChunkBox> boxes;
+#if PX_DESTRUCTION_CHUNK_BOXES >= 2
+  // Per chunk face (6 c + f): the chunks continuing the material across it at rest
+  // (mark_internal_faces), and their CSR form for the stage.
+  std::vector<std::vector<std::uint32_t>> face_neighbours;
+  std::vector<std::uint32_t> face_begin, face_list;
+#endif
 #endif
   // Per material (global index): a fastener group's twist radius of gyration
   // and farthest fastener (m), 0 where the material twists on its patch.
