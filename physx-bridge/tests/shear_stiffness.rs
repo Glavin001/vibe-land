@@ -95,7 +95,7 @@ fn parallel_joints_share_load_by_their_shear_stiffness() {
         let settings = DestructibleSettings {
             max_solver_iterations_per_frame: 64,
             materials: vec![strong()],
-            shear_stiffness_ratio: vec![*gamma as f32],
+            shear_stiffness_ratio: vec![*gamma as f32], surface_static_friction: Vec::new(), surface_dynamic_friction: Vec::new(), surface_restitution: Vec::new(),
             maximum_bodies: 0,
             maximum_fractures_per_actor_per_tick: 0,
             ..DestructibleSettings::default()

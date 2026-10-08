@@ -323,7 +323,8 @@ void NativeDestruction::clear() {
       if (chunk.shape != nullptr) {
         chunk.shape->release();
       }
-    }
+    }    // After the shapes that referenced them.
+    for (auto &entry : s.surface_cache) entry.second->release();
   }
   PxPhysics &physics = s.physics;
   PxScene &scene = s.scene;
@@ -481,6 +482,34 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
     // Shear stiffness apart from normal (the stage ignores it unless its switch is on).
     out.shearStiffnessRatio = settings.shear_stiffness_ratio.empty() ? 0.0f : std::max(0.0f, settings.shear_stiffness_ratio[index]);
 #endif
+    // The surface (VIBE_SURFACE_MATERIALS=1): a standard PxMaterial per distinct
+    // (static friction, dynamic friction, restitution), PhysX's own combine
+    // rules between two surfaces (average by default). Off, or untabulated:
+    // the world's material.
+    native_require(settings.surface_static_friction.empty() ||
+                       (settings.surface_static_friction.size() == settings.materials.size() &&
+                        settings.surface_dynamic_friction.size() == settings.materials.size() &&
+                        settings.surface_restitution.size() == settings.materials.size()),
+                   "surface tables must be empty or parallel to the materials");
+    {
+      static const bool surfaces_on = [] { const char *v = std::getenv("VIBE_SURFACE_MATERIALS"); return v && v[0] == '1'; }();
+      PxMaterial *surface = nullptr;
+      if (surfaces_on && !settings.surface_static_friction.empty()) {
+        const std::array<float, 3> key{settings.surface_static_friction[index], settings.surface_dynamic_friction[index],
+                                       settings.surface_restitution[index]};
+        native_require(std::isfinite(key[0]) && key[0] >= 0.0f && std::isfinite(key[1]) && key[1] >= 0.0f &&
+                           std::isfinite(key[2]) && key[2] >= 0.0f && key[2] <= 1.0f,
+                       "surface friction must be finite and non-negative, restitution in [0, 1]");
+        auto found = s.surface_cache.find(key);
+        if (found == s.surface_cache.end()) {
+          PxMaterial *created = s.physics.createMaterial(key[0], key[1], key[2]);
+          native_require(created != nullptr, "surface material allocation failed");
+          found = s.surface_cache.emplace(key, created).first;
+        }
+        surface = found->second;
+      }
+      s.surfaces.push_back(surface);
+    }
     ++index;
     s.materials.push_back(out);
   }
@@ -780,7 +809,7 @@ void NativeDestruction::create_destructible(
       PxShape *shape = nullptr;
       if (n.geom_kind == 0) {
         shape = s.physics.createShape(PxBoxGeometry(native_px(n.half_extents)),
-                                      s.material, true);
+                                      s.surface(material_base + n.material), true);
       } else if (n.geom_kind == 1) {
         std::vector<PxVec3> points;
         points.reserve(n.convex_points.size());
@@ -803,8 +832,8 @@ void NativeDestruction::create_destructible(
         native_require(mesh != nullptr, "native convex cooking failed");
         ++hulls;
         if (!mesh->isGpuCompatible()) ++cpu_hulls;
-        shape = s.physics.createShape(PxConvexMeshGeometry(mesh), s.material,
-                                      true);
+        shape = s.physics.createShape(PxConvexMeshGeometry(mesh),
+                                      s.surface(material_base + n.material), true);
         mesh->release();
       }
       native_require(shape != nullptr, "invalid or failed chunk geometry");

@@ -153,7 +153,7 @@ fn settings() -> DestructibleSettings {
         }],
         crush: Vec::new(),
         ductile_slip: Vec::new(),
-        impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(), bearing_modulus: Vec::new(), bend_gyration: Vec::new(), bend_section: Vec::new(), bearing_joint: Vec::new(), shear_friction: Vec::new(), shear_capacity_limit: Vec::new(), shear_stiffness_ratio: Vec::new(),
+        impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(), bearing_modulus: Vec::new(), bend_gyration: Vec::new(), bend_section: Vec::new(), bearing_joint: Vec::new(), shear_friction: Vec::new(), shear_capacity_limit: Vec::new(), shear_stiffness_ratio: Vec::new(), surface_static_friction: Vec::new(), surface_dynamic_friction: Vec::new(), surface_restitution: Vec::new(),
         maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0,
         apply_excess_forces: true,

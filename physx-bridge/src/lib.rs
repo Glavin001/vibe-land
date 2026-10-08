@@ -639,6 +639,13 @@ pub struct DestructibleSettings {
     /// VIBE_SHEAR_STIFFNESS (PhysX PX_DESTRUCTION_SHEAR_STIFFNESS, FIDELITY_AUDIT
     /// D11); 0 or 1 isotropic.
     pub shear_stiffness_ratio: Vec<f32>,
+    /// Empty, or parallel to `materials`: each material's surface as a PhysX
+    /// `PxMaterial` (static and dynamic friction, restitution), used with
+    /// VIBE_SURFACE_MATERIALS=1 (AGENTS.md: per-material friction and
+    /// restitution, cited); otherwise, or empty, the world's material.
+    pub surface_static_friction: Vec<f32>,
+    pub surface_dynamic_friction: Vec<f32>,
+    pub surface_restitution: Vec<f32>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -678,6 +685,9 @@ impl Default for DestructibleSettings {
             shear_friction: Vec::new(),
             shear_capacity_limit: Vec::new(),
             shear_stiffness_ratio: Vec::new(),
+            surface_static_friction: Vec::new(),
+            surface_dynamic_friction: Vec::new(),
+            surface_restitution: Vec::new(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -2551,6 +2561,10 @@ mod ffi {
         shear_capacity_limit: Vec<f32>,
         /// Empty, or parallel to `materials`: shear over normal stiffness, 0 or 1 isotropic.
         shear_stiffness_ratio: Vec<f32>,
+        /// Empty, or parallel to `materials`: the surface's PxMaterial (VIBE_SURFACE_MATERIALS=1).
+        surface_static_friction: Vec<f32>,
+        surface_dynamic_friction: Vec<f32>,
+        surface_restitution: Vec<f32>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -3485,6 +3499,9 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
             shear_friction: value.shear_friction,
             shear_capacity_limit: value.shear_capacity_limit,
             shear_stiffness_ratio: value.shear_stiffness_ratio,
+            surface_static_friction: value.surface_static_friction,
+            surface_dynamic_friction: value.surface_dynamic_friction,
+            surface_restitution: value.surface_restitution,
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,
