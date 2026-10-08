@@ -384,6 +384,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     let (mut converged, mut solves) = (0u32, 0u32);
     // Steps the native stage could not complete (error bits set): a lab invariant, 0.
     let (mut failed_steps, mut crushed_chunks) = (0u32, 0u32);
+    // Every chunk the stage crushed (structure 0), for the shots' energy balance.
+    let mut crushed_ids: BTreeSet<u32> = BTreeSet::new();
     // Per tick: [tick, bonds broken (all evaluations), chunks crushed, step ms].
     let mut stage: Vec<[f32; 4]> = Vec::new();
     let mut step = |arena: &mut crate::movement::PhysicsArena, city: &mut crate::city::CityRuntime, tick: &mut u32, input: Option<&InputCmd>| {
@@ -402,6 +404,7 @@ fn run(r: &Run, meta: &Value) -> Value {
             solves += 1; if status.converged { converged += 1; }
             if status.error != 0 { failed_steps += 1; }
             crushed_chunks += status.crushed_chunks;
+            crushed_ids.extend(city.native_crushed_chunks().into_iter().filter(|c| c.0 == 0).map(|c| c.1));
             stage.push([*tick as f32, status.broken_bonds as f32, status.crushed_chunks as f32, *step_ms.last().unwrap_or(&0.)]);
             // VIBE_TESTBED_STAGE=1: each tick that breaks anything -- in the trial
             // evaluation, the corrected one, and after the motion is final.
@@ -920,8 +923,11 @@ fn run(r: &Run, meta: &Value) -> Value {
             let broken: Vec<u32> = rows.iter().filter(|r| (r.remaining_area <= 0.0 || r.broken) && !h.broken_before.contains(&r.bond_index)
                 && h.is_house[r.node0 as usize] && h.is_house[r.node1 as usize]).map(|r| r.bond_index).collect();
             let fracture_done: f32 = broken.iter().map(|&b| strength.fracture_work(b)).sum();
+            // Crushed house chunks (the stage's crush events: a crush that leaves
+            // debris keeps a body, so "no longer found" misses it), plus any
+            // house chunk otherwise gone.
             let gone: Vec<u32> = (0..h.is_house.len() as u32).filter(|&i| h.is_house[i as usize] && strength.node_mass(i) > 0.
-                && !world.native_chunk_aim(0, i).map_or(false, |a| a.found)).collect();
+                && (crushed_ids.contains(&i) || !world.native_chunk_aim(0, i).map_or(false, |a| a.found))).collect();
             let crush_done: f32 = gone.iter().map(|&i| strength.crush_work(i)).sum();
             physics = Some(json!({"pathFractureJ": fracture, "pathCrushJ": crush, "pathMassKg": mass, "pathChunks": chunks,
                 "fractureWorkJ": fracture_done, "crushWorkJ": crush_done, "brokenIds": broken, "goneIds": gone,
