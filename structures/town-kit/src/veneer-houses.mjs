@@ -590,10 +590,10 @@ export function buildVeneerHouse(options={}){
    continue;
   }
   // Revision 2: each bond the stiffness of its own connection at the length the stage gives its spring
-  // (springLength), within 9%: one material per kind and quarter-octave of length.
+  // (springLength), within 9%: one material per kind and quarter-octave of length (at its centre).
   const bins=new Map();
-  for(const bond of list){const L=springLength(s,bond),k=Math.round(4*Math.log2(L));if(!bins.has(k))bins.set(k,[]);bins.get(k).push([bond,L]);}
-  for(const group of bins.values()){const m=make(area,median(group.map(([,L])=>L)));for(const [bond] of group){bond.m=m;delete bond.kind;}}
+  for(const bond of list){const k=Math.round(4*Math.log2(springLength(s,bond)));if(!bins.has(k))bins.set(k,[]);bins.get(k).push(bond);}
+  for(const [k,group] of bins){const m=make(area,2**(k/4));for(const bond of group){bond.m=m;delete bond.kind;}}
  }
  s.bonds=s.bonds.filter(x=>!x.drop);
  // Revision 2: a tie's in-plane stiffness (WALL_TIE.stiffness) at the length the stage gives its spring.

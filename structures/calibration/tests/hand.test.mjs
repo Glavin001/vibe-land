@@ -71,3 +71,26 @@ test('frame: GSA removal demands', () => {
     assert.ok(u >= lo && u <= hi, `${kind} ${rm}: u ${u}`);
   }
 });
+
+test('house headers: the double top plate over a knocked-out bay (revision 2 bungalow)', async () => {
+  const H = await import('../src/house-headers.mjs');
+  const { buildVeneerHouse } = await import('../../town-kit/src/veneer-houses.mjs');
+  const { pack, metadata } = buildVeneerHouse({ storeys: 1, revision: 2 });
+  // Two nailed plies (EN 1995-1-1 Annex B): nearly no composite action, half the solid section's moment.
+  assert.ok(H.CAP.gamma(2) < 0.05, `gamma ${H.CAP.gamma(2)}`);
+  close(H.PLATES.real.W * H.PLATES.real.fm, 1458, 0.01, 'M_Rk of two 45 x 90 C24 plies');
+  close(H.PLATES.kit.W * H.PLATES.kit.fm, H.PLATES.real.W * H.PLATES.real.fm, 1e-9, "the kit's member has the plies' moment capacity");
+  // One bay (the door's left jack and king), two bays: the plate spans 1.36 m, then 1.96 m, and holds.
+  const bay1 = H.gapCheck(pack, metadata.nodeWalls, [1.532, 1.577]), bay2 = H.gapCheck(pack, metadata.nodeWalls, [1.163, 1.532, 1.577]);
+  close(bay1.gap, 1.359, 0.01, 'one bay: the gap from the stud at 1.163 to the door header\'s right jack');
+  close(bay2.gap, 1.959, 0.01, 'two bays');
+  assert.ok(bay1.real.u < 0.85 && bay2.real.u < 0.85, `bays hold: ${bay1.real.u} ${bay2.real.u}`);
+  // A simply supported span under its seats: M between wL^2/12 and wL^2/8 of its line load.
+  assert.ok(bay2.Mlow < bay2.M && bay2.M / bay2.Mlow < 1.8, `bounds ${bay2.Mlow} ${bay2.M}`);
+  // The truck's hole (five studs, 3.33 m): past the plate's strength between both bounds.
+  const truck = H.gapCheck(pack, metadata.nodeWalls, [-1.238, -0.637, -0.037, 0.563, 1.163]);
+  close(truck.gap, 3.332, 0.01, 'the truck\'s gap, junction stud to the door\'s left king');
+  assert.ok(truck.real.uLow > 1.15, `truck: the plate fails, u ${truck.real.uLow}-${truck.real.u}`);
+  // Bearing beside the gaps stays under f_c,90,k.
+  for (const g of [bay1, bay2, truck]) assert.ok(g.endReaction.every((q) => q.u < 1), JSON.stringify(g.endReaction));
+});

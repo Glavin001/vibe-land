@@ -158,6 +158,14 @@ function skyline(file) {
   return { pack };
 }
 
+/**
+ * The framed-house lanes' bungalow: revision 2 of the town kit's veneer house
+ * (veneer-houses.mjs; docs/calibration/house-headers.md), its header and plate
+ * load path from the code fastening schedule. Revision 1 (the kit's default)
+ * unzipped its front wall under dead load after the truck's hole.
+ */
+export const FRAMED_HOUSE_REVISION = 2;
+
 export function buildLab() {
   const placements = [
     { ...buildGround(), position: [0, 0, 0], yaw: 0, group: 'terrain' },
@@ -167,7 +175,7 @@ export function buildLab() {
     const o = lane.obstacle;
     if (o.kind === 'wall') placements.push({ ...buildWall(o), position: [lane.x, 0, o.z], yaw: 0, group: `wall@${lane.id}` });
     if (o.kind === 'house') placements.push({ ...skyline('house-1story.json'), position: [lane.x, 0, o.z], yaw: 0, group: `house@${lane.id}` });
-    if (o.kind === 'framed-house') placements.push({ pack: buildVeneerBungalow().pack, position: [lane.x, 0, o.z], yaw: 0, group: `framed-house@${lane.id}` });
+    if (o.kind === 'framed-house') placements.push({ pack: buildVeneerBungalow({ revision: FRAMED_HOUSE_REVISION }).pack, position: [lane.x, 0, o.z], yaw: 0, group: `framed-house@${lane.id}` });
     if (o.kind === 'street') {
       o.strikes = [];
       for (const [k, { side, file }] of o.houses.entries()) {
