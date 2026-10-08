@@ -34,6 +34,7 @@ const GROUP_CHUNK: u32 = 1 << 5;
 const ALL: u32 = u32::MAX;
 const STUD: (f64, f64) = (0.09, 0.045); // a 45 x 90 mm stud: depth along the span, width
 const HEIGHT: f64 = 0.5;
+const ORIGIN_Y: f64 = 10.0; // the structure's pose
 const SPAN: f64 = 1.0; // A at -SPAN/2, B at +SPAN/2
 const OVERHANG: f64 = 0.5; // the plate runs 0.5 m past each post
 const PLATE_MASS: f64 = 100.0;
@@ -100,14 +101,14 @@ fn configure(world: &mut World, nodes: &[ChunkNodeDesc], bonds: &[ChunkBondDesc]
         ..DestructibleSettings::default()
     };
     world
-        .native_create_destructible(0, Pose { position: Vec3::new(0.0, 10.0, 0.0), rotation: Quat::IDENTITY },
-            nodes, bonds, settings, GROUP_CHUNK, GROUP_CHUNK)
+        .native_create_destructible(0, Pose { position: Vec3::new(0.0, ORIGIN_Y as f32, 0.0), rotation: Quat::IDENTITY },
+            nodes, bonds, settings, GROUP_CHUNK, ALL)  // chunks meet the plain block
         .unwrap();
     world.step().unwrap();
-    // The product's solve: 64 iterations, FP32.
+    // The product's solve: 64 iterations, the SDK-default tolerance, FP32.
     world
         .native_configure(NativeConfig {
-            max_iterations: 64, tolerance: 1e-3, force_tolerance: 1e-3, warm_start: true,
+            max_iterations: 64, tolerance: 1e-3, force_tolerance: 0.0, warm_start: true,
             damage_rate: 2.0, bend_gain_max: 3.0, fibre_bending: true,
             reserved_contact_pairs: 64, preserve_unchanged_contact_pairs: true,
             gpu_island_repair: true, verdict_sample_ticks: 1,
@@ -134,20 +135,33 @@ fn plate_rebears_after_uplift() {
     let stud_mass = 420.0 * sd * sw * HEIGHT;
     let plate_half = [SPAN / 2.0 + OVERHANG, 0.045, 0.1];
     let plate_y = HEIGHT + plate_half[1];
-    let nodes = [
+    // The plate in five pieces glued end to end (the stage loads a chunk at its
+    // centre, so the block's lever is a piece of its own): the block's piece,
+    // the overhang, the span's middle, and their mirror images. A and B stand
+    // under the second and fourth.
+    let cuts = [-1.0, -0.8, -0.3, 0.3, 0.8, 1.0];
+    let mut nodes = vec![
         node(0, [0.0, -0.025, 0.0], [SPAN, 0.025, 0.15], 0.0), // sill: the support
         node(1, [-SPAN / 2.0, HEIGHT / 2.0, 0.0], [sd / 2.0, HEIGHT / 2.0, sw / 2.0], stud_mass), // A
         node(2, [SPAN / 2.0, HEIGHT / 2.0, 0.0], [sd / 2.0, HEIGHT / 2.0, sw / 2.0], stud_mass), // B
-        node(3, [0.0, plate_y, 0.0], plate_half, PLATE_MASS), // the plate
     ];
+    for k in 0..5 {
+        let (x0, x1) = (cuts[k], cuts[k + 1]);
+        nodes.push(node(3 + k as u32, [(x0 + x1) / 2.0, plate_y, 0.0], [(x1 - x0) / 2.0, plate_half[1], plate_half[2]],
+            PLATE_MASS * (x1 - x0) / (2.0 * plate_half[0])));
+    }
     let area = sd * sw;
     let up = [0.0, 1.0, 0.0];
-    let bonds = vec![
+    let mut bonds = vec![
         bond(0, 0, 1, [-SPAN / 2.0, 0.0, 0.0], up, area, 0),
         bond(1, 0, 2, [SPAN / 2.0, 0.0, 0.0], up, area, 0),
-        bond(2, 1, 3, [-SPAN / 2.0, HEIGHT, 0.0], up, area, 0), // A: held down (strong)
-        bond(3, 2, 3, [SPAN / 2.0, HEIGHT, 0.0], up, area, 1),  // B: end-nailed, the joint under test
+        bond(2, 1, 4, [-SPAN / 2.0, HEIGHT, 0.0], up, area, 0), // A: held down (strong)
+        bond(3, 2, 6, [SPAN / 2.0, HEIGHT, 0.0], up, area, 1),  // B: end-nailed, the joint under test
     ];
+    for k in 0..4 {
+        bonds.push(bond(4 + k as u32, 3 + k as u32, 4 + k as u32, [cuts[k + 1], plate_y, 0.0], [1.0, 0.0, 0.0],
+            4.0 * plate_half[1] * plate_half[2], 0));
+    }
     configure(&mut world, &nodes, &bonds, vec![strong(), nailed()], vec![0.0, 1.0]);
     let half = PLATE_MASS * g() / 2.0;
     let uplift = (BLOCK_MASS * g() * BLOCK_ARM - PLATE_MASS * g() * SPAN / 2.0) / SPAN;
@@ -179,7 +193,7 @@ fn plate_rebears_after_uplift() {
         .add_dynamic_box(DynamicBoxDesc {
             entity_id: 9100, user_id: 9100,
             pose: Pose {
-                position: Vec3::new((-SPAN / 2.0 - BLOCK_ARM) as f32, (plate_y + plate_half[1] + 0.1 + 0.001) as f32, 0.0),
+                position: Vec3::new((-SPAN / 2.0 - BLOCK_ARM) as f32, (ORIGIN_Y + plate_y + plate_half[1] + 0.1 + 0.001) as f32, 0.0),
                 rotation: Quat::IDENTITY,
             },
             half_extents: Vec3::new(0.1, 0.1, 0.1), mass: BLOCK_MASS as f32,
@@ -224,7 +238,7 @@ fn hanging_stud_falls_free() {
         }
     }
     println!("hanging stud ({:.0} N on {NAILS_TENSION} N of nails): broke {broke}, lowest free body at y {low:.3} m (it hung at {:.3})",
-        hanging * g(), 10.0 - HEIGHT / 2.0);
+        hanging * g(), ORIGIN_Y - HEIGHT / 2.0);
     assert!(broke, "the stud hung on with no compression path (re-bearing must still split)");
-    assert!(low < 10.0 - HEIGHT / 2.0 - 0.05, "the stud did not fall (lowest {low:.3} m)");
+    assert!(low < ORIGIN_Y - HEIGHT / 2.0 - 0.05, "the stud did not fall (lowest {low:.3} m)");
 }
