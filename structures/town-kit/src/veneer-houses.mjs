@@ -103,7 +103,7 @@ function materialsFor(b,crush=false,revision=1){
  * to its Johansen capacity, so it is elastic up to its capacity, as the timber members are.
  */
 const connectionElastic=()=>realCapacitiesEnabled()?1:LONG_TERM;
-function jointMaterial(b,kind,area,length,table=CONNECTIONS,revision=1){
+function jointMaterial(b,kind,area,length,table=CONNECTIONS,fixTwist=false){
  let c=table[kind];const k=c.per==='joint'?1/area:1/(c.perArea??1),LONG_TERM=connectionElastic();
  // Fasteners in a row along a face (c.row: their spacing and the face's width): the row this kind's
  // median contact holds, end distances 5 d off (materials.mjs fastenerRow).
@@ -126,12 +126,14 @@ function jointMaterial(b,kind,area,length,table=CONNECTIONS,revision=1){
   ...(c.restBearing&&c.twist&&realCapacitiesEnabled()?(()=>{const bearing=BEARING.elasticModulus/c.restBearing,slipPerArea=c.per==='joint'?c.slip/area:c.slip/(c.perArea??1);
    return {bearingElasticModulus:bearing*length,bendGyration:c.twist.gyration*Math.sqrt(slipPerArea/bearing),bendSection:c.twist.gyration**2/c.twist.reach,
     twistGyration:c.twist.gyration*Math.sqrt(slipPerArea/bearing),
-    // The stage grades twist on the same radius (twistModulus A g^2 / reach): revision 2 moves the reach
-    // with it so the strength stays the nails' (A g0^2 / reach0); revision 1's read slip / bearing of it
-    // (a stud end-nailed to its plate: 1/23 of its 30 N m).
-    ...(revision>=2?{twistReach:c.twist.reach*slipPerArea/bearing}:{})};})():{})})-1;
+    // The stage grades twist on the same radius (twistModulus A g^2 / reach): the reach moves with it so
+    // the strength stays the nails' (A g0^2 / reach0). Without it the strength read slip / bearing of it
+    // (a stud end-nailed to its plate: 1/23 of its 30 N m). `fixTwist`: engineLaw in buildVeneerHouse.
+    ...(fixTwist?{twistReach:c.twist.reach*slipPerArea/bearing}:{})};})():{})})-1;
 }
 
+/** Packs built for the high profile's engine law (VIBE_SECTION_ROTATION: real sections, contact spring length). */
+const sectionRotationLaw=()=>(globalThis.process?.env?.VIBE_SECTION_ROTATION??'0')==='1';
 /**
  * The length the stage gives a bond's spring (physx-bridge native_destruction.cc): under
  * VIBE_SECTION_ROTATION (the high-fidelity profile) the chunks' separation along the bond normal, at
@@ -141,7 +143,7 @@ function jointMaterial(b,kind,area,length,table=CONNECTIONS,revision=1){
  */
 export function springLength(s,bond){
  const p=s.nodes[bond.node0].centroid,q=s.nodes[bond.node1].centroid,d=[q.x-p.x,q.y-p.y,q.z-p.z];
- if((globalThis.process?.env?.VIBE_SECTION_ROTATION??'0')!=='1')return Math.hypot(...d);
+ if(!sectionRotationLaw())return Math.hypot(...d);
  const n=bond.normal,len=Math.hypot(n.x,n.y,n.z);
  return Math.max(Math.abs(d[0]*n.x+d[1]*n.y+d[2]*n.z)/len,Math.sqrt(bond.area));
 }
@@ -273,7 +275,7 @@ export function buildVeneerHouse(options={}){
   const plate=(type,a,c,ya,yb)=>{const pieceId=b.pieceId++,seams=[a];for(let u=w.u0+S.spacing/2+2.4;u<c-1.2;u+=2.4){const f=free(u);if(f>seams.at(-1)+1.2&&f<c-1.2)seams.push(f);}seams.push(c);
    for(let i=0;i<seams.length-1;i++)add(type,seams[i],seams[i+1],ya,yb,{pieceId,along:99});};
   for(const [a,c] of cuts)plate('bottom-plate',a,c,w.y0,yBP);
-  if(C.revision>=2&&C.plateBays!==false)chunkedPlate(w,add,upright,yTP,w.top);else if(C.revision>=2){const pieceId=b.pieceId++;add("top-plate",w.u0,w.u1,yTP,w.top,{pieceId,along:2.4,material:MAT.plate});}else plate('top-plate',w.u0,w.u1,yTP,w.top);
+  if(C.revision>=2)chunkedPlate(w,add,upright,yTP,w.top);else plate('top-plate',w.u0,w.u1,yTP,w.top);
  }
 
  /**
@@ -581,12 +583,16 @@ export function buildVeneerHouse(options={}){
  // The housings' shear is the ledge a tread or riser bears on, which its size sets.
  if(stair){const shear=housingShear(stair.plan);stairTable=Object.fromEntries(Object.entries(STAIR_CONNECTIONS).map(([k,c])=>[k,c.shear==null?{...c,shear:shear[k]}:c]));}
  const median=v=>v.sort((x,y)=>x-y)[v.length>>1],c=i=>s.nodes[i].centroid;
+ // Joint stiffness at the stage's own spring length and bearing joints' twist at their nails' strength
+ // (two authoring bugs, house-headers.md): revision 2 always; revision 1 in packs built for the high
+ // profile's engine law, its runtime packs unchanged.
+ const engineLaw=C.revision>=2||sectionRotationLaw();
  for(const [kind,list] of kinds){
   const table=C.revision>=2&&kind in REVISION_2_CONNECTIONS?REVISION_2_CONNECTIONS:kind in CONNECTIONS?CONNECTIONS:stairTable;
-  const make=(area,length)=>kind==='flooring-nail'||kind==='landing-deck'?jointMaterialFlooring(b,length,`${kind}-joint`):jointMaterial(b,kind,area,length,table,C.revision);
+  const make=(area,length)=>kind==='flooring-nail'||kind==='landing-deck'?jointMaterialFlooring(b,length,`${kind}-joint`):jointMaterial(b,kind,area,length,table,engineLaw);
   if(kind in kindMaterial){for(const bond of list){bond.m=kindMaterial[kind];delete bond.kind;}continue;}
   const area=median(list.map(x=>x.area));
-  if(C.revision<2){
+  if(!engineLaw){
    const length=median(list.map(x=>Math.hypot(c(x.node0).x-c(x.node1).x,c(x.node0).y-c(x.node1).y,c(x.node0).z-c(x.node1).z)));
    kindMaterial[kind]=make(area,length);
    for(const bond of list){bond.m=kindMaterial[kind];delete bond.kind;}
@@ -600,7 +606,7 @@ export function buildVeneerHouse(options={}){
  }
  s.bonds=s.bonds.filter(x=>!x.drop);
  // Revision 2: a tie's in-plane stiffness (WALL_TIE.stiffness) at the length the stage gives its spring.
- if(C.revision>=2)for(const tie of ties){const L=springLength(s,tie),k=Math.round(4*Math.log2(L));tie.m=tieMaterials.get(k)??tieMaterials.set(k,tieMaterial(b,MAT.tie,2**(k/4))).get(k);}
+ if(engineLaw)for(const tie of ties){const L=springLength(s,tie),k=Math.round(4*Math.log2(L));tie.m=tieMaterials.get(k)??tieMaterials.set(k,tieMaterial(b,MAT.tie,2**(k/4))).get(k);}
  s.bonds.push(...ties);
  pack.defaults.solver.materials=b.table;
  pack=cornerReferencedHulls(composeScene([{pack}],{key,title:C.storeys===1?'Brick-veneer bungalow':'Brick-veneer two-storey house'}));
