@@ -61,6 +61,8 @@ H = pathlib.Path(__file__).resolve().parent
 ROOT = H.parent.parent
 _s = importlib.util.spec_from_file_location('explicit_step', H / 'explicit-step.py')
 ex = importlib.util.module_from_spec(_s); _s.loader.exec_module(ex)
+sys.path.insert(0, str(H))
+from contact_law import punch_stiffness, punch_row, row_k, tyre_force, compliant_impulse   # the compliant row's law (shared)
 
 G = 9.81
 DT = 1.0 / 60.0
@@ -239,41 +241,6 @@ def pcg(A, b, prec, tol=1e-6, maxit=200):
     return x, maxit
 
 
-def punch_stiffness(area, E1, E2, nu1=0.3, nu2=0.2):
-    """A flat contact's normal stiffness: a rigid flat punch of the patch's equivalent radius a on an
-    elastic half-space, k = 2 a E*, 1/E* = (1 - nu1^2)/E1 + (1 - nu2^2)/E2 (K. L. Johnson, Contact
-    Mechanics, 1985, sec. 3.8; the same law the bridge uses for a bond's contact length)."""
-    a = np.sqrt(max(area, 1e-8) / np.pi)
-    return 2.0 * a / ((1 - nu1 ** 2) / E1 + (1 - nu2 ** 2) / E2)
-
-
-def punch_row(Ea, Eb, pts, Va, Vb=None):
-    """The kernel's compliant row (PxgDestructionImpactExplicit.cuh exBuild): 1/E* = 1/E_a + 1/E_b
-    (Poisson's ratio left out; a rigid side 1/E = 0), the patch's spread sigma (its points' RMS
-    distance from their centroid), the smaller chunk's equivalent sphere R and face radius:
-    k(d) = 2 E* min(face, max(sigma, sqrt(R d)))."""
-    pts = np.asarray(pts, float); c = pts.mean(0)
-    sigma = float(np.sqrt(np.mean(np.sum((pts - c) ** 2, 1)))) if len(pts) > 1 else 0.0
-    V = min(Va, Vb) if Vb else Va
-    return dict(Estar=1.0 / (1.0 / Ea + (1.0 / Eb if Eb else 0.0)), sigma=sigma, Rh=(0.75 * V / np.pi) ** (1 / 3),
-                face=np.sqrt(V ** (2 / 3) / np.pi), sec=np.inf)
-
-
-def row_k(t, d):
-    """A compliant row's stiffness at depth d."""
-    if 'k' in t: return t['k']
-    return 2.0 * t['Estar'] * min(t['face'], max(t['sigma'], np.sqrt(t['Rh'] * max(d, 0.0))))
-
-
-def tyre_force(t, d):
-    """A pneumatic tyre pressed radially by d (m): the inflation pressure over the contact patch,
-    F = p A, the patch a chord of the tread, A = b 2 sqrt(2 R d) (the membrane approximation;
-    Gent & Walter, The Pneumatic Tire, NHTSA 2006, ch. 7: the load is carried by the inflation
-    pressure over the contact area). Past the section height the rim bears (a rigid row)."""
-    if 'k' in t: return t['k'] * max(d, 0.0)
-    return t['p'] * t['b'] * 2.0 * np.sqrt(2.0 * t['R'] * max(d, 0.0))
-
-
 def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, DT), J0=None, sweeps=1, quiet=False,
         implicit=None, iters=1, sms=None, theta=1.0, row_theta=1.0, hybrid=False):
     """The window. Returns the trace and the books.
@@ -413,18 +380,7 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
             W = Wsplit[i]
             tyre = r.get('tyre')
             if tyre is not None and gap[i] <= 0 and depth[i] < tyre['sec']:
-                if 'k' in tyre or 'Estar' in tyre:
-                    # a linear contact spring, implicit (theta 1: backward Euler, its force at the substep's
-                    # end k (d + h g+); theta 1/2: the trapezoidal rule, d advanced by the mean of the closing
-                    # rates g, g+ before and after the impulse). Unconditionally stable.
-                    kc = row_k(tyre, depth[i]); PN = min(0.0, -kc * h * (depth[i] + h * g[0]) / (1.0 + row_theta * kc * h * h * W[0, 0]))
-                else:
-                    PN = -tyre_force(tyre, depth[i]) * h
-                # friction: the sticking tangential impulse, within mu |P_N|
-                PT = -np.linalg.solve(W[1:, 1:], g[1:] + W[1:, 0] * PN)
-                n_ = np.linalg.norm(PT); lim = r['mu'] * -PN
-                if n_ > lim: PT *= lim / n_
-                P = np.array([PN, PT[0], PT[1]])
+                P = compliant_impulse(W, g, depth[i], dict(tyre), r['mu'], h, row_theta)
             else:
                 g[0] -= gap[i] / h
                 if g[0] <= 0 and not Ptot[i].any() and gap[i] > 0: continue
