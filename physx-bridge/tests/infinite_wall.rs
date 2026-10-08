@@ -32,7 +32,12 @@
 //!   unbreakable   the front plate alone, bonded beyond any load: the
 //!                 control, a wall that must stop the ball
 //!   grid          load_moves_in_the_corrected_pass, below
-//! and the high-fidelity profile's flags pass through from the environment.
+//!   heavy_wall    heavy_impactor_anchored_wall, below
+//! and the profile's flags pass through from the environment: the runtime rows
+//! of scripts/verify/regressions.tsv run them bare on the runtime SDK, the high
+//! rows with scripts/fidelity/high.env sourced (the explicit impact step and the
+//! handoff flags) on the high SDK. The ADMM impact solve's arm
+//! (bound_only_correction, VIBE_IMPACT_CAPACITY=1) is retired with that solve.
 //!
 //! VIBE_GPU_SHARED=1 PHYSX_ROOT=... CARGO_TARGET_DIR=... cargo test \
 //!   -p vibe-land-physx-bridge --features native-destruction \
@@ -296,10 +301,107 @@ fn meteor_on_ground(gap: f32, paved: bool) -> Vec<[f32; 2]> {
     out
 }
 
+/// The heavy impactor's wall (arm `heavy_wall`): masonry-like, 6 m wide and
+/// 6 m tall, 0.25 m thick, of 0.5 m blocks (2000 kg/m^3: 125 kg each), every
+/// block bonded to its neighbours and the bottom row to a fixed footing (mass
+/// 0): one anchored structure. Mortared joints: 0.5 MPa tension, 1 MPa shear,
+/// 10 MPa compression over each joint's face (0.125 m^2). Held up at Y, with
+/// no ground anywhere: the impactor meets the wall and nothing else.
+const HEAVY_MASS: f32 = 100_000.0;
+const HEAVY_V0: f32 = 130.0;
+const BLOCK: f32 = 0.5;
+const WALL_T: f32 = 0.25;
+const BLOCKS: u32 = 12;
+
+fn heavy_wall() -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {
+    let node = |i: u32, c: Vec3, h: Vec3, m: f32| ChunkNodeDesc {
+        node_index: i, centroid: c, mass: m, volume: 8.0 * h.x * h.y * h.z, geom_kind: 0, half_extents: h, convex_points: Vec::new(), material: 0,
+    };
+    let x0 = -0.5 * BLOCKS as f32 * BLOCK + 0.5 * BLOCK;
+    let mut nodes = vec![node(0, Vec3::new(0.0, Y - 0.25, 0.0), Vec3::new(0.5 * BLOCKS as f32 * BLOCK, 0.25, 0.3), 0.0)];
+    let mut bonds = Vec::new();
+    let id = |row: u32, col: u32| 1 + row * BLOCKS + col;
+    for row in 0..BLOCKS {
+        for col in 0..BLOCKS {
+            let c = Vec3::new(x0 + col as f32 * BLOCK, Y + 0.5 * BLOCK + row as f32 * BLOCK, 0.0);
+            nodes.push(node(id(row, col), c, Vec3::new(0.5 * BLOCK, 0.5 * BLOCK, 0.5 * WALL_T), BLOCK * BLOCK * WALL_T * 2000.0));
+            let mut bond = |a: u32, b: u32, at: Vec3, n: Vec3| bonds.push(ChunkBondDesc { bond_index: bonds.len() as u32, node0: a, node1: b, centroid: at, normal: n, area: BLOCK * WALL_T, material: 4 });
+            if row == 0 { bond(0, id(row, col), Vec3::new(c.x, Y, 0.0), Vec3::new(0.0, 1.0, 0.0)); }
+            else { bond(id(row - 1, col), id(row, col), Vec3::new(c.x, c.y - 0.5 * BLOCK, 0.0), Vec3::new(0.0, 1.0, 0.0)); }
+            if col > 0 { bond(id(row, col - 1), id(row, col), Vec3::new(c.x - 0.5 * BLOCK, c.y, 0.0), Vec3::new(1.0, 0.0, 0.0)); }
+        }
+    }
+    (nodes, bonds)
+}
+
+/// The heavy impactor into the anchored wall: its velocity along +z each tick,
+/// bonds broken, and the closed-form floor (heavy_impactor_anchored_wall).
+fn heavy_strike() -> (Vec<f32>, usize, f32) {
+    std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.native_attach().unwrap();
+    let (nodes, bonds) = heavy_wall();
+    let mortar = StressMaterialDesc { compression_elastic: 5e6, compression_fatal: 1e7, tension_elastic: 2.5e5, tension_fatal: 5e5,
+        shear_elastic: 5e5, shear_fatal: 1e6, elastic_modulus: 10e9, residual_area_fraction: 0.0 };
+    let unused = StressMaterialDesc { compression_elastic: 1e6, compression_fatal: 2e6, tension_elastic: 1e6, tension_fatal: 2e6,
+        shear_elastic: 1e6, shear_fatal: 2e6, elastic_modulus: 10e9, residual_area_fraction: 0.0 };
+    let settings = DestructibleSettings { max_solver_iterations_per_frame: 64, materials: vec![unused, unused, unused, unused, mortar],
+        maximum_bodies: 0, maximum_fractures_per_actor_per_tick: 0, linear_damping: 0.0, angular_damping: 0.0, ..DestructibleSettings::default() };
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: identity() }, &nodes, &bonds, settings, GROUP_CHUNK, ALL).unwrap();
+    world.step().unwrap();
+    world.native_configure(NativeConfig {
+        max_iterations: 64, tolerance: 1e-3, force_tolerance: 0.0, warm_start: true, damage_rate: 2.0, bend_gain_max: 3.0,
+        fibre_bending: true, reserved_contact_pairs: 64, preserve_unchanged_contact_pairs: true, gpu_island_repair: true, verdict_sample_ticks: 1,
+    }).unwrap();
+    for _ in 0..10 { world.step().unwrap(); world.native_tick().unwrap(); }
+    // Rock (2650 kg/m^3): 100 t is r 2.07 m. Aimed at the wall's middle (3 m up,
+    // its underside 0.9 m clear of the footing), surface 2 cm short of the face.
+    let radius = (HEAVY_MASS / 2650.0 * 3.0 / (4.0 * std::f32::consts::PI)).cbrt();
+    let mid = Y + 0.5 * BLOCKS as f32 * BLOCK;
+    world.launch_dynamic_ball(LaunchedBallDesc {
+        entity_id: BALL, user_id: 1, pose: Pose { position: Vec3::new(0.0, mid, -0.5 * WALL_T - radius - 0.02), rotation: identity() },
+        radius, mass: HEAVY_MASS, linear_velocity: Vec3::new(0.0, 0.0, HEAVY_V0), collision_group: GROUP_BALL, collision_mask: ALL,
+    }).unwrap();
+    world.native_set_impactor_impedance(BALL, (2650.0f32 * 60e9).sqrt()).unwrap();
+    // The closed form (momentum; Hibbeler, Dynamics, 15.2-15.4): every joint's
+    // face lies along the rock's path (bed joints normal to y, head joints to
+    // x), so a push through the wall loads each in shear: it can resist at most
+    // its shear capacity (1 MPa x 0.125 m^2; masonry's initial shear strength is
+    // 0.1-0.3 MPa, EN 1996-1-1 Table 3.4, so this is generous), here every
+    // joint of the wall at once, for as long as the rock overlaps the wall
+    // ((2 r + t) / v at its entry speed: the longest it can take), and the rock
+    // carries along at most the blocks in its path (its 2r square through the
+    // wall). Exit speed >= (p - sum F_cap t_contact) / (M + m_struck).
+    let capacity: f32 = bonds.len() as f32 * 1e6 * BLOCK * WALL_T;
+    let contact = (2.0 * radius + WALL_T) / HEAVY_V0;
+    let struck = ((2.0 * radius / BLOCK).ceil()).powi(2) * BLOCK * BLOCK * WALL_T * 2000.0;
+    let floor = (HEAVY_MASS * HEAVY_V0 - capacity * contact) / (HEAVY_MASS + struck);
+    println!("heavy wall: {} joints, {:.0} MN together, contact {:.1} ms, {:.0} kg in the path: v >= {floor:.1} m/s", bonds.len(), capacity / 1e6, contact * 1e3, struck);
+    let (mut vz, mut broken) = (Vec::new(), 0usize);
+    for t in 0..20 {
+        world.step().unwrap();
+        let status = world.native_tick().unwrap();
+        assert_eq!(status.error, 0, "stage rejected step {t}: {status:?}");
+        broken += world.native_take_broken_bonds().unwrap().len();
+        let ball = world.body_snapshots().unwrap().into_iter().find(|b| b.entity_id == BALL).expect("rock");
+        println!("tick {t} vz {:.3} z {:.2} broken {} after-correction {} corrections {}", ball.linear_velocity.z, ball.pose.position.z, status.broken_bonds, status.post_correction_broken_bonds, status.correction_passes);
+        vz.push(ball.linear_velocity.z);
+    }
+    (vz, broken, floor)
+}
+
 #[test]
 #[ignore = "spawned by layered_wall"]
 fn arm() {
     let Ok(arm) = std::env::var(ARM) else { return };
+    if arm == "heavy_wall" {
+        let (vz, broken, floor) = heavy_strike();
+        println!("v_end={}", vz.last().unwrap());
+        println!("v_min={}", vz.iter().copied().fold(f32::MAX, f32::min));
+        println!("broken={broken}");
+        println!("floor={floor}");
+        return;
+    }
     if arm.starts_with("meteor_") {
         // Wherever the last step before contact leaves it: 1 cm (inside the
         // contact offset) to 0.6 m up.
@@ -352,29 +454,6 @@ fn layered_wall() {
     assert!(failures.is_empty(), "an infinite wall:\n{}", failures.join("\n"));
 }
 
-/// The impact solve's bound-only corrected pass (VIBE_IMPACT_CAPACITY=1): the
-/// grid again, its weak plates already off under gravity, so on the ball's
-/// tick nothing breaks; the strong pair deflects in the impact solve, and the
-/// corrected pass -- requested by the contact bound alone, with no topology
-/// change -- lets the ball on with what the pair did not take. Gated: the
-/// ball keeps at least the closed form (>= 7.7 m/s), and the tick that slowed
-/// it ran a correction with no bond broken.
-#[test]
-#[ignore = "requires the GPU and an SDK with PX_DESTRUCTION_IMPACT_CAPACITY"]
-fn bound_only_correction() {
-    let floor = (BALL_MASS * V0 - 2.0 * STRONG * DT) / (BALL_MASS + 4.0 * PLATE_MASS);
-    let text = run_arm("grid", &[("VIBE_IMPACT_CAPACITY", "1")]);
-    let min = reported(&text, "v_min");
-    // "tick T vz V broken B after-correction A corrections C"
-    let bound_only = text.lines().filter(|l| l.starts_with("tick ")).any(|l| {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        f.len() >= 10 && f[5] == "0" && f[9] == "1" && f[3].parse::<f32>().map_or(false, |v| v < 0.95 * V0)
-    });
-    println!("grid with the impact solve: v_min {min:.2} (closed form >= {floor:.2}); a bound-only correction: {bound_only}");
-    assert!(bound_only, "no tick slowed the ball with a correction and no break (the bound-only corrected pass)\n{text}");
-    assert!(min >= 0.9 * floor, "an infinite wall: the ball fell to {min:.2} m/s; the strong plates can take it no lower than {floor:.2}\n{text}");
-}
-
 /// Load moved in the corrected pass. Struck at the grid's centre, the trial
 /// (all four plates kinematic) shares the stop four ways, about 0.28 m v0 / dt
 /// a plate: the weak pair breaks, the strong pair (0.3 m v0 / dt each) holds.
@@ -411,6 +490,24 @@ fn impact_pulse() {
     println!("light ball: v_end {end:.2} v_min {min:.2}; Hertz peak {:.1} MN over {:.2} ms against a {:.1} MN bond: v >= {floor:.2} m/s", peak / 1e6, pulse * 1e3, LIGHT_CAP / 1e6);
     assert!(peak > LIGHT_CAP && LIGHT_MASS * LIGHT_V0 * 1.1 / DT < LIGHT_CAP, "the case no longer separates the pulse from the tick average");
     assert!(min >= 0.9 * floor, "an infinite wall (tick-averaged load): the ball fell to {min:.2} m/s (ended {end:.2}); a bond of {:.1} MN can take it no lower than {floor:.2}\n{text}", LIGHT_CAP / 1e6);
+}
+
+/// A heavy impactor (meteor scale: 100 t of rock at 130 m/s) into an anchored,
+/// bonded, masonry-like wall, with no ground anywhere (heavy_wall above). Its
+/// momentum is 13 MN s; every joint of the wall together, at its shear
+/// capacity for the whole overlap, can take at most about a tenth of it. The rock
+/// must leave at or above that closed-form floor, and must not be held: the
+/// anchored wall is kinematic, and a contact the impact model never sees is
+/// stopped there at any force (the wall-matrix meteors held by the masonry wall
+/// and the brick house on garage-hifi@a5c07282b; the impact agent's reproducer).
+#[test]
+#[ignore = "requires the GPU and the native-destruction SDK"]
+fn heavy_impactor_anchored_wall() {
+    let text = run_arm("heavy_wall", &[]);
+    let (end, min, broken, floor) = (reported(&text, "v_end"), reported(&text, "v_min"), reported(&text, "broken"), reported(&text, "floor"));
+    println!("heavy impactor: v_end {end:.2} v_min {min:.2} bonds broken {broken}; closed form v >= {floor:.2} m/s");
+    assert!(floor > 0.3 * HEAVY_V0, "the case no longer separates a wall from a pass: floor {floor:.1}");
+    assert!(min >= floor, "an infinite wall: the rock fell to {min:.2} m/s (ended {end:.2}); the wall's joints can take it no lower than {floor:.2}\n{text}");
 }
 
 /// The fragment depenetration cap (2 m/s whenever vehicles are registered,
