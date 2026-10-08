@@ -125,6 +125,9 @@ An arm that cannot run says why: B is skipped until the bridge reads
 `high.env` takes B's flags and C stays as the reference arm.
 
 **First comparison (2026-10-08, garage-hifi 9e5d201f5, B not merged yet).**
+That SDK lacked feat/impact-capacity's last 22 commits and
+perf/rotation-convergence's last 2, which the branch check now refuses. The
+numbers are superseded by the rerun on the rebuilt SDK.
 Neither arm is physically right on these shots:
 - **A (static)** gets every shot through, but breaks 3,072-3,096 of the
   house's 3,113 bonds. Every shot brings the whole house down: 37-61% of the
@@ -150,6 +153,19 @@ any high-fidelity case.
   `source_revision` must be its checkout's HEAD, or a revision with no
   `physx/` or `blast/` changes since. Otherwise the high profile refuses to
   run. `VERIFY_ALLOW_STALE_SDK=1` runs it anyway, and the run records that.
+- **Feature branches.** An integration branch's head can itself lag the
+  feature branches it merges. `scripts/fidelity/branches.tsv` lists the
+  branches the high profile depends on, in one place. For each:
+  - **PhysX branch:** its current head must be an ancestor of the SDK's
+    `source_revision` (`git merge-base --is-ancestor`). `a|b` accepts either
+    head, for a branch or the merge that took it.
+  - **vibe-land branch:** its head must be in this checkout, unless its changes
+    lie outside what the bridge and server build from (`physx-bridge/`,
+    `server/`, `shared/`, `destruction/src`). Then it is a note.
+
+  A missing branch is named with its head and the number of commits the SDK
+  lacks, and the high profile refuses to run. A server test binary older than
+  the SDK install is reported: the run's cargo build relinks it.
 - **Packs.** High-fidelity packs older than any authoring source are rebuilt
   (`build-packs.sh high`, a few seconds). Runtime packs that are out of date
   are reported.

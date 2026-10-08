@@ -27,4 +27,5 @@ for path in sys.argv[1:]:
     txt = open(log).read()
     def total(key): return sum(int(m.group(1)) for m in re.finditer(r'(\d+) ' + key, txt))
     if ev: print(f"  impact solve: {len(ev)} evaluations, mean {sum(ev)/len(ev):.0f} ms, max {max(ev):.0f} ms, longest dispatch {max(disp):.0f} ms;"
-                 f" capped {total('capped')}, diverged {total('diverged')}, held stops {total('held stops')}, energy gains {total('energy gains')}, infeasible {total('infeasible projections')}")
+                 f" capped {total('capped,')}, fallen back {total('capped fallback')}, diverged {total('diverged')}, energy gains {total('energy gains')}, infeasible {total('infeasible projections')},"
+                 f" held over capacity {sum(int(m.group(1)) for m in re.finditer(r'HELD OVER CAPACITY: (\\d+)', txt))}")

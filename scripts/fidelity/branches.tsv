@@ -1,0 +1,12 @@
+# The feature branches the high-fidelity profile depends on. A high run is
+# refused unless the SDK's source revision contains each PhysX branch's current
+# head, and this checkout contains each vibe-land branch's changes to what the
+# bridge and server build from (scripts/fidelity/provenance.sh).
+# repo	branch (a|b: either head counts, e.g. a branch or the merge that took it)	what it carries
+physx	feat/impact-capacity	impact capacity E and impact-pressure crush (VIBE_IMPACT_CAPACITY)
+physx	perf/rotation-convergence	section rotation's solve convergence (VIBE_SECTION_ROTATION)
+physx	feat/section-rotational-stiffness	rotational stiffness from the real section (VIBE_SECTION_ROTATION)
+physx	fix/crush-in-correction	crush in the correction pass (VIBE_NATIVE_CRUSH)
+physx	fix/mac-ctest-baseline	the destruction ctest gate on CuMetal
+vibe-land	perf/rotation-convergence	the bridge side of rotation convergence
+vibe-land	fix/impact-convergence	the impact solve's convergence work and its oracles
