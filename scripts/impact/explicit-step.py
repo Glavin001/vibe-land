@@ -221,7 +221,7 @@ class Explicit:
         gers = np.max(rows * mid)
         return np.sqrt(lam), np.sqrt(gers)
 
-    def omega_bound(self, products=24):
+    def omega_bound(self, products=8):
         """The GPU step's substep bound (PxgDestructionImpactExplicit.cuh exFinish): Collatz-Wielandt on L >= |S|,
         S = M^-1/2 K M^-1/2, L each node's diagonal block assembled before |.| and the joints' blocks between nodes
         by theirs, lumped to translation/rotation per node; min with Gershgorin on M^-1 K and on S. Rigorous:
