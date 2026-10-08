@@ -150,6 +150,13 @@ static bool native_uncapped_spin() {
   return value;
 }
 static constexpr float kUncappedAngularVelocity = 1.0e16f; // add_dynamic's value
+/// VIBE_REBEARING=1 (high-fidelity profile, SDKs with PX_DESTRUCTION_REBEARING): a bearing
+/// joint whose fasteners fail becomes a unilateral contact that bears in compression and
+/// lifts off in tension (FIDELITY_AUDIT C9; PhysX PxgDestructionRebearing.cuh).
+static bool native_rebearing() {
+  static const bool value = native_env_f32("VIBE_REBEARING", 0.0f) != 0.0f;
+  return value;
+}
 /// VIBE_STRENGTH_SHORT_TERM=1: see append_materials.
 static bool native_short_term_strength() {
   static const bool value = native_env_f32("VIBE_STRENGTH_SHORT_TERM", 0.0f) != 0.0f;
@@ -1326,6 +1333,15 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
 #else
   native_require(!native_impact_capacity(),
                  "VIBE_IMPACT_CAPACITY needs a PhysX SDK with PX_DESTRUCTION_IMPACT_CAPACITY (PhysX feat/impact-capacity)");
+#endif
+#if defined(VIBE_PHYSX_HAS_REBEARING)
+  // The stage reads its switch at configuration.
+  if (native_rebearing()) {
+    setenv("PX_DESTRUCTION_REBEARING", "1", 1);
+    std::fprintf(stderr, "[destruction] re-bearing: on (a bearing joint whose fasteners fail bears in compression as a contact)\n");
+  }
+#else
+  native_require(!native_rebearing(), "VIBE_REBEARING needs a PhysX SDK with PX_DESTRUCTION_REBEARING (PhysX feat/rebearing)");
 #endif
   // One trial evaluation plus one corrected rigid pass. Zero would leave the
   // stage in its diagnostic mode, where any membership-changing verdict is

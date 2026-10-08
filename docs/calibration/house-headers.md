@@ -308,6 +308,57 @@ joints keep their wood's stiffness. This applies to high-profile packs
 only. The other joints' median impact k is 2.16e6 -> 1.44e6 N/m. It does
 not move the bound, which the wood sets.
 
+## Re-bearing (C9), measured 2026-10-08
+
+PhysX feat/rebearing (SDK garage-rebearing 402e7eb58, which carries
+integration/high-fidelity ccfb4ebed), `VIBE_REBEARING=1`, now in the high
+profile. A bearing joint whose fasteners fail stays as a unilateral contact:
+compression to its bearing capacity (its material's, f_c,90,k for timber),
+shear by friction only (mu 0.23, EN 1995-2:2004 Table 6.2, sawn softwood
+parallel to the grain), no tension. It lifts off when the solve pulls it and
+re-bears when the solve's displacement presses its chunks together; it breaks
+only by crushing, by sliding (|V| > mu C), or when what it held has no path
+left to a support (that region splits, as before).
+
+`run.mjs house-headers --configs high`, 600 ticks, 64 iterations, FP32,
+correction limit 1, the same SDK (402e7eb58) with the flag off and on, 3
+runs each (the stage is not deterministic run to run). "Frame beyond" counts
+frame joints broken more than one stud bay (0.6 m) outside the knocked-out
+bay; "front" those in the front wall.
+
+| Case | Off: broken / frame beyond / front frame beyond | On: broken / frame beyond / front frame beyond |
+|---|---|---|
+| intact | 0 / 0 / 0 (x3) | 0 / 0 / 0 (x5) |
+| bay1 | 0 (x3) | 0 (x5) |
+| bay2 | 2: a cripple-to-lintel joint and a board screw (x3) | 1 board screw, no frame joint (x5) |
+| truck | 25 / 6 / 6 (x3) | 9 / 1 / 1 (x5) |
+| truck-door | 1,166-1,241 / 120-159 / 72-78 | 1,301-1,483 / 88-104 / 39-48 |
+
+Re-bearing does what C9 asked: the uprights beyond the gap that the plate
+lifts no longer break, so truck stays local and bay2 holds (it was the MISS).
+It does not stop truck-door. There the plate over the 4.3 m gap and the
+joints at and beyond both ends of it (the door header's king and jack, the
+next opening's cripples, jacks and headers) all fail in ticks 1-3 together,
+each from one elastic snapshot: C10. Re-bearing roughly halves the front-wall
+frame broken beyond the gap and cuts all frame beyond it by a third; the
+total rises 10-20%, in the board and brick skins of the side and back walls
+(the remains stay attached longer and load them). The calibration's verdict
+is unchanged (`either`: the plate alone is past its strength over the gap);
+the hand calculation's local answer needs C10's sequence as well.
+
+On the earlier integration SDK (ec95655d5, before feat/impact-capacity's last
+commits) the same comparison gave truck-door 1,708-2,295 off and 2,216-2,583
+on, and one of five on-runs collapsed bay1 (343 broken, from the roof over the
+bay) and truck (2,295); none did on 402e7eb58.
+
+At rest (`qualify_structures.py`, the high packs): veneer-bungalow--frame and
+veneer-house--frame 0.00% broken (0.17% / 0.18% off); the as-built houses
+0.00% either way, and with the flag off the SDK reproduces the base SDK's
+qualification exactly (unconverged shares and median residuals equal to the
+digit). The studless variants still collapse (10% broken); the two-storey with
+only its ground-floor front studs out breaks 0.45% (0.84% off), below the
+acceptance's 2% collapse share either way.
+
 ## Reproduce
 
 ```sh
