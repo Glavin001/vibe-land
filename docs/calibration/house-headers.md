@@ -252,6 +252,62 @@ load needs no stud-to-plate tie-down in N1-N2 wind. It is reported as an
 engine gap: unilateral re-bearing of bearing joints whose fasteners have
 failed.
 
+## Joint stiffness against the fasteners, and the explicit impact step (2026-10-08)
+
+The perf agent suspected that the 7% of joints setting the explicit impact
+step's time step were fastened joints authored with the wood's E. They are
+not. Below is every fastened timber kind's engine stiffness k = E A / L
+(high profile; spring length per the bridge), medians over the lab house,
+against n x K_ser. K_ser comes from EN 1995-1-1 Table 7.1 at rho_m 420:
+nails 3.15 mm 0.72 kN/mm, 8d 0.75 kN/mm, M12 bolts 4.49 kN/mm, gypsum
+screws 0.5 kN/mm.
+
+| Kind | Engine k (kN/mm) | n x K_ser (kN/mm) |
+|---|---|---|
+| rafter seat (3 nails) | 2.16 | 2.16 |
+| joist seat (3 nails) | 1.76 | 2.16 (area spread) |
+| ridge (4) | 3.0 | 2.9 |
+| joist splice (4) | 3.1 | 2.9 |
+| header-king (4 x 8d) | 3.2 | 3.0 |
+| heel (M12) | 4.2 | 4.5 |
+| plate lap, stud-plate side (2) | 1.4 | 1.44 |
+| anchors (M12 per 0.108 m2) | 10.3 | 10.2 |
+| stud lap (1 per 0.054 m2) | 0.88 | 0.93 |
+| board screws (1 per 0.0135 m2) | 1.1 | 1.06 |
+
+The stiff 7% are the members' own wood. A stud or jack is two chunks, and
+the bond between its halves is E A / L of C24 over half its length:
+3.7e7 N/m for a stud, 4.5e7 N/m for a jack. A stud end bearing on its plate
+is E90 A / t: 3.3e7 N/m, correct in compression; its nails govern only in
+tension and shear, which the stage's one stiffness per bond cannot
+separate (FIDELITY_AUDIT C9).
+
+Revision 2's plate chunks a bay long, though, had become the stiffest
+elements: 1.7 kg each, 1.5e8 N/m across each cut. They doubled the bound.
+Measured with the perf agent's `IMPACT_EXPLICIT_LOCAL=1` replay
+(perf/explicit-step) on cannonball captures:
+
+| Authoring | Bound omega (rad/s) | Joints over omega/2 | Stiff set |
+|---|---|---|---|
+| revision 1 (old SDK capture) | 2.6-2.9e4 | 7% | stud and jack halves, area 0.004, 2 kg |
+| revision 2, plate a bay per chunk | 5.3-5.6e4 | 3% | plate cuts, area 0.0081, 1.7 kg, 1.5e8 N/m |
+| revision 2, plate two bays per chunk (now) | **2.7-2.9e4** | 9-12% | stud and jack halves again |
+
+So the plate is now cut every two bays (chunks 0.3-1.4 m, median 1.1 m).
+On the high profile, the calibration and the static cascade are unchanged
+in kind:
+
+- intact and one bay: 0 broken;
+- two bays: one frame joint (the stud next to the gap) plus one board screw;
+- the truck's hole: local (24 broken, 0.81 m drop);
+- truck-door: still unzips, 880 broken (C9/C10).
+
+In an impact, fastened joints now take K_u = 2/3 K_ser (EN 1995-1-1
+2.2.2(2): an ultimate state), through `impactElasticModulus`. Bearing
+joints keep their wood's stiffness. This applies to high-profile packs
+only. The other joints' median impact k is 2.16e6 -> 1.44e6 N/m. It does
+not move the bound, which the wood sets.
+
 ## Reproduce
 
 ```sh
