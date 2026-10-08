@@ -75,6 +75,8 @@ if [ "$one_run" = 1 ]; then worker_take "$out"; one "${one_args[@]}"; s=$?; work
 if [ "$judge_only" = 0 ]; then
   for arm in ${arms//,/ }; do
     mkdir -p "$out/$arm"
+    # A stale SDK (a branch just moved): wait for sdk-follow's rebuild first.
+    (arm_env "$arm" > /dev/null) || GPU_WORKERS_ROOT=$ROOT sdk_wait_current || { echo "[repeats] the SDK is still stale after 20 min"; exit 1; }
     (arm_env "$arm" && node "$ROOT/scripts/verify/scenarios.mjs" meta lab --pack "$LAB" --base "${LAB%.json}.meta.json" --out "$out/$arm/lab.meta.json" > /dev/null) || exit 1
   done
   bin=$( (arm_env "${arms%%,*}" && cd "$ROOT" && cargo test --release -p web-fps-server --features native-destruction --lib --no-run 2>&1) \
