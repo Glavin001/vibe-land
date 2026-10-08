@@ -523,6 +523,39 @@ Steel gets no crush law: it is ductile, so it dents, never comminutes.
   (stone-strength joints). The lab's street-1 house and 28 Vibe Town houses
   use this asset.
 
+**Mohr-Coulomb shear (C11, `VIBE_MOHR_COULOMB_SHEAR=1`, PhysX
+feat/mohr-coulomb-shear).** The masonry mortar joints carry mu 0.4 and the
+cap 0.065 f_b (EN 1996-1-1 eq. 3.5) in high packs, and the stage grades an
+intact joint's shear against f_v0 + mu sigma_c. Measured 2026-10-08
+(garage-mohr-coulomb d03f51a50), the stone house with mortar joints at rest:
+
+| | broken at rest | |
+|---|---|---|
+| without the friction term | 10 (0.61%) | FALLS |
+| with it | 8 (0.48%) | under the 0.5% gate, not 0 |
+
+- **What it saves:** the two head joints with compression across them
+  (sigma_c 0.007 and 0.045 MPa).
+- **What is left:** seven head joints at the sills (bonds 1370, 1382, 1415,
+  1438, 1467, 1469, 1473) with sigma_c <= 0.05 MPa or in tension, sheared
+  vertically at 0.15-0.23 MPa, where mu sigma_c adds at most 0.02; and one
+  slab bearing (bond 1000) lifted in tension at the slab's end.
+- **Why the head joints shear:** a pier stone (155: 67 kN from above) puts
+  54 kN on its bed and hangs 16 kN on its neighbour's head joint (1382,
+  0.069 m^2). The split is by stiffness, and the solve gives a bond one
+  stiffness in every direction (FIDELITY_AUDIT D11). Masonry's shear modulus
+  is 0.4 E (EN 1996-1-1 3.8.3), so the head joint draws about 2.5x its share.
+  The CPU oracle (stress-share.py) with G = 0.4 E on mortar joints: the head
+  joint carries 9.1 kN (1.08 x f_v0 without friction, 0.99 with), and the
+  round-0 cracks fall from 8 to 2 without friction and 1 with it, the slab
+  bearing in tension (1.17 f_xk1, which re-bearing holds as a contact).
+- So the stone joints stay opt-in until D11: anisotropic joint stiffness
+  (axial E A / L, shear G A / L).
+- **Regressions, flag on, default high packs:** lab 0, veneer houses 0 (as
+  built and frame-only), Vibe Town 273/273 under the gate with library-151 at
+  0.08%. That is two glazing joints, identical on the stock garage-hifi with
+  the flag off, so it is not C11's.
+
 ## Reproduce
 
 ```sh

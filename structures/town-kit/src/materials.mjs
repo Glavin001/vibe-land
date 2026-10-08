@@ -92,8 +92,10 @@ export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mo
  * them, where the stage's intact-joint shear has no f_vk0 + 0.4 sigma_d
  * friction term (FIDELITY_AUDIT C11; docs/calibration/house-headers.md "Stone"). A stone wall is units in mortar, and fails at its joints as brick does:
  * EN 1996-1-1 Table 3.4, dimensioned natural stone in general-purpose mortar
- * M2.5-M9: initial shear strength f_vk0 0.15 MPa (the stage has no friction
- * term, 0.4 sigma_d: FIDELITY_AUDIT C9); flexural tension across the bed joint
+ * M2.5-M9: initial shear strength f_vk0 0.15 MPa (its friction term 0.4 sigma_d
+ * is masonryShear's, graded under VIBE_MOHR_COULOMB_SHEAR: FIDELITY_AUDIT C11;
+ * with it the house cracks 8 joints, 0.48%, the rest D11's: one stiffness per
+ * bond in every direction, where masonry's G is 0.4 E); flexural tension across the bed joint
  * f_xk1 0.1 MPa (EN 1996-1-1 3.6.3, nationally determined; 0.05-0.1 for natural
  * stone and aggregate units in general-purpose mortar); in compression the
  * masonry's f_k = 0.45 f_b^0.7 f_m^0.3 = 10.5 MPa (eq. 3.1, the crush law's);
@@ -106,8 +108,9 @@ export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mo
  * under VIBE_REBEARING a cracked joint re-bears; FIDELITY_AUDIT C9). What stays
  * approximate: the stage grades a bearing joint's tension as fasteners at its
  * centre, T = M/d + N, so the crack moment of a bed joint in pure bending reads
- * 3x the flexural f_xk1 W (exact in direct tension), and re-bearing's friction
- * is timber's 0.23 where masonry's is 0.4 (EN 1996-1-1 3.6.2).
+ * 3x the flexural f_xk1 W (exact in direct tension). Re-bearing's friction is
+ * the material's mu under VIBE_MOHR_COULOMB_SHEAR (masonry 0.4, EN 1996-1-1
+ * 3.6.2), timber's 0.23 without it.
  */
 export const STONE_MORTAR_JOINT = { tensionElastic: 0.1e6, tensionFatal: 0.1e6, shearElastic: 0.15e6, shearFatal: 0.15e6,
   compressionElastic: 10.5e6, compressionFatal: 10.5e6, elasticModulus: 10.5e9, bearingJoint: 1 };
