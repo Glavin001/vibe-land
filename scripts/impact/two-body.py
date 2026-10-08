@@ -247,6 +247,24 @@ def punch_stiffness(area, E1, E2, nu1=0.3, nu2=0.2):
     return 2.0 * a / ((1 - nu1 ** 2) / E1 + (1 - nu2 ** 2) / E2)
 
 
+def punch_row(Ea, Eb, pts, Va, Vb=None):
+    """The kernel's compliant row (PxgDestructionImpactExplicit.cuh exBuild): 1/E* = 1/E_a + 1/E_b
+    (Poisson's ratio left out; a rigid side 1/E = 0), the patch's spread sigma (its points' RMS
+    distance from their centroid), the smaller chunk's equivalent sphere R and face radius:
+    k(d) = 2 E* min(face, max(sigma, sqrt(R d)))."""
+    pts = np.asarray(pts, float); c = pts.mean(0)
+    sigma = float(np.sqrt(np.mean(np.sum((pts - c) ** 2, 1)))) if len(pts) > 1 else 0.0
+    V = min(Va, Vb) if Vb else Va
+    return dict(Estar=1.0 / (1.0 / Ea + (1.0 / Eb if Eb else 0.0)), sigma=sigma, Rh=(0.75 * V / np.pi) ** (1 / 3),
+                face=np.sqrt(V ** (2 / 3) / np.pi), sec=np.inf)
+
+
+def row_k(t, d):
+    """A compliant row's stiffness at depth d."""
+    if 'k' in t: return t['k']
+    return 2.0 * t['Estar'] * min(t['face'], max(t['sigma'], np.sqrt(t['Rh'] * max(d, 0.0))))
+
+
 def tyre_force(t, d):
     """A pneumatic tyre pressed radially by d (m): the inflation pressure over the contact patch,
     F = p A, the patch a chord of the tread, A = b 2 sqrt(2 R d) (the membrane approximation;
@@ -305,7 +323,8 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
             # a joint explicitly stable at h (its own frequency, from its split inverse masses, within
             # the symplectic bound 0.9 x 2 / h) stays explicit; only the stiffer ones are implicit
             for l in np.where(imp)[0]:
-                w2 = np.max(np.real(np.linalg.eigvals(np.diag(model.k[l]) @ Ws[l])))
+                # (the kernel's bound: Gershgorin on K^1/2 W~ K^1/2)
+                sk = np.sqrt(np.where(model.k[l] < 1e30, model.k[l], 0.0)); w2 = np.max(np.sum(np.abs(sk[:, None] * Ws[l] * sk[None, :]), 1))
                 if np.sqrt(max(w2, 0.0)) * h <= 0.9 * 2.0: imp[l] = False
             nimp = int(imp.sum())
         for l in np.where(imp)[0]:
@@ -394,11 +413,11 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
             W = Wsplit[i]
             tyre = r.get('tyre')
             if tyre is not None and gap[i] <= 0 and depth[i] < tyre['sec']:
-                if 'k' in tyre:
+                if 'k' in tyre or 'Estar' in tyre:
                     # a linear contact spring, implicit (theta 1: backward Euler, its force at the substep's
                     # end k (d + h g+); theta 1/2: the trapezoidal rule, d advanced by the mean of the closing
                     # rates g, g+ before and after the impulse). Unconditionally stable.
-                    kc = tyre['k']; PN = min(0.0, -kc * h * (depth[i] + h * g[0]) / (1.0 + row_theta * kc * h * h * W[0, 0]))
+                    kc = row_k(tyre, depth[i]); PN = min(0.0, -kc * h * (depth[i] + h * g[0]) / (1.0 + row_theta * kc * h * h * W[0, 0]))
                 else:
                     PN = -tyre_force(tyre, depth[i]) * h
                 # friction: the sticking tangential impulse, within mu |P_N|
@@ -470,7 +489,15 @@ def contact_step(model, omega_explicit, theta, eps):
     for r, Wt in zip(model.rows, model.Wtrue):
         t = r.get('tyre')
         if t is None: continue
-        k = t['k'] if 'k' in t else tyre_force(t, t['sec']) / t['sec']    # a tyre: its secant to the rim
+        if 'Estar' in t:
+            # (the kernel's: k at the depth its closing speed reaches over the tick)
+            v = np.zeros(6 * len(model.nodes))
+            for i, n in enumerate(model.nodes):
+                if not n['anchored']: v[6 * i:6 * i + 3] = n['v']; v[6 * i + 3:6 * i + 6] = n['w']
+            gN = float(np.asarray(model.Bc[model.rows.index(r)].T @ v).ravel()[0])
+            k = row_k(t, max(gN, 0.0) * DT)
+        else:
+            k = t['k'] if 'k' in t else tyre_force(t, t['sec']) / t['sec']    # a tyre: its secant to the rim
         taus.append(np.pi * np.sqrt(1.0 / Wt[0, 0] / k))
     hs = [H_CAP]
     if taus: hs.append(np.sqrt(c * eps) * min(taus) / np.pi)
@@ -478,6 +505,45 @@ def contact_step(model, omega_explicit, theta, eps):
     h = min(hs)
     return h, (f"shortest contact {min(taus) * 1e6:.0f} us -> {np.sqrt(c * eps) * min(taus) / np.pi * 1e6:.1f} us at {eps * 100:.0f}% period error; " if taus else '') + \
               (f"explicit bound {0.9 * 2 / omega_explicit * 1e6:.1f} us; " if omega_explicit > 0 else '') + f"cap {H_CAP * 1e6:.0f} us -> h {h * 1e6:.1f} us"
+
+
+def export(model, info, J0, h, R, prefix):
+    """The window's problem for the GPU kernel's replay (PhysX
+    physx/source/gpudestruction/tests/two_body_replay.cu), and what the harness made of it.
+    PREFIX.bin (little-endian u32 / f32):
+      'TWOB', nodes, joints, rows, dt, h, band, 0
+      node:  car, inverse mass, inverse (scalar) inertia, v[6]
+      joint: a, b (~0: held), flags (1 ductile, 2 the car's), R[9] (rows n, t1, t2), o0[3], o1[3], k[6], F[9], ultimate slip, J0[6]
+      row:   a, b, compliant, R[9], o0[3], o1[3], friction, E*, sigma, R_hertz, face, gap
+    PREFIX.expected: the car's dv (3), its yielded joints, then the broken joints' indices."""
+    import struct
+    dyn = [i for i, n in enumerate(model.nodes) if not n['anchored']]
+    local = {i: k for k, i in enumerate(dyn)}
+    car = info['car']
+    out = bytearray(b'TWOB') + struct.pack('<3I4f', len(dyn), len(model.joints), len(model.rows), DT, h, BAND, 0.0)
+    for i in dyn:
+        n = model.nodes[i]
+        out += struct.pack('<I8f', 1 if n['body'] == car else 0, 1.0 / n['m'], 1.0 / n['I'][0, 0], *n['v'], *n['w'])
+    NONE = 0xffffffff
+    for l, j in enumerate(model.joints):
+        a, b = local.get(j['a'], NONE), local.get(j['b'], NONE)
+        flags = (1 if j['slip'] > 0 else 0) | (2 if model.nodes[j['a']]['body'] == car else 0)
+        out += struct.pack('<3I', a, b, flags) + struct.pack('<9f', *j['R'].reshape(-1)) + struct.pack('<3f', *(j['c'] - model.nodes[j['a']]['x'])) \
+            + struct.pack('<3f', *(j['c'] - model.nodes[j['b']]['x'])) + struct.pack('<6f', *np.where(j['k'] < 1e30, j['k'], 0.0)) \
+            + struct.pack('<9f', *j['F']) + struct.pack('<f', j['slip']) + struct.pack('<6f', *J0[l])
+    for r in model.rows:
+        t = r.get('tyre') or {}
+        comp = 1 if 'Estar' in t else 0
+        out += struct.pack('<3I', local[r['a']], local[r['b']], comp) + struct.pack('<9f', *r['R'].reshape(-1)) \
+            + struct.pack('<3f', *(r['p'] - model.nodes[r['a']]['x'])) + struct.pack('<3f', *(r['p'] - model.nodes[r['b']]['x'])) \
+            + struct.pack('<6f', r['mu'], t.get('Estar', 0.0), t.get('sigma', 0.0), t.get('Rh', 0.0), t.get('face', 0.0), r['gap'])
+    pathlib.Path(prefix + '.bin').write_bytes(bytes(out))
+    p0, mc = body_momentum(model, R['v0'], car); p1, _ = body_momentum(model, R['v'], car)
+    car_j = [l for l, j in enumerate(model.joints) if model.nodes[j['a']]['body'] == car]
+    broken = [l for l in range(len(model.joints)) if not R['live'][l]]
+    yielded = int(sum(1 for l in car_j if R['yielded'][l]))
+    pathlib.Path(prefix + '.expected').write_text(' '.join(f'{x:.6g}' for x in (p1 - p0) / mc) + f'\n{yielded}\n' + '\n'.join(map(str, broken)) + '\n')
+    print(f"exported {prefix}.bin ({len(dyn)} nodes, {len(model.joints)} joints, {len(model.rows)} rows) and its expectation: {len(broken)} broken, {yielded} car joints yielded")
 
 
 def body_momentum(model, v, body):
@@ -654,6 +720,7 @@ def truck_wall(speed, real_joints=False, reach=None, wheel_contacts=False, compl
                 if abs(q[0] - c[0]) <= sz[0] / 2 and abs(q[1] - c[1]) <= sz[1] / 2:
                     rows.setdefault((pid, node), []).append(q)
     tyres = {p['id']: tyre_of(p, hulls[p['id']]) for p in meta['parts'] if (p.get('motion') or {}).get('role') == 'wheel'}
+    part_volume = {p['id']: p['volume'] for p in meta['parts']}
     for (pid, node), qs in rows.items():
         qs = np.array(qs); lead = qs[:, 2].max()
         t = tyres.get(pid)
@@ -661,8 +728,9 @@ def truck_wall(speed, real_joints=False, reach=None, wheel_contacts=False, compl
             # a tyre's tread shares its pressure over the blocks it spans: this block's share of its width
             t = dict(t, b=t['b'] * (np.ptp(qs[:, 0]) / max(np.ptp(hulls[pid][:, 0]), 1e-9) if len(qs) > 1 else 1.0))
         if t is None and compliant:
-            # steel on the wall's masonry (its mortar joints' modulus), over the patch the part's hull spans on this block
-            t = dict(k=punch_stiffness(max(np.ptp(qs[:, 0]) * np.ptp(qs[:, 1]), 1e-4), 210e9, wall_E), sec=np.inf)
+            # steel on the wall's masonry (its mortar joints' modulus), the patch the part's hull points on this block
+            pt = qs.copy(); pt[:, 2] = face
+            t = punch_row(wall_E, 210e9, pt, 0.5 * 0.5 * 0.25, part_volume[pid])
         m.row(node, ids[pid], (qs[:, 0].mean(), qs[:, 1].mean(), face), (0, 0, 1), 0.5, gap=face - lead, tyre=t)
     wheels = [ids[p['id']] for p in meta['parts'] if (p.get('motion') or {}).get('role') == 'wheel']
     mass = sum(p['mass'] for p in meta['parts'])
@@ -687,7 +755,7 @@ def ball_truck(real_joints=False, mass=10650.0, speed=60.0, ticks=1, compliant=F
         hit = pts[(d_perp <= r) & (pts[:, 0] >= side - reach)]
         if not len(hit): continue
         lead = hit[:, 0].max()
-        t = dict(k=punch_stiffness(max(np.ptp(hit[:, 1]) * np.ptp(hit[:, 2]), 1e-4), 210e9, 210e9), sec=np.inf) if compliant else None
+        t = punch_row(210e9, 0.0, np.c_[np.full(len(hit), lead), hit[:, 1:]], [p['volume'] for p in meta['parts'] if p['id'] == pid][0]) if compliant else None
         m.row(ids[pid], ball, (lead, hit[:, 1].mean(), hit[:, 2].mean()), (-1, 0, 0), 0.3, gap=side - lead, tyre=t)
     wheels = [ids[p['id']] for p in meta['parts'] if (p.get('motion') or {}).get('role') == 'wheel']
     return m, dict(car='truck', ids=ids, meta=meta, speed=speed, mass=sum(p['mass'] for p in meta['parts']), wheels=wheels, ball=ball, ball_mass=mass)
@@ -766,6 +834,7 @@ def main():
     ap.add_argument('--sms', type=float, default=None, help="selective mass scaling of the car's joints to this frequency (rad/s)")
     ap.add_argument('--tensor-inertia', action='store_true', help="each chunk's full inertia tensor (the stage's chunks: scalar trace / 3)")
     ap.add_argument('--json')
+    ap.add_argument('--export', help="PREFIX: the window's problem and the harness's result for the GPU replay (two_body_replay.cu)")
     a = ap.parse_args()
     Model.TENSOR = a.tensor_inertia
     if a.scene == 'fixture': model, info = fixture(a.speed or 20.0)
@@ -798,6 +867,7 @@ def main():
             record=tuple(t * 1e-3 for t in (1, 2, 4, 8)) + tuple(DT * (k + 1) for k in range(a.ticks)),
             implicit=car if a.implicit else None, iters=a.iters, sms=(car, a.sms) if a.sms else None, theta=a.theta, row_theta=a.row_theta, hybrid=a.hybrid)
     out = report(model, R, info, a)
+    if a.export: export(model, info, J0, R['h'], R, a.export)
     out['implicit_joints'] = R['implicit_joints']; print(f"  implicit joints {R['implicit_joints']}")
     out['omega_max'] = om; out['integrator'] = 'implicit' if a.implicit else ('sms' if a.sms else 'explicit')
     if a.sms:
