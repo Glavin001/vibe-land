@@ -54,7 +54,13 @@ function buildGround() {
   for (const lane of LANES) {
     const x0 = lane.x - HALF_LANE, x1 = lane.x + HALF_LANE;
     const z0 = START_Z - 10, z1 = START_Z + (lane.length ?? LANE_LENGTH);
-    if (lane.paved && lane.paveTo != null) {
+    // No paving: the lane is the server's flat ground plane at y = 0. Destructible
+    // pavers on a subgrade were flush boxes, and flush boxes make ghost contacts at
+    // every seam in stock PhysX (a ball is thrown up, a box snags; one surface is
+    // clean). The owner chose a plain plane; VIBE_LAB_PAVING=1 restores the pavers.
+    if (process.env.VIBE_LAB_PAVING !== '1') {
+      // paving off
+    } else if (lane.paved && lane.paveTo != null) {
       b.box({ min: [x0, -0.16, z0], max: [x1, 0, lane.paveTo], material: M.footing, fixed: true, type: 'foundation' });
       b.box({ min: [x0, 0, z0], max: [x1, 0.025, lane.paveTo], material: asphalt, type: 'road', split: [2, 1, Math.round((lane.paveTo - z0) / 4)] });
     } else if (lane.paved) {
