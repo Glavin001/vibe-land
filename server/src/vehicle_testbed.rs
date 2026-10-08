@@ -268,6 +268,8 @@ const ROOF_TYPES: &[&str] = &["rafter", "ridge-board", "ceiling-joist"];
 /// frame still stand, and -- for a car -- which pieces it freed were inside the
 /// car's hulls when they were freed (installed where they stood, overlapping it).
 struct HouseProbe {
+    /// The struck structure's node-group prefix ("framed-house", or a wall-matrix target's group).
+    group: String,
     is_house: Vec<bool>,
     broken_before: BTreeSet<u32>,
     roof_start: Vec<(u32, f32)>,
@@ -280,8 +282,8 @@ fn node_centroid(scene: &SceneIndex, i: u32) -> Vector3<f32> {
     Vector3::new(c["x"].as_f64().unwrap_or(0.) as f32, c["y"].as_f64().unwrap_or(0.) as f32, c["z"].as_f64().unwrap_or(0.) as f32)
 }
 impl HouseProbe {
-    fn start(arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex) -> Option<Self> {
-        let is_house: Vec<bool> = scene.group_of_node.iter().map(|g| g.starts_with("framed-house")).collect();
+    fn start(arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex, group: &str) -> Option<Self> {
+        let is_house: Vec<bool> = scene.group_of_node.iter().map(|g| g.starts_with(group)).collect();
         if !is_house.iter().any(|&h| h) { return None; }
         let world = arena.physx_world_mut()?;
         let broken_before = world.native_bond_stress_rows(0).unwrap_or_default().into_iter()
@@ -292,7 +294,7 @@ impl HouseProbe {
                 if let Ok(a) = world.native_chunk_aim(0, i as u32) { if a.found { roof_start.push((i as u32, a.center.y)); } }
             }
         }
-        Some(Self { is_house, broken_before, roof_start, anchored: vibe_land_physx_bridge::native_entity_id(0, 0), inside: BTreeSet::new(), crushed: 0 })
+        Some(Self { group: group.to_string(), is_house, broken_before, roof_start, anchored: vibe_land_physx_bridge::native_entity_id(0, 0), inside: BTreeSet::new(), crushed: 0 })
     }
     /// House pieces no longer on the anchored body whose centre is inside one
     /// of the car's hulls (each hull's box in the car frame).
@@ -306,7 +308,10 @@ impl HouseProbe {
             if hulls.iter().any(|(lo, hi)| (0..3).all(|k| local[k] >= lo[k] && local[k] <= hi[k])) { self.inside.insert(i as u32); }
         }
     }
-    fn finish(&self, arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex, impact: Option<Vector3<f32>>) -> Value {
+    /// `line`: the impactor's line of travel (a point on it, its unit direction):
+    /// each broken bond's distance from it, for the scenario matrix's locality
+    /// (docs/verification/SCENARIOS.md).
+    fn finish(&self, arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex, impact: Option<Vector3<f32>>, line: Option<(Vector3<f32>, Vector3<f32>)>) -> Value {
         let world = arena.physx_world_mut().expect("physx");
         let rows = world.native_bond_stress_rows(0).unwrap_or_default();
         let frame = |i: u32| FRAME_TYPES.contains(&scene.types.get(i as usize).map_or("", |s| s.as_str()));
@@ -314,6 +319,7 @@ impl HouseProbe {
         let edges = [0f32, 1., 2., 4., 8., 1e9];
         let mut by_distance = [0u32; 5];
         let mut distances = Vec::new();
+        let mut line_distances = Vec::new();
         for r in &rows {
             if !(self.is_house[r.node0 as usize] && self.is_house[r.node1 as usize]) { continue; }
             total += 1;
@@ -322,6 +328,10 @@ impl HouseProbe {
             if !(r.remaining_area <= 0.0 || r.broken) || self.broken_before.contains(&r.bond_index) { continue; }
             broken += 1;
             if is_frame { structural += 1; }
+            if let Some((o, dir)) = line {
+                let rel = (node_centroid(scene, r.node0) + node_centroid(scene, r.node1)) * 0.5 - o;
+                line_distances.push(((rel - dir * rel.dot(&dir)).norm() * 100.).round() / 100.);
+            }
             if let Some(p) = impact {
                 let d = ((node_centroid(scene, r.node0) + node_centroid(scene, r.node1)) * 0.5 - p).norm();
                 distances.push(d);
@@ -329,6 +339,8 @@ impl HouseProbe {
             }
         }
         distances.sort_by(f32::total_cmp);
+        line_distances.sort_by(f32::total_cmp);
+        line_distances.truncate(8000);
         // Roof: how far its members came down; frame: how much is still on the anchored body.
         let (mut drops, mut gone) = (Vec::new(), 0u32);
         for &(i, y0) in &self.roof_start {
@@ -343,6 +355,7 @@ impl HouseProbe {
         }
         let mean = |v: &[f32]| if v.is_empty() { 0. } else { v.iter().sum::<f32>() / v.len() as f32 };
         json!({
+            "group": self.group, "lineDistances": line_distances,
             "bonds": total, "broken": broken, "brokenFrac": broken as f32 / total.max(1) as f32,
             "structuralBonds": structural_total, "structuralBroken": structural, "cosmeticBroken": broken - structural,
             "byDistance": {"0-1m": by_distance[0], "1-2m": by_distance[1], "2-4m": by_distance[2], "4-8m": by_distance[3], "8m+": by_distance[4]},
@@ -420,7 +433,11 @@ fn run(r: &Run, meta: &Value) -> Value {
     read_damage(&mut arena, id, tick, &mut damage, geometry, 0.);
     let settled_broken = damage.broken.len();
     let scene_before = scene_broken(&mut arena, r.scene);
-    let mut house = if trial["id"].as_str().unwrap_or("").contains("framed-house") { HouseProbe::start(&mut arena, r.scene) } else { None };
+    // The struck structure: the brick-veneer house for its trials, a wall-matrix
+    // case's target group, or a trial's own `struck` group.
+    let struck_group = trial["struck"].as_str().or(trial["matrix"]["group"].as_str())
+        .or(trial["id"].as_str().unwrap_or("").contains("framed-house").then_some("framed-house"));
+    let mut house = struck_group.and_then(|g| HouseProbe::start(&mut arena, r.scene, g));
     // The car's hulls as boxes in its frame (for what the house frees inside it).
     let hulls: Vec<([f32; 3], [f32; 3])> = geometry.parts.iter().flat_map(|p| p.shapes.iter().map(move |sh| {
         let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
@@ -428,6 +445,13 @@ fn run(r: &Run, meta: &Value) -> Value {
         (lo, hi)
     })).collect();
     let mut house_impact: Option<Vector3<f32>> = None;
+    // Each part's shape boxes in the car frame, for the parts a projectile
+    // sweeps through when the car is the target (the scenario matrix).
+    let part_boxes: Vec<(usize, [f32; 3], [f32; 3])> = geometry.parts.iter().enumerate().flat_map(|(i, p)| p.shapes.iter().map(move |sh| {
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for v in &sh.vertices { for k in 0..3 { let x = p.position[k] + sh.position[k] + v[k]; lo[k] = lo[k].min(x); hi[k] = hi[k].max(x); } }
+        (i, lo, hi)
+    })).collect();
     let mut peak_spin_after = 0f32;
     let drive = &trial["drive"];
     let kind = drive["kind"].as_str().unwrap();
@@ -470,6 +494,9 @@ fn run(r: &Run, meta: &Value) -> Value {
     let mut drift_done = false;
     // Attack.
     let (mut projectile, mut closest) = (None::<u32>, f32::INFINITY);
+    // The parts of the car a projectile's sphere passed through (car frame at
+    // that tick), its radius, and its previous position in the car frame.
+    let (mut swept, mut sweep_last, mut sweep_radius, mut sweep_ticks) = (BTreeSet::<usize>::new(), None::<(u32, Vector3<f32>)>, 0f32, 0u32);
     // A shot at the scene (attack `shot`): its aim point and direction, and
     // how far past the aim point it got along that direction (the wall face).
     let mut shot: Option<(Vector3<f32>, Vector3<f32>)> = None;
@@ -655,7 +682,12 @@ fn run(r: &Run, meta: &Value) -> Value {
                     }
                     "cannonball" => {
                         // From 12 m to the car's right, at the chassis' height.
-                        let (radius, mass, ball_speed) = (crate::city::city_ball_radius_m(), crate::city::city_ball_mass_kg(), crate::city::city_ball_speed_ms());
+                        // `mass`: a lighter ball of the cannonball's steel at its speed.
+                        let (radius, mass, ball_speed) = match a["mass"].as_f64().map(|m| m as f32) {
+                            Some(m) => ((m / crate::city::city_ball_density_kg_m3() * 3. / (4. * std::f32::consts::PI)).cbrt(), m, crate::city::city_ball_speed_ms()),
+                            None => (crate::city::city_ball_radius_m(), crate::city::city_ball_mass_kg(), crate::city::city_ball_speed_ms()),
+                        };
+                        sweep_radius = radius;
                         let right = Vector3::new(s.forward.z, 0., -s.forward.x);
                         let target = s.p;
                         let origin = target + right * 12. + Vector3::new(0., 0.4, 0.);
@@ -679,6 +711,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                         let origin = aim + dir * 6.;
                         let tt = 6. / f("speed");
                         projectile = arena.launch_ball_from_muzzle(origin, (aim - origin) / tt + Vector3::new(0., 0.5 * (vibe_netcode::movement::GRAVITY as f32) * tt, 0.) + s.v, f("radius"), f("mass"), 600);
+                        sweep_radius = f("radius");
                     }
                     "meteor" => {
                         let tuning = crate::meteor::MeteorTuning::from_env();
@@ -763,6 +796,28 @@ fn run(r: &Run, meta: &Value) -> Value {
             if let Some(b) = arena.snapshot_dynamic_bodies().into_iter().find(|b| b.0 == pid) {
                 let p = Vector3::new(b.1[0], b.1[1], b.1[2]);
                 closest = closest.min((p - after.p).norm());
+                // The car as the target (not a shot at the scene): every part whose
+                // box the projectile's sphere passed through, sub-stepped over the
+                // tick in the carrier's frame, for 30 ticks from the first part swept.
+                if shot.is_none() && sweep_ticks < 30 {
+                    let r = if sweep_radius > 0. { sweep_radius } else { crate::meteor::MeteorTuning::from_env().radius_m };
+                    let local = after.q.inverse() * (p - after.p);
+                    let from = sweep_last.filter(|(id, _)| *id == pid).map_or(local, |(_, l)| l);
+                    let steps = (((local - from).norm() / (0.5 * r).max(0.05)).ceil() as usize).clamp(1, 64);
+                    let before = swept.len();
+                    for k in 0..=steps {
+                        let c = from + (local - from) * (k as f32 / steps as f32);
+                        // Swept: the sphere reaches the box's mid-plane through its thinnest
+                        // dimension (the box shrunk by half that), so the part is cut, not grazed.
+                        for (i, lo, hi) in &part_boxes {
+                            let m = (0..3).map(|k| 0.5 * (hi[k] - lo[k])).fold(f32::INFINITY, f32::min);
+                            let d = Vector3::new((lo[0] + m - c.x).max(c.x - hi[0] + m).max(0.), (lo[1] + m - c.y).max(c.y - hi[1] + m).max(0.), (lo[2] + m - c.z).max(c.z - hi[2] + m).max(0.));
+                            if d.norm() < r { swept.insert(*i); }
+                        }
+                    }
+                    if !swept.is_empty() && (sweep_ticks > 0 || swept.len() > before) { sweep_ticks += 1; }
+                    sweep_last = Some((pid, local));
+                }
                 if let Some((target, dir)) = shot { shot_past = shot_past.max((p - target).dot(&dir)); }
             }
         }
@@ -883,7 +938,9 @@ fn run(r: &Run, meta: &Value) -> Value {
     }
     let scene_after = scene_broken(&mut arena, r.scene);
     if house.is_some() && house_impact.is_none() { house_impact = shot.map(|(t, _)| t); }
-    let house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact));
+    // The line of travel: a shot's, or the car's from where it struck along its starting heading.
+    let line = shot.or(house_impact.map(|p| (p, heading0)));
+    let house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact, line));
     let scene_broken_pairs: Vec<[u32; 2]> = if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() {
         arena.physx_world_mut().expect("physx").native_bond_stress_rows(0).unwrap_or_default().into_iter()
             .filter(|r| r.remaining_area <= 0.0 || r.broken).map(|r| [r.node0, r.node1]).collect()
@@ -917,7 +974,10 @@ fn run(r: &Run, meta: &Value) -> Value {
         // dissipated by the same model (the work of the house bonds that broke,
         // the crush work of the house chunks that are gone).
         if let (Some((target, dir)), Some(h)) = (shot, house.as_ref()) {
-            let (fracture, crush, mass, chunks) = strength.path_work(target - dir * pr.radius, target + dir * 12.0, pr.radius, "framed-house");
+            // The path: 12 m through the veneer house (its acceptance shots), or
+            // the trial's `pathLength` (the scenario matrix), or the struck layer.
+            let length = trial["pathLength"].as_f64().map(|l| l as f32).unwrap_or(if h.group == "framed-house" { 12.0 } else { trial["layer"].as_f64().unwrap_or(0.3) as f32 + pr.radius });
+            let (fracture, crush, mass, chunks) = strength.path_work(target - dir * pr.radius, target + dir * length, pr.radius, &h.group);
             let world = arena.physx_world_mut().expect("physx");
             let rows = world.native_bond_stress_rows(0).unwrap_or_default();
             let broken: Vec<u32> = rows.iter().filter(|r| (r.remaining_area <= 0.0 || r.broken) && !h.broken_before.contains(&r.bond_index)
@@ -929,7 +989,7 @@ fn run(r: &Run, meta: &Value) -> Value {
             let gone: Vec<u32> = (0..h.is_house.len() as u32).filter(|&i| h.is_house[i as usize] && strength.node_mass(i) > 0.
                 && (crushed_ids.contains(&i) || !world.native_chunk_aim(0, i).map_or(false, |a| a.found))).collect();
             let crush_done: f32 = gone.iter().map(|&i| strength.crush_work(i)).sum();
-            physics = Some(json!({"pathFractureJ": fracture, "pathCrushJ": crush, "pathMassKg": mass, "pathChunks": chunks,
+            physics = Some(json!({"pathLengthM": length, "pathFractureJ": fracture, "pathCrushJ": crush, "pathMassKg": mass, "pathChunks": chunks,
                 "fractureWorkJ": fracture_done, "crushWorkJ": crush_done, "brokenIds": broken, "goneIds": gone,
                 "impactorMassKg": pr.mass, "impactorRadiusM": pr.radius}));
         }
@@ -957,6 +1017,40 @@ fn run(r: &Run, meta: &Value) -> Value {
     out["actorsEnd"] = actors_end;
     out["driveState"] = drive_state;
     out["carrierParts"] = if carrier_parts.len() <= 40 { json!(carrier_parts) } else { json!(carrier_parts.len()) };
+    if !swept.is_empty() || attack.is_some_and(|a| matches!(a["kind"].as_str(), Some("cannonball" | "meteor" | "debris"))) {
+        // What a projectile passed through when the car was the target: those
+        // parts cannot stay on (it occupied their space) unless it stopped; and
+        // whether removing them cuts every path between the front and the rear
+        // wheels (the car cut in two).
+        let wheel = |i: usize| { let n = &geometry.parts[i].name; (n.starts_with("Front ") || n.starts_with("Rear ")) && n.ends_with(" wheel assembly") };
+        let index: HashMap<&str, usize> = geometry.parts.iter().enumerate().map(|(i, p)| (p.id.as_str(), i)).collect();
+        let mut parent: Vec<usize> = (0..geometry.parts.len()).collect();
+        fn root(p: &mut Vec<usize>, mut i: usize) -> usize { while p[i] != i { p[i] = p[p[i]]; i = p[i]; } i }
+        for b in &geometry.bonds {
+            let (Some(&a), Some(&c)) = (index.get(b.a.as_str()), index.get(b.b.as_str())) else { continue };
+            if swept.contains(&a) || swept.contains(&c) { continue; }
+            let (ra, rc) = (root(&mut parent, a), root(&mut parent, c));
+            parent[ra] = rc;
+        }
+        let wheels: Vec<usize> = (0..geometry.parts.len()).filter(|&i| wheel(i) && !swept.contains(&i)).collect();
+        let front: Vec<usize> = wheels.iter().copied().filter(|&i| geometry.parts[i].name.starts_with("Front")).collect();
+        let rear: Vec<usize> = wheels.iter().copied().filter(|&i| geometry.parts[i].name.starts_with("Rear")).collect();
+        let joined = front.iter().any(|&f| rear.iter().any(|&b| root(&mut parent, f) == root(&mut parent, b)));
+        // The heaviest piece left once the swept parts are gone; everything else
+        // was held on only through them and must come off with them.
+        let mut by_root: HashMap<usize, f64> = HashMap::new();
+        for i in (0..geometry.parts.len()).filter(|i| !swept.contains(i)) { *by_root.entry(root(&mut parent, i)).or_default() += geometry.parts[i].mass; }
+        let kept = by_root.values().cloned().fold(0f64, f64::max);
+        let separated: f64 = by_root.values().sum::<f64>() - kept;
+        let mass = |set: &mut dyn Iterator<Item = usize>| set.map(|i| geometry.parts[i].mass).sum::<f64>();
+        let off: BTreeSet<usize> = damage.parts_off.iter().map(|&i| i as usize).collect();
+        out["swept"] = json!({
+            "radius": sweep_radius, "parts": swept.len(), "names": swept.iter().take(16).map(|&i| geometry.parts[i].name.clone()).collect::<Vec<_>>(),
+            "massKg": mass(&mut swept.iter().copied()), "partsOff": swept.intersection(&off).count(),
+            "sweptMassOffKg": mass(&mut swept.intersection(&off).copied()), "massOffKg": mass(&mut off.iter().copied()),
+            "wheelsSwept": swept.iter().filter(|&&i| wheel(i)).count(), "frontRearJoined": joined, "separatedMassKg": separated, "totalMassKg": geometry.mass,
+        });
+    }
     out["failedSteps"] = json!(failed_steps);
     out["crushedChunks"] = json!(crushed_chunks);
     out["converged"] = json!(if solves > 0 { converged as f32 / solves as f32 } else { 0. });

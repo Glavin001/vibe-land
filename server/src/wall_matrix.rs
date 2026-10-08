@@ -206,6 +206,12 @@ impl Probe {
         let v_min = after.iter().map(|r| r[2]).fold(f32::MAX, f32::min);
         let v_out = t.last().unwrap()[2];
         let past_max = t.iter().map(|r| r[1]).fold(f32::MIN, f32::max);
+        // The approach speed when the impactor's centre (a car's front) first got
+        // past a depth behind the face: the struck layer and its own size (the
+        // exit speed the scenario matrix compares with Recht-Ipson), and 4, 8 and 12 m.
+        let exit_depth = self.layer + if self.radius > 0. { 2. * self.radius } else { 1. };
+        let v_at = |d: f32| t[first..].iter().find(|r| r[1] >= d).map(|r| r[2]);
+        let v_at_past: Vec<Value> = [exit_depth, 4., 8., 12.].iter().map(|&d| json!([d, v_at(d)])).collect();
         // How long the impactor took to lose 90% of its approach speed (ticks), if it did.
         let stop_ticks = after.iter().position(|r| r[2] < 0.1 * v_in).map(|p| p as u32);
         let force = self.mass * drop / dt;
@@ -235,6 +241,7 @@ impl Probe {
         json!({
             "contact": true, "mass": self.mass, "radius": self.radius,
             "firstContactTick": t[first][0], "vIn": v_in, "vMin": v_min, "vOut": v_out, "pastMax": past_max,
+            "vExit": v_at(exit_depth), "vAtPast": v_at_past,
             "stopTicks": stop_ticks, "momentumLost": dp, "energyLost": 0.5 * self.mass * (v_in * v_in - v_out.max(0.).powi(2)),
             "peak": row(peak), "peakDrop": drop, "peakForceN": force,
             "touched": set.len(), "touchedTypes": types, "touchedHeldAnchored": held_set.len(),

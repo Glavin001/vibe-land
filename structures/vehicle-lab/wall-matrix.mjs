@@ -56,6 +56,7 @@ export const IMPACTORS = {
   ball100: { attack: 'cannonball', mass: 100 },    // 100 kg steel (r 0.146 m) at 60 m/s: the impact study's
   ball1000: { attack: 'cannonball', mass: 1000 },  // 1 t steel (r 0.31 m) at 60 m/s
   truck10: { truck: 10 }, truck20: { truck: 20 },  // the monster truck (5 t) at 10 and 20 m/s
+  truck30: { truck: 30 },                          // and at its top speed (30 m/s, client/src/vehicles/reality.mjs)
 };
 
 const ANGLES = { 0: 0, 30: 30, 60: 60, glancing: 78 };
@@ -93,7 +94,8 @@ function trial(pack, target, impactorId, angle, point = 'centre', extra = {}) {
   const base = { id, probe: true, target: aim, layer: target.layer, matrix: { target: target.id, group: target.group, impactor: impactorId, angle, point, chunk: node && { index: node.i, type: node.type, material: node.material, mass: node.mass } } };
   if (imp.truck) {
     // Start far enough back to reach the speed, square on to the bearing.
-    const speed = imp.truck, run = speed > 15 ? 55 : 30;
+    // At 7.5 m/s^2 (the monster's tune) 30 m/s takes 60 m: 90 m out.
+    const speed = imp.truck, run = speed > 25 ? 90 : speed > 15 ? 55 : 30;
     const b = (from * Math.PI) / 180;
     const heading = (from + 180) % 360;
     const start = [aim[0] + Math.sin(b) * run, aim[2] + Math.cos(b) * run];
@@ -208,7 +210,7 @@ export function matrix(pack, set = 'all') {
   }
   // The truck: two speeds square on, 30 and 60 degrees, a corner, a window.
   if (want('truck')) {
-    for (const t of ['veneer', 'masonry', 'brick-house']) for (const i of ['truck10', 'truck20']) out.push(trial(pack, T[t], i, '0'));
+    for (const t of ['veneer', 'masonry', 'brick-house']) for (const i of ['truck10', 'truck20', 'truck30']) out.push(trial(pack, T[t], i, '0'));
     for (const a of ['30', '60']) out.push(trial(pack, T.veneer, 'truck20', a));
     for (const t of ['veneer-corner', 'veneer-window', 'veneer-door']) out.push(trial(pack, T[t], 'truck20', '0'));
   }
