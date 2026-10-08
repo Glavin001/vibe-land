@@ -627,6 +627,13 @@ pub struct DestructibleSettings {
     /// Empty, or parallel to `materials`: 1 for a fastened bearing joint,
     /// graded by its fasteners once the contact opens (section bending).
     pub bearing_joint: Vec<f32>,
+    /// Empty, or parallel to `materials`: a joint's friction coefficient mu
+    /// and its shear strength cap (Pa, 0 uncapped): with VIBE_MOHR_COULOMB_SHEAR
+    /// (PhysX PX_DESTRUCTION_MOHR_COULOMB_SHEAR, FIDELITY_AUDIT C11) an intact
+    /// joint resists shear f_v0 + mu sigma_c, sigma_c the compression across it
+    /// (EN 1996-1-1 3.6.2: f_vk = f_vk0 + 0.4 sigma_d <= f_vlt); 0 none.
+    pub shear_friction: Vec<f32>,
+    pub shear_capacity_limit: Vec<f32>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -663,6 +670,8 @@ impl Default for DestructibleSettings {
             bend_gyration: Vec::new(),
             bend_section: Vec::new(),
             bearing_joint: Vec::new(),
+            shear_friction: Vec::new(),
+            shear_capacity_limit: Vec::new(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -2531,6 +2540,9 @@ mod ffi {
         bend_section: Vec<f32>,
         /// Empty, or parallel to `materials`: 1 for a fastened bearing joint.
         bearing_joint: Vec<f32>,
+        /// Empty, or parallel to `materials`: friction mu and shear cap (Pa, 0 uncapped).
+        shear_friction: Vec<f32>,
+        shear_capacity_limit: Vec<f32>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -3462,6 +3474,8 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
             bend_gyration: value.bend_gyration,
             bend_section: value.bend_section,
             bearing_joint: value.bearing_joint,
+            shear_friction: value.shear_friction,
+            shear_capacity_limit: value.shear_capacity_limit,
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,

@@ -31,7 +31,7 @@
  * is y 0.15; the veneer's outer faces are x +-5.0 and z +-3.9.
  */
 import {Builder,composeScene,round,v} from './geometry.mjs';
-import {M,MORTAR_JOINT,C24,DOUBLE_TOP_PLATE,SPLICES,STOCK_LENGTH,SPLICE_LAP,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,REVISION_2_CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled,ULTIMATE_SLIP,fastenerRow} from './materials.mjs';
+import {M,MORTAR_JOINT,masonryShear,BRICK_FB,C24,DOUBLE_TOP_PLATE,SPLICES,STOCK_LENGTH,SPLICE_LAP,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,REVISION_2_CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled,ULTIMATE_SLIP,fastenerRow} from './materials.mjs';
 import {cornerReferencedHulls} from './parts/hull-origins.mjs';
 import {realCapacitiesEnabled} from './real-capacities.mjs';
 import {planStair,checkStair,requiredVoid,checkHeadroom,buildTimberStair,frameFloorOpening,stairConnection,housingShear,STAIR_CONNECTIONS,STAIR_TYPES,OPENING_TYPES,STAIR_SIZES} from './stairs-timber.mjs';
@@ -69,7 +69,7 @@ function materialsFor(b,crush=false,revision=1){
  const t=b.table,add=m=>t.push(m)-1,base=t[M.frame];
  const timber=add({...structuredClone(base),name:'stud-timber',color:'#b48a5c',textureKey:'aged-timber',...C24});
  const veneer=add({...structuredClone(t[M.brick]),name:'brick-veneer',color:'#9a5a46',textureKey:'brick',...(crush&&{crush:CRUSH.brickVeneer})});
- const mortar=add({...structuredClone(t[M.brick]),name:'veneer-mortar-joint',...MORTAR_JOINT});
+ const mortar=add({...structuredClone(t[M.brick]),name:'veneer-mortar-joint',...MORTAR_JOINT,...masonryShear(BRICK_FB)});
  const drywall=add({...structuredClone(t[M.plaster]),name:'drywall',color:'#ece6d8',textureKey:'white-concrete',...GYPSUM,...(crush&&{crush:CRUSH.gypsum})});
  const tile=add({...structuredClone(t[M.roof]),name:'concrete-roof-tile',color:'#7b4a3c',textureKey:'roof-slate',...ROOF_TILE_LAYER});
  const gable=add({...structuredClone(base),name:'gable-weatherboard',color:'#e4dccb',textureKey:'white-concrete',density:WEATHERBOARD.density*.025/S.gable});

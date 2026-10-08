@@ -60,12 +60,29 @@ export const concreteFooting = () => ({ ...structuredClone(base.find((m) => m.na
  */
 export const MORTAR_JOINT = { tensionElastic: 0.2e6, tensionFatal: 0.6e6, shearElastic: 0.33e6, shearFatal: 1.0e6 };
 export const mortarJointsEnabled = () => (globalThis.process?.env?.VIBE_BRICK_JOINTS ?? 'mortar') !== 'unit';
+/**
+ * Mohr-Coulomb shear of a masonry mortar joint (FIDELITY_AUDIT C11; the stage
+ * reads it under VIBE_MOHR_COULOMB_SHEAR, PhysX PX_DESTRUCTION_MOHR_COULOMB_SHEAR):
+ * EN 1996-1-1 3.6.2 eq. 3.5, all joints filled, general-purpose mortar:
+ * f_vk = f_vk0 + 0.4 sigma_d, but not greater than 0.065 f_b (or the
+ * nationally determined f_vlt). sigma_d is the compression across the joint;
+ * f_vk0 is the joint's authored shear strength, 0.4 its friction coefficient
+ * (the code's, from triplet tests: EN 1052-3). The cap 0.065 f_b (Pa) is where
+ * the units split in tension rather than the joint sliding, so it is the unit's:
+ * clay brick f_b 20 MPa (CRUSH.brickVeneer) 1.3 MPa, natural stone f_b 50 MPa
+ * (CRUSH.stone) 3.25 MPa. High-profile packs only (VIBE_REAL_CAPACITIES=1):
+ * runtime packs stay byte-identical.
+ */
+export const MASONRY_FRICTION = 0.4;
+export const masonryShear = (fb) => (globalThis.process?.env?.VIBE_REAL_CAPACITIES ?? '0') === '1'
+  ? { shearFriction: MASONRY_FRICTION, shearCapacityLimit: 0.065 * fb } : {};
+export const BRICK_FB = 20e6, STONE_FB = 50e6;
 /** Masonry by name: a concrete facade with a brick texture is still concrete. */
 export const isMasonry = (name) => /^brick(-|$)/.test(name) || /masonry/.test(name) && !/connection|seam/.test(name);
 /** What masonry is bedded on (its bed joint is mortar too). */
 export const isBed = (name) => /concrete|footing|slab/.test(name);
 /** The mortar-joint material, from a brick material. */
-export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mortar-joint', ...(mortarJointsEnabled() ? MORTAR_JOINT : {}) });
+export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mortar-joint', ...(mortarJointsEnabled() ? { ...MORTAR_JOINT, ...masonryShear(BRICK_FB) } : {}) });
 /**
  * Natural-stone masonry's mortar joints: opt-in, VIBE_STONE_JOINTS=mortar on a
  * high-profile pack build (VIBE_REAL_CAPACITIES=1); off, the joints keep the
@@ -144,7 +161,7 @@ export function mortarJoints(pack) {
   const stone = stoneJointsEnabled() && table.find((m) => isStone(m.name));
   if (stone) {
     let index = table.findIndex((m) => m.name === 'stone-mortar-joint');
-    if (index < 0) { index = table.length; table.push({ ...structuredClone(stone), name: 'stone-mortar-joint', residualAreaFraction: 0, ...STONE_MORTAR_JOINT }); delete table[index].crush; }
+    if (index < 0) { index = table.length; table.push({ ...structuredClone(stone), name: 'stone-mortar-joint', residualAreaFraction: 0, ...STONE_MORTAR_JOINT, ...masonryShear(STONE_FB) }); delete table[index].crush; }
     const lintel = lintelJoints(s, names);
     for (const b of s.bonds) {
       const x = names[b.node0], y = names[b.node1];

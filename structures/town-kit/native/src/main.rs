@@ -102,7 +102,9 @@ fn run(pack:&Value, meta:&Value, mode:&str, report:&mut Value, rec:&mut Recorder
   bearing_modulus:mats.iter().map(|m|m["bearingElasticModulus"].as_f64().unwrap_or(0.0) as f32).collect(),
   bend_gyration:mats.iter().map(|m|m["bendGyration"].as_f64().unwrap_or(0.0) as f32).collect(),
   bend_section:mats.iter().map(|m|m["bendSection"].as_f64().unwrap_or(0.0) as f32).collect(),
-  bearing_joint:mats.iter().map(|m|m["bearingJoint"].as_f64().unwrap_or(0.0) as f32).collect(),maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
+  bearing_joint:mats.iter().map(|m|m["bearingJoint"].as_f64().unwrap_or(0.0) as f32).collect(),
+  shear_friction:mats.iter().map(|m|m["shearFriction"].as_f64().unwrap_or(0.0) as f32).collect(),
+  shear_capacity_limit:mats.iter().map(|m|m["shearCapacityLimit"].as_f64().unwrap_or(0.0) as f32).collect(),maximum_bodies:0,maximum_fractures_per_actor_per_tick:0,
   apply_excess_forces:true,apply_centrifugal:true,excess_force_scale:0.012,linear_damping:0.25,angular_damping:0.35,
  },1<<5,mask)?;
  let mut contact=ContactSettings::default();
