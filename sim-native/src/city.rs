@@ -238,6 +238,13 @@ fn apply_app_defaults() {
         // <= 87 ms (clean/high-fidelity docs/perf/NATIVE_APP_FINDINGS.md).
         ("CUMETAL_GPU_KEEPALIVE_US", "0"),
         ("CUMETAL_GPU_KEEPALIVE_BUSY", "0"),
+        // No GPU code that waits on another threadgroup: CuMetal's resident
+        // cooperative grids spin at a device-atomic barrier for peers only
+        // assumed resident; with the window server and this app's rendering
+        // holding GPU cores a peer never starts and the GPU hangs (the
+        // WindowServer watchdog then logs the user out). One threadgroup per
+        // cooperative launch waits only on itself (clean/high-fidelity).
+        ("CUMETAL_COOPERATIVE_RESIDENT_GRID", "0"),
     ] {
         if std::env::var_os(name).is_none() {
             std::env::set_var(name, value);
