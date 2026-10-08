@@ -38,6 +38,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../..');
 const KEY = 'vehicle-lab';
 const HALF_LANE = 4;
+// Paving is off unless VIBE_LAB_PAVING=1: the lanes are the flat ground plane at y = 0.
+const PAVING = process.env.VIBE_LAB_PAVING === '1';
+const isPaved = (lane) => PAVING && !!lane.paved;
 
 /** Deterministic pseudo-random numbers for debris placement. */
 function rng(seed) {
@@ -58,7 +61,7 @@ function buildGround() {
     // pavers on a subgrade were flush boxes, and flush boxes make ghost contacts at
     // every seam in stock PhysX (a ball is thrown up, a box snags; one surface is
     // clean). The owner chose a plain plane; VIBE_LAB_PAVING=1 restores the pavers.
-    if (process.env.VIBE_LAB_PAVING !== '1') {
+    if (!PAVING) {
       // paving off
     } else if (lane.paved && lane.paveTo != null) {
       b.box({ min: [x0, -0.16, z0], max: [x1, 0, lane.paveTo], material: M.footing, fixed: true, type: 'foundation' });
@@ -100,7 +103,7 @@ function buildLoose() {
   };
   for (const lane of LANES) {
     const o = lane.obstacle;
-    const base = lane.paved ? 0.026 : 0.001;
+    const base = isPaved(lane) ? 0.026 : 0.001;
     if (o.kind === 'debris') {
       // A field of loose pieces across the lane, every size of DEBRIS.
       const random = rng(o.seed);
@@ -231,7 +234,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // brick and gypsum, materials.mjs CRUSH), as vehicle-lab-crush.*.
   const key = KEY + (crushEnabled() ? '-crush' : '');
   writeFileSync(path.join(out, `${key}.json`), JSON.stringify(pack));
-  writeFileSync(path.join(out, `${key}.meta.json`), JSON.stringify({ lanes: LANES, pads: PADS, startZ: START_Z, debris: DEBRIS, trials, places }, null, 1));
+  writeFileSync(path.join(out, `${key}.meta.json`), JSON.stringify({ lanes: LANES.map((lane) => ({ ...lane, paved: isPaved(lane) })), pads: PADS, startZ: START_Z, debris: DEBRIS, trials, places }, null, 1));
   writeFileSync(path.join(out, `${key}.slots`), trials.map((t) => t.slot.join(',')).join(';'));
   const masses = loose.map((n) => n.mass).sort((a, b) => a - b);
   console.log(`${key}: ${pack.scenario.nodes.length} nodes, ${pack.scenario.bonds.length} bonds; ${loose.length} loose pieces ${masses[0]?.toFixed(0)}-${masses.at(-1)?.toFixed(0)} kg; ${trials.length} trials`);
