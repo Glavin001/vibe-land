@@ -354,8 +354,12 @@ IMPACT_EVAL = re.compile(r"\[impact\] evaluation (\d+) pass (\d+): ([\d.]+) ms i
 # diverged count and the tail (held stops, infeasible projections) are newer fields.
 IMPACT_PASS = re.compile(r"\[impact\] pass (\d+): (\d+) islands, (\d+) solves, (\d+) iterations \((\d+) capped(?:, (\d+) diverged)?\), "
                          r"(\d+) rounds, broke (\d+), yielded (\d+), (\d+) contacts from (\d+) impactors.*?error (\d+)\s*$")
+# The replay's summary line. Since the explicit step (2026-10-08) it carries
+# "N diverged (worst bond B), N infeasible, N non-finite, N energy gains; "
+# before "error": optional here, so both formats parse (scripts/perf/test_suite_replay.py).
 REPLAY = re.compile(r": (\d+) chunks, (\d+) bonds, (\d+) rows; (\d+) islands, (\d+) solves, (\d+) iterations \((\d+) capped\), (\d+) rounds; "
-                    r"broke (\d+), yielded (\d+); (\d+) contacts, (\d+) impactors; error (\d+); ([\d.]+) ms in (\d+) dispatches \(longest ([\d.]+) ms\)")
+                    r"broke (\d+), yielded (\d+); (\d+) contacts, (\d+) impactors; (?:(\d+) diverged[^;]*; )?error (\d+); "
+                    r"([\d.]+) ms in (\d+) dispatches \(longest ([\d.]+) ms\)")
 
 
 def read_job(path: Path) -> dict:
@@ -426,7 +430,8 @@ def read_replay(path: Path) -> dict | None:
     for line in path.read_text(errors="replace").splitlines():
         if (m := REPLAY.search(line)):
             runs.append({"solves": int(m[5]), "iterations": int(m[6]), "capped": int(m[7]), "rounds": int(m[8]),
-                         "error": int(m[13]), "ms": float(m[14]), "dispatches": int(m[15]), "longest": float(m[16]),
+                         "diverged": int(m[13]) if m[13] is not None else None,
+                         "error": int(m[14]), "ms": float(m[15]), "dispatches": int(m[16]), "longest": float(m[17]),
                          "chunks": int(m[1]), "bonds": int(m[2])})
     if not runs:
         return None
@@ -436,7 +441,7 @@ def read_replay(path: Path) -> dict | None:
     return {"kind": "replay", "runs": len(timed),
             "step_ms": {"median": st.median(ms), "p95": pct(ms, 95), "max": max(ms), "mean": st.fmean(ms)},
             "impact": {"evaluations": 1, "solves": r0["solves"], "steps": r0["iterations"], "capped": r0["capped"],
-                       "diverged": int(bool(r0["error"] & 2)), "round_budget": int(bool(r0["error"] & 4)),
+                       "diverged": r0["diverged"] if r0["diverged"] is not None else int(bool(r0["error"] & 2)), "round_budget": int(bool(r0["error"] & 4)),
                        "ms": st.median(ms), "longest_dispatch_ms": max(r["longest"] for r in timed),
                        "dispatches": r0["dispatches"], "chunks": r0["chunks"], "bonds": r0["bonds"]},
             "score_value": st.median(ms)}
