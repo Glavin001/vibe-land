@@ -160,21 +160,30 @@ fn strike(plates: u32) -> (Vec<f32>, usize) {
     }).unwrap();
     for _ in 0..10 { world.step().unwrap(); world.native_tick().unwrap(); }
     // 1 t of steel (7850 kg/m^3): r 0.31 m, its surface 2 cm short of the front plate's face.
+    // INFINITE_WALL_OVERLAP=d: the ball launched d into the plate, as a contact the narrowphase finds
+    // a tick late (the corrected pass must start it from the checkpoint, not from pass 0's push-out).
+    let overlap: f32 = std::env::var("INFINITE_WALL_OVERLAP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
     let (mass, v0) = ball();
     let radius = (mass / 7850.0 * 3.0 / (4.0 * std::f32::consts::PI)).cbrt();
     world.launch_dynamic_ball(LaunchedBallDesc {
-        entity_id: BALL, user_id: 1, pose: Pose { position: Vec3::new(0.0, Y, -0.05 - radius - 0.02), rotation: identity() },
+        entity_id: BALL, user_id: 1, pose: Pose { position: Vec3::new(0.0, Y, -0.05 - radius - 0.02 + overlap), rotation: identity() },
         radius, mass, linear_velocity: Vec3::new(0.0, 0.0, v0), collision_group: GROUP_BALL, collision_mask: ALL,
     }).unwrap();
     world.native_set_impactor_impedance(BALL, (7850.0f32 * 200e9).sqrt()).unwrap();
     let (mut vz, mut broken) = (Vec::new(), 0usize);
+    let mut z_prev: Option<f32> = Some(-0.05 - radius - 0.02 + overlap);   // (its launch)
     for t in 0..20 {
         world.step().unwrap();
         let status = world.native_tick().unwrap();
         assert_eq!(status.error, 0, "stage rejected step {t}: {status:?}");
         broken += world.native_take_broken_bonds().unwrap().len();
         let ball = world.body_snapshots().unwrap().into_iter().find(|b| b.entity_id == BALL).expect("ball");
-        println!("tick {t} vz {:.3} broken {} after-correction {} corrections {}", ball.linear_velocity.z, status.broken_bonds, status.post_correction_broken_bonds, status.correction_passes);
+        // The tick's displacement against its end velocity (symplectic Euler: z1 = z0 + v1 dt): where
+        // nothing touches the ball in the pass that stands, its motion is exactly that.
+        let z = ball.pose.position.z;
+        let drift = z_prev.map_or(0.0, |z0| (z - z0) - ball.linear_velocity.z * DT);
+        z_prev = Some(z);
+        println!("tick {t} vz {:.3} z {z:.4} drift {drift:+.4} broken {} after-correction {} corrections {}", ball.linear_velocity.z, status.broken_bonds, status.post_correction_broken_bonds, status.correction_passes);
         vz.push(ball.linear_velocity.z);
     }
     (vz, broken)
