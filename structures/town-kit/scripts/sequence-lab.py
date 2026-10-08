@@ -79,7 +79,7 @@ class Structure:
     def __init__(self, s, mats):
         self.s, self.mats = s, mats
         pack = {'scenario': s, 'defaults': {'solver': {'materials': mats}}}
-        tmp = '/tmp/sequence-lab-pack.json'
+        tmp = f'/tmp/sequence-lab-pack-{os.getpid()}.json'   # (per process: parallel runs raced on one file)
         json.dump(pack, open(tmp, 'w'))
         _, s2, _, self.pos, self.mass = ss.load(tmp)
         self.sections = ss.fastener_twist(s, mats, ss.bond_sections(s))

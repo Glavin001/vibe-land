@@ -134,7 +134,8 @@ export async function run(id, { configs, ticks, judgeOnly = false, specOnly = fa
   for (const config of configs) {
     const out = path.join(dir, `report-${config}.json`);
     const iterations = process.env.VIBE_CITY_NATIVE_STRESS_ITERATIONS ?? (scenario.iterations ? String(scenario.iterations) : undefined);
-    const extraEnv = { ...(iterations ? { VIBE_CITY_NATIVE_STRESS_ITERATIONS: iterations } : {}), ...(spec.charges ? { VIBE_CALIB_CHARGES: spec.charges } : {}) };
+    const extraEnv = { ...(iterations ? { VIBE_CITY_NATIVE_STRESS_ITERATIONS: iterations } : {}), ...(spec.charges ? { VIBE_CALIB_CHARGES: spec.charges } : {}),
+      ...(spec.removals ? { PX_DESTRUCTION_REMOVE_BONDS: spec.removals } : {}) };
     let report;
     try { report = judgeOnly ? JSON.parse(readFileSync(out, 'utf8')) : runScene({ scene: spec.scene, out, config, ticks: ticks ?? spec.ticks, extraEnv }); }
     catch (error) { console.log(`\n${config}: NO RUN -- ${error.message.split('\n')[0]}`); verdicts.push({ config, passed: false, error: error.message.split('\n')[0], cases: [] }); continue; }

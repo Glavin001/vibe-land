@@ -62,7 +62,13 @@ export function writeScenario(scenario) {
   let charges = null;
   const firings = list.flatMap((c, k) => (c.charges ?? []).map((f) => ({ tick: f.tick, case: c.id, boxes: f.boxes.map(([lo, hi]) => [lo.map((v, i) => v + (i === 2 ? k * scenario.spacing : 0)), hi.map((v, i) => v + (i === 2 ? k * scenario.spacing : 0))]) })));
   if (firings.length) { charges = path.join(dir, 'charges.json'); writeFileSync(charges, JSON.stringify(firings)); }
-  const spec = { scenario: scenario.id, charges, title: scenario.title, scene: scenePath, ticks: scenario.ticks ?? 600, criteria: { ...CRITERIA, ...(scenario.criteria ?? {}) },
+  // Removals (house-headers-removal): bonds the stage cuts at a frame (PhysX PX_DESTRUCTION_REMOVE_BONDS),
+  // each case's (case-local) moved to its scene index; one line per frame.
+  let removals = null;
+  const cuts = new Map();
+  list.forEach((c, k) => { for (const r of c.removals ?? []) { const base = specCases[k].bonds[0]; cuts.set(r.tick, [...(cuts.get(r.tick) ?? []), ...r.bonds.map((b) => b + base)]); } });
+  if (cuts.size) { removals = path.join(dir, 'removals.txt'); writeFileSync(removals, [...cuts].map(([t, b]) => `${t} ${b.join(' ')}`).join('\n') + '\n'); }
+  const spec = { scenario: scenario.id, charges, removals, title: scenario.title, scene: scenePath, ticks: scenario.ticks ?? 600, criteria: { ...CRITERIA, ...(scenario.criteria ?? {}) },
     band: scenario.band, models: scenario.models, tolerate: scenario.tolerate ?? null, holdsByDrop: !!scenario.holdsByDrop, cases: specCases, hand: scenario.hand ?? null };
   writeFileSync(path.join(dir, 'spec.json'), JSON.stringify(spec, null, 1));
   return { dir, spec, scene };

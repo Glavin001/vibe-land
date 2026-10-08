@@ -18,10 +18,14 @@ def main():
     after = int(sys.argv[sys.argv.index('--after') + 1]) if '--after' in sys.argv else 0
     spec = json.load(open(os.path.join(out, 'spec.json'))); r = json.load(open(os.path.join(out, report)))
     scene = json.load(open(spec['scene']))['scenario']
+    # (the removal's own cuts, PX_DESTRUCTION_REMOVE_BONDS: not damage)
+    cutset = set()
+    if spec.get('removals') and os.path.exists(spec['removals']):
+        for line in open(spec['removals']): cutset.update(int(x) for x in line.split()[1:])
     result = {}
     for c in spec['cases']:
         b0, n0 = c['bonds'][0], c['nodes'][0]; gap = GAP.get(c['id']); dz = c['offset'][2]
-        broken = [b for b in r['cases'].get(c['id'], {}).get('broken', []) if b['tick'] >= after]
+        broken = [b for b in r['cases'].get(c['id'], {}).get('broken', []) if b['tick'] >= after and b['bond'] not in cutset]
         cnt = collections.Counter(); first = []
         for b in sorted(broken, key=lambda x: x['tick']):
             bd = scene['bonds'][b['bond']]; t0, t1 = c['types'][bd['node0'] - n0], c['types'][bd['node1'] - n0]

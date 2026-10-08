@@ -60,7 +60,7 @@ export function knockOut(pack, nodeWalls, bay) {
 }
 
 /** Bond keys: the front plate's cuts, stud tops, header ends, and every skin joint (tolerated). */
-function keys(pack, nodeWalls) {
+export function keys(pack, nodeWalls) {
   const s = pack.scenario, mats = pack.defaults.solver.materials, t = s.nodeTypes;
   const front = (i) => nodeWalls[i] === 'front', x = (b) => +b.centroid.x.toFixed(3);
   return s.bonds.map((b) => {
