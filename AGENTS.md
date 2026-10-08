@@ -26,6 +26,98 @@ The stress iteration cap with the destructible fleet is 64 per tick, and the
 owner accepts it. Do not lower it to save time; make the 64 iterations fast.
 Unconverged solves continue next tick (`PX_DESTRUCTION_ALLOW_UNCONVERGED=1`).
 
+## GPU destruction: goal, architecture and what counts as a valid change
+
+**Goal.** Destruction that a structural engineer or demolition expert would
+recognise as physically correct, running in real time at city scale (hundreds
+of thousands of chunks and joints, all on the GPU). This is an engineering
+project that implements known, standard mathematics. It is not physics research.
+
+**The architecture (fixed).**
+
+1. PhysX GPU does all rigid-body simulation. Motion, gravity, contacts,
+   friction, restitution and collision detection are PhysX's alone. We never
+   re-implement or override them.
+2. An intact structure is one PhysX rigid body made of many chunk shapes.
+   Chunks are never connected by PhysX joints, springs or any other constraints.
+3. The stress solver decides fracture, and nothing else.
+   - Inputs: the loads on the structure (gravity, and the contact impulses
+     PhysX reports) and the bodies' states.
+   - Output: which joints between chunks break, which gives the new
+     chunk-to-body hierarchy.
+4. PhysX applies the new hierarchy and re-simulates the step natively, through
+   the corrected pass with correction limit 1. Whatever PhysX produces is the
+   answer.
+5. If the solver breaks nothing, the structure holds as one rigid body. That is
+   correct behaviour, not a bug.
+
+**Valid changes.**
+
+- Making the stress solver's decision more accurate, using standard, cited
+  engineering models:
+  - section capacities;
+  - shear that grows with compression;
+  - shear versus normal stiffness;
+  - re-bearing;
+  - ductility;
+  - accounting for inertia over an impact's duration, as part of the solve.
+- Making the solver faster or more converged, without changing its answer.
+- Correcting the inputs the solver reads, such as the loads PhysX reports, as
+  long as PhysX's behaviour isn't changed.
+- Authoring with cited real-world values:
+  - geometry;
+  - materials (strength, stiffness, crush laws);
+  - per-material PhysX friction and restitution, as standard `PxMaterial`s
+    (one material per surface type, never one value for the whole world).
+- Choosing standard PhysX representations, for example static ground as one
+  plane or mesh rather than chunks.
+- Tests, diagnostics and tooling.
+
+**Invalid changes.** Reject these, even if they fix a symptom.
+
+- Any dynamics, contact detection, narrowphase or collision geometry of our
+  own, outside PhysX.
+- Writing velocities, positions or impulses into PhysX bodies from the solver.
+- Modifying PhysX's contact solver: impulse caps, dropped contact pairs,
+  depenetration rules, contact correction.
+- Any constant without a physical derivation or a citation:
+  - caps;
+  - clamps;
+  - tolerances;
+  - "allowances";
+  - thresholds;
+  - global tuning knobs standing in for a material property.
+- Heuristics: ordering failures by guesswork, damage-falloff fudges, "break the
+  most overloaded first".
+- Anything non-standard or invented. If you can't cite who does it this way (a
+  textbook, a design code or an established engine), it's out.
+- Anything that can't plausibly run in real time at city scale.
+
+**Deciding whether a change is in scope.** All four answers must be "yes":
+
+1. Standard: is it a known method, citable to a textbook, a design code or an
+   established engine?
+2. Correct: is it physically accurate for rigid bodies and fracture?
+3. Architecture: does it stay inside the stress solver's job (loads in, broken
+   joints out), with PhysX doing all the dynamics?
+4. Scale: can it run in real time for a whole city?
+
+If any answer is "no" or "unsure", stop and ask the owner before building
+anything.
+
+**Process.**
+
+- Tests first: reproduce every bug with a failing test, and use the same test to
+  prove the fix.
+- Physics-derived gates: pass/fail criteria come from energy, momentum,
+  capacity, closed-form answers or cited references, never from guessed
+  percentages.
+- Flags: every capability sits behind a flag. The shipping (runtime) profile
+  must not change.
+- Fixed engine settings: single precision (FP32), correction limit 1, stress
+  iterations fixed (64 in the product).
+- No stale runs: every run uses a current SDK.
+
 ## Native macOS app (single-player /city)
 
 `scripts/native-mac.sh` builds and runs it: three.js WebGPU (`vite build
