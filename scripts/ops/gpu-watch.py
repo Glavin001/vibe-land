@@ -253,8 +253,9 @@ def stream():
             if procs[j["pid"]]["age"] > LONG_S:
                 emit(key + ":long", f"LONG {j['label']} (pid {j['pid']}) has run {procs[j['pid']]['age'] // 60} min")
             miss = sdk_missing(j, procs)
-            if miss:
-                emit(key + ":stale", f"STALE SDK {j['label']} (pid {j['pid']}): its SDK lacks the head of {', '.join(miss)}; the result will be refused")
+            if miss:  # once per (missing heads), not once per job: short runs start in bursts
+                heads = ", ".join(f"{b}@{sh('git', '-C', PHYSX_SOURCE, 'rev-parse', '--short', b).strip()}" for b in miss)
+                emit("stale:" + heads, f"STALE SDK: jobs starting now (first: {j['label']}, pid {j['pid']}) run an SDK that lacks {heads}; results are provisional until the rebuild")
         for key in [k for k in started if k not in live]:
             label, t0 = started.pop(key)
             if VERBOSE or now - t0 > LONG_S / 3:
