@@ -120,6 +120,151 @@ Steps 1-3 of §6 were carried out. Findings that change the plan:
      both graders. The compliant contact rows (two-body work: a finite contact stiffness) are the
      physical route for contacts that never reach the step.
 
+## Status 2026-10-08: compliant impact contacts, CPU stage
+
+The infinite walls (hand-off, open problems 1 and 2) reproduced and fixed on the CPU. Harness:
+`scripts/impact/compliant-step.py` (vibe-land `feat/impact-compliant`). It reads the stage's own
+structure from a capture (`scripts/impact/impc.py`, `.impc` v2, `prepareBond` on the CPU), the
+hulls and aims from the high lab pack and its trial meta, and runs the whole passage as one
+explicit window. The row law is the two-body agent's (`scripts/impact/contact_law.py`, shared);
+the struck side's crush is an optional block of it.
+
+### The model
+
+- **Rows.** Every contact between the fast body and a structural chunk is a window row, including
+  the chunks it meets later in the window. Johnson's punch with the relative curvature, integrated
+  by backward Euler. No row on a support (mass 0: the ground, E10).
+- **Crush in the row, paid by the striker.**
+  - Onset: when the row's pressure reaches the material's own crush stress (its Drucker-Prager cone
+    and cap read uniaxially: `min(c / (1 - s/3), 3 p_cap)`).
+  - Plateau: the crush energy density, at most the onset. The contact area is the crater's,
+    `a^2 = 2 R d` (Johnson 6.3).
+  - The intrusion past the elastic depth is crushed (delta_p). Its work, F delta_p, is the
+    striker's.
+  - Crushed through (delta_p reaches the chunk's depth): the chunk's joints break, and a perfectly
+    inelastic normal impulse carries its mass at the striker's normal speed (the plug).
+  - Short of that, the chunk keeps a partial crush, `damage = delta_p / depth`.
+  - A material with no crush law (stone, timber, steel in the packs) yields at its compressive
+    strength.
+- **Routing**, evaluated at each chunk's first contact. A row goes to the window when
+  `v_n sqrt(k_eff m_eff)` exceeds the smaller of:
+  - the support function of its chunk's joint capacities along n;
+  - its crush onset over the face.
+
+  `k_eff` is the compliant row in series with the chunk's joints along n.
+  - Every struck row in the cases below routes, except grazing rows with `v_n` about 0.
+  - What stays with PhysX: contacts whose peak force is under both capacities. These are resting
+    debris, sliding parts (`v_n` about 0) and slow touches. For them the rigid stop and the
+    compliant one deliver the same impulse and break nothing. The boundary is that equality; there
+    is no threshold.
+- **Geometry.** Rows are exact (sphere against each hull, every substep), or the kernel's: fixed
+  rows with their signed gap, rebuilt after the impactor has moved one face radius relative to the
+  chunks it can reach (`--geometry fixed`). Rows fixed for a whole tick are half-spaces. The 100 kg
+  ball then met phantom walls on its neighbours' faces: exit 7.8 m/s, against 26.4 exact.
+  Rebuilding every <= 4 ms reproduces exact.
+
+### Results (high lab pack, FP64; FP32 identical to the shown precision)
+
+Exit speed (m/s) against the scenario band (scenarios.mjs) and the momentum floor (meteor-floor):
+
+| Case | Band | Floor | Lab (garage-hifi 3536ce049) | Compliant, exact | Compliant, kernel geometry | Rigid rows, all routed |
+|---|---|---|---|---|---|---|
+| meteor, masonry wall | 133.5-135.5 | 134.1 | 132.3 (marginal) | 137.3 | 137.3 | 135.5 |
+| meteor, stone house upper wall | 95.2-121.9 | 88.6 | held, -11.4 | 128.2 | 128.0 | 114.4 |
+| meteor, stone house | 111.0-129.8 | | | 123.5 | 123.4 | 108.5 |
+| meteor, brick house | 130.8-134.7 | | | 131.9 | 131.9 | 124.8 |
+| meteor, veneer | 136.1-138.0 | | 105.4 | 134.4 | 134.4 | 130.9 |
+| meteor, roof | 125.3-134.8 | | 98.1, partial hold | 134.0 | 133.8 | 129.4 |
+| 100 kg, masonry | 21.8-40.4 | | | 26.2 | 26.1 | 27.4 |
+| 100 kg, brick house | 16.4-41.0 | | | 19.4 | 19.5 | 20.4 |
+| 100 kg, stone house | 0-32.4 (intent through) | | | stopped | stopped | 13.3 |
+| 100 kg, veneer | 32.2-53.0 | | | 33.0 | 32.9 | 34.6 |
+| 1 t, masonry | 28.2-51.6 | | | 52.3 | 50.7 | 44.6 |
+| 1 t, brick house | 41.0-52.1 | | | 49.2 | 48.9 | 45.2 |
+| 1 t, veneer | 48.1-56.7 | | | 54.8 | 54.7 | 53.6 |
+| cannonball, framed house | 53.3-56.7 | | | 57.6 (254 broken, farthest 2.05 m) | 57.6 | 57.2 (254, 2.04 m) |
+
+What the table shows:
+- **Infinite walls:** none. Every meteor passes its floor. Every case leaves within its band plus
+  the judge's 10% of the entry speed, except the 100 kg ball into the stone house (below).
+- **Ghosts:** no contact is cut at a bound. A row's force is its law's or its crush plateau, and the
+  plateau advances the chunk's recorded crush. Swept-intact is 0 in every case: no uncrushed chunk
+  still tied to a support overlaps the impactor's path.
+- **Energy** closes dissipatively in every case: residual >= 0, where it was -96 MJ before the hulls
+  turned with their chunks.
+- **The cannonball** is unchanged against rigid rows.
+
+### Why compliant, not rigid rows routed
+
+Routed rigid rows also pass the floors here, because the window sees every contact. But their
+force is the impulse over the substep, `m v / h`, not a physical force:
+
+| 100 kg ball into the masonry wall | Compliant | Rigid |
+|---|---|---|
+| 1 m/s | peak 14 kN, nothing breaks | peak 1.1 MN |
+| 3 m/s | peak 42 kN, nothing breaks | peak 3.3 MN, the struck block's 4 joints break (punched out at 450 J) |
+| 10 m/s | peak 129 kN | peak 10.9 MN |
+
+The rigid force scales with 1/h. That is the same artefact as the ghosts: a rigid contact cannot
+tell a load from the time step.
+
+### Open, found here
+
+1. **Locality, 100 kg and 1 t balls into the masonry wall: 12 of 25 and 20 of 47 breaks beyond
+   r + 2t + l.** The lab shows the same: 7 of 32 and 1 of 37.
+   - The far breaks are the top course's bed and head joints at their bending capacity,
+     f_t S = 0.6 MPa x 5.2e-3 m^3 = 3.1 kN m, 3-15 ms after the hit: the panel's out-of-plane
+     response.
+   - With compliant rows, the force on the struck block rises to the punching capacity of its four
+     joints (about 0.5 MN) over about 1.8 ms. That is far above the wall's own flexural resistance
+     (12-45 kN, SCENARIOS), so the panel cracks.
+   - Even at 10 m/s, compliant rows give 23 breaks to 3.4 m: 129 kN against a 12-45 kN wall.
+   - Rigid rows punch the block out in one substep (MN), so the panel never feels it. Their
+     locality is the artefact above.
+   - Reading: authoring and expectation, not the contact. The free-standing wall's flexural
+     capacity is about 10x below its punching capacity. Not insensitive to the crater radius:
+     crater from the ball's own radius gives 15 of 19.
+2. **The 100 kg ball into the stone house stops.**
+   - Stone has no crush law in the packs, so its contact yields at its compressive strength,
+     102 MPa.
+   - Crushing the ball's path costs about 0.066 m^2 x 0.3 m x 102 MPa, about 2 MJ, against 180 kJ.
+     Rigid rows: through at 13.3.
+   - Its crush properties are authoring's: stone, timber, roof tile and steel have none (FIDELITY
+     authoring item).
+3. **Penetration resistance.** The plateau is the crush energy density (brick 3.5 MPa). The
+   confined cavity-expansion resistance under a projectile (Forrestal) is several f_c, plus rho v^2.
+   - Exits are within the bands as they are. The meteors are slightly high (masonry 137.3 against
+     135.5, upper wall 128 against 121.9), because chunks pushed off the curved front carry less
+     than a full prism plug.
+   - Not tuned. Recorded for the owner.
+
+### Kernel design (to build after main's go; PX_DESTRUCTION_IMPACT_COMPLIANT)
+
+1. **Routing** (`routeRows`) by the criterion above. A crushed chunk is no longer skipped: Ci does
+   not crush a chunk with a routed row, and the window does. Exposed as one device function for the
+   two-body car rows.
+2. **The crush block** in `exCompliantRow`, from `contact_law.compliant_impulse(crush=)`. The
+   partial crush persists in `PxDestructionCrushState::damage`, and the next tick's row starts at
+   `penetration - delta_p`.
+3. **Rows for later layers:**
+   - the stage's rows with their signed gap (contact offset >= |v| dt for the fast body);
+   - an in-kernel narrowphase refresh every face radius of travel: the sphere, or the impactor's
+     hull, against chunk boxes or hulls. That is up to about 40 refreshes a tick on thin timber
+     (the veneer meteor), and 1-18 on masonry.
+4. **The corrected pass** (IMPACT_STEP_PLAN section 1, rule 3; agreed with the two-body and C10
+   agents):
+   - the window runs once, in the trial, and its verdict stands for its islands;
+   - the impactor (and a two-body car) and the freed patch chunks start the corrected pass with the
+     window's end velocities: one hand-off kernel after `prepareCandidateBodies`, shared with C10;
+   - the pairs the window decided (`ExScratch::rowDecided`) are dropped from the corrected rigid
+     solve.
+
+   This replaces `boundImpactor` and pairwise bounds for routed pairs.
+5. **Cost.**
+   - Substeps per tick: 333-742 (h 22-50 us), set by the joints' bound and the rows' period bound,
+     which are equal on the houses.
+   - Patches: 67-905 chunks.
+
 ## Status 2026-10-08: hand-off
 
 ### What landed
