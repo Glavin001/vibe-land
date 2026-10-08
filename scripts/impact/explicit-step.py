@@ -205,6 +205,42 @@ class Explicit:
         gers = np.max(rows * mid)
         return np.sqrt(lam), np.sqrt(gers)
 
+    def omega_bound(self, products=24):
+        """The GPU step's substep bound (PxgDestructionImpactExplicit.cuh exFinish): Collatz-Wielandt on L >= |S|,
+        S = M^-1/2 K M^-1/2, L each node's diagonal block assembled before |.| and the joints' blocks between nodes
+        by theirs, lumped to translation/rotation per node; min with Gershgorin on M^-1 K and on S. Rigorous:
+        lambda_max(S) <= rho(|S|) <= max_i (L x)_i / x_i for every positive x."""
+        P = self.P; nn = P.nn
+        live = self.inpatch & P.alive0 & P.joint
+        m = self.Mi.diagonal().reshape(nn, 6); sm = np.sqrt(m)
+        D = np.zeros((nn, 6, 6)); off = []          # (node, other, 6x6 |C|)
+        for l in np.where(live)[0]:
+            ends = self.ends[l]; on = [e >= 0 and self.on[e] for e in ends]
+            Bl = [P.d['B'][l, 36 * e:36 * e + 36].reshape(6, 6) for e in (0, 1)]
+            for a in (0, 1):
+                if not on[a]: continue
+                D[ends[a]] += Bl[a] @ np.diag(self.k[l]) @ Bl[a].T
+                if on[1 - a]: off.append((ends[a], ends[1 - a], np.abs(Bl[a] @ np.diag(self.k[l]) @ Bl[1 - a].T)))
+        g = np.abs(D).sum(2); y = (np.abs(D) * sm[:, None, :]).sum(2)
+        Ld = np.zeros((nn, 2, 2)); Lo = []
+        for i in range(nn):
+            t = np.stack([(np.abs(D[i])[:, 3 * b:3 * b + 3] * sm[i, 3 * b:3 * b + 3]).sum(1) for b in (0, 1)], 1)   # 6 x 2
+            Ld[i] = np.array([[np.max(sm[i, 3 * a:3 * a + 3] * t[3 * a:3 * a + 3, b]) for b in (0, 1)] for a in (0, 1)])
+        for i, j, C in off:
+            g[i] += C.sum(1); y[i] += (C * sm[j][None, :]).sum(1)
+            t = np.stack([(C[:, 3 * b:3 * b + 3] * sm[j, 3 * b:3 * b + 3]).sum(1) for b in (0, 1)], 1)
+            Lo.append((i, j, np.array([[t[3 * a:3 * a + 3, b].max() * np.sqrt(m[i, 3 * a:3 * a + 3].max()) for b in (0, 1)] for a in (0, 1)])))
+        chunk = self.on & ~np.array([bool(P.d['node_tensor'][i]) for i in range(nn)])
+        lam = min(np.max((m * g)[chunk]), np.max((sm * y)[chunk]))
+        x = np.ones((nn, 2))
+        for _ in range(products):
+            Y = np.einsum('iab,ib->ia', Ld, x)
+            for i, j, L in Lo: Y[i] += L @ x[j]
+            lam = min(lam, np.max((Y / x)[chunk])); ym = Y[chunk].max()
+            if not ym > 0: break
+            x = np.where(Y > 0, Y / ym, 1.0)
+        return np.sqrt(lam)
+
     def run(self, T, dt, record=(0.5e-3, 1e-3, 2e-3, 4e-3, 8e-3, 16.67e-3), sweeps=4):
         P = self.P; nl = P.nl; nn = P.nn; dty = self.dtype
         k = self.k.astype(dty); Mi = self.Mi.astype(dty); B = self.B.astype(dty); Bt = self.Bt.astype(dty)
@@ -355,7 +391,7 @@ def main():
     ap.add_argument('--patch', type=float, default=None); ap.add_argument('--boundary', default='fixed')
     ap.add_argument('--fp32', action='store_true'); ap.add_argument('--mass-scale', type=float, default=None,
                     help='target rotational frequency (rad/s); default none')
-    ap.add_argument('--dt-us', type=float, default=None); ap.add_argument('--sweeps', type=int, default=4); ap.add_argument('--json'); ap.add_argument('--zeta', type=float, default=0.0, help='damping ratio at the hop frequency (beta = 2 zeta / omega_hop)'); ap.add_argument('--handoff', action='store_true')
+    ap.add_argument('--dt-us', type=float, default=None); ap.add_argument('--omega', default='true', choices=['true', 'bound'], help='the substep from the true largest frequency (power iteration), or from the GPU step\'s rigorous bound (Collatz-Wielandt, exFinish)'); ap.add_argument('--sweeps', type=int, default=4); ap.add_argument('--json'); ap.add_argument('--zeta', type=float, default=0.0, help='damping ratio at the hop frequency (beta = 2 zeta / omega_hop)'); ap.add_argument('--handoff', action='store_true')
     ap.add_argument('--contacts', default='gauss-seidel', choices=['gauss-seidel', 'jacobi'], help='rows one after another (--sweeps of them), or all from the same velocities with mass splitting (the GPU step)')
     ap.add_argument('--cone', default='coulomb', choices=['coulomb', 'metric', 'clamp'], help='the contact impulse: Coulomb sliding with the metric projection as its energy-safe fallback (the GPU step), the projection alone, or the tangential clamp')
     a = ap.parse_args()
@@ -364,6 +400,7 @@ def main():
     X = Explicit(P, patch=a.patch, boundary=a.boundary, dtype=np.float32 if a.fp32 else np.float64, mass_scale=a.mass_scale, cone=a.cone)
     X.jacobi = a.contacts == 'jacobi'
     wmax, wg = X.omega_max()
+    if a.omega == 'bound': wb = X.omega_bound(); print(f'omega bound (GPU) {wb:.4g} rad/s against the true {wmax:.4g}'); wmax = wb
     k_med = np.median(X.k[P.joint & P.alive0][:, 0]); w_hop = np.sqrt(k_med / np.median(P.mass))
     X.damping = 2 * a.zeta / w_hop if a.zeta else 0.0
     zmax = X.damping * wmax / 2
