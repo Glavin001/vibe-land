@@ -290,16 +290,66 @@ observed outcome.
    Engine: the vehicle contact model (E8's frontal impedance does not hold the
    force down). The truck's exit speeds behind walls are also 30-60% under
    plug momentum in runtime (2.6 against 8.3, 9.9 against 16.9 m/s).
+
+   **Root cause (2026-10-08, the test bed's `loadBalance` audit,
+   `VIBE_TESTBED_AUDIT=1`).** The audit compares the stress input on the car
+   with the force its measured momentum change needs. The car's joints are
+   graded in the trial pass, where the struck wall or house chunks are still
+   anchored (kinematic, infinite mass). So the car takes a dead stop, plus the
+   solver's position correction for up to 0.36 m of first-tick penetration.
+   Its breaks are committed from that pass, and the corrected pass then lets
+   the wall go.
+
+   Monster truck, high (explicit step), default joints, first tick of contact:
+
+   | Trial | Graded | Measured |
+   |---|---|---|
+   | Masonry wall at 10 m/s | 3.2 MN (a dead stop) | 1.7 MN |
+   | Masonry wall at 20 m/s | 38.9 MN | 0.20 MN |
+   | Lab wall | 42.7 MN | 0.52 MN |
+   | Framed house | 44.2 MN | 7.0 MN |
+
+   Stopping the truck dead in one tick takes 6.5 MN. The excess is the same
+   with the impact step off, crush off, or any depenetration cap.
+
+   The wheels go by their own inertia under these loads: about 800 g on 293
+   kg. At 10 m/s, Vehicle2's corner constraint adds 520 kN per front wheel,
+   about 0.37 MN m at the hub against the square-patch mount's 69 kN m.
+
+   - **Test:** `physx-bridge/tests/vehicle_contact_load.rs` (regression
+     `vehicle-contact-load`). It grades 1227 kN against 791 kN of momentum
+     change (1.55x) on a wall the car breaks, and 1.00 on static and unbroken
+     walls.
+   - **Fix:** the impact agent's anchored-contact bound in the rigid solver.
+     Every contact on an anchored chunk, in every pass, is bounded by what
+     that chunk can transmit, C dt + m v_close.
+
+   The authoring side is the joints' brittleness. Next item.
 4. **Corner load spike with nothing hitting the car** (found by the joint
    bound). Coasting on a flat street, the rear upright-wishbone bond went from
    0.28 utilisation to past 1 within 5 ticks, at steady 10-14 kN wheel loads
    (`target/vehicle-testbed/scen-ab-on.json`, coast, audits). Stiffness is
    unchanged by the bound, so the forces are the stage's own, and the spike
    exists in the default assets too. It is hidden there by 100x joints.
-5. **Vehicle joints cannot be ductile.** `StressMaterialDesc` (the bridge's
-   vehicle materials, `server/src/vehicle_assets/fracture.rs`) has no
-   `ductileSlip`, so steel joints at real capacity break brittle and cascade
-   (EN 1993-1-1 3.2.2 ductility).
+5. **Vehicle joints cannot be ductile.** Ductile slip reached the stage
+   (0193a7e2), but only the ADMM impact solve used it. That solve is now
+   retired, and the static verdict grades steel brittle at fatal.
+
+   PhysX fix/static-ductile-steel (`PX_DESTRUCTION_STATIC_DUCTILE`) gives metal
+   joints (E >= 50 GPa) with an ultimate slip a static rule:
+   - they strain-harden between the elastic and fatal limits with no section
+     loss;
+   - past fatal they neck by the slip of the excess, (u - 1) F_u / k plus
+     1/2 (u - 1) F_u / m_light dt^2;
+   - they rupture at the ultimate slip.
+
+   Vehicle metal joints yield at a cited f_y/f_u (S355, 10.9, 6061-T6). Test:
+   `static_ductile.rs`.
+
+   On the trucks the rule waits for item 3's bound. Mode 1, the rule as built,
+   still loses wheels against the 39 MN over-count, though the cannonball
+   shreds the truck (675 bonds). Mode 2, the return mapping alone, keeps every
+   wheel but stops the cannonball shredding it (47 bonds).
 6. **Runtime grading** (known gaps 1-2). From one hit the whole veneer house
    comes down: 1,900-2,990 bonds broken beyond 2R, roof 77-102 of 102 members
    down. This covers the cannonball, the 1 t ball and the trucks.
