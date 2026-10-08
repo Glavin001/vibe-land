@@ -634,6 +634,11 @@ pub struct DestructibleSettings {
     /// (EN 1996-1-1 3.6.2: f_vk = f_vk0 + 0.4 sigma_d <= f_vlt); 0 none.
     pub shear_friction: Vec<f32>,
     pub shear_capacity_limit: Vec<f32>,
+    /// Empty, or parallel to `materials`: a joint's stiffness across its normal
+    /// over its stiffness along it (G/E; masonry 0.4, EN 1996-1-1 3.8.3), with
+    /// VIBE_SHEAR_STIFFNESS (PhysX PX_DESTRUCTION_SHEAR_STIFFNESS, FIDELITY_AUDIT
+    /// D11); 0 or 1 isotropic.
+    pub shear_stiffness_ratio: Vec<f32>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -672,6 +677,7 @@ impl Default for DestructibleSettings {
             bearing_joint: Vec::new(),
             shear_friction: Vec::new(),
             shear_capacity_limit: Vec::new(),
+            shear_stiffness_ratio: Vec::new(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -2543,6 +2549,8 @@ mod ffi {
         /// Empty, or parallel to `materials`: friction mu and shear cap (Pa, 0 uncapped).
         shear_friction: Vec<f32>,
         shear_capacity_limit: Vec<f32>,
+        /// Empty, or parallel to `materials`: shear over normal stiffness, 0 or 1 isotropic.
+        shear_stiffness_ratio: Vec<f32>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -3476,6 +3484,7 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
             bearing_joint: value.bearing_joint,
             shear_friction: value.shear_friction,
             shear_capacity_limit: value.shear_capacity_limit,
+            shear_stiffness_ratio: value.shear_stiffness_ratio,
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,

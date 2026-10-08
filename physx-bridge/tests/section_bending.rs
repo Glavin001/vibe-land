@@ -205,7 +205,7 @@ fn run(chunks: &[Chunk], joints: &[Joint]) -> Vec<(f64, f64, f64)> {
     };
     let settings = DestructibleSettings {
         max_solver_iterations_per_frame: 4096, graph_reduction_level: 0,
-        materials: vec![strong], crush: Vec::new(), ductile_slip: Vec::new(), impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(), bearing_modulus: Vec::new(), bend_gyration: Vec::new(), bend_section: Vec::new(), bearing_joint: Vec::new(), shear_friction: Vec::new(), shear_capacity_limit: Vec::new(), maximum_bodies: 0,
+        materials: vec![strong], crush: Vec::new(), ductile_slip: Vec::new(), impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(), bearing_modulus: Vec::new(), bend_gyration: Vec::new(), bend_section: Vec::new(), bearing_joint: Vec::new(), shear_friction: Vec::new(), shear_capacity_limit: Vec::new(), shear_stiffness_ratio: Vec::new(), maximum_bodies: 0,
         maximum_fractures_per_actor_per_tick: 0, apply_excess_forces: true, apply_centrifugal: true,
         excess_force_scale: 0.012, linear_damping: 0.25, angular_damping: 0.35,
     };

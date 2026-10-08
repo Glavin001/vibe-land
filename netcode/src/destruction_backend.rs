@@ -101,6 +101,9 @@ pub struct StressSolverSettings {
     /// VIBE_MOHR_COULOMB_SHEAR (FIDELITY_AUDIT C11); 0 none.
     pub shear_friction: Vec<f32>,
     pub shear_capacity_limit: Vec<f32>,
+    /// Empty, or parallel to `materials`: a joint's shear over normal stiffness
+    /// (VIBE_SHEAR_STIFFNESS; FIDELITY_AUDIT D11); 0 or 1 isotropic.
+    pub shear_stiffness_ratio: Vec<f32>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -134,6 +137,7 @@ impl Default for StressSolverSettings {
             bearing_joint: Vec::new(),
             shear_friction: Vec::new(),
             shear_capacity_limit: Vec::new(),
+            shear_stiffness_ratio: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,

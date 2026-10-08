@@ -29,6 +29,10 @@ import scipy.sparse.linalg as spla
 import os
 # The stage's Mohr-Coulomb joint shear (VIBE_MOHR_COULOMB_SHEAR=1; FIDELITY_AUDIT C11).
 MOHR_COULOMB = os.environ.get('VIBE_MOHR_COULOMB_SHEAR') == '1'
+# The stage's per-material shear stiffness (VIBE_SHEAR_STIFFNESS=1; FIDELITY_AUDIT
+# D11): a bond's linear stiffness k (n n' + gamma (I - n n')), gamma the
+# material's shearStiffnessRatio (with the section's rotational stiffness, as the stage).
+SHEAR_STIFFNESS = os.environ.get('VIBE_SHEAR_STIFFNESS') == '1'
 
 G = 9.81
 
@@ -221,6 +225,16 @@ def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
     offs = [np.linalg.norm(np.array([bd['centroid'][k] for k in 'xyz']) - pos[q]) for bd in bonds for q in (bd['node0'], bd['node1']) if mass[q] > 0]
     Ls = float(np.mean(offs)) if offs else 1.0
     R = np.zeros((m, 3, 3))   # angular column block: J_ang = w R y_ang
+    # Linear column block: J_lin = w Al y_lin, Al = n n' + sqrt(gamma) (I - n n')
+    # (identity unless shear stiffness applies, so the arithmetic is as before).
+    MB = np.zeros((m, 3, 3))
+    for b, bd in enumerate(bonds):
+        g = mats[bd['m']].get('shearStiffnessRatio', 0) if (SHEAR_STIFFNESS and angular == 'section') else 0
+        if g and g > 0 and g != 1:
+            nb = np.array([bd['normal'][q] for q in 'xyz']); nb = nb / np.linalg.norm(nb)
+            MB[b] = np.outer(nb, nb) + np.sqrt(g) * (np.eye(3) - np.outer(nb, nb))
+        else:
+            MB[b] = np.eye(3)
     for b, bd in enumerate(bonds):
         if angular != 'section':
             R[b] = np.eye(3) * Ls; continue
@@ -253,13 +267,16 @@ def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
             r = row[node]
             if r < 0: continue
             arm = c - pos[node]
+            Mb = MB[b]
             for k in range(3):
-                rows.append(6 * r + k); cols.append(6 * b + k); vals.append(sign * w[b])          # force from linear
+                for c2 in range(3):
+                    if Mb[k, c2] != 0: rows.append(6 * r + k); cols.append(6 * b + c2); vals.append(sign * w[b] * Mb[k, c2])
+            for k in range(3):
                 for a2 in range(3):                                                                 # torque from angular
                     if R[b][a2, k] != 0:
                         rows.append(6 * r + 3 + a2); cols.append(6 * b + 3 + k); vals.append(sign * w[b] * R[b][a2, k])
             # torque from linear: arm x L
-            X = np.array([[0, -arm[2], arm[1]], [arm[2], 0, -arm[0]], [-arm[1], arm[0], 0]])
+            X = np.array([[0, -arm[2], arm[1]], [arm[2], 0, -arm[0]], [-arm[1], arm[0], 0]]) @ Mb
             for a in range(3):
                 for k in range(3):
                     if X[a, k] != 0:
@@ -275,6 +292,7 @@ def solve(s, mats, pos, mass, extra=None, angular='uniform', sections=None):
     resid = np.linalg.norm(A @ y - f) / max(np.linalg.norm(f), 1e-30)
     Y = y.reshape(m, 6)
     J = Y * w[:, None]
+    J[:, :3] = np.einsum('bij,bj->bi', MB, Y[:, :3]) * w[:, None]
     J[:, 3:] = np.einsum('bij,bj->bi', R, Y[:, 3:]) * w[:, None]
     return J, resid
 

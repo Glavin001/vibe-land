@@ -556,6 +556,30 @@ intact joint's shear against f_v0 + mu sigma_c. Measured 2026-10-08
   0.08%. That is two glazing joints, identical on the stock garage-hifi with
   the flag off, so it is not C11's.
 
+**Shear stiffness (D11, `VIBE_SHEAR_STIFFNESS=1`, PhysX feat/shear-stiffness).**
+The masonry joints are 0.4 as stiff across their normal as along it (G = 0.4 E,
+EN 1996-1-1 3.8.3), in the stress solve, the impact models and the CPU oracle.
+Measured 2026-10-08 (garage-shear-stiffness 21822b004, C11 on), the stone
+house with mortar joints at rest:
+
+| Stress iterations per tick | Broken at rest |
+|---|---|
+| 16 (the qualification's default) | 1 (0.06%), head joint 1382 on tick 1 |
+| 64 (the product's) | 0 |
+| 1,024 | 0 |
+
+- **Why 1382 still breaks at 16 iterations:** with G = 0.4 E the pier stone
+  hangs 9.1 kN on that head joint instead of 16 kN. Converged, it is at 0.99 of
+  f_v0 + 0.4 sigma_c (the CPU oracle). A 16-iteration first tick from cold has
+  not converged, and its iterate overshoots a joint that close to capacity.
+  That is a transient of the solve, not a load the wall carries.
+- **The slab bearing (bond 1001):** in tension at 1.17 f_xk1 in the oracle, it
+  is held by re-bearing as a contact on the GPU.
+- **Vibe Town with mortar stone:** its 28 houses are 0 broken at 64 iterations
+  and 1 joint each (0.06%) at 16; nothing else changes.
+- **Default high packs, flag on:** lab 0, veneer houses 0, Vibe Town 273/273,
+  with library-151's two glazing joints as before.
+
 ## Reproduce
 
 ```sh
