@@ -429,11 +429,17 @@ def run(case, args):
                     # mass of the impactor and the chunk) against the smaller of what the chunk's
                     # joints carry along n (the support function of their capacity sets) and its
                     # crush onset over the face
-                    n_ = -Rf[0]; ks, cap = 0.0, 0.0
+                    # the joints' first-failure load along the push (the kernel's routeImpact): parallel
+                    # springs, each taking k_j / sum k of it, so min_j f_j sum k / k_j
+                    n_ = -Rf[0]; ks, ratio = 0.0, np.inf
                     for l in np.where(live & ((jchunks[:, 0] == c) | (jchunks[:, 1] == c)))[0]:
-                        aa = float(J[l]['R'][0] @ n_); tt = np.sqrt(max(0.0, 1 - aa * aa))
-                        ks += kk[l, 0] * abs(aa) + kk[l, 1] * tt
-                        cap += (F[l, 0] if aa * (1 if jchunks[l, 0] == c else -1) > 0 else F[l, 1]) * abs(aa) + F[l, 2] * tt
+                        aa = float(J[l]['R'][0] @ n_) * (1 if jchunks[l, 0] == c else -1); tt = np.sqrt(max(0.0, 1 - aa * aa))
+                        ks += kk[l, 0]
+                        f = np.inf
+                        if abs(aa) > 0: f = (F[l, 0] if aa > 0 else F[l, 1]) / abs(aa)
+                        if tt > 0: f = min(f, F[l, 2] / tt)
+                        ratio = min(ratio, f / kk[l, 0])
+                    cap = ratio * ks if np.isfinite(ratio) else 0.0
                     kc = law.row_k(row_law[c], 1e9); keff = 1 / (1 / kc + (1 / ks if ks > 0 else 0.0))
                     meff = 1 / (1 / m_imp + 1 / mass[i]) if ks == 0 else m_imp
                     Fpk = max(g[0], 0.0) * np.sqrt(keff * meff); Fcr = sig_y[c] * np.pi * row_law[c]['face'] ** 2
