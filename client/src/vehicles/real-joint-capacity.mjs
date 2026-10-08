@@ -23,16 +23,18 @@
  * and its material's density. Stiffness keeps the measured area (geometry).
  * A wheel's mount keeps its counted studs.
  */
-// Opt-in on its own, not yet part of the high profile's VIBE_REAL_CAPACITIES:
-// under it the monster truck broke its rear corner while coasting on a flat
-// street (vehicle lab `coast`, 2026-10-08: upright-wishbone utilisation 0.28
-// to past 1 within 5 ticks at steady 10-14 kN wheel loads). The stage's loads
-// on the corner spike several-fold with nothing hitting it, and vehicle joints
-// cannot be ductile yet (StressMaterialDesc carries no ductileSlip), so at real
-// capacities a brittle cascade follows. Both are routed to the stage owners
-// (docs/verification/SCENARIOS.md, "Engine or authoring").
+import { jointMaterials } from './strength-profile.mjs';
+
+// Opt-in on its own (VIBE_REAL_VEHICLE_JOINTS). Under the bound alone the
+// monster truck broke its rear corners coasting (vehicle lab `coast`,
+// 2026-10-08): its rear wheels mounting the paved lane's 25 mm lip at 23 m/s
+// put 80 kN on each (Vehicle2's damper in one tick), and brittle steel joints at
+// real capacity cascaded (251 bonds, 4 wheels). Metal joints are therefore
+// ductile with the bound (applyDuctility, below): the same run breaks nothing.
 export const realJointCapacitiesEnabled = () => (globalThis.process?.env?.VIBE_REAL_VEHICLE_JOINTS ?? '0') === '1';
-export const REAL_JOINT_CAPACITY_VERSION = 'section-bound-1';
+/** VIBE_VEHICLE_JOINTS_BRITTLE=1 (A/B only): real capacities without applyDuctility, as before 2026-10-08. */
+export const vehicleJointsBrittle = () => (globalThis.process?.env?.VIBE_VEHICLE_JOINTS_BRITTLE ?? '0') === '1';
+export const REAL_JOINT_CAPACITY_VERSION = vehicleJointsBrittle() ? 'section-bound-1' : 'section-bound-3-ductile';
 
 /** Density of each structural category's material (kg/m3). */
 export const DENSITY = Object.freeze({
@@ -76,6 +78,64 @@ export function applySectionBound(parts, bonds) {
     const scale = limit / bond.area;
     bond.strength = { ...bond.strength, ...Object.fromEntries(LIMITS.map((k) => [k, bond.strength[k] * scale])) };
     bond.realCapacity = { version: REAL_JOINT_CAPACITY_VERSION, sectionM2: limit, scale };
+    changed.push(bond);
+  }
+  return changed;
+}
+
+/**
+ * Ductile metal joints (docs/verification/SCENARIOS.md, engine item 5).
+ *
+ * A metal joint does not fracture at its capacity: it yields and keeps
+ * carrying it while it deforms, and ruptures only once its deformation is
+ * spent. The stage models that as a ductile material
+ * (PxDestructionMaterial::ductileSlip, the impact solve): at capacity the
+ * joint carries its capacity and breaks when its slip over a tick passes the
+ * ultimate slip. It is the building joints' model (town-kit materials.mjs
+ * ULTIMATE_SLIP; veneer-houses.mjs jointMaterial), and as there, under real
+ * capacities a joint is elastic up to its capacity (elastic = fatal): the
+ * stage's only path between yield and rupture is section loss at its damage
+ * rate (FIDELITY_AUDIT C2, a MODEL), where steel between f_y and f_u strain
+ * hardens and holds (EN 1993-1-1 3.2.2: f_u / f_y >= 1.10).
+ *
+ * Ultimate slip: a metal joint ruptures by necking of the metal that carries
+ * it -- the parent member beside a full-strength weld (EN 1993-1-8 4.7), the
+ * net section, the fastener. Necking elongation scales with the square root of
+ * the section (Barba's law), which is why tensile elongation is specified on
+ * the proportional gauge L0 = 5.65 sqrt(S0) (EN ISO 6892-1). So the slip at
+ * rupture is A L0 = A 5.65 sqrt(S), with S the section that carries the joint
+ * (the member's section where the section bound applies, else the joint's
+ * area; one stud of a wheel's set) and A the metal's elongation after fracture:
+ * - steel (structural members and their welds): 15% (EN 1993-1-1 3.2.2(1));
+ * - wheel studs, property class 10.9: 9% (ISO 898-1 Table 3);
+ * - aluminium alloy 6061-T6: 8% (EN 755-2, extrusions).
+ * Composites, glass, rubber, webbing and upholstery joints stay brittle.
+ */
+export const ELONGATION = Object.freeze({ steel: 0.15, stud: 0.09, alloy: 0.08 });
+/** EN ISO 6892-1 proportional gauge: L0 = 5.65 sqrt(S0). */
+export const PROPORTIONAL_GAUGE = 5.65;
+/** Studs per wheel mount the measured interface stands for (strength-profile.mjs: ten M22 studs, 38 cm2). */
+export const STUDS_PER_MOUNT = 10;
+
+/**
+ * Make each metal joint ductile: its ultimate slip from the section that
+ * carries it, elastic up to its capacity. A joint's metal is the joint profile
+ * it was given (strength-profile.mjs jointStrength: a dissimilar joint takes
+ * its weaker constituent's, so steel-to-alloy is alloy and steel-to-glass is
+ * glass), read from its modulus, not from its parts' labels (a merged chunk
+ * keeps one label for several materials). Run after applySectionBound (it
+ * reads the bound's section). Returns the bonds changed.
+ */
+export function applyDuctility(parts, bonds) {
+  const changed = [];
+  for (const bond of bonds) {
+    const metal = Object.keys(ELONGATION).find((m) => bond.strength.elasticModulus === jointMaterials[m].elasticModulus);
+    if (!metal) continue;
+    const section = bond.attachment === 'wheel-mount' ? bond.area / STUDS_PER_MOUNT : (bond.realCapacity?.sectionM2 ?? bond.area);
+    if (!(section > 0)) continue;
+    const s = bond.strength;
+    bond.strength = { ...s, compressionElastic: s.compressionFatal, tensionElastic: s.tensionFatal, shearElastic: s.shearFatal,
+      ductileSlip: ELONGATION[metal] * PROPORTIONAL_GAUGE * Math.sqrt(section) };
     changed.push(bond);
   }
   return changed;

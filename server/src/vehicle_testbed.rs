@@ -160,7 +160,22 @@ fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, da
         rows.sort_by(|a, b| b.0.total_cmp(&a.0));
         json!(rows.iter().take(6).map(|(f, n)| format!("{n} {f:.0}")).collect::<Vec<_>>())
     };
+    // The chunks carrying the largest stress input on this step by source
+    // (kN: prepared -- gravity, Vehicle2's wheel loads --, constraint, contact),
+    // for the audit: where a load entered the car, not only at the broken bond.
+    let top_loads = |r: &vibe_land_physx_bridge::FfiStressSolveReport| -> Value {
+        let n = |v: &vibe_land_physx_bridge::FfiVec3| (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+        let mut rows: Vec<(f32, String)> = r.chunks.iter().filter(|c| c.structure_id == structure && (c.node as usize) < geometry.parts.len()).map(|c| {
+            let m = geometry.parts[c.node as usize].mass as f32 / 1e3;
+            let (p, k, t) = (n(&c.prepared_linear) * m, n(&c.constraint_linear) * m, n(&c.contact_linear) * m);
+            (p + k + t, format!("{} prepared {p:.0} constraint {k:.0} contact {t:.0}", geometry.parts[c.node as usize].name))
+        }).filter(|r| r.0 > 5.).collect();
+        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+        json!(rows.iter().take(8).map(|(_, s)| s.clone()).collect::<Vec<_>>())
+    };
     let Ok(d) = arena.vehicle_destruction_debug(id) else { return };
+    let m = |w: &Value, k: &str| (w[k].as_array().map_or(0., |v| v.iter().map(|x| x.as_f64().unwrap_or(0.).powi(2)).sum::<f64>().sqrt()) / 100.).round() / 10.;
+    let wheels_now: Vec<[f64; 3]> = d["wheelLoads"].as_array().into_iter().flatten().map(|w| [m(w, "suspension"), m(w, "tire"), m(w, "constraintForce")]).collect();
     let mut contacts_logged = false;
     for b in d["bonds"].as_array().into_iter().flatten() {
         let index = b["index"].as_u64().unwrap() as u32;
@@ -172,8 +187,9 @@ fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, da
                 let r = |v: f64| (v * 1000.).round() / 1000.;
                 damage.audits.push(json!({"tick": tick, "bond": index, "parts": bond_parts(geometry, index).0, "area": geometry.bonds[index as usize].area,
                     "beforeFractionOfFatal": [r(before[0] / st.tension_fatal), r(before[1] / st.compression_fatal), r(before[2] / st.shear_fatal)],
-                    "utilisationBefore": r(before[3]), "wheelLoadsBeforeKN": damage.last_wheels, "accelG": accel_g,
+                    "utilisationBefore": r(before[3]), "wheelLoadsBeforeKN": damage.last_wheels, "wheelLoadsKN": wheels_now, "accelG": accel_g,
                     "loadsKN": loads(&geometry.bonds[index as usize].a, &geometry.bonds[index as usize].b),
+                    "topLoadsKN": if contacts_logged { Value::Null } else { report.as_ref().map_or(Value::Null, top_loads) },
                     "contactsKN": if contacts_logged { Value::Null } else { contacts_logged = true; report.as_ref().map_or(Value::Null, contacts) }}));
             }
             damage.broken.entry(index).or_insert(tick);
@@ -182,8 +198,7 @@ fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, da
             damage.last.insert(index, [f("tension"), f("compression"), f("shear"), f("utilisation")]);
         }
     }
-    let m = |w: &Value, k: &str| (w[k].as_array().map_or(0., |v| v.iter().map(|x| x.as_f64().unwrap_or(0.).powi(2)).sum::<f64>().sqrt()) / 100.).round() / 10.;
-    damage.last_wheels = d["wheelLoads"].as_array().into_iter().flatten().map(|w| [m(w, "suspension"), m(w, "tire"), m(w, "constraintForce")]).collect();
+    damage.last_wheels = wheels_now;
     for h in d["hulls"].as_array().into_iter().flatten() {
         if h["actor"].as_u64().unwrap_or(0) != 0 { damage.parts_off.insert(h["part"].as_u64().unwrap() as u32); }
     }

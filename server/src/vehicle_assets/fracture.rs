@@ -19,6 +19,10 @@ pub struct NativeVehicleAssembly {
     pub shapes: Vec<vibe_land_physx_bridge::VehiclePartShape>,
     pub bonds: Vec<vibe_land_physx_bridge::ChunkBondDesc>,
     pub materials: Vec<vibe_land_physx_bridge::StressMaterialDesc>,
+    /// Empty, or parallel to `materials`: each material's ultimate slip (m),
+    /// 0 brittle (`DestructibleSettings::ductile_slip`). Empty when no joint
+    /// of the asset is ductile, so assets without it register as before.
+    pub ductile_slip: Vec<f32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -40,6 +44,12 @@ pub struct AssetBondStrength {
     pub shear_fatal: f64,
     pub elastic_modulus: f64,
     pub residual_area_fraction: f64,
+    /// A ductile joint's ultimate slip (m): it yields at its capacity and
+    /// breaks when its slip over a tick passes this (the stage's
+    /// PxDestructionMaterial::ductileSlip); 0 (absent), brittle. Authored by
+    /// client/src/vehicles/real-joint-capacity.mjs (`applyDuctility`).
+    #[serde(default)]
+    pub ductile_slip: f64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -142,6 +152,7 @@ impl PreparedGeometry {
         let layout = self.validate_vehicle2_fracture_layout()?;
         let vector = |v: [f64; 3]| bridge::Vec3::new(v[0] as f32, v[1] as f32, v[2] as f32);
         let mut materials = Vec::new();
+        let mut slips: Vec<f32> = Vec::new();
         let parts = self
             .parts
             .iter()
@@ -204,11 +215,14 @@ impl PreparedGeometry {
                     elastic_modulus: s.elastic_modulus as f32,
                     residual_area_fraction: s.residual_area_fraction as f32,
                 };
+                let slip = s.ductile_slip as f32;
                 let material_index = materials
                     .iter()
-                    .position(|m| m == &material)
+                    .zip(&slips)
+                    .position(|(m, &d)| m == &material && d == slip)
                     .unwrap_or_else(|| {
                         materials.push(material);
+                        slips.push(slip);
                         materials.len() - 1
                     });
                 bridge::ChunkBondDesc {
@@ -222,11 +236,13 @@ impl PreparedGeometry {
                 }
             })
             .collect();
+        let ductile_slip = if slips.iter().any(|&d| d > 0.0) { slips } else { Vec::new() };
         Ok(NativeVehicleAssembly {
             parts,
             shapes,
             bonds,
             materials,
+            ductile_slip,
         })
     }
 
@@ -401,6 +417,8 @@ impl PreparedGeometry {
                 || s.elastic_modulus <= 0.0
                 || !s.residual_area_fraction.is_finite()
                 || !(0.0..=1.0).contains(&s.residual_area_fraction)
+                || !s.ductile_slip.is_finite()
+                || s.ductile_slip < 0.0
             {
                 return Err(fail("invalid strength/material properties"));
             }
@@ -598,6 +616,24 @@ mod tests {
         assert_eq!(layout.visual_chunks["hub"], 6);
         #[cfg(feature = "native-destruction")]
         assert_eq!(asset.native_fracture_assembly().unwrap().parts[6].wheel, 255);
+    }
+
+    /// Ductile joints (SCENARIOS.md engine item 5): a joint's ultimate slip
+    /// reaches the stage as a table parallel to the materials, and a slip
+    /// makes a material of its own; an asset without any stays brittle (empty).
+    #[cfg(feature = "native-destruction")]
+    #[test]
+    fn native_conversion_carries_ductile_slip_parallel_to_materials() {
+        let mut asset = functional_assembly();
+        assert!(asset.native_fracture_assembly().unwrap().ductile_slip.is_empty());
+        asset.bonds[0].strength.ductile_slip = 0.017;
+        let native = asset.native_fracture_assembly().unwrap();
+        assert_eq!(native.materials.len(), 2);
+        assert_eq!(native.ductile_slip.len(), native.materials.len());
+        assert_eq!(native.ductile_slip[native.bonds[0].material as usize], 0.017);
+        assert_eq!(native.ductile_slip[native.bonds[1].material as usize], 0.0);
+        asset.bonds[0].strength.ductile_slip = -1.0;
+        assert!(asset.validate_fracture_layout().is_err());
     }
 
     #[cfg(feature = "native-destruction")]

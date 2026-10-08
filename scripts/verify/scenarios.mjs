@@ -271,6 +271,7 @@ function judgeOne(ex, run, others) {
     // Only a projectile that cuts through the car (sweptOff scenarios) can take a wheel by
     // passing through it; a slow lump that strikes a tyre bounces off it.
     const cut = V.sweptOff && sw && (!sw.frontRearJoined || (sw.wheelsCut ?? sw.wheelsSwept) > 0);
+    if (V.bondsBroken != null) row('bonds broken', `<= ${V.bondsBroken}`, run.bondsBroken, run.bondsBroken <= V.bondsBroken);
     if (V.wheelsKept) row('wheels kept', cut ? 'measured (its path took a wheel or cut the car)' : `${V.wheelsKept}`, 4 - run.wheelsLost, cut ? null : 4 - run.wheelsLost >= V.wheelsKept);
     if (V.drives && run.driveAway) {
       const m = run.driveAway.metres, expected = V.drives === true || (V.drives === 'unless-cut' && !cut);
