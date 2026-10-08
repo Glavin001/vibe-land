@@ -19,6 +19,7 @@
 #   scripts/native-mac.sh film-determinism # the same film twice from tick 0: what must match does
 #   scripts/native-mac.sh vehicle-lab [--build B] # the vehicle test bed in the app (structures/vehicle-lab)
 #   scripts/native-mac.sh runtime|sim|bundle
+#   scripts/native-mac.sh scene-env --scene S # the pack this profile and scene run (no launch)
 #
 # --scene NAME (any subcommand) picks the city:
 #   city            the default destructible city (high-rise-3f-local)
@@ -73,6 +74,21 @@ while [ $# -gt 0 ]; do
 done
 set -- "${args[@]+"${args[@]}"}"
 [ "${1:-}" = vehicle-lab ] && SCENE=lab
+# The high-fidelity profile (scripts/fidelity/high.env, VIBE_FIDELITY=high) runs on
+# its own packs: its engine flags on the runtime packs broke 2,719 lab bonds at
+# rest (2026-10-08; the runtime packs lack its authoring: crush, real capacities,
+# buried anchors, masonry friction). VEHICLE_LAB_PACK / VIBE_TOWN_PACK still win.
+if [ "${VIBE_FIDELITY:-}" = high ]; then
+  while IFS='=' read -r key path; do
+    case "$key" in
+      lab) export VEHICLE_LAB_PACK="${VEHICLE_LAB_PACK:-${path%.json}}" ;;
+      town) export VIBE_TOWN_PACK="${VIBE_TOWN_PACK:-${path%.json}}" ;;
+    esac
+  done < <("$ROOT/scripts/fidelity/packs.sh" high)
+  for p in "$VEHICLE_LAB_PACK" "$VIBE_TOWN_PACK"; do
+    [ -f "$p.json" ] || { echo "high-fidelity profile: $p.json missing (scripts/fidelity/build-packs.sh high)" >&2; exit 1; }
+  done
+fi
 case "$SCENE" in
   city) ;;
   skyline)
@@ -121,10 +137,14 @@ case "$SCENE" in
     # VEHICLE_LAB_PACK: another build of the lab (out/vehicle-lab-crush: chunk
     # crushing authored, `VIBE_CRUSH=1 node structures/vehicle-lab/build-lab.mjs`).
     pack="${VEHICLE_LAB_PACK:-$ROOT/structures/vehicle-lab/out/vehicle-lab}"
-    stale=0
-    for source in "$ROOT"/structures/vehicle-lab/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
-    crush=0; case "$pack" in *-crush) crush=1 ;; esac
-    [ -f "$pack.json" ] && [ "$stale" = 0 ] || VIBE_CRUSH=$crush node "$ROOT/structures/vehicle-lab/build-lab.mjs"
+    if [ -z "${VEHICLE_LAB_PACK:-}" ]; then
+      stale=0
+      for source in "$ROOT"/structures/vehicle-lab/*.mjs; do [ "$pack.json" -nt "$source" ] || stale=1; done
+      [ -f "$pack.json" ] && [ "$stale" = 0 ] || node "$ROOT/structures/vehicle-lab/build-lab.mjs"
+    else
+      # Another build (the high profile's: scripts/fidelity/build-packs.sh): never rebuilt here.
+      [ -f "$pack.json" ] || { echo "VEHICLE_LAB_PACK: $pack.json missing" >&2; exit 1; }
+    fi
     # One car per trial (vehicle-lab picks the trials and sets these); the
     # fleet's 64 stress iterations; the spawn at the flat lane's start.
     export VIBE_CITY_SCENE="$pack.json" VIBE_CITY_GRID=1 VIBE_CITY_VARIED_HEIGHTS=0 \
@@ -658,6 +678,8 @@ film_bundle() {
 }
 
 case "${1:-run}" in
+  # The scene's pack as this profile and --scene resolve it (no build, no launch).
+  scene-env) echo "$VIBE_CITY_SCENE" ;;
   runtime) runtime ;;
   sim) sim ;;
   bundle) bundle ;;
