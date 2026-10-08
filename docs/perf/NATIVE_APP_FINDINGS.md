@@ -40,6 +40,26 @@
   - The client's timestamp readback (three.js WebGPU, a 1,440-byte `mapAsync` every frame) must skip a frame while the previous map is still pending. Otherwise a slow frame turns into a validation error and a rejected submit every frame.
   - Measure what the keep-alive's absence costs in tick time. The server measured idle ticks of 5.4 vs 3.1 ms, but in the app, rendering keeps the GPU active.
 
+### What the keep-alive was buying (measured)
+
+`scripts/native-mac.sh perf` on the default city, high profile: one run each, so read the differences as indicative. The table gives the worst one-second average tick and the maximum PhysX step per phase.
+
+| Phase | Tick, off | Tick, on | PhysX, off | PhysX, on |
+|---|---|---|---|---|
+| idle | 13.1 ms | 10.3 ms | 4.7 ms | 2.4 ms |
+| building meteor | 12.7 | 6.6 | 13.7 | 5.9 |
+| cannonballs | 15.2 | 7.8 | 19.3 | 6.9 |
+| car meteor | 16.1 | 11.3 | 15.8 | 16.9 |
+| triple meteor | 17.9 | 16.0 | 40.4 | 24.8 |
+
+- **Rendering is unchanged:** median 16.7 ms, a steady 60 FPS.
+- **The physics is about 1.5–2× slower without the keep-alive:** the GPU idles between short 60 Hz ticks and runs them at a lower clock (see the `apple-gpu-clock` memory: a paced server runs kernels ~2.3× slower).
+- **Not a fix:** holding the clock with permanent background GPU work. That is what hung the desktop.
+- **The responsible levers:**
+  - less GPU time per tick: fewer, longer-running dispatches per command buffer and no host waits mid-tick, so a tick is one dense burst;
+  - the performance work proper, on the solver and the narrowphase.
+- **Game Mode** (macOS 14, fullscreen) is the platform's own way to prioritise a game's CPU and GPU; worth measuring when the app runs fullscreen.
+
 ## CPU: the player's move computes tight bounds of every dynamic actor
 
 `physx_bridge.cc` `move_player` decides the controller's step offset by testing the swept capsule against `getWorldBounds()` of every dynamic actor in `records_`.
