@@ -158,6 +158,20 @@ function skyline(file) {
   return { pack };
 }
 
+/**
+ * The framed-house lanes' bungalow: revision 2 of the town kit's veneer house
+ * (veneer-houses.mjs; docs/calibration/house-headers.md), its header and plate
+ * load path from the code fastening schedule. Revision 1 (the kit's default)
+ * levered its front wall apart under dead load after the truck's hole.
+ * Revision 2's joints are authored for the high profile's engine law (real
+ * sections, the spring length of VIBE_SECTION_ROTATION); under the runtime
+ * profile's capped bending its board screws pass their sustained limit at
+ * rest (calibration house-headers, runtime), so runtime packs keep revision 1.
+ * VIBE_LAB_HOUSE_REVISION overrides (an A/B on one SDK, with FIDELITY_PACK_DIR
+ * for a separate pack set).
+ */
+export const FRAMED_HOUSE_REVISION = Number(process.env.VIBE_LAB_HOUSE_REVISION ?? ((process.env.VIBE_SECTION_ROTATION ?? '0') === '1' ? 2 : 1));
+
 export function buildLab() {
   const placements = [
     { ...buildGround(), position: [0, 0, 0], yaw: 0, group: 'terrain' },
@@ -167,7 +181,7 @@ export function buildLab() {
     const o = lane.obstacle;
     if (o.kind === 'wall') placements.push({ ...buildWall(o), position: [lane.x, 0, o.z], yaw: 0, group: `wall@${lane.id}` });
     if (o.kind === 'house') placements.push({ ...skyline('house-1story.json'), position: [lane.x, 0, o.z], yaw: 0, group: `house@${lane.id}` });
-    if (o.kind === 'framed-house') placements.push({ pack: buildVeneerBungalow().pack, position: [lane.x, 0, o.z], yaw: 0, group: `framed-house@${lane.id}` });
+    if (o.kind === 'framed-house') placements.push({ pack: buildVeneerBungalow({ revision: FRAMED_HOUSE_REVISION }).pack, position: [lane.x, 0, o.z], yaw: 0, group: `framed-house@${lane.id}` });
     if (o.kind === 'street') {
       o.strikes = [];
       for (const [k, { side, file }] of o.houses.entries()) {

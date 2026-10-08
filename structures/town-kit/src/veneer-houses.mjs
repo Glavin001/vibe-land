@@ -31,7 +31,7 @@
  * is y 0.15; the veneer's outer faces are x +-5.0 and z +-3.9.
  */
 import {Builder,composeScene,round,v} from './geometry.mjs';
-import {M,MORTAR_JOINT,C24,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled,ULTIMATE_SLIP} from './materials.mjs';
+import {M,MORTAR_JOINT,C24,DOUBLE_TOP_PLATE,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,REVISION_2_CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled,ULTIMATE_SLIP,fastenerRow} from './materials.mjs';
 import {cornerReferencedHulls} from './parts/hull-origins.mjs';
 import {realCapacitiesEnabled} from './real-capacities.mjs';
 import {planStair,checkStair,requiredVoid,checkHeadroom,buildTimberStair,frameFloorOpening,stairConnection,housingShear,STAIR_CONNECTIONS,STAIR_TYPES,OPENING_TYPES,STAIR_SIZES} from './stairs-timber.mjs';
@@ -65,7 +65,7 @@ export const STRUCTURAL_TYPES=['foundation',...STUDS,...HORIZONTAL,'ceiling-jois
 export const SKIN_TYPES=['brick-veneer','veneer-lintel-course','drywall','ceiling-lining'];
 export const COSMETIC_TYPES=[...SKIN_TYPES,'gable-cladding','roof-covering','window-frame','door-frame','glazing'];
 
-function materialsFor(b,crush=false){
+function materialsFor(b,crush=false,revision=1){
  const t=b.table,add=m=>t.push(m)-1,base=t[M.frame];
  const timber=add({...structuredClone(base),name:'stud-timber',color:'#b48a5c',textureKey:'aged-timber',...C24});
  const veneer=add({...structuredClone(t[M.brick]),name:'brick-veneer',color:'#9a5a46',textureKey:'brick',...(crush&&{crush:CRUSH.brickVeneer})});
@@ -81,7 +81,9 @@ function materialsFor(b,crush=false){
   tensionElastic:LONG_TERM*WALL_TIE.tension/WALL_TIE.area,tensionFatal:WALL_TIE.tension/WALL_TIE.area,
   shearElastic:LONG_TERM*WALL_TIE.shear/WALL_TIE.area,shearFatal:WALL_TIE.shear/WALL_TIE.area,
   elasticModulus:WALL_TIE.stiffness*WALL_TIE.length/WALL_TIE.area,impactElasticModulus:WALL_TIE.axialStiffness*WALL_TIE.length/WALL_TIE.area});
- return {timber,veneer,mortar,drywall,tile,gable,gableFrame,flooring,tie};
+ // Revision 2: the doubled top plate's strength as two nailed plies (materials.mjs DOUBLE_TOP_PLATE).
+ const plate=revision>=2?add({...structuredClone(base),name:'double-top-plate',color:'#b48a5c',textureKey:'aged-timber',...DOUBLE_TOP_PLATE}):timber;
+ return {timber,veneer,mortar,drywall,tile,gable,gableFrame,flooring,tie,plate};
 }
 
 /**
@@ -101,8 +103,11 @@ function materialsFor(b,crush=false){
  * to its Johansen capacity, so it is elastic up to its capacity, as the timber members are.
  */
 const connectionElastic=()=>realCapacitiesEnabled()?1:LONG_TERM;
-function jointMaterial(b,kind,area,length,table=CONNECTIONS){
- const c=table[kind],k=c.per==='joint'?1/area:1/(c.perArea??1),LONG_TERM=connectionElastic();
+function jointMaterial(b,kind,area,length,table=CONNECTIONS,revision=1){
+ let c=table[kind];const k=c.per==='joint'?1/area:1/(c.perArea??1),LONG_TERM=connectionElastic();
+ // Fasteners in a row along a face (c.row: their spacing and the face's width): the row this kind's
+ // median contact holds, end distances 5 d off (materials.mjs fastenerRow).
+ if(c.row){const along=area/c.row.width,n=Math.max(2,Math.round(along/c.row.spacing)+1);c={...c,twist:fastenerRow(n,Math.max(along-2*5*3.15e-3,.01))};}
  const f={compression:c.compression,tension:c.tension*k,shear:c.shear*k};
  const perArea=c.bearing?BEARING.elasticModulus/c.bearing:c.per==='joint'?c.slip/area:c.slip/(c.perArea??1);
  const elastic=perArea*length;
@@ -118,13 +123,36 @@ function jointMaterial(b,kind,area,length,table=CONNECTIONS){
   // A compressed bearing joint (materials.mjs CONNECTIONS restBearing): its stiffness at rest is the
   // wood's in bearing; in rotation it is a pin on its nails, K_ser sum r^2 at that stiffness
   // (radius scaled by sqrt(slip / bearing)), graded at the most loaded nail (S = A g^2 / reach).
-  ...(c.restBearing&&c.twist&&realCapacitiesEnabled()?(()=>{const bearing=BEARING.elasticModulus/c.restBearing,slipPerArea=c.slip/area;
+  ...(c.restBearing&&c.twist&&realCapacitiesEnabled()?(()=>{const bearing=BEARING.elasticModulus/c.restBearing,slipPerArea=c.per==='joint'?c.slip/area:c.slip/(c.perArea??1);
    return {bearingElasticModulus:bearing*length,bendGyration:c.twist.gyration*Math.sqrt(slipPerArea/bearing),bendSection:c.twist.gyration**2/c.twist.reach,
-    twistGyration:c.twist.gyration*Math.sqrt(slipPerArea/bearing)};})():{})})-1;
+    twistGyration:c.twist.gyration*Math.sqrt(slipPerArea/bearing),
+    // The stage grades twist on the same radius (twistModulus A g^2 / reach): revision 2 moves the reach
+    // with it so the strength stays the nails' (A g0^2 / reach0); revision 1's read slip / bearing of it
+    // (a stud end-nailed to its plate: 1/23 of its 30 N m).
+    ...(revision>=2?{twistReach:c.twist.reach*slipPerArea/bearing}:{})};})():{})})-1;
+}
+
+/**
+ * The length the stage gives a bond's spring (physx-bridge native_destruction.cc): under
+ * VIBE_SECTION_ROTATION (the high-fidelity profile) the chunks' separation along the bond normal, at
+ * least the contact's own size sqrt(A); otherwise the distance between their centres. A connection's
+ * stiffness k is a modulus k L / A only at the L the stage uses: revision 1's kinds took the median
+ * centre distance, which under the high profile left joist seats 17x and heels 5x their stiffness.
+ */
+export function springLength(s,bond){
+ const p=s.nodes[bond.node0].centroid,q=s.nodes[bond.node1].centroid,d=[q.x-p.x,q.y-p.y,q.z-p.z];
+ if((globalThis.process?.env?.VIBE_SECTION_ROTATION??'0')!=='1')return Math.hypot(...d);
+ const n=bond.normal,len=Math.hypot(n.x,n.y,n.z);
+ return Math.max(Math.abs(d[0]*n.x+d[1]*n.y+d[2]*n.z)/len,Math.sqrt(bond.area));
+}
+/** A wall tie of the house's (materialsFor) with its in-plane stiffness at spring length L. */
+function tieMaterial(b,tie,L){
+ const m=structuredClone(b.table[tie]);m.elasticModulus=WALL_TIE.stiffness*L/WALL_TIE.area;m.impactElasticModulus=WALL_TIE.axialStiffness*L/WALL_TIE.area;
+ return b.table.push(m)-1;
 }
 
 /** The connection kind joining two node types (different pieces). */
-function connection(ta,tb,wa,wb,normal){
+function connection(ta,tb,wa,wb,normal,revision=1){
  // The stair and its floor opening (stairs-timber.mjs): hangers, housings, the landing frame.
  const stair=stairConnection(ta,tb,normal);if(stair!==undefined)return stair;
  if((ta==='header-joist'&&tb==='trimmer-joist')||(tb==='header-joist'&&ta==='trimmer-joist'))return 'header-hanger';
@@ -158,6 +186,10 @@ function connection(ta,tb,wa,wb,normal){
  if(one('gable-frame'))return one('ridge-board')?null:'gable-stud';
  if(one('subfloor'))return 'flooring-nail';
  if(has('foundation','bottom-plate'))return 'anchor';
+ // Revision 2 (REVISION_2_CONNECTIONS): a header's ends toe-nailed to its king studs, the plate
+ // face-nailed to a header built up to it.
+ if(revision>=2&&has('header','king-stud'))return 'header-king';
+ if(revision>=2&&has('header','top-plate'))return 'header-plate';
  if(either(STUDS)&&either(HORIZONTAL)&&!both(STUDS)&&!both(HORIZONTAL))return 'stud-plate';
  if(has('ceiling-joist','top-plate')||has('floor-joist','top-plate')||has('rim-joist','top-plate'))return 'joist-plate';
  if(has('rafter','top-plate'))return 'rafter-seat';
@@ -170,11 +202,21 @@ function connection(ta,tb,wa,wb,normal){
  throw Error(`No connection for ${ta} - ${tb}`);
 }
 
+/**
+ * `revision`: 1, the house as first authored (the default: the packs, tests and
+ * calibrations that name it); 2, its load path re-authored from the code
+ * fastening schedule (docs/calibration/house-headers.md, 2026-10-08): the
+ * top plate cut at every bay so it bends where a plate bends; the plate
+ * face-nailed to a header built up to it; the header toe-nailed to its king
+ * studs (materials.mjs REVISION_2_CONNECTIONS); every joint's stiffness at the
+ * spring length the stage uses (springLength).
+ */
 export function buildVeneerHouse(options={}){
- const C={storeys:1,palette:'ochre',key:null,crush:crushEnabled(),...options};
+ const C={storeys:1,palette:'ochre',key:null,crush:crushEnabled(),revision:1,...options};
  if(![1,2].includes(C.storeys))throw Error('storeys: 1 or 2');
+ if(![1,2].includes(C.revision))throw Error('revision: 1 or 2');
  const key=C.key??(C.storeys===1?'veneer-bungalow':'veneer-house');
- const b=new Builder(key,{palette:C.palette,group:'building'}),MAT=materialsFor(b,C.crush);
+ const b=new Builder(key,{palette:C.palette,group:'building'}),MAT=materialsFor(b,C.crush,C.revision);
  const members=[],wallOf=[],walls={},veneer=[],ties=[];
  const X=5-S.veneer-S.cavity,Z=3.9-S.veneer-S.cavity,Xi=X-D,Zi=Z-D;   // frame outer / inner faces
  const tag=(first,wall)=>{for(let i=first;i<b.s.nodes.length;i++)wallOf[i]=wall;return range(first,b.s.nodes.length);};
@@ -203,7 +245,10 @@ export function buildVeneerHouse(options={}){
   let cuts=[[w.u0,w.u1]];for(const o of w.openings.filter(o=>o.kind==='door'))cuts=cuts.flatMap(([a,c])=>o.u1<=a||o.u0>=c?[[a,c]]:[[a,o.u0],[o.u1,c]].filter(([p,q])=>q-p>EPS));
   // A lintel under 0.45 m of the top plate is built up solid to it: cripples that short
   // would be 0.4 kg chunks between 9 kg plates and lintels (lint: mass contrast).
-  function headerDepth(o){return yTP-o.y1<=S.solidHeader?yTP-o.y1:Math.min(S.header,yTP-o.y1);}
+  // Revision 2: the 2 / 190 x 45 lintel with cripple studs on it to the plate (AS 1684.2 'jack studs'
+  // over a lintel; IRC R602.7 cripples), not blocked solid: the plate bears on cripples, which are
+  // pinned at both ends, so plate and lintel do not become one glued beam.
+  function headerDepth(o){return yTP-o.y1<=S.solidHeader&&C.revision<2?yTP-o.y1:Math.min(S.header,yTP-o.y1);}
   const busy=[...w.openings.map(o=>[o.u0-2*W,o.u1+2*W]),...(w.junctions??[]).map(j=>[j.u-j.width/2,j.u+j.width/2])];
   const grid=[];for(let u=w.u0;u<w.u1-2*W-EPS;u+=S.spacing)grid.push(u);grid.push(w.u1-W);
   for(const u of grid){
@@ -228,7 +273,31 @@ export function buildVeneerHouse(options={}){
   const plate=(type,a,c,ya,yb)=>{const pieceId=b.pieceId++,seams=[a];for(let u=w.u0+S.spacing/2+2.4;u<c-1.2;u+=2.4){const f=free(u);if(f>seams.at(-1)+1.2&&f<c-1.2)seams.push(f);}seams.push(c);
    for(let i=0;i<seams.length-1;i++)add(type,seams[i],seams[i+1],ya,yb,{pieceId,along:99});};
   for(const [a,c] of cuts)plate('bottom-plate',a,c,w.y0,yBP);
-  plate('top-plate',w.u0,w.u1,yTP,w.top);
+  if(C.revision>=2&&C.plateBays!==false)chunkedPlate(w,add,upright,yTP,w.top);else if(C.revision>=2){const pieceId=b.pieceId++;add("top-plate",w.u0,w.u1,yTP,w.top,{pieceId,along:2.4,material:MAT.plate});}else plate('top-plate',w.u0,w.u1,yTP,w.top);
+ }
+
+ /**
+  * Revision 2: the doubled top plate (one 90 x 90 member, as revision 1) cut
+  * into chunks at every bay, midway between the uprights under it and clear of
+  * the joists and rafters on it. The stage checks a member's bending only
+  * across its chunks' bonds: revision 1's 2.4 m chunks were rigid over a gap,
+  * a lever that pried up the studs and headers beyond it, where a real plate
+  * bends and, overloaded, breaks beside the support. The cuts are the plate's
+  * own timber (one piece, as revision 1's splices).
+  */
+ function chunkedPlate(w,add,upright,ya,yb){
+  const ends=[...upright].sort((p,q)=>p[0]-q[0]);
+  // Joists and rafters bearing on an x wall (their x extents), which a cut must clear.
+  const bearers=w.axis==='x'?[...joistLines(),...rafterLines()].map(x=>[x,x+W]):[];
+  const clear=u=>!bearers.some(([p,q])=>u>p-.01&&u<q+.01)&&!ends.some(([p,q])=>u>p-.01&&u<q+.01);
+  const cuts=[];
+  for(let k=0;k<ends.length-1;k++){
+   const a=ends[k][1],c=ends[k+1][0],m=(a+c)/2;if(c-a<.15)continue;
+   let u=m;for(let d=0;!clear(u)&&d<.3;d+=.005){if(clear(m+d)){u=m+d;break;}if(clear(m-d)){u=m-d;break;}}
+   if(clear(u)&&u>w.u0+.2&&u<w.u1-.2&&(!cuts.length||u-cuts.at(-1)>=.2))cuts.push(round(u));
+  }
+  const xs=[w.u0,...cuts,w.u1],pieceId=b.pieceId++;
+  for(let i=0;i<xs.length-1;i++)add('top-plate',xs[i],xs[i+1],ya,yb,{pieceId,along:99,material:MAT.plate});
  }
 
  /** Window or door frame in the rough opening; a window has one pane on its sill. */
@@ -499,7 +568,7 @@ export function buildVeneerHouse(options={}){
  for(const bond of s.bonds){
   const ta=s.nodeTypes[bond.node0],tb=s.nodeTypes[bond.node1];
   if(s.nodePieces[bond.node0]===s.nodePieces[bond.node1])continue;   // within one member: its own material
-  let kind=connection(ta,tb,wallOf[bond.node0]??'',wallOf[bond.node1]??'',bond.normal);
+  let kind=connection(ta,tb,wallOf[bond.node0]??'',wallOf[bond.node1]??'',bond.normal,C.revision);
   // The birdsmouth's plumb heel cut stands against the plate's outer face; the seat is what is nailed.
   if(kind==='rafter-seat'&&Math.abs(bond.normal.y)<.5)kind=null;
   // Real capacities: a stud against a plate's end or side (a junction stud beside the crossing wall's
@@ -508,24 +577,36 @@ export function buildVeneerHouse(options={}){
   // A verge rafter lies on its gable frame for its whole length; the ridge board stops against it.
   if(kind==='ridge'&&(verge.has(bond.node0)||verge.has(bond.node1)))kind=null;if(kind===null){bond.drop=true;continue;}bond.kind=kind;if(!kinds.has(kind))kinds.set(kind,[]);kinds.get(kind).push(bond);
  }
- const kindMaterial={mortar:MAT.mortar,glazing:M.glassJoint};
+ const kindMaterial={mortar:MAT.mortar,glazing:M.glassJoint},tieMaterials=new Map();
  // The housings' shear is the ledge a tread or riser bears on, which its size sets.
  if(stair){const shear=housingShear(stair.plan);stairTable=Object.fromEntries(Object.entries(STAIR_CONNECTIONS).map(([k,c])=>[k,c.shear==null?{...c,shear:shear[k]}:c]));}
+ const median=v=>v.sort((x,y)=>x-y)[v.length>>1],c=i=>s.nodes[i].centroid;
  for(const [kind,list] of kinds){
-  if(!(kind in kindMaterial)){
-   const median=v=>v.sort((x,y)=>x-y)[v.length>>1],c=i=>s.nodes[i].centroid;
-   const area=median(list.map(x=>x.area)),length=median(list.map(x=>Math.hypot(c(x.node0).x-c(x.node1).x,c(x.node0).y-c(x.node1).y,c(x.node0).z-c(x.node1).z)));
-   kindMaterial[kind]=kind==='flooring-nail'||kind==='landing-deck'?jointMaterialFlooring(b,length,`${kind}-joint`):kind in CONNECTIONS?jointMaterial(b,kind,area,length):jointMaterial(b,kind,area,length,stairTable);
+  const table=C.revision>=2&&kind in REVISION_2_CONNECTIONS?REVISION_2_CONNECTIONS:kind in CONNECTIONS?CONNECTIONS:stairTable;
+  const make=(area,length)=>kind==='flooring-nail'||kind==='landing-deck'?jointMaterialFlooring(b,length,`${kind}-joint`):jointMaterial(b,kind,area,length,table,C.revision);
+  if(kind in kindMaterial){for(const bond of list){bond.m=kindMaterial[kind];delete bond.kind;}continue;}
+  const area=median(list.map(x=>x.area));
+  if(C.revision<2){
+   const length=median(list.map(x=>Math.hypot(c(x.node0).x-c(x.node1).x,c(x.node0).y-c(x.node1).y,c(x.node0).z-c(x.node1).z)));
+   kindMaterial[kind]=make(area,length);
+   for(const bond of list){bond.m=kindMaterial[kind];delete bond.kind;}
+   continue;
   }
-  for(const bond of list){bond.m=kindMaterial[kind];delete bond.kind;}
+  // Revision 2: each bond the stiffness of its own connection at the length the stage gives its spring
+  // (springLength), within 9%: one material per kind and quarter-octave of length (at its centre).
+  const bins=new Map();
+  for(const bond of list){const k=Math.round(4*Math.log2(springLength(s,bond)));if(!bins.has(k))bins.set(k,[]);bins.get(k).push(bond);}
+  for(const [k,group] of bins){const m=make(area,2**(k/4));for(const bond of group){bond.m=m;delete bond.kind;}}
  }
  s.bonds=s.bonds.filter(x=>!x.drop);
+ // Revision 2: a tie's in-plane stiffness (WALL_TIE.stiffness) at the length the stage gives its spring.
+ if(C.revision>=2)for(const tie of ties){const L=springLength(s,tie),k=Math.round(4*Math.log2(L));tie.m=tieMaterials.get(k)??tieMaterials.set(k,tieMaterial(b,MAT.tie,2**(k/4))).get(k);}
  s.bonds.push(...ties);
  pack.defaults.solver.materials=b.table;
  pack=cornerReferencedHulls(composeScene([{pack}],{key,title:C.storeys===1?'Brick-veneer bungalow':'Brick-veneer two-storey house'}));
  const counts={};for(const ty of pack.scenario.nodeTypes)counts[ty]=(counts[ty]??0)+1;
  const metadata={
-  kind:'building',buildingType:key,options:C,
+  kind:'building',buildingType:key,options:C,revision:C.revision,
   structure:{
    system:'brick-veneer timber frame',structuralTypes:STRUCTURAL_TYPES,cosmeticTypes:COSMETIC_TYPES,skinTypes:SKIN_TYPES,
    loadPath:['concrete slab on grade','bottom plates on M12 anchor bolts','studs at 600 mm, king/jack studs and headers at openings','doubled top plate',...(C.storeys>1?['rim and floor joists, particleboard floor','upper storey frame','timber stair: stringers on the slab and the landing, hung from the landing rim and the opening\'s trimmer; landing on posts']:[]),'ceiling joists tying the rafter feet (bolted heels)','rafters on birdsmouth seats, ridge board','concrete tiles on battens'],

@@ -123,6 +123,25 @@ const limits = ({ compression, tension, shear }) => ({
 export const C24 = { density: 420, elasticModulus: 11e9, ...limits({ compression: 21e6, tension: 24e6, shear: 4.0e6 }), residualAreaFraction: 0 };
 
 /**
+ * The doubled top plate (revision 2, veneer-houses.mjs): two 45 x 90 C24 plies
+ * face-nailed one 16d per 406 mm (IRC R602.3(1) item 12), modelled as one
+ * 90 x 90 member. Nailed plies are a mechanically jointed beam (EN 1995-1-1
+ * Annex B): gamma = 1 / (1 + pi^2 E A s / (K L^2)) = 0.01-0.07 over spans of
+ * 1.4-4.3 m (E A 4.5e7 N, s 0.406 m, K_ser 0.72 kN/mm), so the plies bend
+ * almost independently: in the wall's plane the plate's moment capacity is
+ * 2 f_m,k b t^2 / 6 = 1.46 kN m, half the solid section's. The stage grades a
+ * bond's fibre stress M / S with S of the 90 x 90 section, so the member's
+ * bending strength is f_m,k x 2 W_ply / W_90x90 = 12 MPa; f_c,0,k, f_v,k as
+ * C24 (axially the two plies carry together: f_t,0,k 14.5 MPa on the full
+ * area is within 20% of it). What stays approximate: its bending stiffness
+ * (the stage's 90 x 90 is 4x the plies'; one stiffness per bond cannot be
+ * both the plies' bearing and their slip), and its out-of-plane bending,
+ * where the plies stand side by side and the solid section is the real one
+ * (the plate is braced there by a joist or rafter seat every 0.6 m).
+ */
+export const DOUBLE_TOP_PLATE = { density: 420, elasticModulus: 11e9, ...limits({ compression: 21e6, tension: 24e6 * (2 * 0.045 ** 2) / 0.09 ** 2, shear: 4.0e6 }), residualAreaFraction: 0 };
+
+/**
  * Perpendicular-to-grain bearing of C24 (EN 338: f_c,90,k 2.5 MPa, E90,mean
  * 0.37 GPa): what a stud end does to the plate it stands on, a joist to the
  * plate it sits on. Every timber connection's compression limit, and its
@@ -294,6 +313,51 @@ export const CONNECTIONS = {
 };
 // A stud beside a plate's end or side, not standing on it (real-capacity packs): the same nails, no bearing.
 CONNECTIONS['stud-plate-side'] = (({ restBearing, ...c }) => c)(CONNECTIONS['stud-plate']);
+
+/**
+ * One 8d common nail (2-1/2 in x 0.131 in: 3.33 x 63.5 mm) in C24, rho_k 350,
+ * as NAIL above (EN 1995-1-1): M_y,Rk = 0.3 x 600 x 3.33^2.6 = 4.1 N m;
+ * f_h,k = 0.082 x 350 x 3.33^-0.3 = 20.0 MPa; F_v,Rk = 1.15 sqrt(2 M_y,Rk
+ * f_h,k d) = 0.85 kN (8.2.2, mode f). Toe-nailed (driven at 30 deg, started
+ * L/3 from the member's end: NDS 2018 12.1.5 / Fig. 12A) it reaches L cos 30
+ * - L/3 = 34 mm into the other member: withdrawal f_ax,k d l = 2.45 x 3.33 x
+ * 34 = 0.28 kN (8.3.2). K_ser rho_m^1.5 d^0.8 / 30 = 0.75 kN/mm (Table 7.1).
+ */
+export const NAIL_8D = { lateral: 850, withdrawal: 276, slip: 751e3 };
+/**
+ * Face nails at 16 in. (406 mm) centres along a 90 mm wide plate: the contact
+ * area each 16d (the kit's 3.15 x 90 NAIL) serves. IRC 2021 Table R602.3(1)
+ * item 12, "top plate to top plate: 16d common, 16 in. o.c., face nail" (the
+ * same nailing a framer gives a plate over a header built up to it).
+ */
+const FACE_NAILED_PLATE = 0.406 * 0.09;
+/**
+ * The house's load path, re-authored (veneer-houses.mjs `revision: 2`,
+ * 2026-10-08; docs/calibration/house-headers.md): the connections revision 1
+ * rated as something else.
+ */
+export const REVISION_2_CONNECTIONS = {
+  // Header to king stud: IRC 2021 Table R602.3(1) item 11, "continuous
+  // header to stud: 4-8d common toe nails", at each end. (Revision 1 rated
+  // it as a stud against a plate's side: 2 end-grain nails, 1.0 kN.) Lateral
+  // 4 x 0.85 x 0.83 (NDS 12.5.4 toe-nail factor) = 2.8 kN; withdrawal 4 x
+  // 0.28 x 0.67 = 0.74 kN. The nails run down the lintel's 190 mm depth.
+  // The header bears on its jack studs (stud-plate, as revision 1): the king
+  // stud's nails only locate it.
+  'header-king': { per: 'joint', tension: 4 * NAIL_8D.withdrawal * NAIL.toeWithdrawal, shear: 4 * NAIL_8D.lateral * NAIL.toeLateral,
+    compression: BEARING.compression, slip: 4 * NAIL_8D.slip, twist: fastenerRow(4, 0.19 - 2 * 5 * 3.33e-3) },
+  // Top plate to the header (built up solid to it) under it: face-nailed as
+  // the plates are to each other, one 16d per 406 mm (R602.3(1) item 12).
+  // Revision 1 rated it as a corner lap, one nail per 40 cm^2: 20 nails along
+  // a 1 m door head where a framer drives 2-3, which made plate and header
+  // one 0.5 m deep glued beam.
+  // The plate bears on the header (restBearing: as stiff as its 90 mm of
+  // cross-grain wood, as a stud on its plate) and turns on its row of nails,
+  // a pin: 2-3 nails do not make plate and header one beam.
+  // (`perArea`: the patch one fastener group serves; its capacities and slip in N and N/m.)
+  'header-plate': { per: 'area', perArea: FACE_NAILED_PLATE, tension: NAIL.withdrawal, shear: NAIL.lateral, compression: BEARING.compression, slip: SLIP.nail,
+    row: { spacing: 0.406, width: 0.09 } },
+};
 
 /**
  * A brick wall tie (veneer to stud): a corrugated or twisted steel strip
