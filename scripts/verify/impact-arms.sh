@@ -30,6 +30,16 @@ done
 [ "$one_run" = 1 ] || [ "$repeats" -ge 3 ] || echo "[arms] warning: $repeats repeats; outcomes bifurcate, 3 is the least that says how often"
 [ "$one_run" = 1 ] || mkdir -p "$out"
 export PX_DESTRUCTION_ALLOW_UNCONVERGED=1 PX_DESTRUCTION_IMPACT_LOG=1 VIBE_TESTBED_EARLY_END=1
+# Until the high profile's SDK is current again (bounded: 20 min).
+wait_current() {
+  local end=$((SECONDS + 1200))
+  echo "[arms] the SDK is stale: waiting for sdk-follow.sh's rebuild"
+  while [ $SECONDS -lt $end ]; do
+    sleep 30
+    (source "$ROOT/scripts/fidelity/high.env"; export PHYSX_ROOT=$(cd -P "$PHYSX_ROOT" && pwd); "$ROOT/scripts/fidelity/provenance.sh" high > /dev/null 2>&1) && return 0
+  done
+  return 1
+}
 # One run (the workers call the script back with --one ARM TRIAL K).
 one() {
   local arm=$1 trial=$2 k=$3 dir=$out/$1/$2-r$3 t0
@@ -39,7 +49,13 @@ one() {
   VERIFY_TRIALS="$trial\$" VERIFY_LABEL="impact-arms-$arm-$trial-r$k" "$ROOT/scripts/verify/acceptance.sh" "$arm" "$dir" \
     --skip veneer,lab,town,wire,walk,node > "$dir.log" 2>&1 || echo "[arms] $arm $trial r$k: acceptance exited non-zero ($dir.log)"
   grep -E "refused|NOT IN THIS SDK" "$dir.log" | sed "s/^/[arms] $arm: /"
-  if grep -q "\[acceptance\] refused" "$dir.log"; then rm -rf "$dir"; touch "$out/.refused"; echo "[arms] stopping: the provenance check refused (rebuild the SDK)"; return 1; fi
+  if grep -q "\[acceptance\] refused" "$dir.log"; then
+    # A branch moved: sdk-follow.sh rebuilds within minutes. Wait for a current
+    # SDK (up to 20 min), then run this one again; stop the queue only past that.
+    rm -rf "$dir"
+    if [ "${4:-0}" = 0 ] && wait_current; then one "$arm" "$trial" "$k" 1; return $?; fi
+    touch "$out/.refused"; echo "[arms] stopping: the provenance check refused for 20 min (is sdk-follow.sh running?)"; return 1
+  fi
   echo "[arms] $arm $trial r$k: $(( $(date +%s) - t0 )) s"
 }
 if [ "$one_run" = 1 ]; then one "${one_args[@]}"; exit $?; fi
