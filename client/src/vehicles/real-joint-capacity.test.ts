@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyDuctility, applySectionBound, memberSection } from './real-joint-capacity.mjs';
+import { applyDuctility, applySectionBound, memberSection, YIELD_RATIO } from './real-joint-capacity.mjs';
 import { jointMaterials } from './strength-profile.mjs';
 
 const box = (x: number, y: number, z: number) => ({ position: [0, 0, 0], vertices: [[0, 0, 0], [x, y, z]] });
@@ -49,5 +49,23 @@ describe('real joint capacities (section bound)', () => {
     // Glass is brittle: no slip, its yield band kept.
     expect(glazed.strength.ductileSlip).toBeUndefined();
     expect(glazed.strength.tensionElastic).toBeLessThan(glazed.strength.tensionFatal);
+  });
+  it('with the stage static ductility, metal joints yield at f_y / f_u of their capacity (S355, 10.9, 6061-T6)', () => {
+    const before = process.env.PX_DESTRUCTION_STATIC_DUCTILE;
+    process.env.PX_DESTRUCTION_STATIC_DUCTILE = '1';
+    try {
+      const a = { id: 'a', material: 'frame', mass: 7850 * 0.01, position: [0, 0, 0], shapes: [box(1, 0.1, 0.1)] };
+      const b = { id: 'b', material: 'frame', mass: 7850 * 0.01, position: [0, 0, 0], shapes: [box(1, 0.1, 0.1)] };
+      const weld = { a: 'a', b: 'b', area: 0.001, strength: { ...steel } };
+      const wheel = { a: 'a', b: 'b', area: 38e-4, attachment: 'wheel-mount', strength: { ...jointMaterials.stud } };
+      applyDuctility([a, b], [weld, wheel]);
+      expect(YIELD_RATIO.steel).toBeCloseTo(355 / 490, 6);
+      expect(weld.strength.tensionElastic / weld.strength.tensionFatal).toBeCloseTo(355 / 490, 6);
+      expect(weld.strength.shearElastic / weld.strength.shearFatal).toBeCloseTo(355 / 490, 6);
+      expect(wheel.strength.tensionElastic / wheel.strength.tensionFatal).toBeCloseTo(940 / 1040, 6);
+      expect(weld.strength.ductileSlip).toBeGreaterThan(0);
+    } finally {
+      if (before === undefined) delete process.env.PX_DESTRUCTION_STATIC_DUCTILE; else process.env.PX_DESTRUCTION_STATIC_DUCTILE = before;
+    }
   });
 });

@@ -34,7 +34,7 @@ import { jointMaterials } from './strength-profile.mjs';
 export const realJointCapacitiesEnabled = () => (globalThis.process?.env?.VIBE_REAL_VEHICLE_JOINTS ?? '0') === '1';
 /** VIBE_VEHICLE_JOINTS_BRITTLE=1 (A/B only): real capacities without applyDuctility, as before 2026-10-08. */
 export const vehicleJointsBrittle = () => (globalThis.process?.env?.VIBE_VEHICLE_JOINTS_BRITTLE ?? '0') === '1';
-export const REAL_JOINT_CAPACITY_VERSION = vehicleJointsBrittle() ? 'section-bound-1' : 'section-bound-3-ductile';
+export const REAL_JOINT_CAPACITY_VERSION = vehicleJointsBrittle() ? 'section-bound-1' : (globalThis.process?.env?.PX_DESTRUCTION_STATIC_DUCTILE ?? '0') === '1' ? 'section-bound-4-yield' : 'section-bound-3-ductile';
 
 /** Density of each structural category's material (kg/m3). */
 export const DENSITY = Object.freeze({
@@ -112,6 +112,21 @@ export function applySectionBound(parts, bonds) {
  * Composites, glass, rubber, webbing and upholstery joints stay brittle.
  */
 export const ELONGATION = Object.freeze({ steel: 0.15, stud: 0.09, alloy: 0.08 });
+/**
+ * Yield over ultimate strength, f_y / f_u, of each joint metal: where its
+ * joint starts to yield (the elastic limit) below the capacity it ruptures at
+ * (the fatal limit). With the stage's static ductility
+ * (PX_DESTRUCTION_STATIC_DUCTILE) a metal joint strain-hardens between the two
+ * with no section loss and necks past fatal; without it the band is the
+ * damage law's section loss, so it is authored only with the flag
+ * (staticDuctility()).
+ * - steel: S355, f_y 355 / f_u 490 MPa (EN 10025-2; EN 1993-1-1 Table 3.1);
+ * - wheel studs, property class 10.9: R_p0.2 940 / R_m 1040 MPa (ISO 898-1 Table 3);
+ * - aluminium 6061-T6 extrusion: R_p0.2 240 / R_m 260 MPa (EN 755-2).
+ */
+export const YIELD_RATIO = Object.freeze({ steel: 355 / 490, stud: 940 / 1040, alloy: 240 / 260 });
+/** PX_DESTRUCTION_STATIC_DUCTILE=1: the stage yields and necks metal joints in its static verdict. */
+export const staticDuctility = () => (globalThis.process?.env?.PX_DESTRUCTION_STATIC_DUCTILE ?? '0') === '1';
 /** EN ISO 6892-1 proportional gauge: L0 = 5.65 sqrt(S0). */
 export const PROPORTIONAL_GAUGE = 5.65;
 /** Studs per wheel mount the measured interface stands for (strength-profile.mjs: ten M22 studs, 38 cm2). */
@@ -134,7 +149,10 @@ export function applyDuctility(parts, bonds) {
     const section = bond.attachment === 'wheel-mount' ? bond.area / STUDS_PER_MOUNT : (bond.realCapacity?.sectionM2 ?? bond.area);
     if (!(section > 0)) continue;
     const s = bond.strength;
-    bond.strength = { ...s, compressionElastic: s.compressionFatal, tensionElastic: s.tensionFatal, shearElastic: s.shearFatal,
+    // Elastic to capacity, unless the stage yields metal joints statically:
+    // then they yield at f_y / f_u of it (YIELD_RATIO).
+    const y = staticDuctility() ? YIELD_RATIO[metal] : 1;
+    bond.strength = { ...s, compressionElastic: s.compressionFatal * y, tensionElastic: s.tensionFatal * y, shearElastic: s.shearFatal * y,
       ductileSlip: ELONGATION[metal] * PROPORTIONAL_GAUGE * Math.sqrt(section) };
     changed.push(bond);
   }
