@@ -398,7 +398,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     // Steps the native stage could not complete (error bits set): a lab invariant, 0.
     let (mut failed_steps, mut crushed_chunks) = (0u32, 0u32);
     // Every chunk the stage crushed (structure 0), for the shots' energy balance.
-    let mut crushed_ids: BTreeSet<u32> = BTreeSet::new();
+    let crushed_ids: std::cell::RefCell<BTreeSet<u32>> = Default::default();
     // Per tick: [tick, bonds broken (all evaluations), chunks crushed, step ms].
     let mut stage: Vec<[f32; 4]> = Vec::new();
     let mut step = |arena: &mut crate::movement::PhysicsArena, city: &mut crate::city::CityRuntime, tick: &mut u32, input: Option<&InputCmd>| {
@@ -417,7 +417,7 @@ fn run(r: &Run, meta: &Value) -> Value {
             solves += 1; if status.converged { converged += 1; }
             if status.error != 0 { failed_steps += 1; }
             crushed_chunks += status.crushed_chunks;
-            crushed_ids.extend(city.native_crushed_chunks().into_iter().filter(|c| c.0 == 0).map(|c| c.1));
+            crushed_ids.borrow_mut().extend(city.native_crushed_chunks().into_iter().filter(|c| c.0 == 0).map(|c| c.1));
             stage.push([*tick as f32, status.broken_bonds as f32, status.crushed_chunks as f32, *step_ms.last().unwrap_or(&0.)]);
             // VIBE_TESTBED_STAGE=1: each tick that breaks anything -- in the trial
             // evaluation, the corrected one, and after the motion is final.
@@ -520,6 +520,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     // over the balance window. (previous tick's velocity and height; ground J;
     // at the last balance sample: ground J, the impactor's drop m g dh)
     let (mut shot_prev, mut ground_j, mut ground_at_sample, mut drop_at_sample, mut energy_y0): (Option<(Vector3<f32>, f32)>, f32, f32, f32, f32) = (None, 0., 0., 0., 0.);
+    // The structure's own balance window (see below), and the impactor's losses after it.
+    let (mut window, mut off_house, mut ground_after_from, mut ground_after): (Option<Value>, u32, Option<u32>, f32) = (None, 0, None, 0.);
     let probe_target = trial["target"].as_array().map(|t| Vector3::new(t[0].as_f64().unwrap() as f32, t[1].as_f64().unwrap() as f32, t[2].as_f64().unwrap() as f32));
     let heading_of = |f: Vector3<f32>| f.x.atan2(f.z);
     for k in 0..ticks {
@@ -878,12 +880,46 @@ fn run(r: &Run, meta: &Value) -> Value {
                     let g = vibe_netcode::movement::GRAVITY as f32;
                     if energy_since == Some(tick) { energy_y0 = shot_prev.map_or(p.y, |q| q.1); }
                     if let (Some(start), Some((pv, py))) = (energy_since, shot_prev) {
-                        if tick - start <= 90 && !touched_house {
-                            let before = 0.5 * pr.mass * pv.norm_squared() + pr.mass * g * py;
-                            let after = 0.5 * pr.mass * v.norm_squared() + pr.mass * g * p.y;
-                            if before > after { ground_j += before - after; }
-                        }
+                        let before = 0.5 * pr.mass * pv.norm_squared() + pr.mass * g * py;
+                        let after = 0.5 * pr.mass * v.norm_squared() + pr.mass * g * p.y;
+                        let loss = (before - after).max(0.);
+                        if tick - start <= 90 && !touched_house { ground_j += loss; }
                         if tick - start <= 90 && (tick - start) % 3 == 0 { ground_at_sample = ground_j; drop_at_sample = pr.mass * g * (energy_y0 - p.y); }
+                        // The structure's balance window: from first contact with the
+                        // house to the impactor's exit (3 ticks touching nothing of it)
+                        // or its first contact outside it (a tick off the house that
+                        // costs it energy: grade, terrain, other bodies). Closed at
+                        // the tick before; what follows is reported separately.
+                        if window.is_none() {
+                            off_house = if touched_house { 0 } else { off_house + 1 };
+                            let outside = !touched_house && loss > 0.005 * 0.5 * pr.mass * energy_v0 * energy_v0;
+                            if outside || off_house >= 3 || tick - start > 90 {
+                                let world = arena.physx_world_mut().expect("physx");
+                                let (mut kinetic, mut released) = (0f32, 0f32);
+                                let anchored = vibe_land_physx_bridge::native_entity_id(0, 0);
+                                let mut bodies: HashMap<u32, f32> = HashMap::new();
+                                for &n in &energy_nodes {
+                                    let Ok(a) = world.native_chunk_aim(0, n) else { continue };
+                                    if !a.found || a.entity_id == anchored { continue; }
+                                    released += strength.node_mass(n) * g * (strength.node_y(n) - a.center.y);
+                                    *bodies.entry(a.entity_id).or_insert(0.) += strength.node_mass(n);
+                                }
+                                if let Ok(snaps) = world.native_chunk_body_snapshots() {
+                                    for b in snaps.iter() { if let Some(m) = bodies.get(&b.entity_id) { kinetic += 0.5 * m * (b.linear_velocity.x.powi(2) + b.linear_velocity.y.powi(2) + b.linear_velocity.z.powi(2)); } }
+                                }
+                                let (fracture, crush) = house.as_ref().map_or((0., 0.), |h| {
+                                    let rows = world.native_bond_stress_rows(0).unwrap_or_default();
+                                    let f: f32 = rows.iter().filter(|r| (r.remaining_area <= 0.0 || r.broken) && !h.broken_before.contains(&r.bond_index)
+                                        && h.is_house[r.node0 as usize] && h.is_house[r.node1 as usize]).map(|r| strength.fracture_work(r.bond_index)).sum();
+                                    let c: f32 = crushed_ids.borrow().iter().filter(|&&i| h.is_house[i as usize]).map(|&i| strength.crush_work(i)).sum();
+                                    (f, c)
+                                });
+                                window = Some(json!({"endTick": tick - 1, "end": if outside { "contact outside the structure" } else if off_house >= 3 { "exit" } else { "1.5 s" },
+                                    "lostJ": 0.5 * pr.mass * (energy_v0 * energy_v0 - pv.norm_squared()), "dropJ": pr.mass * g * (energy_y0 - py),
+                                    "fragmentsKeJ": kinetic, "peReleasedJ": released.max(0.), "fractureJ": fracture, "crushJ": crush}));
+                                ground_after_from = Some(tick);
+                            }
+                        } else if ground_after_from.is_some() && tick - start <= 90 { ground_after += loss; }
                     }
                     shot_prev = Some((v, p.y));
                 }
@@ -1013,12 +1049,13 @@ fn run(r: &Run, meta: &Value) -> Value {
             // debris keeps a body, so "no longer found" misses it), plus any
             // house chunk otherwise gone.
             let gone: Vec<u32> = (0..h.is_house.len() as u32).filter(|&i| h.is_house[i as usize] && strength.node_mass(i) > 0.
-                && (crushed_ids.contains(&i) || !world.native_chunk_aim(0, i).map_or(false, |a| a.found))).collect();
+                && (crushed_ids.borrow().contains(&i) || !world.native_chunk_aim(0, i).map_or(false, |a| a.found))).collect();
             let crush_done: f32 = gone.iter().map(|&i| strength.crush_work(i)).sum();
             physics = Some(json!({"pathLengthM": length, "pathFractureJ": fracture, "pathCrushJ": crush, "pathMassKg": mass, "pathChunks": chunks,
                 "fractureWorkJ": fracture_done, "crushWorkJ": crush_done, "brokenIds": broken, "goneIds": gone,
                 "impactorMassKg": pr.mass, "impactorRadiusM": pr.radius,
-                "groundJ": ground_at_sample, "impactorDropJ": drop_at_sample}));
+                "groundJ": ground_at_sample, "impactorDropJ": drop_at_sample,
+                "window": window.take(), "afterWindowJ": ground_after}));
         }
     }
     drop(arena);

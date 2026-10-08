@@ -207,6 +207,17 @@ export const TRIALS = [
   { id: 'meteor-framed-house', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
     attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 2.0, 20.1], from: 180, slope: 0.3, distance: 140 },
     why: 'a meteor through a brick-veneer house: it goes through' },
+  // The meteor against the structure before anything else (owner, 2026-10-08):
+  // into the roof first, descending at 45 degrees (the roof spans y 2.6-3.9 m
+  // over z 20.1-27.9); and into the upper front wall on a 3% descent whose
+  // 2 m-radius rock clears grade until it leaves by the back wall (centre 2.6 m
+  // at the face, ~2.35 m at z 27.9).
+  { id: 'meteor-framed-house-roof', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
+    attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 3.6, 24.0], from: 180, slope: 1.0, distance: 140 },
+    why: 'a meteor descending at 45 degrees strikes the roof first and goes into the house' },
+  { id: 'meteor-framed-house-upper', at: 'pad/rest', drive: { kind: 'park' }, seconds: 5,
+    attack: { kind: 'shot', projectile: 'meteor', at: 0.5, target: [124, 2.6, 20.1], from: 180, slope: 0.03, distance: 140 },
+    why: 'a meteor into the upper front wall on a trajectory that leaves by the back wall before it reaches grade' },
   // The study of how a hit fails the veneer house (structures/town-kit/scripts/
   // impact-study.py): the truck into its front-left corner (centred on the
   // corner line, x 119: half on the front wall's end and corner studs), and

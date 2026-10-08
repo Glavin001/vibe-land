@@ -55,13 +55,17 @@ const physicsChecks = (r, kind, profile) => {
   const m = ph.impactorMassKg, ke = 0.5 * m * pr.vIn * pr.vIn, past = r.attack?.pastTarget ?? -1;
   const plug = ph.pathMassKg, carry = ke * plug / (m + plug);
   const pathD = ph.pathFractureJ + ph.pathCrushJ + carry;
+  // The structure's own window: first contact with it to the impactor's exit
+  // or its first contact outside it (the probe's physics.window); what follows
+  // (ground, terrain, other bodies) is reported, not charged to the structure.
+  const w = ph.window;
   const last = pr.energy?.[pr.energy.length - 1] ?? [0, 0, 0, pr.energyLost];
-  const [, fragKe, pe, lost] = last;
-  const modelled = ph.fractureWorkJ + ph.crushWorkJ;
+  const [fragKe, pe, lost] = w ? [w.fragmentsKeJ, w.peReleasedJ, w.lostJ] : [last[1], last[2], last[3]];
+  const modelled = w ? w.fractureJ + w.crushJ : ph.fractureWorkJ + ph.crushWorkJ;
   const contact = (1 - E_REST * E_REST) * carry; // reduced mass against the plug it set moving
   // Outside the house: the impactor's mechanical-energy loss on ticks it
   // touched no house chunk (floor slab, grade, kerbs), and its own drop.
-  const ground = ph.groundJ ?? 0, drop = ph.impactorDropJ ?? 0;
+  const ground = w ? 0 : ph.groundJ ?? 0, drop = w ? w.dropJ : ph.impactorDropJ ?? 0;
   const resid = lost + drop + pe - fragKe - modelled - ground;
   const MJ = (x) => `${(x / 1e6).toFixed(2)} MJ`;
   const out = [];
@@ -69,7 +73,7 @@ const physicsChecks = (r, kind, profile) => {
   out.push({ check: `${kind}: gets through when its energy exceeds what its path can dissipate`, measured: `KE ${MJ(ke)} vs path ${MJ(pathD)} (fracture ${MJ(ph.pathFractureJ)}, crush ${MJ(ph.pathCrushJ)}, carrying ${(plug / 1000).toFixed(1)} t: ${MJ(carry)}); ${fmt(past)} m past`,
     threshold: 'KE > path work => past >= 1 m', pass: ke <= pathD || past >= 1 });
   // (2) Energy closes.
-  out.push({ check: `${kind}: energy balance closes (KE lost + its drop = house dissipation + ground contact + fragments' KE - PE released)`, measured: `lost ${MJ(lost)} + drop ${MJ(drop)}; house: fracture ${MJ(ph.fractureWorkJ)} + crush ${MJ(ph.crushWorkJ)}; ground ${MJ(ground)}; fragments ${MJ(fragKe)}, PE ${MJ(pe)}: unaccounted ${MJ(resid)} (house contact may take ${MJ(contact)})`,
+  out.push({ check: `${kind}: energy balance closes over the structure's window (KE lost + its drop = structure dissipation + fragments' KE - PE released)`, measured: `${w ? `window to tick ${w.endTick} (${w.end})` : 'no window'}: lost ${MJ(lost)} + drop ${MJ(drop)}; fracture ${MJ(w ? w.fractureJ : ph.fractureWorkJ)} + crush ${MJ(w ? w.crushJ : ph.crushWorkJ)}; fragments ${MJ(fragKe)}, PE ${MJ(pe)}${w ? '' : `; ground ${MJ(ground)}`}: unaccounted ${MJ(resid)} (contact may take ${MJ(contact)}); after the window (reported): ${MJ(ph.afterWindowJ ?? 0)}`,
     threshold: `-${100 * ENERGY_TOL}% KE <= unaccounted <= contact + ${100 * ENERGY_TOL}% KE`, pass: resid >= -ENERGY_TOL * ke && resid <= contact + ENERGY_TOL * ke });
   // (3)+(4) Momentum through what held: no joint holds a force past its capacity.
   out.push({ check: `${kind}: nothing holds past its capacity (impulse into what held <= capacity x dt)`, measured: `peak ${(pr.peakForceN / 1e6).toFixed(2)} MN (dp/dt ${fmt(pr.momentumLost)} kg m/s), held capacity ${(pr.heldCapacityN / 1e6).toFixed(2)} MN, touched ${(pr.touchedCapacityN / 1e6).toFixed(2)} MN${pr.infiniteWall ? ': INFINITE WALL' : pr.partialHold ? ': partial hold' : ''}`,
@@ -162,7 +166,7 @@ export const SCENARIOS = [
   {
     id: 'shots-through-house',
     behaviour: 'A cannonball and a meteor go through a house with local damage; the roof holds unless its support truly fails',
-    harness: { kind: 'testbed', build: 'monster', trials: ['cannonball-framed-house', 'meteor-framed-house', 'smallshots-framed-house'] },
+    harness: { kind: 'testbed', build: 'monster', trials: ['cannonball-framed-house', 'meteor-framed-house', 'meteor-framed-house-roof', 'meteor-framed-house-upper', 'smallshots-framed-house'] },
     judge(dir, profile) {
       const runs = testbedRuns(dir);
       const ball = run(runs, 'cannonball-framed-house'), meteor = run(runs, 'meteor-framed-house'), small = run(runs, 'smallshots-framed-house');
@@ -174,6 +178,12 @@ export const SCENARIOS = [
           measured: r ? `${fmt(r.attack?.pastTarget)} m past` : 'missing', threshold: 'past >= 1 m', pass: !!r && (r.attack?.pastTarget ?? -1) >= 1, hard: profile === 'high' })),
         ...physicsChecks(ball, 'cannonball', profile),
         ...physicsChecks(meteor, 'meteor', profile),
+        // The meteor against the structure before anything else (owner, 2026-10-08).
+        ...[['meteor-framed-house-roof', 'meteor into the roof (45 degrees)'], ['meteor-framed-house-upper', 'meteor into the upper front wall']].flatMap(([t, label]) => {
+          const r = run(runs, t);
+          return [{ check: `${label}: penetrates the structure`, measured: r ? `${fmt(r.attack?.pastTarget)} m past the point struck` : 'missing', threshold: 'past >= 1 m', pass: !!r && (r.attack?.pastTarget ?? -1) >= 1, hard: profile === 'high' },
+            ...physicsChecks(r, label, profile)];
+        }),
         ...houseChecks(ball, { local: true, band: BAND.ball, through: (r) => ({ check: 'gets past the front wall (m)', measured: fmt(r.attack?.pastTarget), threshold: '>= 1', pass: (r.attack?.pastTarget ?? 0) >= 1 }) }).map((c) => ({ ...c, check: `cannonball: ${c.check}` })),
         // The meteor (2 m radius, through the whole house) takes the roof's
         // supports on its path, so its roof may come down where they went: only
