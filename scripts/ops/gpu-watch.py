@@ -185,7 +185,7 @@ def waiters(procs):
             continue
         m = re.search(r"kill -0 \$?(\w+)", body)
         target, problem = None, None
-        if "pgrep -f" in body:
+        if re.search(r"pgrep -f\s+(?!['\"]\^)", body):  # an anchored pattern ('^...') can't match the loop
             g = re.search(r"pgrep -f\s+(\"[^\"]*\"|'[^']*'|\S+)", body)
             target = g.group(1) if g else "pgrep"
             problem = "polls with `pgrep -f`, which matches the loop itself"
