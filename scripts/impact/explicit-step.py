@@ -121,7 +121,7 @@ def cone_coulomb(W, g, Ps, mu):
 
 
 class Explicit:
-    def __init__(self, P, patch=None, boundary='fixed', dtype=np.float64, mass_scale=None, damping=0.0, cone='coulomb'):
+    def __init__(self, P, patch=None, boundary='fixed', dtype=np.float64, mass_scale=None, damping=0.0, cone='coulomb', rotation_rule=None):
         self.P = P; nn, nl = P.nn, P.nl; self.dtype = dtype; self.cone = cone
         imp = P.imp[0]; self.imp = imp
         # node positions: the mean of their joints' centroids (as cheap-contact-time.py)
@@ -150,6 +150,10 @@ class Explicit:
             # selective (rotational) mass scaling: raise each node's rotational inertia so its own
             # rotational frequency bound stays under the translational one (see plan)
             Mi = self.scale_rotation(Mi, mass_scale)
+        self.rot_scale = np.ones(nn)
+        if rotation_rule:
+            self.rule_kind = rotation_rule
+            Mi = self.rotation_rule(Mi)
         self.Mi = sp.diags(sel.astype(float)) @ Mi @ sp.diags(sel.astype(float))
         self.B, self.Bt = P.B.tocsr(), P.Bt.tocsr()
         # absorbing boundary: a dashpot on each crossing link, Z = sqrt(k m_out) per component
@@ -189,6 +193,28 @@ class Explicit:
         S = sp.diags(np.repeat(np.maximum(rowc, 1), 6))
         self.Ws = [np.asarray((b.T @ (self.Mi @ S) @ b).todense()) for b in self.Bc]
         self.jacobi = False
+
+    def rotation_rule(self, Mi):
+        """Rotational inertia scaled per chunk so its rotational frequency, on its own diagonal stiffness
+        block, is no higher than its translational one: s = max(1, lambda_max(I^-1/2 K_rr I^-1/2) /
+        lambda_max(m^-1 K_tt)) (no parameter). Translational mass is exact; a chunk's rigid spin is not
+        (its inertia is s I). The window's h then follows from the scaled bound as before."""
+        P = self.P; Mi = Mi.tolil()
+        # rule 'free': the contact rows' chunks keep their true inertia (their rigid response sets the impulse)
+        self.rule_exempt = set(P.index[int(P.d['link_u'][l, 1])] for l in np.where(P.contact)[0]) if self.rule_kind == 'free' else set()
+        K = (P.B @ sp.diags((self.k * (P.alive0 & P.joint)[:, None]).reshape(-1)) @ P.Bt).tocsr()
+        for n in range(P.nn):
+            if n == self.imp or P.d['node_tensor'][n] or n in self.rule_exempt: continue
+            Kii = K[6 * n:6 * n + 6, 6 * n:6 * n + 6].toarray()
+            if not Kii.any(): continue
+            m = Mi[6 * n, 6 * n]; It = np.array([Mi[6 * n + 3 + q, 6 * n + 3 + q] for q in range(3)])
+            wt = m * np.linalg.eigvalsh(Kii[:3, :3]).max()
+            wr = np.linalg.eigvalsh(np.diag(np.sqrt(It)) @ Kii[3:, 3:] @ np.diag(np.sqrt(It))).max()
+            if wt > 0 and wr > wt:
+                self.rot_scale[n] = wr / wt
+                for q in range(3): Mi[6 * n + 3 + q, 6 * n + 3 + q] = It[q] / self.rot_scale[n]
+        self.scaled_nodes = int((self.rot_scale > 1).sum())
+        return Mi.tocsr()
 
     def scale_rotation(self, Mi, target):
         """Rotational inertia raised so no node's rotational Gershgorin frequency exceeds `target` (rad/s)."""
@@ -405,7 +431,7 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument('dump'); ap.add_argument('--e-json', required=True)
     ap.add_argument('--T-ms', type=float, default=16.67); ap.add_argument('--safety', type=float, default=0.9)
     ap.add_argument('--patch', type=float, default=None); ap.add_argument('--boundary', default='fixed')
-    ap.add_argument('--fp32', action='store_true'); ap.add_argument('--mass-scale', type=float, default=None,
+    ap.add_argument('--fp32', action='store_true'); ap.add_argument('--rotation-rule', choices=['all', 'free'], default=None, help='scale chunks\' rotational inertia so each one\'s rotational frequency (own block) is no higher than its translational one (rotation_rule): every chunk, or every chunk but the contact rows\' (free)'); ap.add_argument('--mass-scale', type=float, default=None,
                     help='target rotational frequency (rad/s); default none')
     ap.add_argument('--dt-us', type=float, default=None); ap.add_argument('--omega', default='true', choices=['true', 'bound'], help='the substep from the true largest frequency (power iteration), or from the GPU step\'s rigorous bound (Collatz-Wielandt, exFinish)'); ap.add_argument('--sweeps', type=int, default=4); ap.add_argument('--json'); ap.add_argument('--zeta', type=float, default=0.0, help='damping ratio at the hop frequency (beta = 2 zeta / omega_hop)'); ap.add_argument('--handoff', action='store_true')
     ap.add_argument('--contacts', default='gauss-seidel', choices=['gauss-seidel', 'jacobi'], help='rows one after another (--sweeps of them), or all from the same velocities with mass splitting (the GPU step)')
@@ -413,7 +439,7 @@ def main():
     a = ap.parse_args()
     P = cf.Problem(a.dump, True, [2217, 2218])
     E = json.loads(pathlib.Path(a.e_json).read_text()); eb = E['broken']
-    X = Explicit(P, patch=a.patch, boundary=a.boundary, dtype=np.float32 if a.fp32 else np.float64, mass_scale=a.mass_scale, cone=a.cone)
+    X = Explicit(P, patch=a.patch, boundary=a.boundary, dtype=np.float32 if a.fp32 else np.float64, mass_scale=a.mass_scale, cone=a.cone, rotation_rule=a.rotation_rule)
     X.jacobi = a.contacts == 'jacobi'
     wmax, wg = X.omega_max()
     if a.omega == 'bound': wb = X.omega_bound(); print(f'omega bound (GPU) {wb:.4g} rad/s against the true {wmax:.4g}'); wmax = wb
@@ -447,6 +473,11 @@ def main():
     vv = R['v'].copy(); vv[6 * imp:6 * imp + 6] = 0
     Mfull = P.M.tocsr()
     ke_house = 0.5 * float(vv @ (Mfull @ vv))
+    # the kinetic energy the scaled rotational inertia adds, against the true (unscaled) kinetic energy
+    w = vv.reshape(P.nn, 6)[:, 3:]; I = np.array([[1 / P.Mi[6 * n + 3 + q, 6 * n + 3 + q] if P.Mi[6 * n + 3 + q, 6 * n + 3 + q] > 0 else 0.0 for q in range(3)] for n in range(P.nn)])
+    ke_added = 0.5 * float(((X.rot_scale[:, None] - 1) * I * w * w).sum())
+    out['ke_added'] = ke_added
+    if X.rot_scale.max() > 1: print(f"rotation rule: {int((X.rot_scale > 1).sum())} chunks scaled (median {np.median(X.rot_scale[X.rot_scale > 1]):.2f}, max {X.rot_scale.max():.2f}); added KE {ke_added:.0f} J = {100 * ke_added / max(ke_house, 1e-30):.2f}% of the house's true KE", flush=True)
     out.update(ke_imp_lost=ke_imp_lost, ke_house=ke_house, plastic_work=R['plastic_work'], ev_steps=R['ev_steps'],
                broken_final=sorted(R['broke_at']), first_break_ms={str(k): v * 1e3 for k, v in R['broke_at'].items()})
     print(f"energy: impactor lost {ke_imp_lost:.0f} J, house KE {ke_house:.0f} J, plastic work {R['plastic_work']:.0f} J; "
