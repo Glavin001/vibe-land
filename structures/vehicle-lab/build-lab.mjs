@@ -162,9 +162,15 @@ function skyline(file) {
  * The framed-house lanes' bungalow: revision 2 of the town kit's veneer house
  * (veneer-houses.mjs; docs/calibration/house-headers.md), its header and plate
  * load path from the code fastening schedule. Revision 1 (the kit's default)
- * unzipped its front wall under dead load after the truck's hole.
+ * levered its front wall apart under dead load after the truck's hole.
+ * Revision 2's joints are authored for the high profile's engine law (real
+ * sections, the spring length of VIBE_SECTION_ROTATION); under the runtime
+ * profile's capped bending its board screws pass their sustained limit at
+ * rest (calibration house-headers, runtime), so runtime packs keep revision 1.
+ * VIBE_LAB_HOUSE_REVISION overrides (an A/B on one SDK, with FIDELITY_PACK_DIR
+ * for a separate pack set).
  */
-export const FRAMED_HOUSE_REVISION = 2;
+export const FRAMED_HOUSE_REVISION = Number(process.env.VIBE_LAB_HOUSE_REVISION ?? ((process.env.VIBE_SECTION_ROTATION ?? '0') === '1' ? 2 : 1));
 
 export function buildLab() {
   const placements = [
