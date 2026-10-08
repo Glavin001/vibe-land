@@ -124,6 +124,22 @@ An arm that cannot run says why: B is skipped until the bridge reads
 `PX_DESTRUCTION_IMPACT_STEP`. Once B exists and agrees with C on this table,
 `high.env` takes B's flags and C stays as the reference arm.
 
+**First comparison (2026-10-08, garage-hifi 9e5d201f5, B not merged yet).**
+Neither arm is physically right on these shots:
+- **A (static)** gets every shot through, but breaks 3,072-3,096 of the
+  house's 3,113 bonds. Every shot brings the whole house down: 37-61% of the
+  broken bonds are more than 4 m from the shot line, and the Jaccard index
+  against C is 0.02-0.14. Its stage cost is 59-94 ms per tick on average,
+  with a maximum of 144-253 ms.
+- **C (ADMM at the correctness budget)** stops every shot at the face. It
+  breaks 62-443 bonds, all local. But 94-99% of the impactor's energy is
+  unaccounted over the structure's window. The probe reports a partial hold,
+  or an infinite wall on the roof shot: a peak of 722 MN against 2.7 MN of
+  capacity held. Its stage cost is 1.5-13.7 s per tick on average, with a
+  maximum of 15-32 s.
+
+The record is in `target/verify/impact-arms/impact-arms.txt`.
+
 ### Provenance
 
 `scripts/fidelity/provenance.sh PROFILE` checks that the SDK and the packs are
