@@ -269,7 +269,7 @@ def stream():
         busy = sum(1 for j in jobs if j["slot"] != "exclusive" and j["pid"] in procs)
         if busy < SLOTS and not queue and not any(j["slot"] == "exclusive" for j in jobs):
             idle_since = idle_since or now
-            if now - idle_since > IDLE_S:
+            if now - idle_since > IDLE_S and "idle" not in active:  # once per idle spell
                 emit("idle", f"IDLE {SLOTS - busy} of {SLOTS} GPU slots free for {int((now - idle_since) / 60)} min, nothing queued")
         else:
             idle_since = None
