@@ -235,13 +235,8 @@ launch() {
   local entry="$1"; shift
   cd "$BUNDLE_DIR"
   # The same environment the play server runs the city with
-  # (scripts/perf/play-server.sh), under the machine's GPU lock, and under the
-  # WindowServer guard (scripts/ops/ws-guard.sh): stopped if the desktop stops
-  # answering for 2 s, before macOS's 40 s watchdog logs the user out
-  # (2026-10-08, twice). WS_GUARD=0 runs without it.
-  local guard=("$ROOT/scripts/ops/ws-guard.sh")
-  [ "${WS_GUARD:-1}" = 0 ] && guard=()
-  exec ${guard[@]+"${guard[@]}"} "$ROOT/scripts/perf/gpu-run.sh" native-city env \
+  # (scripts/perf/play-server.sh), under the machine's GPU lock.
+  exec "$ROOT/scripts/perf/gpu-run.sh" native-city env \
     VIBE_PHYSICS_BACKEND=physx_gpu RUST_LOG="${RUST_LOG:-info}" \
     CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache-vehicles" \
     VIBE_DESTRUCTION_ASSET_DIR="$ROOT/destruction/assets/scenes" \
