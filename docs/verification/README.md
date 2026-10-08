@@ -395,7 +395,32 @@ accurate destruction", not a damage percentage.
    measured) and the 3-tick sampling. Unaccounted energy above that is "energy
    vanished".
 
-   The balance has two more terms (the ground term is reported separately):
+   **The structure's window.** The balance is closed over the structure's own
+   window (the probe's `physics.window`). It runs from the impactor's first
+   contact with the structure to whichever comes first:
+   - its exit (3 ticks touching nothing of the structure);
+   - its first contact outside the structure: a tick off the structure that
+     costs it more than 0.5% of its contact KE (grade, terrain, other bodies);
+   - 1.5 s.
+
+   The window records the impactor's KE loss and drop, the fragments' KE and
+   released PE, and the fracture and crush work at its close. What the impactor
+   loses after it (`afterWindowJ`) is reported, never charged to the structure.
+   The meteor trials are aimed so the structure comes first:
+   - `meteor-framed-house-roof` descends at 45 degrees into the roof;
+   - `meteor-framed-house-upper` enters the upper front wall on a 3% descent
+     and leaves by the back wall above grade.
+
+   Each is judged on penetration (>= 1 m past the point struck, hard in high),
+   pass-through against path work, closure over the window, and momentum
+   through what held. The meteor into a vehicle is not judged yet: the probe's
+   joint model (the scene pack's bonds) does not hold a car's joints, so its
+   path work and dissipation cannot be computed. The original
+   `meteor-framed-house` (into the lower wall and the slab) stays as the
+   whole-run case.
+
+   Without a window (older probe output), the balance falls back to the whole
+   run with two more terms (the ground term is reported separately):
 
    - **The impactor's own drop** (m g dh over the window), on the supply side.
    - **Ground contact.** The impactor's mechanical-energy loss, ½ m |v|^2 + m g y,
