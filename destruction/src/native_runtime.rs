@@ -37,7 +37,7 @@ use crate::ids;
 use crate::manifest::DestructionManifest;
 use crate::types::NamedSpan;
 use crate::bridge_authoring::{
-    authored_structure, CityDestructionError, CHUNK_COLLISION_MASK, GROUP_CHUNK,
+    authored_structure, CityDestructionError, CHUNK_COLLISION_MASK, GROUP_CHUNK, GROUP_STATIC,
 };
 
 /// Stress iterations per evaluation.
@@ -525,6 +525,38 @@ struct EscapeSample {
     to_speed: f32,
 }
 
+/// The static ground mesh's entity id: the static namespace's top end, clear
+/// of the ids the server hands out from its start.
+pub const GROUND_MESH_ENTITY: u32 = 0x1fff_fff0;
+
+/// A structure's ground chunks as world-frame boxes. Ground is laid level:
+/// the structure's rotation must be a turn about y by a multiple of 90 degrees
+/// (or none) and the chunks cuboids, so their boxes stay axis-aligned.
+fn ground_boxes_of(structure: &crate::manifest::StructureManifest, nodes: &[u32])
+    -> Result<Vec<vibe_land_physx_bridge::ground_mesh::GroundBox>, CityDestructionError> {
+    let [qx, qy, qz, qw] = structure.world_rotation;
+    let level = qx.abs() < 1e-6 && qz.abs() < 1e-6;
+    // Quarter turns about y: (cos, sin) of the angle, each 0 or +-1.
+    let (c, s) = (qw * qw - qy * qy, 2.0 * qw * qy);
+    if !level || !((c.abs() - 1.0).abs() < 1e-5 && s.abs() < 1e-5 || (s.abs() - 1.0).abs() < 1e-5 && c.abs() < 1e-5) {
+        return Err(CityDestructionError::Bridge(format!("structure {}: static ground must be laid level, in quarter turns", structure.structure_id)));
+    }
+    let (c, s) = (c.round(), s.round());
+    let p = structure.world_position;
+    nodes.iter().map(|&n| {
+        let chunk = &structure.chunks[n as usize];
+        let crate::manifest::ChunkGeometry::Cuboid { half_extents: h } = chunk.geometry else {
+            return Err(CityDestructionError::Bridge(format!("structure {} node {n}: a ground chunk must be a cuboid", structure.structure_id)));
+        };
+        let k = chunk.centroid;
+        // Rotation about y: x' = c x + s z, z' = -s x + c z.
+        let (cx, cz) = (c * k[0] + s * k[2], -s * k[0] + c * k[2]);
+        let (hx, hz) = ((c * h[0]).abs() + (s * h[2]).abs(), (s * h[0]).abs() + (c * h[2]).abs());
+        let centre = [p[0] + cx, p[1] + k[1], p[2] + cz];
+        Ok(([centre[0] - hx, centre[1] - h[1], centre[2] - hz], [centre[0] + hx, centre[1] + h[1], centre[2] + hz]))
+    }).collect()
+}
+
 impl NativeCityDestruction {
     /// Author every structure into the scene and configure the stage.
     ///
@@ -558,9 +590,15 @@ impl NativeCityDestruction {
             .map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
 
         let mut chunk_total = 0usize;
+        let mut ground_boxes: Vec<vibe_land_physx_bridge::ground_mesh::GroundBox> = Vec::new();
         for structure in &manifest.structures {
             let (pose, nodes, bonds) = authored_structure(&manifest, structure);
             chunk_total += nodes.len();
+            // Static ground: support chunks of a ground material (roads, paving)
+            // are drawn but collide as one triangle mesh (below), not as boxes
+            // whose seams catch whatever slides over them.
+            let ground: Vec<u32> = structure.chunks.iter().filter(|c| c.support
+                && settings.ground_materials.get(c.material as usize).copied().unwrap_or(false)).map(|c| c.node_index).collect();
             world
                 .native_create_destructible(
                     structure.structure_id,
@@ -572,6 +610,20 @@ impl NativeCityDestruction {
                     CHUNK_COLLISION_MASK,
                 )
                 .map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
+            if !ground.is_empty() {
+                world.native_exclude_chunk_contacts(structure.structure_id, &ground)
+                    .map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
+                ground_boxes.extend(ground_boxes_of(structure, &ground)?);
+            }
+        }
+        if !ground_boxes.is_empty() {
+            let mesh = vibe_land_physx_bridge::ground_mesh::from_boxes(&ground_boxes);
+            world.add_static_mesh(vibe_land_physx_bridge::StaticMeshDesc {
+                entity_id: GROUND_MESH_ENTITY, user_id: 0,
+                pose: vibe_land_physx_bridge::Pose { position: vibe_land_physx_bridge::Vec3::new(0.0, 0.0, 0.0), rotation: vibe_land_physx_bridge::Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 } },
+                friction: -1.0, restitution: 0.0, collision_group: GROUP_STATIC, collision_mask: CHUNK_COLLISION_MASK | GROUP_CHUNK,
+            }, &mesh.vertices, &mesh.indices).map_err(|e| CityDestructionError::Bridge(e.to_string()))?;
+            eprintln!("[native-destruction] static ground: {} pieces as one mesh of {} triangles", ground_boxes.len(), mesh.triangle_count());
         }
 
         // The step that materialises GPU identities. Nothing observes it.

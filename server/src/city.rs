@@ -1409,6 +1409,8 @@ impl CityRuntime {
                 // Mohr-Coulomb joint shear (opt-in, VIBE_MOHR_COULOMB_SHEAR=1; FIDELITY_AUDIT C11).
                 (settings.shear_friction, settings.shear_capacity_limit) =
                     vibe_land_destruction::scene_pack::shear_friction_tables(payload);
+                // Static ground (VIBE_STATIC_GROUND=1 pack builds): roads and paving.
+                settings.ground_materials = vibe_land_destruction::scene_pack::ground_material_table(payload);
                 if !settings.crush.is_empty() {
                     let crushable = settings.crush.iter().filter(|c| c.cap_pressure > 0.0).count();
                     tracing::info!(crushable, "scene authors chunk crushing");

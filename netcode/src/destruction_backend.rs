@@ -101,6 +101,12 @@ pub struct StressSolverSettings {
     /// VIBE_MOHR_COULOMB_SHEAR (FIDELITY_AUDIT C11); 0 none.
     pub shear_friction: Vec<f32>,
     pub shear_capacity_limit: Vec<f32>,
+    /// Empty, or parallel to `materials`: true for a ground surface material
+    /// (roads, paving: town-kit `ground`, VIBE_STATIC_GROUND=1 pack builds).
+    /// The native stage's support chunks of such a material are drawn but do
+    /// not collide; the world meets them as one static triangle mesh instead
+    /// (physx-bridge ground_mesh: no seams between the pieces).
+    pub ground_materials: Vec<bool>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -134,6 +140,7 @@ impl Default for StressSolverSettings {
             bearing_joint: Vec::new(),
             shear_friction: Vec::new(),
             shear_capacity_limit: Vec::new(),
+            ground_materials: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,

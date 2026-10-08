@@ -852,6 +852,19 @@ pub fn ductile_slip_table(json: &[u8]) -> Vec<f32> {
 /// discrete fasteners twists on them, not on its contact patch. Read by the
 /// native stage under VIBE_SECTION_ROTATION. Empty when the pack authors none;
 /// (0, 0) for a material twisting on its patch.
+/// Each material that is a ground surface (`"ground": true`, town-kit
+/// materials of roads and paving built with VIBE_STATIC_GROUND=1): its support
+/// chunks are static ground, met as one triangle mesh (native_runtime).
+/// Empty when the pack authors none.
+pub fn ground_material_table(json: &[u8]) -> Vec<bool> {
+    let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Vec::new() };
+    let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Vec::new() };
+    if !materials.iter().any(|m| m["ground"].as_bool() == Some(true)) {
+        return Vec::new();
+    }
+    materials.iter().map(|m| m["ground"].as_bool() == Some(true)).collect()
+}
+
 pub fn twist_table(json: &[u8]) -> (Vec<f32>, Vec<f32>) {
     let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Default::default() };
     let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Default::default() };
