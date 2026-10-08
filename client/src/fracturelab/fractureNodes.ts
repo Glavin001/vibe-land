@@ -25,6 +25,15 @@ fn frHash(p: vec3f) -> f32 {
   q += dot(q, q.yzx + 33.33);
   return fract((q.x + q.y) * q.z);
 }
+// d/dp of (1 - smoothstep(e0, e1, f1)) for a cell sampled at p / size.
+fn cell1Grad(cell: mat2x4f, size: f32, e0: f32, e1: f32) -> vec3f {
+  let f1 = cell[0].x;
+  let t = clamp((f1 - e0) / (e1 - e0), 0.0, 1.0);
+  let dsdf = 6.0 * t * (1.0 - t) / (e1 - e0);
+  return -dsdf * cell[1].xyz / max(f1, 1e-5) / size;
+}
+`;
+const hashNoise = `
 // Sparse round dots, 1 per cell at most: a cheap stand-in for cellular noise
 // when the dots are small and isolated (pinholes, specks, iron spots). The
 // dot is jittered inside the middle half of its cell and smaller than a
@@ -38,13 +47,6 @@ fn frDot(p: vec3f, size: f32, prob: f32, radius: f32) -> vec4f {
   let centre = c + 0.25 + 0.5 * vec3f(frHash(c + 11.1), frHash(c + 23.3), frHash(c + 35.7));
   let d = length(q - centre);
   return vec4f(1.0 - smoothstep(radius * 0.6, radius, d), id / max(prob, 1e-4), d, 0.0);
-}
-// d/dp of (1 - smoothstep(e0, e1, f1)) for a cell sampled at p / size.
-fn cell1Grad(cell: mat2x4f, size: f32, e0: f32, e1: f32) -> vec3f {
-  let f1 = cell[0].x;
-  let t = clamp((f1 - e0) / (e1 - e0), 0.0, 1.0);
-  let dsdf = 6.0 * t * (1.0 - t) / (e1 - e0);
-  return -dsdf * cell[1].xyz / max(f1, 1e-5) / size;
 }
 // Cellular noise: col0 = (f1, f2, id, 0); col1 = p minus nearest feature point.
 fn frCell(p: vec3f) -> mat2x4f {
@@ -73,8 +75,6 @@ fn frCell(p: vec3f) -> mat2x4f {
   }
   return mat2x4f(vec4f(f1, f2, id, 0.0), vec4f(toNearest, 0.0));
 }
-`;
-const hashNoise = `
 // Value noise in [-1, 1] with its gradient: (v, dv/dx, dv/dy, dv/dz).
 fn frNoiseD(p: vec3f) -> vec4f {
   let i = floor(p);
@@ -113,6 +113,71 @@ fn frFbmD(p: vec3f, octaves: i32) -> vec4f {
 }
 `;
 const textureNoise = `
+// One PCG integer hash (Jarzynski & Olano 2020) of a lattice cell: three
+// jitter components and an id at once, for a handful of integer ops where
+// frHash costs a dozen float ops per value.
+fn frPcg(c: vec3f) -> vec4f {
+  var v = bitcast<vec3u>(vec3i(c)) * 1664525u + 1013904223u;
+  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+  v ^= v >> vec3u(16u);
+  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+  let w = v.x ^ (v.y >> 3u) ^ (v.z << 5u);
+  return vec4f(vec3f(v >> vec3u(8u)), f32(w >> 8u)) * (1.0 / 16777216.0);
+}
+// Sparse round dots (as the hashed frDot): one PCG per call, not four hashes.
+fn frDot(p: vec3f, size: f32, prob: f32, radius: f32) -> vec4f {
+  let q = p / size;
+  let c = floor(q);
+  let r = frPcg(c);
+  if (r.w >= prob) { return vec4f(0.0, r.w, 9.0, 0.0); }
+  let centre = c + 0.25 + 0.5 * r.xyz;
+  let d = length(q - centre);
+  return vec4f(1.0 - smoothstep(radius * 0.6, radius, d), r.w / max(prob, 1e-4), d, 0.0);
+}
+struct FrCellState { f1: f32, f2: f32, id: f32, toNearest: vec3f }
+fn frCellVisit(st: FrCellState, f: vec3f, i: vec3f, o: vec3f) -> FrCellState {
+  var out = st;
+  let r = frPcg(i + o);
+  let d = f - (o + r.xyz);
+  let dist = length(d);
+  if (dist < out.f1) {
+    out.f2 = out.f1;
+    out.f1 = dist;
+    out.id = r.w;
+    out.toNearest = d;
+  } else if (dist < out.f2) {
+    out.f2 = dist;
+  }
+  return out;
+}
+// Cellular noise, exact F1/F2 of the 3x3x3 neighbourhood with far less
+// work: the 8 cells around p's nearest corner first (they hold the nearest
+// points almost always), then of the other 19 only those whose box could
+// still beat F2. col0 = (f1, f2, id, 0); col1 = p minus nearest feature point.
+fn frCell(p: vec3f) -> mat2x4f {
+  let i = floor(p);
+  let f = p - i;
+  let s = select(vec3f(-1.0), vec3f(1.0), f >= vec3f(0.5));
+  var st = FrCellState(9.0, 9.0, 0.0, vec3f(0.0));
+  for (var k = 0u; k < 8u; k++) {
+    let o = vec3f(f32(k & 1u), f32((k >> 1u) & 1u), f32((k >> 2u) & 1u)) * s;
+    st = frCellVisit(st, f, i, o);
+  }
+  for (var z = -1; z <= 1; z++) {
+    for (var y = -1; y <= 1; y++) {
+      for (var x = -1; x <= 1; x++) {
+        let o = vec3f(f32(x), f32(y), f32(z));
+        // Already visited: the near block (each axis 0 or s).
+        if (all((o == vec3f(0.0)) | (o == s))) { continue; }
+        // The nearest this cell's box [o, o + 1] comes to f.
+        let gap = max(max(o - f, f - o - 1.0), vec3f(0.0));
+        if (dot(gap, gap) >= st.f2 * st.f2) { continue; }
+        st = frCellVisit(st, f, i, o);
+      }
+    }
+  }
+  return mat2x4f(vec4f(st.f1, st.f2, st.id, 0.0), vec4f(st.toNearest, 0.0));
+}
 // Value noise in [-1, 1] with its gradient, from the precomputed periodic
 // table (noiseTexture.ts: 128^3 texels over 32 lattice cells, 4 a cell;
 // r = value, gba = gradient / 4): one trilinear fetch instead of eight
@@ -134,6 +199,9 @@ fn frFbmD(nt: texture_3d<f32>, ns: sampler, p: vec3f, octaves: i32) -> vec4f {
   return sum;
 }
 `;
+// Two libraries with the same functions: the reference (every value hashed
+// per call) and the fast one (value noise from the 3D table, cells and dots
+// by PCG with an exact early-out). noise=hash in the lab selects the first.
 const library: Node = wgsl(commonLibrary + hashNoise);
 const texturedLibrary: Node = wgsl(commonLibrary + textureNoise);
 

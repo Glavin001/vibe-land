@@ -38,7 +38,7 @@ export interface PieceMesh {
   indices: number[];
 }
 
-const emptyMesh = (): PieceMesh => ({ positions: [], normals: [], kinds: [], relief: [], sides: [], indices: [] });
+export const emptyMesh = (): PieceMesh => ({ positions: [], normals: [], kinds: [], relief: [], sides: [], indices: [] });
 
 /**
  * The collider as drawn today: each face a flat fan. `kinds` marks cut faces

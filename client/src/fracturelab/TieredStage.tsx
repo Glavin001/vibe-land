@@ -238,10 +238,13 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
   // Whatever the pool holds was built for the old builder or copies: empty it.
   const flags = useMemo(() => new Uint8Array(n * copies).fill(1), [n, copies]);
   const detailOf = useRef(new Map<number, number>());
+  const scan = useRef({ x: NaN, y: NaN, z: NaN, queue: 0, pixelsTall: 0, radius: 0, fov: 0 });
+  const rescan = useRef(true);
   useEffect(() => {
     for (const g of [...detailOf.current.keys()]) pool.free(g);
     detailOf.current.clear();
     flags.fill(1);
+    rescan.current = true;
   }, [builder, pool, flags]);
 
   // Base poses: static layouts are computed once per parameter change; a
@@ -294,82 +297,96 @@ export function TieredStage({ specimen, state, onStats, onCamera }: {
       const level = Math.min(3, Math.max(0, Math.round(Math.log2(Math.max(d, 1e-3) / fullDetailWithin))));
       return 1 / (1 << level);
     };
-    const evictBeyond = radius * 1.25;
+    // Re-rank only when something could change the answer: the camera
+    // moved, poses or the builder changed, the view's resolution or the
+    // radius changed, or work is still queued. A still camera over a static
+    // scene costs nothing here (a full scan of ~190k pieces is ~0.6 ms of
+    // main thread the simulation wants).
     const reach = Math.hypot(size[0], size[1], size[2]) * (0.6 + state.amount);
     const centre = [(specimen.min[0] + specimen.max[0]) / 2, (specimen.min[1] + specimen.max[1]) / 2, (specimen.min[2] + specimen.max[2]) / 2];
-    const wanted: Array<{ g: number; d: number }> = [];
+    const last = scan.current;
+    const moved = Math.hypot(cam.x - last.x, cam.y - last.y, cam.z - last.z);
+    const idle = !rescan.current && !posesDirty.current && last.queue === 0 && moved < 0.05
+      && last.pixelsTall === pixelsTall && last.radius === radius && last.fov === fov;
+    let queue = idle ? 0 : last.queue;
     let changed = false;
-    for (let c = 0; c < copies; c += 1) {
-      const o = offsets[c];
-      // Whole copies beyond reach are skipped (and anything of theirs evicted).
-      const dc = Math.hypot(centre[0] + o[0] - cam.x, centre[1] + o[1] - cam.y, centre[2] + o[2] - cam.z);
-      if (dc - reach > evictBeyond) {
-        if (detailOf.current.size > 0) {
-          for (let p = 0; p < n; p += 1) {
-            const g = c * n + p;
-            if (flags[g] === 2) {
-              pool.free(g);
-              detailOf.current.delete(g);
-              flags[g] = 1;
-              changed = true;
+    if (!idle) {
+      const evictBeyond = radius * 1.25;
+      const wanted: Array<{ g: number; d: number }> = [];
+      for (let c = 0; c < copies; c += 1) {
+        const o = offsets[c];
+        // Whole copies beyond reach are skipped (and anything of theirs evicted).
+        const dc = Math.hypot(centre[0] + o[0] - cam.x, centre[1] + o[1] - cam.y, centre[2] + o[2] - cam.z);
+        if (dc - reach > evictBeyond) {
+          if (detailOf.current.size > 0) {
+            for (let p = 0; p < n; p += 1) {
+              const g = c * n + p;
+              if (flags[g] === 2) {
+                pool.free(g);
+                detailOf.current.delete(g);
+                flags[g] = 1;
+                changed = true;
+              }
             }
           }
+          continue;
         }
-        continue;
-      }
-      for (let p = 0; p < n; p += 1) {
-        const g = c * n + p;
-        const pose = basePoses.current[p];
-        const d = Math.hypot(pose.p[0] + o[0] - cam.x, pose.p[1] + o[1] - cam.y, pose.p[2] + o[2] - cam.z);
-        if (d < radius && !isGlass(pieces[p])) wanted.push({ g, d });
-        else if (flags[g] === 2 && d > evictBeyond) {
-          pool.free(g);
-          detailOf.current.delete(g);
-          flags[g] = 1;
-          changed = true;
-        }
-      }
-    }
-    wanted.sort((x, y) => x.d - y.d);
-    let queue = 0;
-    for (const { g, d } of wanted) {
-      const detail = detailAt(d);
-      if (detailOf.current.get(g) === detail) continue;
-      if (performance.now() - started > state.tierBudgetMs) {
-        queue += 1;
-        continue;
-      }
-      const p = g % n;
-      const mesh = builder.pieceMesh(p, detail);
-      let ok = pool.write(g, pieces[p], mesh, codes[p]);
-      if (!ok) {
-        // Full: give up the farthest held piece, once.
-        let far = -1;
-        let farD = -1;
-        for (const [held] of detailOf.current) {
-          const hp = basePoses.current[held % n].p;
-          const ho = offsets[Math.floor(held / n)];
-          const hd = Math.hypot(hp[0] + ho[0] - cam.x, hp[1] + ho[1] - cam.y, hp[2] + ho[2] - cam.z);
-          if (hd > farD) {
-            farD = hd;
-            far = held;
+        for (let p = 0; p < n; p += 1) {
+          const g = c * n + p;
+          const pose = basePoses.current[p];
+          const d = Math.hypot(pose.p[0] + o[0] - cam.x, pose.p[1] + o[1] - cam.y, pose.p[2] + o[2] - cam.z);
+          if (d < radius && !isGlass(pieces[p])) wanted.push({ g, d });
+          else if (flags[g] === 2 && d > evictBeyond) {
+            pool.free(g);
+            detailOf.current.delete(g);
+            flags[g] = 1;
+            changed = true;
           }
         }
-        if (far >= 0 && farD > d) {
-          pool.free(far);
-          detailOf.current.delete(far);
-          flags[far] = 1;
-          ok = pool.write(g, pieces[p], mesh, codes[p]);
+      }
+      wanted.sort((x, y) => x.d - y.d);
+      queue = 0;
+      for (const { g, d } of wanted) {
+        const detail = detailAt(d);
+        if (detailOf.current.get(g) === detail) continue;
+        if (performance.now() - started > state.tierBudgetMs) {
+          queue += 1;
+          continue;
         }
+        const p = g % n;
+        const mesh = builder.pieceMesh(p, detail);
+        let ok = pool.write(g, pieces[p], mesh, codes[p]);
+        if (!ok) {
+          // Full: give up the farthest held piece, once.
+          let far = -1;
+          let farD = -1;
+          for (const [held] of detailOf.current) {
+            const hp = basePoses.current[held % n].p;
+            const ho = offsets[Math.floor(held / n)];
+            const hd = Math.hypot(hp[0] + ho[0] - cam.x, hp[1] + ho[1] - cam.y, hp[2] + ho[2] - cam.z);
+            if (hd > farD) {
+              farD = hd;
+              far = held;
+            }
+          }
+          if (far >= 0 && farD > d) {
+            pool.free(far);
+            detailOf.current.delete(far);
+            flags[far] = 1;
+            ok = pool.write(g, pieces[p], mesh, codes[p]);
+          }
+        }
+        if (!ok) {
+          queue += 1;
+          continue;
+        }
+        detailOf.current.set(g, detail);
+        flags[g] = 2;
+        changed = true;
+        stats.current.builtTotal += 1;
       }
-      if (!ok) {
-        queue += 1;
-        continue;
-      }
-      detailOf.current.set(g, detail);
-      flags[g] = 2;
-      changed = true;
-      stats.current.builtTotal += 1;
+      scan.current = { x: cam.x, y: cam.y, z: cam.z, queue, pixelsTall, radius, fov };
+      rescan.current = false;
     }
     const buildMs = performance.now() - started;
 
