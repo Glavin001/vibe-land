@@ -80,7 +80,8 @@ class Scene:
         lib = S['shapeLibrary']
         # each mapped chunk's hull (world, at rest); the stage's chunks are the pack's nodes in the
         # structures' (kinematic, world-aligned) cluster frames
-        self.hull = {}; self.group = {}
+        self.hull = {}; self.group = {}; self.packMaterial = {}
+        self.materials = pack['defaults']['solver']['materials']
         a, b = path0, path0 + d * length
         for c in range(C.n):
             if dist[c] > 1e-3: continue
@@ -97,7 +98,7 @@ class Scene:
             # distance from the swept segment
             t = np.clip((p - a) @ d / (length if length > 0 else 1.0), 0, 1) if length > 0 else 0.0
             if np.linalg.norm(p - (a + d * length * t)) - rb > radius + margin: continue
-            self.hull[c] = (V, rb); self.group[c] = g
+            self.hull[c] = (V, rb); self.group[c] = g; self.packMaterial[c] = S['nodes'][k]['m']
         chunks = sorted(self.hull)
         self.chunks = chunks
         # nodes: the patch's chunks; joints: their live bonds (an end off the patch, or a support, is held)
@@ -242,6 +243,15 @@ def run(case, args):
     omega = float(np.sqrt(max(spl.eigsh(Sm, k=1, which='LA', return_eigenvectors=False, tol=1e-6)[0], 0.0))) if len(sel) > 6 else 0.0
     Emod = {c: C.modulus(c) for c in chunks}
     mats = {c: C.materials[C.chunks[c]['material']] for c in chunks}
+    if args.crush_source == 'pack':
+        # the struck materials' crush laws as the pack authors them (materials[].crush; compressionFatal
+        # where it has none): a rebuilt pack is enough, the capture supplies only the structure
+        def from_pack(c):
+            M = sc.materials[sc.packMaterial[c]]; cr = M.get('crush') or {}
+            return dict(capPressure=float(cr.get('capPressure', 0.0)), cohesion=float(cr.get('cohesion', 0.0)),
+                        frictionSlope=float(cr.get('frictionSlope', 0.0)), crushEnergy=float(cr.get('crushEnergy', 1.0)),
+                        compressionFatalLimit=float(M.get('compressionFatal', 0.0)))
+        mats = {c: from_pack(c) for c in chunks}
     vol = {c: float(C.chunks[c]['volume']) for c in chunks}
     row_law = {c: law.punch_row(Emod[c], None, [np.zeros(3)], vol[c], Rb=np.sqrt(2.5 * I_imp / m_imp)) for c in chunks if Emod[c] > 0}
     laws = {c: law.crush_of(mats[c]) for c in chunks}
@@ -520,6 +530,7 @@ def main():
     ap.add_argument('--rows', default='compliant', choices=['compliant', 'rigid'])
     ap.add_argument('--refresh-us', type=float, default=None, help='fixed geometry: rows rebuilt this often (default: auto, one face radius of travel)')
     ap.add_argument('--crater', default='law', choices=['law', 'impactor'], help="the crater's curvature: the law's relative R, or the impactor's own radius (a sphere into a flat face)")
+    ap.add_argument('--crush-source', default='pack', choices=['pack', 'capture'], help="the struck materials' crush laws from the pack (materials[].crush) or the capture's materials")
     ap.add_argument('--geometry', default='exact', choices=['exact', 'fixed'], help="rows from the bodies' positions every substep, or the kernel's: fixed at each tick's start with their signed gap")
     ap.add_argument('--ticks', type=int, default=3); ap.add_argument('--margin', type=float, default=3.0)
     ap.add_argument('--speed', type=float, default=None); ap.add_argument('--dt-us', type=float, default=None)
