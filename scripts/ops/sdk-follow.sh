@@ -18,6 +18,10 @@
 #   DIRTY: the hifi worktree has local changes; nothing merged
 # A conflict or failure is reported, never resolved here; the loop keeps
 # watching and retries only once the branch heads move again.
+# Parsed whole before it runs ({ ...; exit; }): an edit to this file while it
+# runs cannot shift a running copy (bash reads scripts as it goes). Still,
+# replace it with a temp file and mv, never edit it in place.
+{
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SRC=${SDK_FOLLOW_SRC:-$(cd "$ROOT/.." && pwd)/PhysX/.claude/worktrees/hifi}
@@ -89,3 +93,5 @@ while true; do
   if [ $((SECONDS - alive_at)) -ge 3600 ]; then say "alive: $INTEGRATION at $(git -C "$SRC" rev-parse --short=9 HEAD), $NAME -> $(readlink "$SRC/out/install/$NAME")"; alive_at=$SECONDS; fi
   sleep "$interval"
 done
+exit
+}

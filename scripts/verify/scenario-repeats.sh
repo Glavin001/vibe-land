@@ -9,6 +9,10 @@
 # acceptance.sh's rest trial and the veneer houses' qualification, a process each.
 # Each repeat is judged on its own (scenarios.mjs judge); the table counts each
 # check's PASS over the repeats, per arm.
+# Parsed whole before it runs ({ ...; exit; }): an edit to this file while it
+# runs cannot shift a running copy (bash reads scripts as it goes). Still,
+# replace it with a temp file and mv, never edit it in place.
+{
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 arms=high,high-static repeats=3 rest=0 judge_only=0 jobs=2 one_run=0 bin= out=$ROOT/target/verify/scenario-repeats
@@ -116,3 +120,5 @@ for (const [k, t] of Object.entries(tally)) {
 const w = lines[0].map((_, i) => Math.min(90, Math.max(...lines.map((l) => String(l[i]).length))));
 for (const l of lines) console.log(l.map((x, i) => String(x).slice(0, 90).padEnd(w[i])).join('  '));
 EOF
+exit
+}

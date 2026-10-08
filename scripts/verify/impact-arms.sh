@@ -10,6 +10,10 @@
 # Runs land in OUTDIR/ARM/TRIAL-rK; impact-arms.mjs then counts local vs
 # collapse and the gates per trial and arm, beside the cached arm C where an
 # entry exists (scripts/verify/ground-truth; arm C is retired, a reference only).
+# Parsed whole before it runs ({ ...; exit; }): an edit to this file while it
+# runs cannot shift a running copy (bash reads scripts as it goes). Still,
+# replace it with a temp file and mv, never edit it in place.
+{
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 arms=high,high-static
@@ -74,3 +78,5 @@ runs=()
 for arm in ${arms//,/ }; do for d in "$out/$arm"/*-r*/; do [ -f "$d/testbed.json" ] && runs+=("$arm=$d"); done; done
 node "$ROOT/scripts/verify/impact-arms.mjs" --pack "$lab" --meta "${lab%.json}.meta.json" --trials "$trials" \
   --truth "$ROOT/scripts/verify/ground-truth" --out "$out/impact-arms.json" ${runs[@]+"${runs[@]}"} | tee "$out/impact-arms.txt"
+exit
+}

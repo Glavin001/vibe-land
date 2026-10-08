@@ -22,6 +22,10 @@
 # install from before versioning is moved to $NAME@<its rev> first. The three
 # newest versions are kept; an older one goes only when `lsof +D` finds no
 # process with a file open in it.
+# Parsed whole before it runs ({ ...; exit; }): an edit to this file while it
+# runs cannot shift a running copy (bash reads scripts as it goes). Still,
+# replace it with a temp file and mv, never edit it in place.
+{
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PHYSX=$(cd "$ROOT/../PhysX" && pwd)
@@ -67,3 +71,5 @@ ls -dt "$LINK"@* 2>/dev/null | tail -n +4 | while read -r v; do
   if lsof +D "$v" >/dev/null 2>&1; then echo "kept $v (in use)"; else rm -rf "$v"; fi
 done
 echo "installed $VERSIONED, $PHYSX/out/install/$NAME -> it, from $SRC ($(grep -o 'PX_DESTRUCTION_SCENE_VERSION [0-9]*' "$PHYSX/out/install/$NAME/include/physx/PxDestructionScene.h"))"
+exit
+}
