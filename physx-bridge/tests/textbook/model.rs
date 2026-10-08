@@ -356,14 +356,15 @@ impl Config {
         // all on (here the ones the stress solve and grading see: section
         // rotational stiffness, which implies section bending).
         // "section-bending" alone is a diagnostic step between them.
-        // The stage's impact machinery is on with either impact model: the
-        // retired ADMM solve (VIBE_IMPACT_CAPACITY) or the impact step the high
-        // profile runs (VIBE_IMPACT_STEP; the bridge sets desc.impactCapacity for both).
+        // The high profile has no impact machinery (AGENTS.md "GPU destruction";
+        // docs/destruction/CLEANUP_2026-10-08.md). "+impact" names a run with the
+        // retired impact models on (VIBE_IMPACT_CAPACITY, VIBE_IMPACT_STEP), on an
+        // SDK that still carries them.
         let impact = flag("VIBE_IMPACT_CAPACITY") || flag("VIBE_IMPACT_STEP");
         let rotation = flag("VIBE_SECTION_ROTATION");
         let true_stiffness = rotation || flag("VIBE_BOND_TRUE_STIFFNESS");
         if rotation {
-            let name = if impact { "high-fidelity" } else { "high-fidelity(no-impact)" };
+            let name = if impact { "high-fidelity+impact" } else { "high-fidelity" };
             Config { name, rotation: Rotation::Section, grading: Grading::Section, true_stiffness }
         } else if flag("VIBE_SECTION_BENDING") {
             let name = if impact { "high-fidelity(no-rotation)" } else { "section-bending" };

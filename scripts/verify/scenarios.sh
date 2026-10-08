@@ -25,7 +25,7 @@ done
 out="$ROOT/target/verify/scenarios-$profile"; mkdir -p "$out"
 case $profile in
   runtime) source "$ROOT/scripts/fidelity/runtime.env"; node "$ROOT/structures/vehicle-lab/build-lab.mjs" > /dev/null ;;
-  high|high-*) export HIGH_PHYSX_ROOT=${HIGH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/out/install/garage-hifi}
+  high|high-*) export HIGH_PHYSX_ROOT=${HIGH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/out/install/garage-clean}
         source "$ROOT/scripts/fidelity/select.sh" "$profile" || exit 2 ;;
   *) echo "profile runtime|high|high-ARM" >&2; exit 2 ;;
 esac

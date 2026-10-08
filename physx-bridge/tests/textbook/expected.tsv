@@ -246,7 +246,6 @@ high-fidelity	impact-drop	dynamic amplification, h = 0.1 m	0.1603	MODEL LIMIT: r
 high-fidelity	impact-drop	dynamic amplification, h = 0.4 m	0.4176	MODEL LIMIT: rigid chunks stop the block in one tick, F = m sqrt(2gh)/dt: the peak follows the tick, not the structure's stiffness
 high-fidelity	tip-or-slide	tall block b/h = 0.4: angle at which it tips	0.0156	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
 high-fidelity	tip-or-slide	squat block b/h = 2: angle at which it slides	0.0430	PHYSX CONTACT: patch friction / contact offset shift the tipping and sliding angles
-high-fidelity	crush-locality	the hit crushes something	1.0000	STAGE (impact capacity): a 3e5 N s round breaks 33 bonds of a crushable masonry wall and crushes nothing (impact-pressure crush replaces the virial crush); with VIBE_IMPACT_CAPACITY=0 it crushes 15 chunks
 high-fidelity	crush-locality	every crushed chunk within 1.4 m of the point struck (proposed)	1.0000	STAGE: nothing crushed with impact capacity; with VIBE_IMPACT_CAPACITY=0 the 15 crushed chunks reach 3.24 m from the point struck (not local)
 # high-fidelity (garage-hifi), full tier, 2026-10-07
 high-fidelity	fixed-fixed-point	end bending stress	0.0123	DISCRETISATION: 0.67 m chunks, contact-length fixed ends
