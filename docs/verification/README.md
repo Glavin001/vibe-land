@@ -90,17 +90,50 @@ The impact arms compare how a hit is turned into broken bonds:
 |---|---|---|---|
 | A | `high-static` | `VIBE_IMPACT_CAPACITY=0` | static solve only |
 | B | `high-step` | `VIBE_IMPACT_STEP=1`, `VIBE_IMPACT_CAPACITY=0` | static plus the linear impact step (the candidate) |
-| C | `high-oracle` | `VIBE_IMPACT_CAPACITY=1`, `PX_DESTRUCTION_IMPACT_ITERATIONS=131072`, `PX_DESTRUCTION_IMPACT_EVAL_ITERATIONS=1000000` | the ADMM impact solve at its correctness budget: the reference |
+| C | `high-oracle` | `VIBE_IMPACT_CAPACITY=1`, `PX_DESTRUCTION_IMPACT_ITERATIONS=131072`, `PX_DESTRUCTION_IMPACT_EVAL_ITERATIONS=1000000` | the ADMM impact solve at its correctness budget. **Retired** (see below) |
+| D | `high-explicit`, now `high` itself | `VIBE_IMPACT_STEP=1`, `PX_DESTRUCTION_IMPACT_EXPLICIT=1`, `VIBE_IMPACT_CAPACITY=0` | static plus the explicit impact step, with the handoff fixes (routing, bounds per impactor, corrected warm start): the high profile |
+
+**Arm C is retired (2026-10-08, the owner).** It was too slow to be the
+solution: 0.6-2.4 s per impact evaluation on average and 56-257 s at worst,
+and 95 min for six trials. It was also no ground truth: on the roof meteor
+its own corrected pass bounded none of the contact rows and stopped a 110 t
+meteor as if on a rigid roof. The physics gates (through, energy, held;
+enters, slows; local vs collapse) are the acceptance. No arm is right by
+definition. The cached C trials stay in `scripts/verify/ground-truth/` as an
+optional reference only. They are not extended or rerun.
 
 ```bash
-scripts/verify/impact-arms.sh                       # A, B, C on the shots, then the table
-scripts/verify/impact-arms.sh --arms static,oracle  # a subset
-scripts/verify/impact-arms.sh --judge-only          # re-tabulate existing runs
+scripts/verify/impact-arms.sh                                 # high and high-static, 3 repeats of each trial, then the table
+scripts/verify/impact-arms.sh --repeats 5 --trials cannonball-framed-house
+scripts/verify/impact-arms.sh --judge-only OUTDIR             # re-tabulate existing runs
 ```
 
-Each arm runs `acceptance.sh high-ARM` on the test bed's shots (the
-cannonball, the meteor, the meteor into the roof and into the upper wall), one
-GPU job at a time. `impact-arms.mjs` then prints one row per shot and arm:
+Identical runs can end local or in a collapse, because the rigid simulation
+is not bitwise repeatable on the GPU. So each trial runs at least 3 times per
+arm, each in its own process:
+- `acceptance.sh ARM` (the test bed only, behind the provenance check, on the
+  shared slot);
+- `VERIFY_LABEL` of its own;
+- `VIBE_TESTBED_EARLY_END=1` (see "Run length").
+
+The gates and the outcome per run:
+- **shots:** through, energy, held (as in "Ground truth" below);
+- **driving:** enters, slows, held;
+- **local or collapse:** the test bed's `house.frameBeyondReach` counts the
+  frame joints broken farther from the impactor's line than its reach plus
+  the longer of the joint's two members. The reach is a shot's radius, or the
+  car's half-section. That is the farthest a struck member, or one falling
+  from it, can act. Any such break is progressive failure: a collapse.
+
+`impact-arms.mjs` prints one row per trial and arm. Arm C's cached entry is
+shown where one exists, marked as keyed to another SDK when it is. Each row
+has:
+- the local/collapse count and each gate's passes;
+- the spread (min-max over the repeats) of the bonds broken, the frame joints
+  beyond reach, the frame still anchored, the roof members down, the exit
+  speed, the energy residual, the cost per impact tick and the run's length.
+
+The older table (one run per arm, against C) printed one row per shot and arm:
 
 - **past:** metres past the point struck. FAIL when KE exceeds the path work
   and the shot did not get through.
@@ -143,10 +176,13 @@ Neither arm is physically right on these shots:
 
 The record is in `target/verify/impact-arms/impact-arms.txt`.
 
-### Ground truth (the cached arm C)
+### Ground truth (the cached arm C; retired)
 
-Arm C is slow (seconds per impact tick), so it runs once per SDK and scene, and
-the faster arms are compared against its cache.
+Arm C is retired (above). What follows records how its cache was built and
+judged. The cache remains an optional reference beside the physics gates and
+is not rerun. When it was live, arm C was slow (seconds per impact tick), so it
+ran once per SDK and scene, and the faster arms were compared against its
+cache.
 
 ```bash
 scripts/verify/impact-arms.sh --arms oracle --trials T1,T2,... DIR     # run C
@@ -217,7 +253,7 @@ must be rerun when any part of this key changes.
 | Flags | arm C (`scripts/fidelity/arms/oracle.env`): `VIBE_IMPACT_CAPACITY=1`, `PX_DESTRUCTION_IMPACT_ITERATIONS=131072`, `PX_DESTRUCTION_IMPACT_EVAL_ITERATIONS=1000000`, FP32, correction limit 1, `PX_DESTRUCTION_ALLOW_UNCONVERGED=1` |
 | Cached | `cannonball-framed-house`, `meteor-framed-house-upper`, `framed-house` and `framed-house-corner` (the last two driving trials: gates and house summary, no bond ids) |
 | Not cached | `meteor-framed-house-roof`: fails energy (56% of KE unaccounted) and held (partial hold). At first contact the corrected pass bounded 0 of 29 contact rows, so the meteor was stopped as if by a rigid roof (1159 to 517 MJ in one tick against 2.9 MJ of fracture and crush). This is a fault in C, not in the authoring. `smallshots-framed-house`: probe mass 10.65 t, not 100 kg (test bed fixed after this run) |
-| Compatible | `0696c5fae` (integration merging `feat/impact-capacity` `3426f54f7`), recorded with `ground-truth.mjs compat`. Its 5 changed files are the impact step's code (method 1 only), `recordRest` (launched only for method 1) and `breaksBySource` (a log counter in otherwise unused slots). Arm C's ADMM path is unchanged |
+| Compatible | `0696c5fae` (integration merging `feat/impact-capacity` `3426f54f7`), recorded with `ground-truth.mjs compat`. Its 5 changed files are the impact step's code (method 1 only), `recordRest` (launched only for method 1) and `breaksBySource` (a log counter in otherwise unused slots). Arm C's ADMM path is unchanged. That revision was never installed: garage-hifi went straight to `fc77bf97a`, whose handoff fixes (bounds per impactor body) change C's path too, so the cache is keyed to another SDK there |
 
 One run has a known flaw. In `meteor-framed-house-upper` the meteor reaches
 grade 1.4 m past the back face (centre y 1.90 m, radius 2.0 m, tick 213),
@@ -231,6 +267,34 @@ it reaches grade") does not hold: the meteor touches grade with its centre
 1.44 m past the back face, inside its own 2.0 m radius. That is an authoring
 issue in the trial's aim, not in the engine.
 
+### Run length (the 15-minute rule)
+
+No GPU run may take more than 15 minutes, and `gpu-watch.py` alerts main past
+that. Runs are kept short in three ways:
+- **One trial per process.** `impact-arms.sh` runs every trial and repeat as
+  its own `acceptance.sh` with a `VERIFY_LABEL` of its own.
+- **The trial ends once its outcome is decided** (`VIBE_TESTBED_EARLY_END=1`).
+  The impactor must be done with the house: a shot's balance window has
+  closed, every shot of a volley is out, and the impactor has stopped or has
+  touched nothing of the house for 3 ticks. Then nothing may break for the
+  house's fall time, sqrt(2H/g), so nothing still falling can land and break
+  more. The report gives `endedEarlyS`.
+- **Every run on a fixed SDK revision.** The install is versioned (see
+  Provenance), so no run waits on a rebuild.
+
+Suites that broke the rule as of 2026-10-08, measured from their logs:
+
+| Run | Took | Why | What keeps it short |
+|---|---|---|---|
+| arm C, 6 trials (`acceptance.sh high-oracle`, test bed) | 95 min | the ADMM solve: 0.6-2.4 s per evaluation, 56-257 s worst, about 1,100 evaluations on the truck | retired |
+| `acceptance.sh high`, every part (correctness full, SDK 5d26ce19d) | 78 min | the parts run in series: town qualification 52 min, test bed 15 min (13 trials in one process), lab 5 min, veneer 4 min | trials one per process (`VERIFY_TRIALS`, `VERIFY_LABEL`), and early end. Town still needs splitting per structure |
+| `qualify_structures.py` on Vibe Town (high packs) | 52 min | every town structure qualified at rest one after another, in one job | needs a job per structure (or per batch under 15 min). Not done yet |
+| `flag-matrix.sh` | 50 min | every pack at rest under each flag variant, in series. One variant (high without section rotation) took 13 min alone | needs a job per variant and pack. Not done yet |
+| `meteor-window-high` (test bed) | 62 min | meteor trials in one process, with no early end | early end, a trial per process |
+| `veh5-matrix-high-real` lab (scenario matrix) | 55 min; its cannonball cases 39 min | all of the lab's scenario cases in one test-bed process | needs scenarios.sh to run a case per process with early end. Not done yet |
+| `scenarios.sh high` | 40 min | lab 23 min, fleet 13 min, town 4 min, in series | as above |
+| `correctness.sh full` | 2.4 h (one run 10 h) | the sum of the above | the parts above. `quick` takes 3-13 min |
+
 ### Provenance
 
 `scripts/fidelity/provenance.sh PROFILE` checks that the SDK and the packs are
@@ -241,6 +305,13 @@ any high-fidelity case.
   `source_revision` must be its checkout's HEAD, or a revision with no
   `physx/` or `blast/` changes since. Otherwise the high profile refuses to
   run. `VERIFY_ALLOW_STALE_SDK=1` runs it anyway, and the run records that.
+- **Versioned installs.** `rebuild-garage-sdk.sh` installs into
+  `out/install/NAME@<rev>`. It then repoints the `NAME` symlink in one rename.
+  `vehicle-testbed.sh` and `acceptance.sh` resolve the link when they start,
+  so a run keeps one revision, and `PHYSX_ROOT` names it (`garage-hifi@fc77bf97a`).
+  A rebuild never rewrites a file a live run has open. The three newest
+  versions are kept. An older one is pruned only when `lsof +D` shows no
+  process using it.
 - **Feature branches.** An integration branch's head can itself lag the
   feature branches it merges. `scripts/fidelity/branches.tsv` lists the
   branches the high profile depends on, in one place. For each:
