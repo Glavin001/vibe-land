@@ -228,7 +228,10 @@ fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, da
         let index = b["index"].as_u64().unwrap() as u32;
         let gone = b["remainingArea"].as_f64().is_some_and(|a| a <= 0.0) || b["verdictBroken"].as_bool() == Some(true);
         if gone {
-            if !damage.broken.contains_key(&index) && damage.audits.len() < 40 {
+            // VIBE_TESTBED_AUDIT_MAX: how many breaks are explained (default 40, the first ones).
+            static AUDIT_MAX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            let audit_max = *AUDIT_MAX.get_or_init(|| std::env::var("VIBE_TESTBED_AUDIT_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(40));
+            if !damage.broken.contains_key(&index) && damage.audits.len() < audit_max {
                 let st = &geometry.bonds[index as usize].strength;
                 let before = damage.last.get(&index).copied().unwrap_or_default();
                 let r = |v: f64| (v * 1000.).round() / 1000.;
