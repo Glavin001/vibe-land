@@ -228,14 +228,30 @@ export const SCENARIOS = [
   {
     id: 'studless-houses-collapse',
     behaviour: 'With the studs removed, the houses collapse',
-    harness: { kind: 'qualify', pack: 'veneer', structures: ['veneer-bungalow--no-front-studs', 'veneer-house--no-front-studs', 'veneer-house--no-ground-front-studs'] },
+    // The load path decides each (docs/verification/README.md "Studless houses"): with every front stud out,
+    // nothing carries the front of the roof; the two-storey frame with its ground floor's front studs and
+    // junction studs out has only its spliced chords and rim over 9.7 m (rim u 1.4), which fail.
+    harness: { kind: 'qualify', pack: 'veneer', structures: ['veneer-bungalow--no-front-studs', 'veneer-house--no-front-studs', 'veneer-house--frame-no-ground-front-studs'] },
     judge(dir) {
       const res = qualify(dir, 'veneer');
       // qualify-veneer-houses.mjs COLLAPSE_SHARE: 2% of bonds broken at rest.
-      return ['veneer-bungalow--no-front-studs', 'veneer-house--no-front-studs', 'veneer-house--no-ground-front-studs'].map((s) => {
+      return ['veneer-bungalow--no-front-studs', 'veneer-house--no-front-studs', 'veneer-house--frame-no-ground-front-studs'].map((s) => {
         const r = res?.find((x) => x.structure === s);
         return { check: `${s}: collapses (bonds broken at rest)`, measured: r ? `${fmt(r.broken_pct)}%` : 'missing', threshold: '>= 2% (qualify-veneer-houses COLLAPSE_SHARE)', pass: !!r && r.broken_pct >= 2 };
       });
+    },
+  },
+  {
+    id: 'studless-upper-storey-stands',
+    behaviour: 'With only the ground floor front studs removed, the upper storey stands on what is left',
+    // As built, two paths each carry the 28-31 kN the ground floor's front studs did, and either alone suffices:
+    // the brick ties (153 of them on the upper frame, 0.4 kN each in sliding: 61 kN) and the spliced chords over
+    // the 6.66 m left by the junction stud (chord force 9-11 kN against 16 kN). Some local joints break
+    // (cripples, sills); collapse would break >= COLLAPSE_SHARE.
+    harness: { kind: 'qualify', pack: 'veneer', structures: ['veneer-house--no-ground-front-studs'] },
+    judge(dir) {
+      const res = qualify(dir, 'veneer'), s = 'veneer-house--no-ground-front-studs', r = res?.find((x) => x.structure === s);
+      return [{ check: `${s}: stands (bonds broken at rest under the collapse share)`, measured: r ? `${fmt(r.broken_pct)}%` : 'missing', threshold: '< 2% (qualify-veneer-houses COLLAPSE_SHARE)', pass: !!r && r.broken_pct < 2 }];
     },
   },
   {
