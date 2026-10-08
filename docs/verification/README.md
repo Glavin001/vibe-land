@@ -579,6 +579,8 @@ One line per fix: id, tier, the fix and what the test proves, and the command.
 | Vehicle joints 100-1000x too strong: each joint bounded by its members' sections, opt-in `VIBE_REAL_VEHICLE_JOINTS` (2ea3a19b, c365c1f4) | `real-joint-capacity.test.ts` (`real-joint-capacity`): a panel on a tube holds what the tube can; wheel studs keep their counted section |
 | Brittle vehicle joints cascading at real capacity: metal joints ductile, ultimate slip A x 5.65 sqrt(S) (0193a7e2) | `real-joint-capacity.test.ts` (ductility); `fracture.rs` `native_conversion_carries_ductile_slip_parallel_to_materials` (`vehicle-ductile-slip`: the slip reaches the stage) |
 | Coasting truck breaking its rear corners on the paved lane's 25 mm lip (0193a7e2) | scenario `coast-over-paving-lip` (`vehicle-coast-lip`): 251 bonds and 4 wheels brittle (`VIBE_VEHICLE_JOINTS_BRITTLE=1`), 0 ductile |
+| Car joints graded against a dead stop on the anchored wall it breaks (trial pass; 42.7 MN on the truck vs 0.52 MN measured) | `vehicle_contact_load.rs` (`vehicle-contact-load`, failing first: the impact agent's anchored-contact bound fixes it); the test bed's `loadBalance` audit (`VIBE_TESTBED_AUDIT=1`) |
+| Steel joints brittle in the static verdict | `static_ductile.rs` (`static-ductile-steel`, PhysX fix/static-ductile-steel, `PX_DESTRUCTION_STATIC_DUCTILE`) |
 
 ## Acceptance scenarios (`scripts/verify/acceptance.mjs`)
 
