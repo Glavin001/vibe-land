@@ -17,15 +17,27 @@ for path in sys.argv[1:]:
         print(f"  {r['trial']:24s} house {h['broken']:5d}/{h['bonds']} (frame {h['structuralBroken']}/{h['structuralBonds']}), median break {h.get('medianBreakDistance', 0):.1f} m,"
               f" by distance {h.get('byDistance')}, frame anchored {h.get('frameAnchoredFrac', 0):.2f}, roof drop {h.get('roofDropMean', 0):.2f} m"
               f" ({h.get('roofMembersDown')}/{h.get('roofMembers')} down), crushed {h.get('crushedChunks')}, car bonds {r.get('bondsBroken')}, {reach}")
-# With a .log beside the .json: the impact solve's cost and detectors.
+# With a .log beside the .json: the impact solve's (or step's) cost and detectors,
+# and each trial's breaks by source (PX_DESTRUCTION_IMPACT_LOG: the islands the
+# impact solve or step decided, or the static verdict), the log split at each
+# trial's summary line.
 import os, re
+def impact_summary(txt, indent='  '):
+    ev = [float(m.group(1)) for m in re.finditer(r'\[impact\] evaluation \d+ pass \d: ([\d.]+) ms', txt)]
+    disp = [float(m.group(1)) for m in re.finditer(r'longest ([\d.]+) ms\)', txt)]
+    def total(key): return sum(int(m.group(1)) for m in re.finditer(r'(\d+) ' + key, txt))
+    by = [(int(m.group(1)), int(m.group(2))) for m in re.finditer(r'breaks: (\d+) on islands the impact \w+ decided, (\d+) by the static verdict', txt)]
+    if ev: print(f"{indent}impact: {len(ev)} evaluations, mean {sum(ev)/len(ev):.0f} ms, max {max(ev):.0f} ms, longest dispatch {max(disp) if disp else 0:.0f} ms;"
+                 f" capped {total('capped,')}, fallen back {total('capped fallback')}, diverged {total('diverged')}, energy gains {total('energy gains')}, infeasible {total('infeasible projections')},"
+                 f" held over capacity {sum(int(m.group(1)) for m in re.finditer(r'HELD OVER CAPACITY: (\\d+)', txt))}")
+    if by: print(f"{indent}breaks by source: impact {sum(a for a, _ in by)}, static {sum(b for _, b in by)} (largest static pass {max(b for _, b in by)})"
+                 + ''.join(f"; {m.group(0)}" for m in re.finditer(r'static collapse: [^\n]*', txt)))
 for path in sys.argv[1:]:
     log = path[:-5] + '.log'
     if not os.path.exists(log): continue
-    ev = [float(m.group(1)) for m in re.finditer(r'\[impact\] evaluation \d+ pass \d: ([\d.]+) ms', open(log).read())]
-    disp = [float(m.group(1)) for m in re.finditer(r'longest ([\d.]+) ms\)', open(log).read())]
     txt = open(log).read()
-    def total(key): return sum(int(m.group(1)) for m in re.finditer(r'(\d+) ' + key, txt))
-    if ev: print(f"  impact solve: {len(ev)} evaluations, mean {sum(ev)/len(ev):.0f} ms, max {max(ev):.0f} ms, longest dispatch {max(disp):.0f} ms;"
-                 f" capped {total('capped,')}, fallen back {total('capped fallback')}, diverged {total('diverged')}, energy gains {total('energy gains')}, infeasible {total('infeasible projections')},"
-                 f" held over capacity {sum(int(m.group(1)) for m in re.finditer(r'HELD OVER CAPACITY: (\\d+)', txt))}")
+    parts = re.split(r'\n(monster  (\S+)[^\n]*)', txt)
+    print(f"== {os.path.basename(log)}")
+    if len(parts) < 3: impact_summary(txt); continue
+    for k in range(0, len(parts) - 2, 3):
+        print(f"  {parts[k + 2]}"); impact_summary(parts[k], '    ')
