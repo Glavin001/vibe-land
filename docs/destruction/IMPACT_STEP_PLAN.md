@@ -238,6 +238,33 @@ tell a load from the time step.
      than a full prism plug.
    - Not tuned. Recorded for the owner.
 
+### Fidelity follow-up: the crush plateau against penetration resistance (not implemented)
+
+The row's crush plateau is the authored crush energy density (brick 3.5 MPa, concrete 3.9 MPa).
+The resistance a hard projectile meets inside a confined target is larger.
+
+- **The resistance.** By cavity expansion it is R + N rho v^2 (Forrestal & Tzou, Int. J. Solids
+  Struct. 34, 1997; Frew et al., Int. J. Impact Eng. 21, 1998):
+  - R = S f_c, with S = 82.6 f_c^-0.544 (f_c in MPa). That gives S about 24 and R about 240 MPa at
+    10 MPa.
+  - The inertial term is 18.6 MPa for brick at 140 m/s (N 0.5, a sphere).
+- **Where it applies.** It holds while the target confines the crater, i.e. for penetration
+  depths of a diameter or more into a thick target. A wall thin against the projectile fails by
+  plugging (Recht & Ipson), which the plug impulse at crush-through already carries. So its effect
+  is largest where t/d is near 1 (the 100 kg ball, d 0.29 m, into 0.25-0.30 m walls). For the
+  meteor (d 4 m) and the cannonball (d 1.37 m) the crater never confines.
+- **Sensitivity, if the plateau were 10x** (an upper bound on what confinement adds before the
+  plug):
+  - meteor into masonry: crush work 6.7 MJ becomes 67 MJ, exit 137.3 -> about 133 m/s (into its
+    band);
+  - cannonball through the framed house: crush work 0.36 MJ becomes 3.6 MJ, exit 57.6 -> about
+    52 m/s (below its band, 53.3).
+
+  The cannonball is the case that would show it.
+- **What it needs.** A plateau that depends on depth over diameter (confinement) and on rho v_n^2,
+  derived and checked against NDRC's perforation thickness on the matrix's ball cases. Open, for
+  the owner.
+
 ### Kernel design (to build after main's go; PX_DESTRUCTION_IMPACT_COMPLIANT)
 
 1. **Routing** (`routeRows`) by the criterion above. A crushed chunk is no longer skipped: Ci does
