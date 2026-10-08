@@ -517,6 +517,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     // A shot at the scene (attack `shot`): its aim point and direction, and
     // how far past the aim point it got along that direction (the wall face).
     let mut shot: Option<(Vector3<f32>, Vector3<f32>)> = None;
+    // `shots`: the mass of the ball launched last (the one the probe follows).
+    let mut shots_mass: Option<f32> = None;
     let (mut shot_past, mut shot_speed_end) = (f32::NEG_INFINITY, 0f32);
     let mut trace = Vec::new();
     let tracing = std::env::var_os("VIBE_TESTBED_TRACE").is_some();
@@ -676,6 +678,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                 let mass = shot_def["mass"].as_f64().unwrap_or(100.) as f32;
                 let radius = (mass / crate::city::city_ball_density_kg_m3() * 3. / (4. * std::f32::consts::PI)).cbrt();
                 projectile = arena.launch_ball_from_muzzle(origin, velocity, radius, mass, 600).or(projectile);
+                shots_mass = Some(mass);
                 if shot.is_none() { shot = Some((target, Vector3::new(-bearing.sin(), 0., -bearing.cos()))); }
                 launched += 1;
             }
@@ -863,8 +866,9 @@ fn run(r: &Run, meta: &Value) -> Value {
                     let p = Vector3::new(b.1[0], b.1[1], b.1[2]);
                     if probe.is_none() {
                         let a = attack.unwrap();
+                        // A `shots` attack carries its masses per shot, not at the top level.
                         let (mass, radius) = if a["projectile"] == "meteor" { let t = crate::meteor::MeteorTuning::from_env(); (t.mass_kg, t.radius_m) }
-                            else if let Some(m) = a["mass"].as_f64().map(|m| m as f32) { (m, (m / crate::city::city_ball_density_kg_m3() * 3. / (4. * std::f32::consts::PI)).cbrt()) }
+                            else if let Some(m) = a["mass"].as_f64().map(|m| m as f32).or(shots_mass.filter(|_| a["kind"] == "shots")) { (m, (m / crate::city::city_ball_density_kg_m3() * 3. / (4. * std::f32::consts::PI)).cbrt()) }
                             else { (crate::city::city_ball_mass_kg(), crate::city::city_ball_radius_m()) };
                         // Steel balls and rock meteors (physx_runtime BALL_STEEL / METEOR_ROCK modulus).
                         let modulus = if a["projectile"] == "meteor" { 60e9 } else { 210e9 };

@@ -108,6 +108,7 @@ for (const trial of trialsWanted) {
     if (r?.truthOnly) {
       // A cached ground-truth trial (ground-truth.mjs record): its metrics as recorded.
       const t = r.truthOnly, m = t.metrics, ids = t.broken.map((x) => x[0]), ds = t.broken.map((x) => x[1]).filter((x) => x != null);
+      if (!m) { rows.push({ trial, arm: a.name, status: 'cached driving trial (no shot terms)' }); continue; }
       const g = (k) => t.gates.find((x) => x.gate === k);
       rows.push({ trial, arm: a.name, missing: 'none', past: m.past, mustPass: m.keJ > m.pathJ, passed: g('through')?.pass, keMJ: m.keJ / 1e6, pathMJ: m.pathJ / 1e6,
         broken: ids.length, jaccard: refBroken ? jaccard(ids, refBroken) : null, samePlace: refBroken ? samePlace(ids, refBroken) : null,

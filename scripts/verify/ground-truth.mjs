@@ -15,9 +15,15 @@
 //             (the owner: the cannonball and the meteor go through the building)
 //   energy    shots: the balance closes over the structure's window
 //   held      nothing holds past its capacity (no infinite wall, no partial hold)
-// Locality is recorded (each broken bond's distance from the impactor's line),
-// not gated: the physics criterion for it is that each break is its own
-// verdict, which the held gate and the at-rest gate cover.
+// A driving trial (the truck into the house; no shot, so the test bed records
+// the probe but no energy terms or bond ids):
+//   enters    the car's middle gets past the face it first struck
+//   slows     it leaves slower than it came (momentum went into the structure)
+//   held      as above
+// Locality is recorded (each broken bond's distance from the impactor's line,
+// the frame still anchored, the roof members down), not gated: the physics
+// criterion for it is that each break is its own verdict, which the held gate
+// and the at-rest gate cover.
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -67,10 +73,22 @@ export function distanceFromLine(L, c) {
   return Math.hypot(v[0] - along * L.d[0], v[1] - along * L.d[1], v[2] - along * L.d[2]);
 }
 
+/** A driving trial's gates (no shot): the probe's speeds and holds. */
+export function carGates(run) {
+  const pr = run.probe, face = run.house?.impact?.[2];
+  const enters = run.maxZ != null && face != null ? run.maxZ - face : null;
+  return [
+    { gate: 'enters', pass: enters != null && enters >= 0, measured: enters == null ? 'not recorded' : `middle ${enters.toFixed(2)} m past the face struck (z ${face.toFixed(2)})` },
+    { gate: 'slows', pass: pr.vOut < pr.vIn && pr.momentumLost > 0, measured: `${pr.vIn.toFixed(1)} -> ${pr.vOut.toFixed(1)} m/s, ${(pr.momentumLost / 1e3).toFixed(1)}e3 kg m/s into the structure` },
+    { gate: 'held', pass: !pr.infiniteWall && !pr.partialHold, measured: pr.infiniteWall ? 'infinite wall' : pr.partialHold ? 'partial hold' : 'ok' },
+  ];
+}
+
 /** The owner's physical gates on one run. */
 export function gates(run) {
   const s = shotPhysics(run);
   const shot = run?.attack?.kind === 'shot';
+  if (!s && run?.probe?.contact && !run.attack) return { s: null, shot: false, car: true, checks: carGates(run) };
   if (!s) return { s: null, shot, checks: [{ gate: 'recorded', pass: false, measured: !run ? 'missing' : 'no probe or no contact' }] };
   const checks = [
     { gate: 'through', pass: s.passed, measured: `KE ${(s.ke / 1e6).toFixed(2)} MJ vs path ${(s.pathD / 1e6).toFixed(2)} MJ; ${s.past.toFixed(2)} m past` },
@@ -111,6 +129,12 @@ async function record(argv) {
     const run = list.find((r) => r.trial === trial && r.car === 'monster');
     const tm = meta.trials.find((t) => t.id === trial);
     const { s, shot, checks } = gates(run);
+    // The gates read the probe's mass: a `shots` run recorded before the test
+    // bed took each shot's own mass (it fell back to the cannonball's) is not
+    // ground truth, whatever its gates say.
+    const shotMass = tm?.attack?.kind === 'shots' ? tm.attack.shots?.[tm.attack.shots.length - 1]?.mass ?? 100 : null;
+    if (shotMass != null && run?.probe && Math.abs(run.probe.mass - shotMass) > 1e-3 * shotMass)
+      checks.push({ gate: 'recorded', pass: false, measured: `probe mass ${run.probe.mass} kg, the shot's ${shotMass} kg (a test bed from before the per-shot mass)` });
     const pass = checks.every((c) => c.pass);
     verdicts.push({ trial, pass, checks });
     if (!run) continue;
@@ -126,6 +150,12 @@ async function record(argv) {
         peakForceN: round(s.peakForceN, 0), heldCapacityN: round(s.heldCapacityN, 0),
         energy: shot ? { lostJ: round(s.lost, 0), dropJ: round(s.drop, 0), fractureJ: round(s.fracture, 0), crushJ: round(s.crush, 0), fragmentsKeJ: round(s.fragKe, 0), peReleasedJ: round(s.pe, 0), residJ: round(s.resid, 0), contactJ: round(s.contact, 0), afterWindowJ: round(s.afterWindow, 0), window: s.window } : null,
       },
+      // Driving trials: the probe's numbers (no energy terms or bond ids recorded).
+      car: !s && run.probe ? { massKg: run.probe.mass, vIn: round(run.probe.vIn), vOut: round(run.probe.vOut), vExit: round(run.probe.vExit),
+        momentumLost: round(run.probe.momentumLost, 0), keLostJ: round(run.probe.energyLost, 0), maxZ: round(run.maxZ), carBondsBroken: run.bondsBroken } : null,
+      // Locality, recorded not gated: the house's own summary (vehicle_testbed.rs).
+      house: run.house && (({ lineDistances, ...h }) => ({ ...h, lineDistanceMedian: lineDistances?.length ? [...lineDistances].sort((a, b) => a - b)[lineDistances.length >> 1] : null }))(run.house),
+      exitSpeed: run.probe ? round(run.probe.vExit) : null,
       cost: run.impactCost ?? null,
       // [tick, x, y, z, vx, vy, vz] at the probe's ticks.
       path: (run.impactorPath ?? []).map((r) => r.map((x, k) => round(x, k === 0 ? 0 : 3))),
