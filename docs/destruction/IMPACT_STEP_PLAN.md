@@ -980,7 +980,24 @@ the fix and passes after.
   - The routing takes a routed row's trial load out of the chunk's static input, but not out of the
     moving cluster's rigid acceleration (inertial relief). J0 then holds internal forces against a
     −m·a_trial no contact supplies, and f0 = −B·J0 flings the pieces once their joints break.
-  - Fix: the router (impact-compliant agent).
+  - The cause was not the router. f0 on the rubble showed gravity on most chunks and 10-26 kN
+    opposing pairs on a few: the rigid solve's position corrections pinching the pile. A broken
+    joint kept −B·J0, so those pinches pushed the freed pieces for the rest of the window, and the
+    books missed it because dead-load work is summed over live joints only.
+  - Fix (PhysX 22ec04df5): a free body's joint (the two-body car's, and every joint of a dynamic
+    struck island: eEX_FREE) returns to its rest wrench when it breaks. An anchored island's cut
+    keeps −B·J0, the dead load its path carried. Test: `destruction_gpu_two_body_dynamic_rubble`.
+  - Dynamic windows also translate with their cluster without rotating with it (ccd6c33e8): in
+    its rotating frame, a spinning fragment saw the distant ball at 460 m/s.
+- **Open, accuracy.** The remaining energy flags in dynamic truck windows shrink with h. In one
+  cannonball window, the ductile return gives plastic 865 J at the derived 2.3 µs against 484 J at
+  1.0 µs and 471 J at 0.5 µs, where the books close. A small 0.1-0.2% KE gain at 25 µs closes at
+  5 µs. The step bound resolves stability (ωh ≤ 0.35 here), not the accuracy of a yielding joint.
+  Proposed: h ≤ ε·(cap/k)/|ḋ| for joints at their yield, applied adaptively per launch.
+- **Open, hand-off.** In the cannonball's corrected pass the truck reaches 30 m/s after the first
+  tick, where the window gave about 3 m/s and the 1-tick oracle 10.75 m/s. A two-chunk fragment
+  left at 1.6-2.2 km/s, while its window records were about 42 m/s. Sent to the impact-compliant
+  agent with captures.
 
 **Cannonball into the truck: the oracle.**
 - `two-body.py --scene ball-truck --real-joints --compliant --ticks 4` at 2.5 and 5 µs (FP64,
