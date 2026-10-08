@@ -79,7 +79,7 @@ fn app_settings() {
 }
 
 /// Which lab-scene node groups each named structure owns (wall, house).
-struct SceneIndex { group_of_node: Vec<String>, nodes: Vec<Value>, materials: Vec<String>, types: Vec<String> }
+struct SceneIndex { group_of_node: Vec<String>, nodes: Vec<Value>, materials: Vec<String>, types: Vec<String>, sizes: Vec<[f32; 3]> }
 impl SceneIndex {
     fn load() -> Self {
         let path = std::env::var("VIBE_CITY_SCENE").unwrap();
@@ -88,7 +88,10 @@ impl SceneIndex {
         let nodes = pack["scenario"]["nodes"].as_array().cloned().unwrap_or_default();
         let materials = pack["scenario"]["nodeMaterials"].as_array().map_or(Vec::new(), |m| m.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect());
         let types = pack["scenario"]["nodeTypes"].as_array().map_or(Vec::new(), |m| m.iter().map(|v| v.as_str().unwrap_or("").to_string()).collect());
-        Self { group_of_node, nodes, materials, types }
+        // Each node's box (x, y, z extents): a member's length for the locality gate.
+        let sizes = pack["scenario"]["nodeSizes"].as_array().map_or(Vec::new(), |m| m.iter()
+            .map(|v| ["x", "y", "z"].map(|k| v[k].as_f64().unwrap_or(0.) as f32)).collect());
+        Self { group_of_node, nodes, materials, types, sizes }
     }
 }
 
@@ -326,7 +329,12 @@ impl HouseProbe {
     /// `line`: the impactor's line of travel (a point on it, its unit direction):
     /// each broken bond's distance from it, for the scenario matrix's locality
     /// (docs/verification/SCENARIOS.md).
-    fn finish(&self, arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex, impact: Option<Vector3<f32>>, line: Option<(Vector3<f32>, Vector3<f32>)>) -> Value {
+    /// `reach`: the impactor's half-size across its line (a shot's radius, the
+    /// car's swept half-section). A frame joint broken farther from the line
+    /// than `reach` plus the longer of its two members cannot be a member the
+    /// impactor struck or one that fell from it: such breaks are progressive
+    /// failure (the house's collapse), counted as `frameBeyondReach`.
+    fn finish(&self, arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex, impact: Option<Vector3<f32>>, line: Option<(Vector3<f32>, Vector3<f32>)>, reach: f32) -> Value {
         let world = arena.physx_world_mut().expect("physx");
         let rows = world.native_bond_stress_rows(0).unwrap_or_default();
         let frame = |i: u32| FRAME_TYPES.contains(&scene.types.get(i as usize).map_or("", |s| s.as_str()));
@@ -335,6 +343,8 @@ impl HouseProbe {
         let mut by_distance = [0u32; 5];
         let mut distances = Vec::new();
         let mut line_distances = Vec::new();
+        let member = |i: u32| scene.sizes.get(i as usize).map_or(0., |s| s[0].max(s[1]).max(s[2]));
+        let mut beyond_reach = 0u32;
         for r in &rows {
             if !(self.is_house[r.node0 as usize] && self.is_house[r.node1 as usize]) { continue; }
             total += 1;
@@ -345,7 +355,9 @@ impl HouseProbe {
             if is_frame { structural += 1; }
             if let Some((o, dir)) = line {
                 let rel = (node_centroid(scene, r.node0) + node_centroid(scene, r.node1)) * 0.5 - o;
-                line_distances.push(((rel - dir * rel.dot(&dir)).norm() * 100.).round() / 100.);
+                let d = (rel - dir * rel.dot(&dir)).norm();
+                line_distances.push((d * 100.).round() / 100.);
+                if is_frame && d > reach + member(r.node0).max(member(r.node1)) { beyond_reach += 1; }
             }
             if let Some(p) = impact {
                 let d = ((node_centroid(scene, r.node0) + node_centroid(scene, r.node1)) * 0.5 - p).norm();
@@ -373,6 +385,7 @@ impl HouseProbe {
             "group": self.group, "lineDistances": line_distances,
             "bonds": total, "broken": broken, "brokenFrac": broken as f32 / total.max(1) as f32,
             "structuralBonds": structural_total, "structuralBroken": structural, "cosmeticBroken": broken - structural,
+            "reach": reach, "frameBeyondReach": line.map(|_| beyond_reach),
             "byDistance": {"0-1m": by_distance[0], "1-2m": by_distance[1], "2-4m": by_distance[2], "4-8m": by_distance[3], "8m+": by_distance[4]},
             "medianBreakDistance": distances.get(distances.len() / 2),
             "impact": impact.map(|p| [p.x, p.y, p.z]),
@@ -544,6 +557,21 @@ fn run(r: &Run, meta: &Value) -> Value {
     let (mut window, mut off_house, mut ground_after_from, mut ground_after): (Option<Value>, u32, Option<u32>, f32) = (None, 0, None, 0.);
     let probe_target = trial["target"].as_array().map(|t| Vector3::new(t[0].as_f64().unwrap() as f32, t[1].as_f64().unwrap() as f32, t[2].as_f64().unwrap() as f32));
     let heading_of = |f: Vector3<f32>| f.x.atan2(f.z);
+    // VIBE_TESTBED_EARLY_END=1: end the trial once its outcome is decided --
+    // the impactor has struck the house and is done with it (a shot's balance
+    // window has closed, every shot of a volley is out; a car has stopped), and
+    // no bond anywhere has broken for the time a piece takes to fall the
+    // house's height, sqrt(2 H / g): nothing still falling can land and break more.
+    let early_end = std::env::var("VIBE_TESTBED_EARLY_END").is_ok_and(|v| v == "1");
+    let fall_ticks = house.as_ref().map(|h| {
+        let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+        for i in (0..h.is_house.len()).filter(|&i| h.is_house[i]) {
+            let (c, half) = (node_centroid(r.scene, i as u32), r.scene.sizes.get(i).map_or(0., |s| 0.5 * s[1]));
+            lo = lo.min(c.y - half); hi = hi.max(c.y + half);
+        }
+        ((2. * (hi - lo).max(0.) / vibe_netcode::movement::GRAVITY as f32).sqrt() / DT).ceil() as u32
+    });
+    let (mut last_break, mut ended_early) = (0u32, None::<u32>);
     for k in 0..ticks {
         let s = car_state(&mut arena, id);
         let speed = (s.v.x * s.v.x + s.v.z * s.v.z).sqrt();
@@ -763,6 +791,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         let road_log = std::env::var_os("VIBE_VEHICLE_ROAD_LOG").is_some();
         if road_log { eprintln!("[tick] {k} begin z {:.2} speed {:.2}", s.p.z, speed); }
         step(&mut arena, &mut city, &mut tick, if driving { Some(&input) } else { None });
+        if city.native_tick_view().is_some_and(|(st, _, _)| st.broken_bonds > 0 || st.post_correction_broken_bonds > 0) { last_break = k; }
         if road_log {
             let a = car_state(&mut arena, id);
             let m = |w: &Value, k: &str| (w[k].as_array().map_or(0., |v| v.iter().map(|x| x.as_f64().unwrap_or(0.).powi(2)).sum::<f64>().sqrt()) / 100.).round() / 10.;
@@ -976,6 +1005,16 @@ fn run(r: &Run, meta: &Value) -> Value {
             let spin = [after.w.x, after.w.y, after.w.z].map(|w| (w * 100.).round() / 100.);
             trace.push(json!([k, (speed * 100.).round() / 100., (after.p.z * 100.).round() / 100., (after.p.y * 1000.).round() / 1000., after.jounce.map(|j| if j.is_finite() { (j * 1000.).round() / 1000. } else { -1. }), damage.broken.len(), damage.parts_off.len(), damage.wheel_mask, after.on_road, (after.p.x * 100.).round() / 100., spin, (accel_g * 10.).round() / 10.]));
         }
+        if early_end {
+            // Every shot of a volley is out; the impactor (the probe's body) has
+            // stopped or touched nothing of the struck structure for 3 ticks; a
+            // shot's balance window has closed; and nothing broke for a fall time.
+            let all_out = attack.map_or(true, |a| a["kind"] != "shots" || a["shots"].as_array().map_or(true, |l| launched >= l.len()));
+            let impactor_done = probe.as_ref().is_some_and(|pr| pr.trace.last().is_some_and(|r| r[4] < 0.5)
+                || (1..=3).all(|d| !pr.touched.contains_key(&tick.saturating_sub(d))));
+            if energy_since.is_some() && all_out && impactor_done && (driving || window.is_some())
+                && fall_ticks.is_some_and(|f| k >= last_break + f) { ended_early = Some(k); break; }
+        }
     }
     read_damage(&mut arena, id, tick, &mut damage, geometry, 0.);
     let end = car_state(&mut arena, id);
@@ -1026,7 +1065,11 @@ fn run(r: &Run, meta: &Value) -> Value {
     if house.is_some() && house_impact.is_none() { house_impact = shot.map(|(t, _)| t); }
     // The line of travel: a shot's, or the car's from where it struck along its starting heading.
     let line = shot.or(house_impact.map(|p| (p, heading0)));
-    let house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact, line));
+    // The impactor's reach across its line: a shot's radius; the car's largest
+    // half-section across its heading (its hull boxes, x right and y up).
+    let reach = if shot.is_some() { probe.as_ref().map_or(0., |p| p.radius) }
+        else { hulls.iter().flat_map(|(lo, hi)| [lo[0].abs().max(hi[0].abs()), (hi[1] - lo[1]) * 0.5]).fold(0f32, f32::max) };
+    let house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact, line, reach));
     let scene_broken_pairs: Vec<[u32; 2]> = if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() {
         arena.physx_world_mut().expect("physx").native_bond_stress_rows(0).unwrap_or_default().into_iter()
             .filter(|r| r.remaining_area <= 0.0 || r.broken).map(|r| [r.node0, r.node1]).collect()
@@ -1086,7 +1129,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     let mut out = json!({
         "car": r.car, "trial": trial["id"], "seconds": seconds,
         "bonds": geometry.bonds.len(), "parts": geometry.parts.len(), "mass": geometry.mass, "driving": geometry.driving,
-        "brokenAtSettle": settled_broken, "bondsBroken": broken_in_trial - settled_broken.min(broken_in_trial),
+        "endedEarlyS": ended_early.map(|k| (k + 1) as f32 * DT), "brokenAtSettle": settled_broken, "bondsBroken": broken_in_trial - settled_broken.min(broken_in_trial),
         "bondsBrokenAfterDriveAway": damage.broken.len(), "cornerBondsBroken": corner_bonds,
         "partsOff": damage.parts_off.len(), "wheelsLost": wheels_lost, "firstBreaks": first_breaks,
         "topSpeed": top, "speedAt": speed_at, "timeTo": time_to, "maxZ": max_z, "startZ": start.p.z,

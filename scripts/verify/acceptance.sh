@@ -67,7 +67,7 @@ t0=$(date +%s)
 
 if want testbed; then
   trials=${VERIFY_TRIALS:-framed-house,house,cannonball-framed-house,meteor-framed-house,meteor-framed-house-roof,meteor-framed-house-upper,smallshots-framed-house,rest,near-miss,knock-mirror,coast,debris-wheel,drift}
-  label=verify-acceptance-$profile
+  label=${VERIFY_LABEL:-verify-acceptance-$profile}  # VERIFY_LABEL: a run of its own (impact-arms.sh repeats)
   (cd "$ROOT" && VIBE_TESTBED_PROBE=1 VIBE_CITY_SCENE="$lab" VIBE_TESTBED_META="${lab%.json}.meta.json" \
     WATCH="$ROOT/target/vehicle-testbed/$label.log" watched "$out/testbed.log" scripts/vehicle-testbed.sh --build monster --trials "$trials" --label "$label" --report-only)
   cp "$ROOT/target/vehicle-testbed/$label.json" "$out/testbed.json" 2>/dev/null
