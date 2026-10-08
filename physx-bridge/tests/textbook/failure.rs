@@ -262,7 +262,12 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
         });
     }
     if wanted("redundancy", Tier::Quick) {
-        super::guard(config, "redundancy", expected, out, |out| redundancy(config, expected, out));
+        super::guard(config, "redundancy", expected, out, |out| redundancy(config, expected, out, false));
+    }
+    // The same with the supports as links and blocks (light 2 cm chunks between
+    // stiff joints, k dt^2/m ~4e5): a robustness case for the impact solve.
+    if wanted("redundancy-sliver", Tier::Full) {
+        super::guard(config, "redundancy-sliver", expected, out, |out| redundancy(config, expected, out, true));
     }
     if wanted("gravity-free-fall", Tier::Quick) {
         super::guard(config, "free-fall", expected, out, |out| free_fall(config, expected, out));
@@ -278,7 +283,8 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
 /// The propped cantilever has another load path -- the fixed end -- and must
 /// hold, as a cantilever (root moment w L^2 / 2); the simply supported beam
 /// has none and must fall.
-fn redundancy(config: Config, expected: &[Expectation], out: &mut Output) {
+fn redundancy(config: Config, expected: &[Expectation], out: &mut Output, sliver: bool) {
+    let tag = if sliver { "-sliver" } else { "" };
     let source = "[Hibbeler] 2.4 / 6: an indeterminate structure redistributes; a determinate one with a support removed is a mechanism";
     println!("\nredundancy -- a support removed: indeterminate holds, determinate falls\n  {source}");
     let l = 6.0;
@@ -296,31 +302,43 @@ fn redundancy(config: Config, expected: &[Expectation], out: &mut Output) {
     let (c, _) = beam(&mut s, "beam", 0.0, l, 0.0, n, BEAM, CONCRETE, m);
     let root = fixed(&mut s, c[0], [0.0; 3], [-1.0, 0.0, 0.0], Y, BEAM, m);
     let weak = link_mat(&mut s, 3.0 * w * l / 8.0);
-    let (_, prop_top, _) = hanger_above(&mut s, c[n - 1], l - STRIP / 2.0, BEAM.d / 2.0, BEAM.b, weak);
+    let prop_top = if sliver {
+        hanger_above(&mut s, c[n - 1], l - STRIP / 2.0, BEAM.d / 2.0, BEAM.b, weak).1
+    } else {
+        strip_above(&mut s, c[n - 1], l - STRIP / 2.0, BEAM.d / 2.0, BEAM.b, weak)
+    };
     let (fell, broken, rows) = watch(&s, 120);
     let beam_broken = broken.iter().filter(|&&b| (b as usize) < prop_top).count();
     println!("  propped: broken bonds {broken:?}, beam fell {fell:.3} m");
-    row(config, "redundancy-propped", "beam holds after losing its prop", "1 = holds", source, "1=yes", 1.0, f64::NAN, if fell < 0.01 && beam_broken == 0 { 1.0 } else { 0.0 }, 1.0, expected, out);
+    row(config, &format!("redundancy-propped{tag}"), "beam holds after losing its prop", "1 = holds", source, "1=yes", 1.0, f64::NAN, if fell < 0.01 && beam_broken == 0 { 1.0 } else { 0.0 }, 1.0, expected, out);
     if let Some(rows) = rows {
         let model_root = {
             let mut cant = s.clone();
             cant.bonds.truncate(prop_top);
-            cant.chunks.truncate(cant.chunks.len() - 2); // the link and its anchor
+            cant.chunks.truncate(cant.chunks.len() - if sliver { 2 } else { 1 }); // the link (if any) and its anchor
             model::model_graded(&cant, G, config)[root].bend
         };
-        row(config, "redundancy-propped", "root bending stress, redistributed", "w L^2 / 2S", "[Gere] 4.4", "MPa", w * l * l / 2.0 / BEAM.modulus() * 1e-6, model_root * 1e-6, rows[root].bend * 1e-6, w * l * l / 2.0 / BEAM.modulus() * 1e-6, expected, out);
+        row(config, &format!("redundancy-propped{tag}"), "root bending stress, redistributed", "w L^2 / 2S", "[Gere] 4.4", "MPa", w * l * l / 2.0 / BEAM.modulus() * 1e-6, model_root * 1e-6, rows[root].bend * 1e-6, w * l * l / 2.0 / BEAM.modulus() * 1e-6, expected, out);
     }
 
     // Simply supported.
     let mut s = Structure::new();
     let m = s.material(concrete);
     let (c, _) = beam(&mut s, "beam", 0.0, l, 0.0, n, BEAM, CONCRETE, m);
-    pin_above(&mut s, c[0], STRIP / 2.0, BEAM.d / 2.0, BEAM.b, m);
+    if sliver {
+        pin_above(&mut s, c[0], STRIP / 2.0, BEAM.d / 2.0, BEAM.b, m);
+    } else {
+        strip_above(&mut s, c[0], STRIP / 2.0, BEAM.d / 2.0, BEAM.b, m);
+    }
     let weak = link_mat(&mut s, w * l / 2.0);
-    hanger_above(&mut s, c[n - 1], l - STRIP / 2.0, BEAM.d / 2.0, BEAM.b, weak);
+    if sliver {
+        hanger_above(&mut s, c[n - 1], l - STRIP / 2.0, BEAM.d / 2.0, BEAM.b, weak);
+    } else {
+        strip_above(&mut s, c[n - 1], l - STRIP / 2.0, BEAM.d / 2.0, BEAM.b, weak);
+    }
     let (fell, broken, _) = watch(&s, 90);
     println!("  simply supported: broken bonds {broken:?}, beam fell {fell:.3} m");
-    row(config, "redundancy-simple", "beam falls after losing a support", "1 = falls (> 1 m in 1.5 s)", source, "1=yes", 1.0, f64::NAN, if fell > 1.0 { 1.0 } else { 0.0 }, 1.0, expected, out);
+    row(config, &format!("redundancy-simple{tag}"), "beam falls after losing a support", "1 = falls (> 1 m in 1.5 s)", source, "1=yes", 1.0, f64::NAN, if fell > 1.0 { 1.0 } else { 0.0 }, 1.0, expected, out);
 }
 
 /// Run a structure for `ticks`; return how far its heaviest dynamic body

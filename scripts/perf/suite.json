@@ -1,0 +1,285 @@
+{
+  "why": "The performance suite: one answer to 'how good is our performance' across the scenes players produce, in both engine profiles. Every scenario is a fixed plan (fixed inputs at fixed ticks, the production stepping order); scripts/perf/suite.py runs it under the exclusive GPU lock and scores it. Correctness is scripts/verify/correctness.sh, not this.",
+  "profiles": [
+    "runtime",
+    "high"
+  ],
+  "headline": "high",
+  "score": "geometric mean over scenarios of p95 step time / baseline p95 (replays: median evaluation time / baseline)",
+  "scenes": {
+    "town": {
+      "pack": "town",
+      "what": "Vibe Town as the native app fields it (native-mac.sh --scene town): its 22 cars at the builder's parking spots, 16 stress iterations (the town qualification cap)",
+      "cars": true,
+      "env": {
+        "VIBE_CITY_DESTRUCTIBLE_VEHICLES": "derby,trophy,desert,circuit,derby,trophy,buggy,desert,monster,circuit,monster,derby,circuit,trophy,buggy,desert,derby,monster,circuit,trophy,derby,buggy",
+        "VIBE_CITY_FLEET_SLOTS": "@slots",
+        "VIBE_CITY_SPAWN_X": "-146",
+        "VIBE_CITY_SPAWN_Z": "0",
+        "VIBE_CITY_NATIVE_STRESS_ITERATIONS": "16"
+      }
+    },
+    "lab-truck": {
+      "pack": "lab",
+      "what": "The vehicle lab's framed-house trial: the monster truck floored from 50 m out into the brick-veneer house (structures/vehicle-lab trials.mjs), the fleet's 64 stress iterations",
+      "cars": true,
+      "env": {
+        "VIBE_CITY_DESTRUCTIBLE_VEHICLES": "monster",
+        "VIBE_CITY_FLEET_SLOTS": "124,-30,0",
+        "VIBE_CITY_SPAWN_X": "-120",
+        "VIBE_CITY_SPAWN_Z": "-90"
+      }
+    },
+    "lab-cannonball": {
+      "pack": "lab",
+      "what": "The vehicle lab's cannonball-framed-house trial: the game's cannonball into the brick-veneer house, the truck parked on the rest pad",
+      "cars": true,
+      "env": {
+        "VIBE_CITY_DESTRUCTIBLE_VEHICLES": "monster",
+        "VIBE_CITY_FLEET_SLOTS": "110,-120,0",
+        "VIBE_CITY_SPAWN_X": "-120",
+        "VIBE_CITY_SPAWN_Z": "-90"
+      }
+    },
+    "lab-meteor": {
+      "pack": "lab",
+      "what": "The vehicle lab's meteor-framed-house trial: the game's meteor into the brick-veneer house, the truck parked on the rest pad",
+      "cars": true,
+      "env": {
+        "VIBE_CITY_DESTRUCTIBLE_VEHICLES": "monster",
+        "VIBE_CITY_FLEET_SLOTS": "110,-120,0",
+        "VIBE_CITY_SPAWN_X": "-120",
+        "VIBE_CITY_SPAWN_Z": "-90"
+      }
+    },
+    "calib-demolition": {
+      "pack": "calib:demolition",
+      "what": "Calibration scenario demolition (structures/calibration): three RC frames side by side, two blown down by charge sequences (east-first, core-first) and one left standing",
+      "cars": false,
+      "charges": true,
+      "env": {
+        "VIBE_CITY_VEHICLES": "0",
+        "VIBE_CITY_DESTRUCTIBLE_VEHICLES": "0",
+        "VIBE_CITY_SPAWN_X": "-60",
+        "VIBE_CITY_SPAWN_Z": "-60"
+      }
+    }
+  },
+  "processes": [
+    {
+      "scene": "town",
+      "phases": [
+        {
+          "name": "settle",
+          "record": false,
+          "ticks": {
+            "standard": 30,
+            "quick": 20
+          }
+        },
+        {
+          "scenario": "town-idle",
+          "ticks": {
+            "standard": 60,
+            "quick": 30
+          },
+          "why": "Vibe Town at rest with its parked fleet: the fixed cost every tick of a match pays"
+        },
+        {
+          "scenario": "fleet-drive",
+          "ticks": {
+            "standard": 60,
+            "quick": 30
+          },
+          "drive": {
+            "cars": [
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18
+            ],
+            "throttle": 0.7,
+            "steer": 0.0
+          },
+          "why": "the eight cars parked along Main Street driven down it at once (destructible vehicles under load, the fleet's suspension and road contacts)"
+        },
+        {
+          "scenario": "town-bombard",
+          "ticks": {
+            "standard": 90,
+            "quick": 60
+          },
+          "events": [
+            {
+              "tick": 0,
+              "kind": "cannonball",
+              "place": "elm-park/house-16",
+              "height": 1.5
+            },
+            {
+              "tick": 10,
+              "kind": "meteor",
+              "place": "elm-park/house-18",
+              "height": 2.0
+            },
+            {
+              "tick": 20,
+              "kind": "cannonball",
+              "place": "elm-park/house-23",
+              "height": 1.5
+            },
+            {
+              "tick": 30,
+              "kind": "meteor",
+              "place": "market-quarter/cinema-1",
+              "height": 2.0
+            },
+            {
+              "tick": 40,
+              "kind": "cannonball",
+              "place": "elm-park/house-25",
+              "height": 1.5
+            }
+          ],
+          "why": "cannonballs and meteors into four houses and the cinema, 1/6 s apart: fracture, correction passes, debris; the quick tier fires the first two only",
+          "events_quick": 2
+        }
+      ]
+    },
+    {
+      "scene": "lab-truck",
+      "phases": [
+        {
+          "name": "settle",
+          "record": false,
+          "ticks": {
+            "standard": 120,
+            "quick": 120
+          }
+        },
+        {
+          "scenario": "truck-house",
+          "ticks": {
+            "standard": 240,
+            "quick": 240
+          },
+          "replay": "truck-house",
+          "drive": {
+            "cars": [
+              0
+            ],
+            "throttle": 1.0,
+            "steer": 0.0
+          },
+          "why": "a 4 t monster truck floored into a brick-veneer timber-frame house (impact about 3 s in)"
+        }
+      ],
+      "live": [
+        "runtime"
+      ]
+    },
+    {
+      "scene": "lab-cannonball",
+      "phases": [
+        {
+          "name": "settle",
+          "record": false,
+          "ticks": {
+            "standard": 120,
+            "quick": 120
+          }
+        },
+        {
+          "scenario": "cannonball-house",
+          "ticks": {
+            "standard": 90,
+            "quick": 60
+          },
+          "replay": "cannonball-house",
+          "events": [
+            {
+              "tick": 0,
+              "kind": "cannonball",
+              "target": [
+                122,
+                1.4,
+                20.1
+              ],
+              "from": 180,
+              "slope": 0.02,
+              "distance": 30
+            }
+          ],
+          "why": "the game's cannonball into the brick-veneer house"
+        }
+      ],
+      "live": [
+        "runtime"
+      ]
+    },
+    {
+      "scene": "lab-meteor",
+      "phases": [
+        {
+          "name": "settle",
+          "record": false,
+          "ticks": {
+            "standard": 120,
+            "quick": 120
+          }
+        },
+        {
+          "scenario": "meteor-house",
+          "ticks": {
+            "standard": 120,
+            "quick": 90
+          },
+          "replay": "meteor-house",
+          "events": [
+            {
+              "tick": 0,
+              "kind": "meteor",
+              "target": [
+                124,
+                2,
+                20.1
+              ],
+              "from": 180,
+              "slope": 0.3,
+              "distance": 140
+            }
+          ],
+          "why": "the game's meteor into the brick-veneer house"
+        }
+      ],
+      "live": [
+        "runtime"
+      ]
+    },
+    {
+      "scene": "calib-demolition",
+      "phases": [
+        {
+          "name": "settle",
+          "record": false,
+          "ticks": {
+            "standard": 50,
+            "quick": 50
+          }
+        },
+        {
+          "scenario": "calib-collapse",
+          "ticks": {
+            "standard": 150,
+            "quick": 90
+          },
+          "why": "two three-storey RC frames brought down by their charges (firings at 1.0-1.9 s), the third standing: a large collapse and its debris"
+        }
+      ]
+    }
+  ]
+}
