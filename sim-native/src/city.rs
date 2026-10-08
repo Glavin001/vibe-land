@@ -227,13 +227,16 @@ fn apply_app_defaults() {
         ("BLAST_STRESS_INCREMENTAL_MOTION", "1"),
         ("PX_DESTRUCTION_INCREMENTAL_TOPOLOGY", "1"),
         ("BLAST_STRESS_BALANCED_OPERATOR", "1"),
-        // No busy keep-alive in the app: the bridge's server default keeps a
-        // threadgroup of compute permanently in flight to hold the GPU's clock
-        // between ticks (physx_bridge.cc), but a desktop app shares the GPU with
-        // WindowServer. On 2026-10-08 the app on Vibe Town (high profile)
-        // starved WindowServer for 40 s twice and its watchdog logged the owner
-        // out; the app renders every frame, which keeps the GPU clocked anyway.
-        // The 250 us heartbeat stays (the bridge's other default).
+        // No GPU keep-alive of any kind in the app. The bridge's server
+        // defaults (physx_bridge.cc) hold the GPU awake between 60 Hz ticks: a
+        // 250 us heartbeat and a busy threadgroup. A desktop app shares the GPU
+        // with WindowServer and must let it idle between frames like any game.
+        // On 2026-10-08 the app on Vibe Town (high profile, at rest) hung
+        // WindowServer 52-66 s after launch in 4 of 4 runs with the heartbeat
+        // on (busy on or off); macOS's watchdog then logged the owner out. With
+        // both off it ran 120 s with WindowServer answering in ~55 ms
+        // throughout (docs/perf/NATIVE_APP_FINDINGS.md).
+        ("CUMETAL_GPU_KEEPALIVE_US", "0"),
         ("CUMETAL_GPU_KEEPALIVE_BUSY", "0"),
     ] {
         if std::env::var_os(name).is_none() {
