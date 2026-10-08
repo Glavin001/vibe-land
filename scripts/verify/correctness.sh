@@ -17,6 +17,10 @@
 # (a known gap that got worse counts; a known gap that holds does not).
 # Correctness runs share the GPU (VIBE_GPU_SHARED=1); nothing here takes the lock.
 # See docs/verification/README.md.
+# Parsed whole before it runs ({ ...; exit; }): an edit to this file while it
+# runs cannot shift a running copy (bash reads scripts as it goes). Still,
+# replace it with a temp file and mv, never edit it in place.
+{
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 tier=${1:-quick}
@@ -38,13 +42,15 @@ export PX_DESTRUCTION_ALLOW_UNCONVERGED=1
 export PX_DESTRUCTION_IMPACT_LOG=1
 I=/Users/glavin/Development/PhysX/out/install
 export RUNTIME_SDK=${RUNTIME_PHYSX_ROOT:-$I/garage-roof}
-# High-fidelity runs on high.env's SDK (clean/high-fidelity, garage-clean: every
-# capability). These remain for the single-feature regression tests.
-export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/install/garage-clean}
-export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/install/garage-clean}
+# The single-feature regression tests run on high.env's SDK, read from high.env
+# itself so they cannot drift from it (2026-10-08: they ran on a retired SDK
+# after high.env moved), and checked by its provenance below.
+HIGH_ENV_SDK=$(env -u HIGH_PHYSX_ROOT bash -c 'source "$1" >/dev/null 2>&1; echo "$PHYSX_ROOT"' _ "$ROOT/scripts/fidelity/high.env")
+export ROTATION_SDK=${VERIFY_ROTATION_PHYSX_ROOT:-$HIGH_ENV_SDK}
+export CRUSH_SDK=${VERIFY_CRUSH_PHYSX_ROOT:-$HIGH_ENV_SDK}
 export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/build/clean-package}
-# The PhysX destruction ctest gate's package tree (fix/mac-ctest-baseline; the hifi
-# tree once integration/high-fidelity merges it).
+# The PhysX destruction ctest gate's package tree: the clean branch's tests,
+# built against garage-clean's libraries (cmake -S destruction, BUILD_TESTING=ON).
 export DESTRUCTION_CTEST_TREE=${VERIFY_DESTRUCTION_CTEST_TREE:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/build/clean-package}
 export IMPACT_BUILD=${VERIFY_IMPACT_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/build/impact-e-tests}
 t_start=$(date +%s)
@@ -176,7 +182,7 @@ fi
 
 if want acceptance; then
   for p in runtime high; do
-    # High-fidelity on high.env's SDK (the combined garage-hifi install);
+    # High-fidelity on high.env's SDK (garage-clean);
     # VERIFY_HIGH_PHYSX_ROOT picks another.
     HIGH_PHYSX_ROOT=${VERIFY_HIGH_PHYSX_ROOT:-} "$ROOT/scripts/verify/acceptance.sh" "$p" "$out/acceptance-$p" > "$out/acceptance-$p.log" 2>&1 || failed=1
     sig=$(bug_signals "$out/acceptance-$p"/*.log "$ROOT/target/vehicle-testbed/verify-acceptance-$p.log")
@@ -209,3 +215,4 @@ fi
 python3 "$ROOT/scripts/verify/report.py" "$out" | tee "$out/report.md"
 echo "[verify] $tier tier took $(( $(date +%s) - t_start )) s; results in $out"
 exit $failed
+}
