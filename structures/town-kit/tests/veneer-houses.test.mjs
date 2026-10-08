@@ -52,9 +52,11 @@ test('brick-veneer bungalow, revision 2: headers, plate and joint stiffness as b
   if(pair(b)==='header/top-plate')assert.equal(mat(b),'header-plate-joint');
  }
  const hk=s.bonds.find(b=>mat(b)==='header-king-joint');assert(Math.abs(t[hk.m].shearFatal*hk.area-REVISION_2_CONNECTIONS['header-king'].shear)<1,'a header end holds its toe nails');
- // The plate: cut at every bay (no chunk over 1.1 m), its strength the plies'.
+ // The plate: cut every two bays (no chunk over 2 m, against revision 1's 2.4 m and more), its strength the plies'.
  const plates=s.nodes.map((_,i)=>i).filter(i=>type(i)==='top-plate');
- assert(plates.every(i=>Math.max(s.nodeSizes[i].x,s.nodeSizes[i].z)<=1.1),'plate chunks a bay long');
+ assert(plates.every(i=>Math.max(s.nodeSizes[i].x,s.nodeSizes[i].z)<=2),'plate chunks two bays long');
+ // Fastened joints in an impact at K_u = 2/3 K_ser (EN 1995-1-1 2.2.2(2)); a bearing joint at its wood's.
+ for(const b of s.bonds){const m=t[b.m];if(m.name==='drywall-screw-joint'||m.name==='heel-joint')assert(Math.abs(m.impactElasticModulus/m.elasticModulus-2/3)<1e-9);if(m.bearingElasticModulus)assert(!m.impactElasticModulus,'a bearing joint keeps its wood stiffness');}
  assert(plates.every(i=>t[s.nodes[i].m].tensionFatal===DOUBLE_TOP_PLATE.tensionFatal));
  // Every slip-rated joint's stiffness E A / L at the stage's spring length is its fasteners' (within the
  // quarter-octave bins): a drywall screw row's K_ser per area times its area.

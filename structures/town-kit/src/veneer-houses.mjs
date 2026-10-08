@@ -103,7 +103,7 @@ function materialsFor(b,crush=false,revision=1){
  * to its Johansen capacity, so it is elastic up to its capacity, as the timber members are.
  */
 const connectionElastic=()=>realCapacitiesEnabled()?1:LONG_TERM;
-function jointMaterial(b,kind,area,length,table=CONNECTIONS,fixTwist=false){
+function jointMaterial(b,kind,area,length,table=CONNECTIONS,fixTwist=false,impactSlip=false){
  let c=table[kind];const k=c.per==='joint'?1/area:1/(c.perArea??1),LONG_TERM=connectionElastic();
  // Fasteners in a row along a face (c.row: their spacing and the face's width): the row this kind's
  // median contact holds, end distances 5 d off (materials.mjs fastenerRow).
@@ -117,6 +117,9 @@ function jointMaterial(b,kind,area,length,table=CONNECTIONS,fixTwist=false){
   shearElastic:LONG_TERM*f.shear,shearFatal:f.shear,
   // A few discrete fasteners twist on their own group (materials.mjs fastenerRow); read under VIBE_SECTION_ROTATION.
   ...(c.twist?{twistGyration:c.twist.gyration,twistReach:c.twist.reach}:{}),
+  // An impact is an ultimate state: a fastener's slip modulus there is K_u = 2/3 K_ser (EN 1995-1-1
+  // 2.2.2(2), 7.1(2)). Not for a joint that bears (its contact is the wood's, not its nails').
+  ...(impactSlip&&!(c.restBearing&&realCapacitiesEnabled())&&!c.bearing?{impactElasticModulus:2/3*elastic}:{}),
   // Its members bear on each other (every connection here has a bearing compression): graded by its
   // fasteners once the contact opens, not as a glued patch (PX_DESTRUCTION_BEARING_JOINTS).
   ...(realCapacitiesEnabled()&&c.compression>0?{bearingJoint:1}:{}),
@@ -280,12 +283,15 @@ export function buildVeneerHouse(options={}){
 
  /**
   * Revision 2: the doubled top plate (one 90 x 90 member, as revision 1) cut
-  * into chunks at every bay, midway between the uprights under it and clear of
-  * the joists and rafters on it. The stage checks a member's bending only
+  * into chunks two bays long, midway between the uprights under it and clear
+  * of the joists and rafters on it. The stage checks a member's bending only
   * across its chunks' bonds: revision 1's 2.4 m chunks were rigid over a gap,
   * a lever that pried up the studs and headers beyond it, where a real plate
   * bends and, overloaded, breaks beside the support. The cuts are the plate's
-  * own timber (one piece, as revision 1's splices).
+  * own timber (one piece, as revision 1's splices). Two bays, not one: a
+  * chunk a bay long (1.7 kg, its cut 1.5e8 N/m) was the stiffest element of
+  * the house and halved the explicit impact step (bound 5.3e4 rad/s against
+  * 2.9e4 at two bays, where the stud halves set it, as in revision 1).
   */
  function chunkedPlate(w,add,upright,ya,yb){
   const ends=[...upright].sort((p,q)=>p[0]-q[0]);
@@ -298,7 +304,7 @@ export function buildVeneerHouse(options={}){
    let u=m;for(let d=0;!clear(u)&&d<.3;d+=.005){if(clear(m+d)){u=m+d;break;}if(clear(m-d)){u=m-d;break;}}
    if(clear(u)&&u>w.u0+.2&&u<w.u1-.2&&(!cuts.length||u-cuts.at(-1)>=.2))cuts.push(round(u));
   }
-  const xs=[w.u0,...cuts,w.u1],pieceId=b.pieceId++;
+  const xs=[w.u0,...cuts.filter((_,i)=>i%2===1),w.u1],pieceId=b.pieceId++;
   for(let i=0;i<xs.length-1;i++)add('top-plate',xs[i],xs[i+1],ya,yb,{pieceId,along:99,material:MAT.plate});
  }
 
@@ -589,7 +595,7 @@ export function buildVeneerHouse(options={}){
  const engineLaw=C.revision>=2||sectionRotationLaw();
  for(const [kind,list] of kinds){
   const table=C.revision>=2&&kind in REVISION_2_CONNECTIONS?REVISION_2_CONNECTIONS:kind in CONNECTIONS?CONNECTIONS:stairTable;
-  const make=(area,length)=>kind==='flooring-nail'||kind==='landing-deck'?jointMaterialFlooring(b,length,`${kind}-joint`):jointMaterial(b,kind,area,length,table,engineLaw);
+  const make=(area,length)=>kind==='flooring-nail'||kind==='landing-deck'?jointMaterialFlooring(b,length,`${kind}-joint`):jointMaterial(b,kind,area,length,table,engineLaw,engineLaw);
   if(kind in kindMaterial){for(const bond of list){bond.m=kindMaterial[kind];delete bond.kind;}continue;}
   const area=median(list.map(x=>x.area));
   if(!engineLaw){
