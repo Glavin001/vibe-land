@@ -356,6 +356,25 @@ the profile's SDK and packs, then judges.
 | turning-slalom-avoidance | test bed `drift`; the film unit tests | criteria.mjs; unit tests |
 | vibe-town-qualifies | qualification of the town pack | no FAIL, FALLS, CRUSH or ERROR |
 
+**Owner gate (hard, high fidelity):**
+
+- **The requirement:** "the cannon ball should go through the building".
+- **Applies to:** `cannonball-framed-house` and `meteor-framed-house`.
+- **Pass:** the projectile passes the target (`pastTarget` >= 1 m) with local
+  damage (bonds broken within the top of the oracle band: 10% for the ball,
+  20% for the meteor).
+- **Never a known gap:** `acceptance.mjs` marks the check `hard`, and the judge
+  ignores `acceptance-expected.tsv` for it.
+- **The energy balance still applies:** a stop must be accounted for by modelled
+  dissipation.
+
+It fails today on garage-hifi:
+
+| Projectile | Stops at | Bonds broken |
+|---|---|---|
+| Cannonball | -0.01 m (at the face) | 47 of 3,084 |
+| Meteor | 1.43 m short | 100 |
+
 `structures/vehicle-lab/criteria.mjs` has only lower bounds ("house damaged >=
 20"), so a hit that destroys the whole house passes it. The bands above come
 from the impact oracle (`structures/town-kit/scripts/impact-study.py`,

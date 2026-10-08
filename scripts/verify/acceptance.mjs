@@ -119,13 +119,21 @@ export const SCENARIOS = [
     id: 'shots-through-house',
     behaviour: 'A cannonball and a meteor go through a house with local damage; the roof holds unless its support truly fails',
     harness: { kind: 'testbed', build: 'monster', trials: ['cannonball-framed-house', 'meteor-framed-house', 'smallshots-framed-house'] },
-    judge(dir) {
+    judge(dir, profile) {
       const runs = testbedRuns(dir);
       const ball = run(runs, 'cannonball-framed-house'), meteor = run(runs, 'meteor-framed-house'), small = run(runs, 'smallshots-framed-house');
       return [
         ...houseChecks(small, { band: BAND.small, through: (r) => ({ check: 'gets past the brick face (m)', measured: fmt(r.attack?.pastTarget), threshold: '>= 1', pass: (r.attack?.pastTarget ?? 0) >= 1 }) }).map((c) => ({ ...c, check: `three 100 kg balls between the studs: ${c.check}` })),
         energyCheck(ball, 'cannonball', 1),
         energyCheck(meteor, 'meteor', 8),
+        // Owner requirement (2026-10-07): "the cannon ball should go through the
+        // building". In high fidelity a HARD gate: never a known gap.
+        ...[[ball, 'cannonball', BAND.ball], [meteor, 'meteor', BAND.meteor]].map(([r, kind, band]) => {
+          const past = r?.attack?.pastTarget, h = r?.house, f = h ? h.broken / h.bonds : NaN;
+          const local = h && f <= band[1];
+          return { check: `${kind}: passes the target with local damage (owner gate)`, measured: r ? `${fmt(past)} m past, ${h ? `${h.broken} of ${h.bonds} bonds (${(100 * f).toFixed(1)}%)` : '-'}` : 'missing',
+            threshold: `past >= 1 m and broken <= ${Math.round(100 * band[1])}%`, pass: !!r && (past ?? -1) >= 1 && !!local, hard: profile === 'high' };
+        }),
         ...houseChecks(ball, { local: true, band: BAND.ball, through: (r) => ({ check: 'gets past the front wall (m)', measured: fmt(r.attack?.pastTarget), threshold: '>= 1', pass: (r.attack?.pastTarget ?? 0) >= 1 }) }).map((c) => ({ ...c, check: `cannonball: ${c.check}` })),
         // The meteor (2 m radius, through the whole house) takes the roof's
         // supports on its path, so its roof may come down where they went: only
@@ -255,7 +263,8 @@ if (cmd === 'list') {
   for (const s of SCENARIOS) {
     console.log(`\n${s.id} -- ${s.behaviour}`);
     for (const c of s.judge(dir, profile)) {
-      const known = expected.has(`${profile}\t${s.id}\t${c.check}`);
+      // A hard gate is never a known gap.
+      const known = !c.hard && expected.has(`${profile}\t${s.id}\t${c.check}`);
       const st = c.pass ? (known ? 'FIXED' : 'PASS') : known ? 'KNOWN-GAP' : 'FAIL';
       if (st === 'FAIL') failing++;
       console.log(`  ${c.check.padEnd(64)} ${String(c.measured).padEnd(28)} ${String(c.threshold).padEnd(34)} ${st}${c.note ? `  (${c.note})` : ''}`);
