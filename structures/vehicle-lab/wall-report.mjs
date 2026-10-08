@@ -61,7 +61,11 @@ export function judge(run) {
     touched: p.touched, held: p.touchedHeldAnchored, types: p.touchedTypes,
     peakTick: p.peak?.tick, peakBroken: p.peak?.broken, peakAfterCorrection: p.peak?.brokenAfterCorrection, peakCorrections: p.peak?.corrections, peakConverged: p.peak?.converged,
     energyRatio: p.energyExcessRatio, debrisUp: p.debrisUpMax, impactorUpGain: (p.impactorUpMax ?? 0) - (p.impactorUpIn ?? 0),
-    energyInjected: p.energyExcessRatio > 1.05,
+    // Energy from nowhere: the fragments' balance, or a contact throwing the impactor up past
+    // the rebound its descent allows (wall_matrix.rs impactorReboundExcess; 1 m/s: the
+    // judges' allowance for the solver's velocity tolerance, infinite_wall.rs).
+    reboundExcess: p.impactorReboundExcess,
+    energyInjected: p.energyExcessRatio > 1.05 || (p.impactorReboundExcess ?? 0) > 1.0,
     stopTicks: p.stopTicks, sceneBroken: Object.values(run.sceneBroken ?? {}).reduce((a, b) => a + b, 0), failedSteps: run.failedSteps, converged: run.converged,
   };
 }

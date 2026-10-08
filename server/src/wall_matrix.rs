@@ -266,6 +266,16 @@ impl Probe {
             "energyExcessRatio": self.energy.iter().map(|e| e[1] / (e[2] + e[3]).max(1.)).fold(0f32, f32::max),
             "debrisUpMax": self.energy.iter().map(|e| e[4]).fold(0f32, f32::max),
             "impactorUpMax": t[first..].iter().map(|r| r[3]).fold(f32::MIN, f32::max),
+            // Energy from a contact, which the structure's balance above cannot see (the
+            // 2026-10-08 ground kick: up 22 m/s off a 9 m/s landing while the rock lost more
+            // along its path): over each tick the impactor's upward velocity change, gravity
+            // removed, is at most a contact that stops its descent and returns e of it,
+            // (1 + e) max(0, -v_up before) (Hibbeler, Dynamics, 15.4; e the world's restitution,
+            // WorldConfig: VIBE_WORLD_RESTITUTION, 0.1). The most any tick exceeded it (m/s).
+            "impactorReboundExcess": {
+                let e = std::env::var("VIBE_WORLD_RESTITUTION").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.1);
+                (first..t.len()).map(|k| (t[k][3] - t[k - 1][3] + G * dt) - (1. + e) * (-t[k - 1][3]).max(0.)).fold(0f32, f32::max)
+            },
             "impactorUpIn": t[first - 1][3],
             // Every tick from first contact for 1.5 s: [tick, past, v along, v up].
             "after": t[first - 1..t.len().min(first + 90)].iter().map(|r| [r[0], (r[1] * 100.).round() / 100., (r[2] * 100.).round() / 100., (r[3] * 100.).round() / 100.]).collect::<Vec<_>>(),

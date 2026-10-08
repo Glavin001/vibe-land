@@ -1095,6 +1095,17 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
     mass.inertia[3]=props.inertiaTensor[1][0];mass.inertia[4]=props.inertiaTensor[2][0];mass.inertia[5]=props.inertiaTensor[2][1];
     s.properties.push_back(mass);
     s.chunks.push_back({hulls[i][0],structure_id,i,0,PX_INVALID_U32,0});
+#ifdef PX_DESTRUCTION_CHUNK_BOXES
+    {
+      // Its hulls' bounds in the vehicle's actor frame (its cluster's): the impact step's
+      // own contact geometry for a body striking the vehicle (a dynamic struck island's
+      // window re-finds its rows as the striker crosses it). Bounds only: not exact.
+      PxBounds3 bounds=PxBounds3::empty();
+      for (auto *shape : hulls[i]) {PxBounds3 g;if (PxGeometryQuery::computeGeomBounds(g, shape->getGeometry(), shape->getLocalPose())) bounds.include(g);}
+      if (s.boxes.size() < s.nodes.size()) s.boxes.resize(s.nodes.size());
+      if (!bounds.isEmpty()) {PxDestructionChunkBox box;box.center=bounds.getCenter();box.halfExtents=bounds.getExtents();s.boxes[s.nodes.size()-1]=box;}
+    }
+#endif
     for (PxU32 h=0;h<hulls[i].size();++h) {
       auto *shape=hulls[i][h];shape->acquireReference();
       auto filter=shape->getSimulationFilterData();filter.word3|=kNativeChunkFilterBit;shape->setSimulationFilterData(filter);
