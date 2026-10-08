@@ -24,12 +24,15 @@ source "$ROOT/scripts/fidelity/select.sh" "$profile" || exit 2
 profile=$VIBE_FIDELITY_PROFILE
 [ "$fidelity_base" = high ] && { [ -f "$ROOT/target/fidelity/high/structures/vehicle-lab/out/vehicle-lab-crush.json" ] || "$ROOT/scripts/fidelity/build-packs.sh" high; }
 source "$ROOT/scripts/fidelity/check.sh" --degrade
+# A versioned SDK (NAME -> NAME@<rev>, rebuild-garage-sdk.sh): resolve it once,
+# so the provenance check and the whole run see one revision.
+export PHYSX_ROOT=$(cd -P "$PHYSX_ROOT" 2>/dev/null && pwd || echo "$PHYSX_ROOT")
 # Provenance: a stale or dirty SDK, or packs older than their sources, would
 # measure yesterday's engine (high: refused; runtime: reported).
 "$ROOT/scripts/fidelity/provenance.sh" "$fidelity_base" | tee "$out/provenance.log" || { echo "[acceptance] refused: see $out/provenance.log"; exit 1; }
 eval "$("$ROOT/scripts/fidelity/packs.sh" "$fidelity_base")"
 export VIBE_GPU_SHARED=1
-sdk=$(basename "$PHYSX_ROOT")
+sdk=$(basename "$PHYSX_ROOT"); sdk=${sdk%@*}  # per SDK name, not revision (the bridge relinks when PHYSX_ROOT changes)
 export CARGO_TARGET_DIR=$ROOT/target/verify-server-$sdk
 export QUALIFY_TARGET_DIR=$CARGO_TARGET_DIR
 # Stall guard: a harness whose log (or $WATCH) stops growing for VERIFY_STALL_S (default
@@ -64,7 +67,7 @@ t0=$(date +%s)
 
 if want testbed; then
   trials=${VERIFY_TRIALS:-framed-house,house,cannonball-framed-house,meteor-framed-house,meteor-framed-house-roof,meteor-framed-house-upper,smallshots-framed-house,rest,near-miss,knock-mirror,coast,debris-wheel,drift}
-  label=verify-acceptance-$profile
+  label=${VERIFY_LABEL:-verify-acceptance-$profile}  # VERIFY_LABEL: a run of its own (impact-arms.sh repeats)
   (cd "$ROOT" && VIBE_TESTBED_PROBE=1 VIBE_CITY_SCENE="$lab" VIBE_TESTBED_META="${lab%.json}.meta.json" \
     WATCH="$ROOT/target/vehicle-testbed/$label.log" watched "$out/testbed.log" scripts/vehicle-testbed.sh --build monster --trials "$trials" --label "$label" --report-only)
   cp "$ROOT/target/vehicle-testbed/$label.json" "$out/testbed.json" 2>/dev/null

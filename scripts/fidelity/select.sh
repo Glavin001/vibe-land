@@ -10,6 +10,7 @@
 #   high-static   A: the static solve only (VIBE_IMPACT_CAPACITY=0)
 #   high-step     B: static plus the linear impact step (VIBE_IMPACT_STEP=1)
 #   high-oracle   C: the ADMM impact solve at its correctness budget (the reference)
+#   high-explicit D: static plus the explicit impact step (PX_DESTRUCTION_IMPACT_EXPLICIT=1)
 _fidelity_here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 _fidelity_name=${1:?usage: source select.sh runtime|high|high-ARM}
 case $_fidelity_name in

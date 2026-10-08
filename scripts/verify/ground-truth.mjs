@@ -9,16 +9,27 @@
 //       and the passing ones to --out (default scripts/verify/ground-truth/<trial>.json).
 //   node scripts/verify/ground-truth.mjs key --pack PACK --meta META
 //       The current key (SDK revision, pack and meta hashes).
+//   node scripts/verify/ground-truth.mjs compat --to REV --reason TEXT [--trials a,b] [--repo ../PhysX]
+//       Admit SDK revision REV for cached trials: records the reason and the
+//       diff from the cached revision (files, and the functions each hunk is in).
+//       The comparison accepts REV for those trials; nothing else is relaxed.
 //
 // The gates (docs/verification/README.md, "Ground truth"):
 //   through   a shot whose KE exceeds its path work gets >= 1 m past the point struck
 //             (the owner: the cannonball and the meteor go through the building)
 //   energy    shots: the balance closes over the structure's window
 //   held      nothing holds past its capacity (no infinite wall, no partial hold)
-// Locality is recorded (each broken bond's distance from the impactor's line),
-// not gated: the physics criterion for it is that each break is its own
-// verdict, which the held gate and the at-rest gate cover.
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+// A driving trial (the truck into the house; no shot, so the test bed records
+// the probe but no energy terms or bond ids):
+//   enters    the car's middle gets past the face it first struck
+//   slows     it leaves slower than it came (momentum went into the structure)
+//   held      as above
+// Locality is recorded (each broken bond's distance from the impactor's line,
+// the frame still anchored, the roof members down), not gated: the physics
+// criterion for it is that each break is its own verdict, which the held gate
+// and the at-rest gate cover.
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,10 +50,49 @@ export function currentKey(packPath, metaPath, env = process.env) {
     metaSha256: metaPath && existsSync(metaPath) ? sha(metaPath) : null,
   };
 }
-/** Differences between a cached key and the current one ([] when it matches). */
-export function keyMismatch(cached, current) {
-  return ['sdkRevision', 'packSha256', 'metaSha256'].filter((k) => cached?.[k] !== current[k])
+/** Differences between a cached key and the current one ([] when it matches).
+ * An SDK revision on the entry's `compatible` list (ground-truth.mjs compat:
+ * each with its reason and the diff checked) counts as the cached one. */
+export function keyMismatch(cached, current, compatible = []) {
+  const same = (a, b) => !!a && !!b && (a.startsWith(b) || b.startsWith(a));
+  return ['sdkRevision', 'packSha256', 'metaSha256']
+    .filter((k) => cached?.[k] !== current[k] && !(k === 'sdkRevision' && compatible.some((c) => same(c.sdkRevision, current[k] ?? ''))))
     .map((k) => `${k}: cached ${String(cached?.[k]).slice(0, 12)}, now ${String(current[k]).slice(0, 12)}`);
+}
+/** The compatible entry that admits `revision`, if any. */
+export function compatibleWith(entry, revision) {
+  return (entry?.compatible ?? []).find((c) => revision && (c.sdkRevision.startsWith(revision) || revision.startsWith(c.sdkRevision))) ?? null;
+}
+
+/** The diff from the cached SDK revision to `to` in the PhysX repo: files and,
+ * per file, the enclosing functions or structs of each hunk (git's hunk headers). */
+function sdkDiff(repo, from, to) {
+  const git = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' });
+  const full = git('rev-parse', to).trim(), base = git('rev-parse', from).trim();
+  const files = git('diff', '--name-only', base, full).split('\n').filter(Boolean);
+  const functions = {};
+  for (const f of files) {
+    const heads = [...git('diff', '-U0', base, full, '--', f).matchAll(/^@@[^@]*@@ ?(.*)$/gm)].map((m) => m[1].trim()).filter(Boolean);
+    functions[f] = [...new Set(heads.map((h) => h.replace(/\s*\{.*$/, '').slice(0, 140)))];
+  }
+  return { from: base, to: full, files, functions };
+}
+
+/** Admit SDK revision --to for cached trials, with the reason and the diff checked. */
+function compat(argv) {
+  const opt = (k, d) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : d; };
+  const dir = opt('--dir', path.join(ROOT, 'scripts/verify/ground-truth')), repo = opt('--repo', path.resolve(ROOT, '../PhysX'));
+  const to = opt('--to'), reason = opt('--reason');
+  if (!to || !reason) { console.error('usage: ground-truth.mjs compat --to REV --reason TEXT [--trials a,b] [--dir DIR] [--repo PHYSX]'); process.exit(2); }
+  const trials = opt('--trials')?.split(',') ?? readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, ''));
+  for (const trial of trials) {
+    const f = path.join(dir, `${trial}.json`), t = JSON.parse(readFileSync(f, 'utf8'));
+    const d = sdkDiff(repo, t.key.sdkRevision, to);
+    t.compatible = (t.compatible ?? []).filter((c) => c.sdkRevision !== d.to);
+    t.compatible.push({ sdkRevision: d.to, reason, checked: new Date().toISOString(), diff: d });
+    writeFileSync(f, JSON.stringify(t));
+    console.log(`[ground-truth] ${trial}: ${d.to.slice(0, 9)} admitted (${d.files.length} files changed since ${d.from.slice(0, 9)})`);
+  }
 }
 
 /** The shot's line: through the target along -(sin b, slope, cos b) (vehicle_testbed.rs). */
@@ -67,10 +117,22 @@ export function distanceFromLine(L, c) {
   return Math.hypot(v[0] - along * L.d[0], v[1] - along * L.d[1], v[2] - along * L.d[2]);
 }
 
+/** A driving trial's gates (no shot): the probe's speeds and holds. */
+export function carGates(run) {
+  const pr = run.probe, face = run.house?.impact?.[2];
+  const enters = run.maxZ != null && face != null ? run.maxZ - face : null;
+  return [
+    { gate: 'enters', pass: enters != null && enters >= 0, measured: enters == null ? 'not recorded' : `middle ${enters.toFixed(2)} m past the face struck (z ${face.toFixed(2)})` },
+    { gate: 'slows', pass: pr.vOut < pr.vIn && pr.momentumLost > 0, measured: `${pr.vIn.toFixed(1)} -> ${pr.vOut.toFixed(1)} m/s, ${(pr.momentumLost / 1e3).toFixed(1)}e3 kg m/s into the structure` },
+    { gate: 'held', pass: !pr.infiniteWall && !pr.partialHold, measured: pr.infiniteWall ? 'infinite wall' : pr.partialHold ? 'partial hold' : 'ok' },
+  ];
+}
+
 /** The owner's physical gates on one run. */
 export function gates(run) {
   const s = shotPhysics(run);
   const shot = run?.attack?.kind === 'shot';
+  if (!s && run?.probe?.contact && !run.attack) return { s: null, shot: false, car: true, checks: carGates(run) };
   if (!s) return { s: null, shot, checks: [{ gate: 'recorded', pass: false, measured: !run ? 'missing' : 'no probe or no contact' }] };
   const checks = [
     { gate: 'through', pass: s.passed, measured: `KE ${(s.ke / 1e6).toFixed(2)} MJ vs path ${(s.pathD / 1e6).toFixed(2)} MJ; ${s.past.toFixed(2)} m past` },
@@ -111,6 +173,12 @@ async function record(argv) {
     const run = list.find((r) => r.trial === trial && r.car === 'monster');
     const tm = meta.trials.find((t) => t.id === trial);
     const { s, shot, checks } = gates(run);
+    // The gates read the probe's mass: a `shots` run recorded before the test
+    // bed took each shot's own mass (it fell back to the cannonball's) is not
+    // ground truth, whatever its gates say.
+    const shotMass = tm?.attack?.kind === 'shots' ? tm.attack.shots?.[tm.attack.shots.length - 1]?.mass ?? 100 : null;
+    if (shotMass != null && run?.probe && Math.abs(run.probe.mass - shotMass) > 1e-3 * shotMass)
+      checks.push({ gate: 'recorded', pass: false, measured: `probe mass ${run.probe.mass} kg, the shot's ${shotMass} kg (a test bed from before the per-shot mass)` });
     const pass = checks.every((c) => c.pass);
     verdicts.push({ trial, pass, checks });
     if (!run) continue;
@@ -126,6 +194,12 @@ async function record(argv) {
         peakForceN: round(s.peakForceN, 0), heldCapacityN: round(s.heldCapacityN, 0),
         energy: shot ? { lostJ: round(s.lost, 0), dropJ: round(s.drop, 0), fractureJ: round(s.fracture, 0), crushJ: round(s.crush, 0), fragmentsKeJ: round(s.fragKe, 0), peReleasedJ: round(s.pe, 0), residJ: round(s.resid, 0), contactJ: round(s.contact, 0), afterWindowJ: round(s.afterWindow, 0), window: s.window } : null,
       },
+      // Driving trials: the probe's numbers (no energy terms or bond ids recorded).
+      car: !s && run.probe ? { massKg: run.probe.mass, vIn: round(run.probe.vIn), vOut: round(run.probe.vOut), vExit: round(run.probe.vExit),
+        momentumLost: round(run.probe.momentumLost, 0), keLostJ: round(run.probe.energyLost, 0), maxZ: round(run.maxZ), carBondsBroken: run.bondsBroken } : null,
+      // Locality, recorded not gated: the house's own summary (vehicle_testbed.rs).
+      house: run.house && (({ lineDistances, ...h }) => ({ ...h, lineDistanceMedian: lineDistances?.length ? [...lineDistances].sort((a, b) => a - b)[lineDistances.length >> 1] : null }))(run.house),
+      exitSpeed: run.probe ? round(run.probe.vExit) : null,
       cost: run.impactCost ?? null,
       // [tick, x, y, z, vx, vy, vz] at the probe's ticks.
       path: (run.impactorPath ?? []).map((r) => r.map((x, k) => round(x, k === 0 ? 0 : 3))),
@@ -141,6 +215,7 @@ async function record(argv) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const [cmd, ...rest] = process.argv.slice(2);
   if (cmd === 'record') await record(rest);
+  else if (cmd === 'compat') compat(rest);
   else if (cmd === 'key') { const o = (k) => rest[rest.indexOf(k) + 1]; console.log(JSON.stringify(currentKey(o('--pack'), o('--meta')), null, 1)); }
   else { console.error('usage: ground-truth.mjs record|key ...'); process.exit(2); }
 }

@@ -32,6 +32,9 @@ stale=0
 for source in "$lab"/*.mjs; do [ "$lab/out/vehicle-lab.json" -nt "$source" ] || stale=1; done
 [ -f "$lab/out/vehicle-lab.json" ] && [ "$stale" = 0 ] || node "$lab/build-lab.mjs"
 export PHYSX_ROOT="${PHYSX_ROOT:-$(cd "$ROOT/.." && pwd)/PhysX/out/install/garage-multihull}"
+# A versioned SDK (NAME -> NAME@<rev>, rebuild-garage-sdk.sh): this run keeps the
+# revision it started on, however often the link moves.
+PHYSX_ROOT=$(cd -P "$PHYSX_ROOT" 2>/dev/null && pwd || echo "$PHYSX_ROOT")
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target/garage-vehicles}"
 (cd "$ROOT" && cargo test --release -p web-fps-server --features native-destruction --lib --no-run 2>&1 | grep -E '^error' -A12 || true)
 log="$ROOT/target/vehicle-testbed/$label.log"

@@ -134,8 +134,13 @@ def replay_binary(env: dict) -> Path | None:
     sdk = Path(env["PHYSX_ROOT"])
     art = sdk / "sdk-artifacts.json"
     prefix = Path(json.loads(art.read_text()).get("install_prefix", sdk)) if art.exists() else sdk
-    candidate = prefix.parent.parent / "build" / prefix.name / "package/topology/destruction_impact_capture_replay"
-    return candidate if candidate.exists() else None
+    # A versioned install (rebuild-garage-sdk.sh: NAME@<rev>) was built in build/NAME.
+    names = [prefix.name] + ([prefix.name.split("@", 1)[0]] if "@" in prefix.name else [])
+    for name in names:
+        candidate = prefix.parent.parent / "build" / name / "package/topology/destruction_impact_capture_replay"
+        if candidate.exists():
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------- plans
