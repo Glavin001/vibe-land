@@ -30,6 +30,7 @@ Fixed constraints, not levers:
   | Meteor | 98 | 24.5k | 20 s | 60 ms |
 
   A house evaluation at rest converges in 36-42 steps (20-40 ms), or costs nothing with the carried yield state. Levers: fewer ramp levels and brittle cascades, cheaper J-steps, parallel islands. The 32768 budget is a correctness budget, not a performance target.
+- 2026-10-08, high profile (sections on), after the J-step fix (innerTolerance 0.1 with the lever limit) and the load fixes (impactor load = its momentum; depenetration pairs released): the cannonball's first contact needs 35 solves and 1.1e5 steps to converge (55 s in 5.6k dispatches, the longest 18 ms). The high profile's correctness budget is therefore 131072 steps per solve and 1e6 per evaluation (`scripts/fidelity/high.env`: `PX_DESTRUCTION_IMPACT_ITERATIONS`, `PX_DESTRUCTION_IMPACT_EVAL_ITERATIONS`); at the old 4096/32768 the tick caps and falls back. Correct first; levers for speed: the conditioning of near-mechanisms (the step residual reads about 1/2500 of the distance to the optimum there), fewer ramp levels, an error certificate for termination.
 
 **2. Rotational stiffness convergence** (`VIBE_SECTION_ROTATION`, PhysX `feat/section-rotational-stiffness`)
 - Cost: about 3× the iterations to the same force error on the two-storey veneer house (319 vs 114, native polynomial, from cold to 1e-3).
