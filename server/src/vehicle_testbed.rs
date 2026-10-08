@@ -930,6 +930,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                                     (f, c)
                                 });
                                 window = Some(json!({"endTick": tick - 1, "end": if outside { "contact outside the structure" } else if off_house >= 3 { "exit" } else { "1.5 s" },
+                                    "contactKeJ": 0.5 * pr.mass * energy_v0 * energy_v0,
                                     "lostJ": 0.5 * pr.mass * (energy_v0 * energy_v0 - pv.norm_squared()), "dropJ": pr.mass * g * (energy_y0 - py),
                                     "fragmentsKeJ": kinetic, "peReleasedJ": released.max(0.), "fractureJ": fracture, "crushJ": crush}));
                                 ground_after_from = Some(tick);

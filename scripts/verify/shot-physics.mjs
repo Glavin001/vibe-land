@@ -9,7 +9,10 @@ export const ENERGY_TOL = 0.1; // of the impactor's KE: unmeasured fragment rota
 export function shotPhysics(r) {
   const pr = r?.probe, ph = r?.physics;
   if (!pr || !ph || !pr.contact) return null;
-  const m = ph.impactorMassKg, ke = 0.5 * m * pr.vIn * pr.vIn, past = r.attack?.pastTarget ?? -1;
+  // KE at first contact: the window's (the impactor's full speed the tick
+  // before it touched), else the probe's vIn (its speed along the shot line,
+  // short of the full speed for a descending shot).
+  const m = ph.impactorMassKg, ke = ph.window?.contactKeJ ?? 0.5 * m * pr.vIn * pr.vIn, past = r.attack?.pastTarget ?? -1;
   // (1) Pass-through: the straight path's fracture and crush work, plus the
   // KE lost carrying its whole swept mass as a plug (perfectly inelastic).
   const plug = ph.pathMassKg, carry = ke * plug / (m + plug);
