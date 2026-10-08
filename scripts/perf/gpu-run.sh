@@ -54,12 +54,25 @@ if [ "${VIBE_GPU_SHARED:-0}" = 1 ]; then
     [ -z "$held" ] && sleep 2
   done
 else
-  until mkdir "$LOCK" 2>/dev/null; do
-    stale "$LOCK" && { rm -rf "$LOCK"; continue; }
+  # Timing work waits for the GPU to be idle BEFORE it claims the lock, so a
+  # long correctness run doesn't leave a pending timing job blocking every other
+  # shared job behind it (it did: a trial running for an hour starved the rest).
+  # Correctness comes first; timing takes the GPU when it is free.
+  slots_busy() {
+    for slot in "$DIR"/slot-*; do
+      [ -d "$slot" ] || continue
+      if stale "$slot"; then rm -rf "$slot"; else return 0; fi
+    done
+    return 1
+  }
+  while :; do
+    while slots_busy; do sleep 2; done
+    if mkdir "$LOCK" 2>/dev/null; then break; fi
+    stale "$LOCK" && rm -rf "$LOCK"
     sleep 2
   done
   echo "$$ $label $(date +%H:%M:%S) $(started $$)" > "$LOCK/owner"; held=$LOCK
-  # Timing work also waits for the shared jobs already running to finish.
+  # A shared job may have started between the check and the claim: wait it out.
   while :; do
     busy=0
     for slot in "$DIR"/slot-*; do
