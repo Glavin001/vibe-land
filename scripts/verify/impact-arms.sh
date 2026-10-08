@@ -37,6 +37,7 @@ if [ "$judge_only" = 0 ]; then
         VERIFY_TRIALS="$trial\$" VERIFY_LABEL="impact-arms-$arm-$trial-r$k" "$ROOT/scripts/verify/acceptance.sh" "$arm" "$dir" \
           --skip veneer,lab,town,wire,walk,node > "$dir.log" 2>&1 || echo "[arms] $arm $trial r$k: acceptance exited non-zero ($dir.log)"
         grep -E "refused|NOT IN THIS SDK" "$dir.log" | sed "s/^/[arms] $arm: /"
+        grep -q "\[acceptance\] refused" "$dir.log" && { rm -rf "$dir"; echo "[arms] stopping: the provenance check refused (rebuild the SDK)"; exit 1; }
         echo "[arms] $arm $trial r$k: $(( $(date +%s) - t0 )) s"
       done
     done
@@ -46,4 +47,4 @@ eval "$("$ROOT/scripts/fidelity/packs.sh" high)"
 runs=()
 for arm in ${arms//,/ }; do for d in "$out/$arm"/*-r*/; do [ -f "$d/testbed.json" ] && runs+=("$arm=$d"); done; done
 node "$ROOT/scripts/verify/impact-arms.mjs" --pack "$lab" --meta "${lab%.json}.meta.json" --trials "$trials" \
-  --truth "$ROOT/scripts/verify/ground-truth" --out "$out/impact-arms.json" "${runs[@]}" | tee "$out/impact-arms.txt"
+  --truth "$ROOT/scripts/verify/ground-truth" --out "$out/impact-arms.json" ${runs[@]+"${runs[@]}"} | tee "$out/impact-arms.txt"
