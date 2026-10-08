@@ -359,6 +359,61 @@ digit). The studless variants still collapse (10% broken); the two-storey with
 only its ground-floor front studs out breaks 0.45% (0.84% off), below the
 acceptance's 2% collapse share either way.
 
+## Sequencing (C10): two prototypes, measured 2026-10-08
+
+`structures/town-kit/scripts/sequence-lab.py` (CPU, the stress-share.py model:
+min-norm solve, section bending and rotation, bearing joints; outputs in
+target/c10). Each case is set up as a removal: the intact bungalow at
+equilibrium under its dead load, then the case's members (the knocked-out
+bay's frame and skin) taken out. It is the truck's situation and the alternate
+path method's (GSA 2016, UFC 4-023-03). "Frame beyond" counts frame joints
+broken more than 0.6 m outside the knocked-out bay. It includes the gap's own
+end supports where the gap runs past the bay (the door's right king and jack,
+x 2.5).
+
+- **cascade:** the engine today. Every bond past fatal breaks at once, then
+  re-solve and repeat (static-cascade.py).
+- **ramp:** the removed members' forces are released quasi-statically, event
+  by event (sequentially linear analysis; Rots and Invernizzi 2004). Each
+  bond's critical load factor is its crossing on the current topology's linear
+  path. The first one breaks, the structure is solved again at that load, and
+  so on.
+- **dynamic:** explicit dynamics. Rigid chunks, the bonds as brittle springs
+  (E A / L, k r^2), symplectic Euler, undamped. The members vanish at t = 0,
+  and a bond breaks in the substep its force reaches capacity.
+
+C9 is included in both ramp and dynamic.
+
+| Case | cascade (C9 off) | ramp + C9 | dynamic + C9 | dynamic, C9 off |
+|---|---|---|---|---|
+| intact | 0 | 0 | 0 | |
+| bay1 | 0 | 0 | 0 | |
+| bay2 | 1 skin | 1 skin | 2: the door header's far jack and king, 180 ms (the overshoot of a sudden removal) | 21 / 9 frame beyond |
+| truck | 26 / 6 | 7 / 0: the plate holds | 63 / 3: the plate breaks at 72 ms, the roof edge over the gap follows | 997 / 267 |
+| truck-door | 638 / 136 | 245 / 88 | **61 / 5**: the plate breaks over the gap at 64-81 ms, then the seats, ridge and covering over the gap | 1,005 / 267 |
+| solves or substeps (truck-door) | 14 solves | 1,142 solves (52 s CPU) | 15,040 substeps of 33 us for 0.5 s (10 s CPU) | |
+
+Notes on the runs:
+
+- **Dynamic, energy:** kinetic + strain + gravity potential never exceeds its
+  start plus what the breaks released, in any run (worst gain 0 with C9,
+  0.4-0.8 J of 76 J without: integrator round-off).
+- **Dynamic, substep:** halving it (17 us) gives the same order and 57 broken.
+
+Only dynamic redistribution with re-bearing gives the hand calculation's
+answer for truck-door: the plate fails over the gap first, then the roof edge
+over the hole, and nothing beyond.
+
+- **The ramp unzips** after the plate breaks (lambda 0.59). The roof edge
+  over the gap is then a mechanism. Statically it must still be held, so its
+  weight is routed sideways into the next opening, which slides and fails.
+  A load-controlled static path cannot follow a snap-through. Under dead load
+  that snap-through is the dynamic collapse, which is what the dynamic run
+  integrates.
+- **The ramp is also slow:** truck-door takes 1,142 solves.
+- **C9 is necessary:** without it the dynamic run unzips too. The uprights
+  beyond the gap break at 3-18 ms, before the plate.
+
 ## Reproduce
 
 ```sh
