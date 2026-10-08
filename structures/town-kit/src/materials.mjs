@@ -67,22 +67,91 @@ export const isBed = (name) => /concrete|footing|slab/.test(name);
 /** The mortar-joint material, from a brick material. */
 export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mortar-joint', ...(mortarJointsEnabled() ? MORTAR_JOINT : {}) });
 /**
+ * Natural-stone masonry's mortar joints: opt-in, VIBE_STONE_JOINTS=mortar on a
+ * high-profile pack build (VIBE_REAL_CAPACITIES=1); off, the joints keep the
+ * stone's own strength (the asset as it was). Off by default because at rest a
+ * skyline stone house cracks 10 of its 1,652 joints (0.61%, nothing falls):
+ * head joints at the window sills, sheared past f_vk0 with no compression on
+ * them, where the stage's intact-joint shear has no f_vk0 + 0.4 sigma_d
+ * friction term (FIDELITY_AUDIT C11; docs/calibration/house-headers.md "Stone"). A stone wall is units in mortar, and fails at its joints as brick does:
+ * EN 1996-1-1 Table 3.4, dimensioned natural stone in general-purpose mortar
+ * M2.5-M9: initial shear strength f_vk0 0.15 MPa (the stage has no friction
+ * term, 0.4 sigma_d: FIDELITY_AUDIT C9); flexural tension across the bed joint
+ * f_xk1 0.1 MPa (EN 1996-1-1 3.6.3, nationally determined; 0.05-0.1 for natural
+ * stone and aggregate units in general-purpose mortar); in compression the
+ * masonry's f_k = 0.45 f_b^0.7 f_m^0.3 = 10.5 MPa (eq. 3.1, the crush law's);
+ * stiffness E = 1000 f_k = 10.5 GPa (3.7.2), the wall's, mortar included.
+ * Characteristic, short-term values: elastic = fatal (masonry has no k_mod).
+ * A bed or head joint is a bearing contact with a weak tensile bond: once the
+ * bond cracks it bears on in compression and slides on friction, which is how
+ * masonry stands over openings (arching) and under a slab's end rotation. So it
+ * is a bearing joint (bearingJoint: PX_DESTRUCTION_BEARING_JOINTS grading, and
+ * under VIBE_REBEARING a cracked joint re-bears; FIDELITY_AUDIT C9). What stays
+ * approximate: the stage grades a bearing joint's tension as fasteners at its
+ * centre, T = M/d + N, so the crack moment of a bed joint in pure bending reads
+ * 3x the flexural f_xk1 W (exact in direct tension), and re-bearing's friction
+ * is timber's 0.23 where masonry's is 0.4 (EN 1996-1-1 3.6.2).
+ */
+export const STONE_MORTAR_JOINT = { tensionElastic: 0.1e6, tensionFatal: 0.1e6, shearElastic: 0.15e6, shearFatal: 0.15e6,
+  compressionElastic: 10.5e6, compressionFatal: 10.5e6, elasticModulus: 10.5e9, bearingJoint: 1 };
+export const stoneJointsEnabled = () => (globalThis.process?.env?.VIBE_REAL_CAPACITIES ?? '0') === '1' && (globalThis.process?.env?.VIBE_STONE_JOINTS ?? 'unit') === 'mortar';
+const isStone = (name) => name === 'stone';
+/**
+ * The head joints inside a stone lintel. A stone wall spans an opening on a
+ * lintel (a single stone, or a timber or steel lintel) bearing >= 150 mm each
+ * side (BS 5628-3 / BS EN 1996-2 practice, as the veneer's lintel course), not
+ * on stones hung from their mortar. The skyline assets' course over each
+ * window or door is cut into wall-sized stones: their head joints within the
+ * opening's width plus 150 mm bearing each side, in the course above its head,
+ * are the inside of one lintel stone and keep the stone's strength. Returns a
+ * predicate on bonds.
+ */
+function lintelJoints(s, names) {
+  const box = (i) => { const c = s.nodes[i].centroid, z = s.nodeSizes?.[i]; return z ? [[c.x - z.x / 2, c.y - z.y / 2, c.z - z.z / 2], [c.x + z.x / 2, c.y + z.y / 2, c.z + z.z / 2]] : null; };
+  const openings = [];
+  for (let i = 0; i < s.nodes.length; i++) {
+    if (!/glass|door/.test(names[i] ?? '') && !/glazing|door/.test(s.nodeTypes?.[i] ?? '')) continue;
+    const b = box(i); if (!b) continue;
+    const thin = [0, 2].reduce((k, j) => (b[1][j] - b[0][j] < b[1][k] - b[0][k] ? j : k));   // the wall's normal axis
+    openings.push({ along: thin === 0 ? 2 : 0, normal: thin, lo: b[0], hi: b[1] });
+  }
+  const k = ['x', 'y', 'z'];
+  return (bond) => {
+    const n = bond.normal, c = [bond.centroid.x, bond.centroid.y, bond.centroid.z];
+    return openings.some((o) => Math.abs(n[k[o.along]]) > 0.5 && c[1] > o.hi[1] && c[1] < o.hi[1] + 0.7
+      && c[o.along] > o.lo[o.along] - 0.15 && c[o.along] < o.hi[o.along] + 0.15 && Math.abs(c[o.normal] - (o.lo[o.normal] + o.hi[o.normal]) / 2) < 0.4);
+  };
+}
+/**
  * A pack's masonry bonds as mortar joints (in place): the pack gains a
  * `mortar-joint` material and every bond between two masonry nodes, or
- * masonry and its bed, uses it. Returns how many bonds changed.
+ * masonry and its bed, uses it; with stone joints on, a `stone-mortar-joint`
+ * likewise for stone on stone or on its bed. Returns how many bonds changed.
  */
 export function mortarJoints(pack) {
-  if (!mortarJointsEnabled()) return 0;
   const table = pack.defaults.solver.materials, s = pack.scenario;
-  const brick = table.find((m) => isMasonry(m.name));
-  if (!brick) return 0;
   const names = s.nodeMaterials ?? s.nodes.map((n) => table[n.m ?? 0].name);
-  let index = table.findIndex((m) => m.name === 'mortar-joint');
-  if (index < 0) { index = table.length; table.push(mortarMaterial(brick)); }
   let changed = 0;
-  for (const b of s.bonds) {
-    const x = names[b.node0], y = names[b.node1];
-    if ((isMasonry(x) && (isMasonry(y) || isBed(y))) || (isMasonry(y) && isBed(x))) { b.m = index; changed += 1; }
+  const brick = mortarJointsEnabled() && table.find((m) => isMasonry(m.name));
+  if (brick) {
+    let index = table.findIndex((m) => m.name === 'mortar-joint');
+    if (index < 0) { index = table.length; table.push(mortarMaterial(brick)); }
+    for (const b of s.bonds) {
+      const x = names[b.node0], y = names[b.node1];
+      if ((isMasonry(x) && (isMasonry(y) || isBed(y))) || (isMasonry(y) && isBed(x))) { b.m = index; changed += 1; }
+    }
+  }
+  const stone = stoneJointsEnabled() && table.find((m) => isStone(m.name));
+  if (stone) {
+    let index = table.findIndex((m) => m.name === 'stone-mortar-joint');
+    if (index < 0) { index = table.length; table.push({ ...structuredClone(stone), name: 'stone-mortar-joint', residualAreaFraction: 0, ...STONE_MORTAR_JOINT }); delete table[index].crush; }
+    const lintel = lintelJoints(s, names);
+    for (const b of s.bonds) {
+      const x = names[b.node0], y = names[b.node1];
+      if (isStone(x) && isStone(y) && lintel(b)) continue;
+      // Stone on stone, on its bed, or with brick laid on it (a mortar bed too, the weaker unit's).
+      if ((isStone(x) && (isStone(y) || isBed(y) || isMasonry(y))) || (isStone(y) && (isBed(x) || isMasonry(x)))) { b.m = index; changed += 1; }
+    }
   }
   return changed;
 }

@@ -477,6 +477,52 @@ Checks (high profile, garage-hifi 3536ce049 with re-bearing):
      | as built | 0.62% | 0.84% |
      | bare frame, junction studs out | 40.95% | 3.26% |
 
+## Stone (2026-10-08)
+
+**Crush laws.** These sit in materials.mjs `CRUSH`, applied by `crushFor` in
+VIBE_CRUSH packs. All four are in the default high packs.
+
+| Material | Law | Citations |
+|---|---|---|
+| Natural-stone masonry | f_k 10.5 MPa (cohesion 6.3 MPa, k 1.2, cap 26 MPa), 4.2 MJ/m3 | EN 1996-1-1 eq. 3.1 and Table 3.3; Bond limestone Wi 11.6 kWh/t |
+| Structural softwood | along the grain, 21 MPa, 15 MJ/m3 | EN 338; Reid & Peng 1997 |
+| Concrete roof tile | flexural, 2.2 MPa on the smeared layer | EN 1992-1-1 3.1.8 |
+| Slate | flexural, 26 MPa on its layer | EN 12326 |
+
+Steel gets no crush law: it is ductile, so it dents, never comminutes.
+
+**Results with the crush laws:**
+- The 100 kg ball through the stone house: 35.9 m/s, within its judged band
+  of 0-38.4.
+- Meteors: 128.7 and 127.6 m/s.
+- At rest: houses 0.00%, Vibe Town 273/273.
+
+**Mortar joints (opt-in, `VIBE_STONE_JOINTS=mortar` on a high build).**
+- **What changes.** Stone-to-stone bonds, stone on its bed and brick on
+  stone become `stone-mortar-joint`:
+  - f_vk0 0.15 MPa and f_xk1 0.1 MPa (EN 1996-1-1 Table 3.4 and 3.6.3,
+    natural stone in M2.5-M9 mortar);
+  - compression 10.5 MPa, E 10.5 GPa;
+  - a bearing joint, so a crack re-bears.
+- **Lintels.** The head joints of the course over each opening, across its
+  width plus 150 mm bearing each side, stay stone: a stone wall spans an
+  opening on a lintel. Without them, the stones over the windows hang on
+  their mortar: 15.9% broken at rest.
+- **Impact.** The compliant agent's harness, run with `--joints-source pack`:
+  - the 100 kg ball exits at 33.0 m/s, 35.9 before;
+  - the struck stone's joints let go and it moves off as a 330 kg block
+    while the ball crushes into it: a one-stone plug, with crush taking
+    114 of the 125 kJ;
+  - 58 joints broke, the farthest 4.36 m from the ball's line;
+  - meteors 127.7 and 128.8 m/s.
+- **At rest it cracks:** 10 of 1,652 joints (0.61%) on tick 1. They are head
+  joints at the window sills, sheared past f_vk0 with no compression on them.
+  The cause is FIDELITY_AUDIT C11: an intact joint's shear has no
+  f_vk0 + 0.4 sigma friction term. That fails the 0.5% gate, so the joints
+  are off by default and the default packs are byte-identical to before
+  (stone-strength joints). The lab's street-1 house and 28 Vibe Town houses
+  use this asset.
+
 ## Reproduce
 
 ```sh
