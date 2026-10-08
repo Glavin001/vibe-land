@@ -255,7 +255,8 @@ def stream():
             miss = sdk_missing(j, procs)
             if miss:  # once per (missing heads), not once per job: short runs start in bursts
                 heads = ", ".join(f"{b}@{sh('git', '-C', PHYSX_SOURCE, 'rev-parse', '--short', b).strip()}" for b in miss)
-                emit("stale:" + heads, f"STALE SDK: jobs starting now (first: {j['label']}, pid {j['pid']}) run an SDK that lacks {heads}; results are provisional until the rebuild")
+                if "stale:" + heads not in active:
+                  emit("stale:" + heads, f"STALE SDK: jobs starting now (first: {j['label']}, pid {j['pid']}) run an SDK that lacks {heads}; results are provisional until the rebuild")
         for key in [k for k in started if k not in live]:
             label, t0 = started.pop(key)
             if VERBOSE or now - t0 > LONG_S / 3:
