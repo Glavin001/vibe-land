@@ -428,7 +428,7 @@ impl HouseProbe {
             if !self.is_house[i as usize] { continue; }
             if let Ok(a) = world.native_chunk_aim(0, i) { if a.found && a.entity_id != self.anchored { *body_size.entry(a.entity_id).or_default() += 1; } }
         }
-        let (mut collapsed, mut loose) = (0u32, 0u32);
+        let (mut collapsed, mut loose, mut loose_nodes) = (0u32, 0u32, Vec::new());
         for i in 0..self.is_house.len() as u32 {
             if !self.is_house[i as usize] || !frame(i) || scene.types[i as usize] == "foundation" { continue; }
             frame_nodes += 1;
@@ -448,7 +448,7 @@ impl HouseProbe {
                     // (its body has other chunks): the assembly lost its path to the
                     // anchors. Alone, it was knocked or cut loose (debris, the hit).
                     let size = aim.as_ref().filter(|a| a.found).and_then(|a| body_size.get(&a.entity_id)).copied().unwrap_or(1);
-                    if size >= 2 { collapsed += 1; } else { loose += 1; }
+                    if size >= 2 { collapsed += 1; } else { loose += 1; loose_nodes.push(i); }
                 }
             }
         }
@@ -460,7 +460,7 @@ impl HouseProbe {
             "bonds": total, "broken": broken, "brokenFrac": broken as f32 / total.max(1) as f32,
             "structuralBonds": structural_total, "structuralBroken": structural, "cosmeticBroken": broken - structural,
             "reach": reach, "frameBeyondReach": line.map(|_| beyond_reach), "fallenBeyondReach": line.map(|_| fallen_beyond),
-            "collapsedMembers": line.map(|_| collapsed), "looseFallenMembers": line.map(|_| loose),
+            "collapsedMembers": line.map(|_| collapsed), "looseFallenMembers": line.map(|_| loose), "looseFallenNodes": loose_nodes,
             "byDistance": {"0-1m": by_distance[0], "1-2m": by_distance[1], "2-4m": by_distance[2], "4-8m": by_distance[3], "8m+": by_distance[4]},
             "medianBreakDistance": distances.get(distances.len() / 2),
             "impact": impact.map(|p| [p.x, p.y, p.z]),
@@ -1184,7 +1184,21 @@ fn run(r: &Run, meta: &Value) -> Value {
     });
     let reach = if shot.is_some() { probe.as_ref().map_or(0., |p| p.radius) + volley }
         else { hulls.iter().flat_map(|(lo, hi)| [lo[0].abs().max(hi[0].abs()), (hi[1] - lo[1]) * 0.5]).fold(0f32, f32::max) };
-    let house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact, line, reach, passage_broken.as_ref()));
+    let mut house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact, line, reach, passage_broken.as_ref()));
+    // Could debris have knocked the lone fallen members loose? Freeing them takes
+    // the fracture work of their joints (each once); the fragments carried at most
+    // their peak kinetic energy (the probe's samples). Work beyond that budget is
+    // not debris: those members fell because their load path failed.
+    if let (Some(hr), Some(st)) = (house_report.as_mut(), strength.as_ref()) {
+        let nodes: Vec<u32> = hr["looseFallenNodes"].as_array().map_or(Vec::new(), |v| v.iter().filter_map(|x| x.as_u64().map(|x| x as u32)).collect());
+        let bonds: BTreeSet<u32> = nodes.iter().flat_map(|&n| st.bonds_of(n)).collect();
+        let work: f32 = bonds.iter().map(|&b| st.fracture_work(b)).sum();
+        let debris = probe.as_ref().map_or(0., |p| p.energy.iter().map(|e| e[1]).fold(0f32, f32::max));
+        hr["looseFallenWorkJ"] = json!(work);
+        hr["debrisKeJ"] = json!(debris);
+        hr["collapse"] = json!(hr["collapsedMembers"].as_u64().unwrap_or(0) > 0 || work > debris);
+        if let Some(o) = hr.as_object_mut() { o.remove("looseFallenNodes"); }
+    }
     let scene_broken_pairs: Vec<[u32; 2]> = if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() {
         arena.physx_world_mut().expect("physx").native_bond_stress_rows(0).unwrap_or_default().into_iter()
             .filter(|r| r.remaining_area <= 0.0 || r.broken).map(|r| [r.node0, r.node1]).collect()

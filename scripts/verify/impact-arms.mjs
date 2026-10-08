@@ -20,7 +20,10 @@
 //             detached assembly of two or more chunks (house.collapsedMembers).
 //             An assembly falls because the joints holding it to the rest broke;
 //             a member knocked loose by debris or cut by the hit falls alone
-//             (house.looseFallenMembers, shown, not counted).
+//             (house.looseFallenMembers). Lone members count as collapse too
+//             when freeing them took more work (their joints' fracture work)
+//             than the debris ever carried (its peak kinetic energy): debris
+//             cannot have done it (house.collapse).
 //   local     no such member.
 // SCENARIOS.md, "Collapse", derives it. The frame joints broken beyond reach
 // (house.frameBeyondReach) are shown too. Per trial and arm the table counts
@@ -61,7 +64,8 @@ function verdict(run) {
   const h = run.house ?? {};
   const collapsed = h.collapsedMembers;
   return {
-    checks, outcome: collapsed == null ? '?' : collapsed === 0 ? 'local' : 'collapse', beyond: h.frameBeyondReach, fallen: collapsed, loose: h.looseFallenMembers,
+    checks, outcome: h.collapse == null ? (collapsed == null ? '?' : collapsed === 0 ? 'local' : 'collapse') : h.collapse ? 'collapse' : 'local',
+    beyond: h.frameBeyondReach, fallen: collapsed, loose: h.looseFallenMembers, looseWork: h.looseFallenWorkJ, debris: h.debrisKeJ,
     broken: h.broken, frame: h.frameAnchoredFrac, roofDown: h.roofMembersDown, reach: h.reach,
     exit: run.probe?.vExit ?? null, energyPct: s?.window && run.attack?.kind === 'shot' ? 100 * s.resid / s.ke : null,
     costMean: run.impactCost?.meanMs ?? null, costMax: run.impactCost?.maxMs ?? null, seconds: run.endedEarlyS ?? run.seconds ?? null,
@@ -109,7 +113,7 @@ for (const trial of trialsWanted) {
     rows.push({ trial, arm, n: vs.length,
       local: vs.filter((v) => v.outcome === 'local').length, collapse: vs.filter((v) => v.outcome === 'collapse').length,
       gates: Object.fromEntries(gateNames.map((g) => [g, `${vs.filter((v) => v.checks.find((x) => x.gate === g)?.pass).length}/${vs.length}`])),
-      ...Object.fromEntries(['broken', 'beyond', 'fallen', 'loose', 'frame', 'roofDown', 'exit', 'energyPct', 'costMean', 'costMax', 'seconds'].map((k) => [k, vs.map((v) => v[k])])),
+      ...Object.fromEntries(['broken', 'beyond', 'fallen', 'loose', 'looseWork', 'debris', 'frame', 'roofDown', 'exit', 'energyPct', 'costMean', 'costMax', 'seconds'].map((k) => [k, vs.map((v) => v[k])])),
       sdk: [...new Set(runs.filter((r) => r.arm === arm).map((r) => r.sdk))].join(', ') });
   }
 }
@@ -120,7 +124,7 @@ const cols = [
   ['trial', (r) => r.trial.replace('-framed-house', '').replace('framed-house', 'truck')], ['arm', (r) => r.arm], ['n', (r) => String(r.n)],
   ['local/collapse', (r) => !r.n ? 'no runs' : r.local + r.collapse ? `${r.local}/${r.collapse}` : '?'],
   ['gates passed', (r) => r.gates ? Object.entries(r.gates).map(([g, v]) => `${g} ${v}`).join(', ') : ''],
-  ['broken', (r) => spread(r.broken)], ['collapsed members', (r) => spread(r.fallen)], ['loose fallen', (r) => spread(r.loose)], ['frame joints beyond reach', (r) => spread(r.beyond)], ['frame anchored', (r) => spread(r.frame, 2)],
+  ['broken', (r) => spread(r.broken)], ['collapsed members', (r) => spread(r.fallen)], ['loose fallen', (r) => spread(r.loose)], ['their work / debris KE kJ', (r) => r.looseWork ? `${spread(r.looseWork?.map((x) => x == null ? null : x / 1e3))} / ${spread(r.debris?.map((x) => x == null ? null : x / 1e3))}` : '-'], ['frame joints beyond reach', (r) => spread(r.beyond)], ['frame anchored', (r) => spread(r.frame, 2)],
   ['roof down', (r) => spread(r.roofDown)], ['exit m/s', (r) => spread(r.exit, 1)], ['energy %KE', (r) => spread(r.energyPct, 1)],
   ['ms/impact tick mean (max)', (r) => r.costMean ? `${spread(r.costMean)} (${spread(r.costMax)})` : '-'], ['s run', (r) => spread(r.seconds, 1)],
 ];

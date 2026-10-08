@@ -156,7 +156,17 @@ bond graph without them (`frontRearJoined`).
   hit, has its own joints broken and falls alone. Those lone members are
   counted separately (`looseFallenMembers`) and shown, but are not collapse.
   Two members knocked off together by one piece of debris would count, which
-  is rare and an over-count. The outcome is local when no member collapsed.
+  is rare and an over-count.
+
+  Lone members are not automatically debris. A house whose every joint fails
+  under its own weight also drops its members one by one. So lone members
+  count as collapse too when debris cannot have freed them. Freeing them takes
+  at least the fracture work of their joints, each joint counted once. The
+  debris carried at most its peak kinetic energy (the probe's samples). If the
+  work exceeds that energy, gravity freed them, not debris
+  (`house.looseFallenWorkJ` against `house.debrisKeJ`). The outcome is local
+  when no assembly fell and the lone members fit the debris budget
+  (`house.collapse`).
   Counts: `house.collapsedMembers` and `house.looseFallenMembers` (the test
   bed's house summary).
 - **Stands.** No roof member down more than 0.5 m (the house probe's
