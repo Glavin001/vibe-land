@@ -957,3 +957,65 @@ with the rigid row's original lines untouched, did (PhysX 6c7e35e07). A flags-of
 existing arithmetic textually unchanged. Check it with `IMPACT_HASH` on a replay, and with
 `scripts/ops/kernel-identity.sh` per kernel. A bisect must include every commit: the first one
 skipped here put the blame on the wrong commit.
+
+### 8.1 Since the hand-off (2026-10-08, afternoon)
+
+**One window per car** (PhysX a82154230). Past the breach, the truck touched two struck clusters
+and was the car of both patches. The patches share the chunk and bond maps (`nodeOf`, `linkOf`),
+so each window took the other's joints, and the car's windows went from 98 kJ to 0.6-0.9 GJ
+(775 breaks). Now an island belongs to one patch, as struck or as car. Explicit windows count
+`Status::energyGain` past symplectic Euler's bound: out KE·(1 − ωh/2) > KE + held + dead-load
+work. Test: `destruction_gpu_two_body_car_two_patches`, the captured evaluation, which fails before
+the fix and passes after.
+
+**Dynamic struck structures** (`PX_DESTRUCTION_IMPACT_DYNAMIC_STRUCK`, PhysX 597218b84).
+- A car struck by debris or a cannonball was graded statically on the rigid contact impulse.
+  Debris on a wheel: 462 kN graded against 129 kN of momentum change, 2 wheels lost.
+- Now rows exist on moving clusters (`ContactRow::clusterIm`, `clusterBody`, capture v4). The
+  window takes the whole island, free, in its co-moving frame. Hand-off records carry v0/w0, and
+  the corrected pass applies R(v − v0), summed over windows.
+- Debris on a wheel: 0 wheels lost (43-49 bonds) in every arm.
+- **Open, energy gain.** The captured evaluation 244 shows a rubble island's chunks going from
+  110 J to 2,477 J when 5 joints break. With dynamic struck off, it stays at 110 J.
+  - The routing takes a routed row's trial load out of the chunk's static input, but not out of the
+    moving cluster's rigid acceleration (inertial relief). J0 then holds internal forces against a
+    −m·a_trial no contact supplies, and f0 = −B·J0 flings the pieces once their joints break.
+  - Fix: the router (impact-compliant agent).
+
+**Cannonball into the truck: the oracle.**
+- `two-body.py --scene ball-truck --real-joints --compliant --ticks 4` at 2.5 and 5 µs (FP64,
+  energy closing +0.05%/+0.10%): 270-274 broken, 669-670 yielded, 1 wheel lost, Δv 18.6-19.2 m/s,
+  ball out at 51.1-51.4 m/s. This is SCENARIOS.md's band.
+- The stage's 689-693 ("shredded") was the static over-count.
+- Over 1 tick, the harness gives 166 broken, 607 yielded, ball out at 55 m/s.
+- The GPU's first window gives 109 / 402. It had only the tick's initial rows: vehicle chunks had
+  no boxes, so there were no swept rows (fixed in the bridge, vibe-land efb2155f).
+- Later ticks coupled the ball and truck inelastically: truck 41.7 m/s.
+
+**Wheel mounts on their stud circles** (vibe-land ef74376b).
+- Ten M22x1.5 10.9 on a 335 mm PCD (ISO 4107); A_s 333 mm² each, 33.3 cm² (ISO 898-1); no
+  mass-budget scale (it had made the mount 54 cm²).
+- Bending on the stud circle's tangent (VDI 2230-1 5.3.2): S = 0.75·A·r, 435 kN·m at R_m, where the
+  square patch gave 69 kN·m.
+- A per-material fastener-group section that the bridge applies whatever the contact patch.
+- The mounts no longer break. The 10.9 m/s wall still lost all four wheels, at hub–upright and
+  axle–hub, because of the next item.
+
+**Tyres in series with the suspension** (`VIBE_VEHICLE_TYRE_BOUND`; PhysX 869bc0968, d10eb5472;
+vibe-land 3d29324d).
+- Vehicle2 put a wheel's whole jounce jump at the stump into its damper: 582 kN on the front-right
+  wheel at 10.9 m/s, with a tyre force of 19.8 kN.
+- The road reaches the wheel only through the tyre, F_max = p·b·2√(2R·sec) (Gent & Walter), about
+  148 kN for the monster. NativeVehicleDesc::tyreMaxForce bounds each wheel's suspension force
+  (before the tyre reads its load) and its limit rows. The rows take the tyre's impulse over each
+  step: a drive-limit force was read as an impulse on the GPU, so 1 kN let the rows take 60 kN.
+- A rim hull per road wheel (25/66 of the OD) stays out of the wheel-hull exclusion, so a wheel past
+  its tyre bears on its rim as a contact.
+- Kerb test: unbounded, the corners took 158/309 kN; bounded at 40.7 kN, momentum-consistent.
+- Lab (compliant + two-body + dynamic, tyre bound): 10.9 m/s wall 3/0/0 wheels lost (no tyre: 4);
+  21.7 m/s wall 0/1; debris 0/0. These carry the dynamic-struck energy gain above until it is fixed.
+
+**vehicle_contact_load.** The quarter-weight tolerance is gone: the graded impulses and the
+momentum change are the same tick's, and gravity is out of both. Impact ticks are 0.97-1.02.
+Resting ticks over 1.1x (the H7 position correction, a few kN) are reported apart and still fail,
+until the compliant agent's ground-kick fix lands.
