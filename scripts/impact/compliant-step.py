@@ -73,7 +73,7 @@ PROJECTILES = {'meteor': (110584.0625, 2.0), 'cannonball': (10650.0, 0.6870), 'b
 class Scene:
     """The struck structure near the shot's line: chunks (nodes), their hulls, joints, the impactor."""
 
-    def __init__(self, C, pack, path0, d, radius, length, margin, exclude=('terrain', 'debris')):
+    def __init__(self, C, pack, path0, d, radius, length, margin, exclude=('terrain', 'debris'), boxes=False, joints_from_pack=False):
         self.C = C; S = pack['scenario']
         P = np.array([[n['centroid'][k] for k in 'xyz'] for n in S['nodes']])
         dist, idx = cKDTree(P).query(C.chunks['position'].astype(float))
@@ -93,6 +93,11 @@ class Scene:
                 V = np.array([[sx, sy, sz] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)]) * e
             else:
                 V = np.array(lib[col['shape']]['points'], float).reshape(-1, 3)
+            if boxes:
+                # the kernel's geometry: each chunk's box, the hull's bounds in its frame (the stage's
+                # chunk boxes; a cuboid is its own)
+                lo_, hi_ = V.min(0), V.max(0)
+                V = np.array([[x_, y_, z_] for x_ in (lo_[0], hi_[0]) for y_ in (lo_[1], hi_[1]) for z_ in (lo_[2], hi_[2])])
             p = C.chunks['position'][c].astype(float)
             rb = float(np.max(np.linalg.norm(V, axis=1)))
             # distance from the swept segment
@@ -105,6 +110,31 @@ class Scene:
         self.index = {c: i for i, c in enumerate(chunks)}
         bonds = sorted({i for c in chunks for i in C.chunk_bonds(c) if C.member(i)})
         self.joints = [j for j in (C.prepare_bond(i) for i in bonds) if j is not None]
+        if joints_from_pack:
+            # the joints' strength and axial stiffness as the pack authors them (a re-authored pack
+            # with the same nodes): each bond's pack bond by its two nodes, its material's fatal
+            # limits over the bond's live area, k = E A / L (the bridge's true stiffness,
+            # VIBE_BOND_TRUE_STIFFNESS: L the separation along n, at least sqrt A), the rotational
+            # stiffnesses scaled with it (their section radii unchanged); its ductile slip
+            node_of = {c: int(idx[c]) for c in range(C.n) if dist[c] <= 1e-3}
+            pb = {}
+            for bi, b in enumerate(S['bonds']): pb[(min(b['node0'], b['node1']), max(b['node0'], b['node1']))] = b
+            M = pack['defaults']['solver']['materials']; changed = 0
+            for j in self.joints:
+                a, b_ = node_of.get(j['c0']), node_of.get(j['c1'])
+                if a is None or b_ is None: continue
+                q = pb.get((min(a, b_), max(a, b_)))
+                if q is None: continue
+                m = M[q['m']]; A = j['area']
+                T = float(m.get('tensionFatal', 0)); Cc = float(m.get('compressionFatal', 0)); Sh = float(m.get('shearFatal', 0))
+                F = j['F'].copy(); F[0], F[1], F[2] = Cc * A, (T if T > 0 else Cc) * A, (Sh if Sh > 0 else Cc) * A
+                if m.get('elasticModulus'):
+                    p0, p1 = C.chunks[j['c0']]['position'].astype(float), C.chunks[j['c1']]['position'].astype(float)
+                    L = max(abs(float((p1 - p0) @ j['R'][0])), np.sqrt(A)); kl = float(m['elasticModulus']) * A / L
+                    j['k'] = j['k'] * (kl / j['k'][0]) if j['k'][0] > 0 else j['k']
+                j['slip'] = float(m.get('ductileSlip', 0.0) or 0.0)
+                changed += int(not np.allclose(F, j['F'])); j['F'] = F
+            self.joints_changed = changed
 
     def hull_planes(self):
         """Each hull's triangles and outward planes (local), and its depth extent function."""
@@ -174,7 +204,8 @@ def run(case, args):
     T_max = args.ticks * C.settings['dt']
     length = v_in * T_max + 4 * r
     start = target - d * (r + 2.0 * r)
-    sc = Scene(C, pack, start, d, r, length + 2 * r, args.margin)
+    sc = Scene(C, pack, start, d, r, length + 2 * r, args.margin, boxes=args.boxes, joints_from_pack=args.joints_source == 'pack')
+    if args.joints_source == 'pack': print(f'  joints from the pack: {sc.joints_changed} of {len(sc.joints)} capacities differ from the capture', flush=True)
     sc.hull_planes()
     chunks = sc.chunks; nc = len(chunks)
     pos0 = C.chunks['position'][chunks].astype(float)
@@ -531,6 +562,8 @@ def main():
     ap.add_argument('--refresh-us', type=float, default=None, help='fixed geometry: rows rebuilt this often (default: auto, one face radius of travel)')
     ap.add_argument('--crater', default='law', choices=['law', 'impactor'], help="the crater's curvature: the law's relative R, or the impactor's own radius (a sphere into a flat face)")
     ap.add_argument('--crush-source', default='pack', choices=['pack', 'capture'], help="the struck materials' crush laws from the pack (materials[].crush) or the capture's materials")
+    ap.add_argument('--boxes', action='store_true', help="each chunk's hull replaced by its bounding box (the kernel's chunk boxes)")
+    ap.add_argument('--joints-source', default='capture', choices=['capture', 'pack'], help="the joints' capacities, stiffness and slip from the capture (the stage's) or the pack (a re-authored pack with the same nodes)")
     ap.add_argument('--geometry', default='exact', choices=['exact', 'fixed'], help="rows from the bodies' positions every substep, or the kernel's: fixed at each tick's start with their signed gap")
     ap.add_argument('--ticks', type=int, default=3); ap.add_argument('--margin', type=float, default=3.0)
     ap.add_argument('--speed', type=float, default=None); ap.add_argument('--dt-us', type=float, default=None)
