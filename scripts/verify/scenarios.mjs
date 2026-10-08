@@ -197,6 +197,11 @@ function judgeOne(ex, run, others) {
   if (!run) { row('ran', 'a run', 'missing', false); return rows; }
   if (run.failedSteps) row('every step completed', '0', run.failedSteps, false);
   const pr = run.probe, I = ex.impactor;
+  // A shot must meet the structure before anything else: a tick before first
+  // contact that cost it more than 0.5% of its KE touched grade or terrain
+  // first, and the trial then measures that contact too (mis-aimed).
+  if (run.preContact && run.attack?.kind === 'shot')
+    row('reaches the structure untouched', 'no loss before first contact', run.preContact.ticks ? `${run.preContact.ticks} ticks, ${f(run.preContact.lossJ / 1e6, 2)} MJ lost first` : 'none', !run.preContact.ticks);
   // Outcome.
   if (e.outcome && e.outcome !== 'either') {
     let through, measured;

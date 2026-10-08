@@ -3,7 +3,8 @@
 # after changing PhysX or Blast sources, then refresh the artifact manifest the
 # bridge verifies every library against.
 #
-#   scripts/perf/rebuild-garage-sdk.sh            # ~3-4 min with GPU source changes
+#   scripts/perf/rebuild-garage-sdk.sh            # call it directly: it takes a shared GPU
+#                                                 # slot only for its install's warm gate
 #   PHYSX_SRC=../PhysX/.claude/worktrees/x GARAGE_SDK_NAME=garage-x scripts/perf/rebuild-garage-sdk.sh
 #                                                 # a branch in its own worktree, built in its own
 #                                                 # tree and installed beside the default SDK
@@ -21,6 +22,10 @@
 # install from before versioning is moved to $NAME@<its rev> first. The three
 # newest versions are kept; an older one goes only when `lsof +D` finds no
 # process with a file open in it.
+# Parsed whole before it runs ({ ...; exit; }): an edit to this file while it
+# runs cannot shift a running copy (bash reads scripts as it goes). Still,
+# replace it with a temp file and mv, never edit it in place.
+{
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 PHYSX=$(cd "$ROOT/../PhysX" && pwd)
@@ -33,6 +38,9 @@ NAME=${GARAGE_SDK_NAME:-garage-multihull}
 LINK="$SRC/out/install/$NAME"
 REV=$(git -C "$SRC" rev-parse --short=9 HEAD)
 VERSIONED="$LINK@$REV"
+# A rebuild of the same revision (a touched file, a changed build rule) never
+# installs over a version that exists: it may be the one live runs have open.
+n=1; while [ "${GARAGE_SDK_STAGE:-all}" != gpu ] && [ -e "$VERSIONED" ]; do VERSIONED="$LINK@$REV.$n"; n=$((n + 1)); done
 OPTS=(--preset macos-cumetal --generator 'Unix Makefiles' --jobs 8
   --build-root "$SRC/out/build/$NAME" --install-prefix "$VERSIONED"
   --cumetal-rigid-demo --cumetal-explicit-aggregate-root --cumetal-explicit-motion-root
@@ -49,7 +57,10 @@ if [ -d "$LINK" ] && [ ! -L "$LINK" ]; then
   mv "$LINK" "$dest"; ln -s "$(basename "$dest")" "$LINK"
   echo "moved the unversioned install to $dest"
 fi
-python3 -B tools/scripts/build-destruction-sdk.py "${OPTS[@]}" --stage sdk --install
+# Only this stage touches the GPU (the Metal pipeline warm gate in its install
+# step, a few seconds): it alone takes a shared slot. The gpu stage above only
+# compiles, so the script runs unwrapped (call it directly, not under gpu-run).
+VIBE_GPU_SHARED=1 "$ROOT/scripts/perf/gpu-run.sh" "sdk-${NAME}-install" python3 -B tools/scripts/build-destruction-sdk.py "${OPTS[@]}" --stage sdk --install
 cp out/sdk-artifacts.json "$VERSIONED/sdk-artifacts.json"
 # Repoint $LINK in one rename (a relative link, so the tree can move).
 ln -sfn "$(basename "$VERSIONED")" "$LINK.next" && python3 -c 'import os,sys;os.replace(sys.argv[1],sys.argv[2])' "$LINK.next" "$LINK"
@@ -60,3 +71,5 @@ ls -dt "$LINK"@* 2>/dev/null | tail -n +4 | while read -r v; do
   if lsof +D "$v" >/dev/null 2>&1; then echo "kept $v (in use)"; else rm -rf "$v"; fi
 done
 echo "installed $VERSIONED, $PHYSX/out/install/$NAME -> it, from $SRC ($(grep -o 'PX_DESTRUCTION_SCENE_VERSION [0-9]*' "$PHYSX/out/install/$NAME/include/physx/PxDestructionScene.h"))"
+exit
+}

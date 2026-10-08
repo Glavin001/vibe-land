@@ -90,11 +90,20 @@ function nearestNode(pack, target) {
   return best;
 }
 
+// The meteor's radius (server/src/meteor.rs MeteorTuning: r 2 m) and the
+// clearance its underside keeps above grade (lab grade y 0) at the struck face.
+// It descends to the aim, so every earlier point is higher: an aim of at least
+// R + clearance meets the structure before anything else. Aimed lower, a 2 m
+// sphere ploughs the ground first: wm-masonry-meteor-0 lost 130 MJ (12% of its
+// KE) to terrain for 4 evaluations before it reached the wall.
+export const METEOR_RADIUS = 2.0, METEOR_CLEARANCE = 0.1;
+
 /** One trial: `impactor` at `target`'s `point`, `angle` degrees off square. */
 function trial(pack, target, impactorId, angle, point = 'centre', extra = {}) {
   const imp = IMPACTORS[impactorId];
   const node = nearestNode(pack, target);
   const aim = hitPoint(target, point, node);
+  if (imp.attack === 'meteor' && !target.town) aim[1] = Math.max(aim[1], +(METEOR_RADIUS + METEOR_CLEARANCE).toFixed(3));
   const from = (target.face + ANGLES[angle]) % 360;
   const id = `wm-${target.id}-${impactorId}-${angle}${point === 'centre' ? '' : `-${point}`}${extra.suffix ?? ''}`;
   const base = { id, probe: true, target: aim, layer: target.layer, matrix: { target: target.id, group: target.group, impactor: impactorId, angle, point, chunk: node && { index: node.i, type: node.type, material: node.material, mass: node.mass } } };

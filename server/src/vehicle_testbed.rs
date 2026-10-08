@@ -415,18 +415,29 @@ impl HouseProbe {
             match world.native_chunk_aim(0, i) { Ok(a) if a.found => drops.push(y0 - a.center.y), _ => gone += 1 }
         }
         drops.sort_by(f32::total_cmp);
-        let (mut frame_nodes, mut frame_anchored) = (0u32, 0u32);
+        let (mut frame_nodes, mut frame_anchored, mut fallen_beyond) = (0u32, 0u32, 0u32);
         for i in 0..self.is_house.len() as u32 {
             if !self.is_house[i as usize] || !frame(i) || scene.types[i as usize] == "foundation" { continue; }
             frame_nodes += 1;
-            if world.native_chunk_aim(0, i).map_or(false, |a| a.found && a.entity_id == self.anchored) { frame_anchored += 1; }
+            let aim = world.native_chunk_aim(0, i).ok();
+            if aim.as_ref().map_or(false, |a| a.found && a.entity_id == self.anchored) { frame_anchored += 1; continue; }
+            // A frame member off the house that has fallen (dropped by more than
+            // its own depth, off its bearing; or gone) while it lay beyond the
+            // impactor's reach plus its own length: gravity took it, not the hit.
+            let c0 = node_centroid(scene, i);
+            let size = scene.sizes.get(i as usize).copied().unwrap_or([0.; 3]);
+            let fell = aim.as_ref().map_or(true, |a| !a.found || c0.y - a.center.y > size[0].min(size[1]).min(size[2]));
+            if let (true, Some((o, dir))) = (fell, line) {
+                let rel = c0 - o;
+                if (rel - dir * rel.dot(&dir)).norm() > reach + member(i) { fallen_beyond += 1; }
+            }
         }
         let mean = |v: &[f32]| if v.is_empty() { 0. } else { v.iter().sum::<f32>() / v.len() as f32 };
         json!({
             "group": self.group, "lineDistances": line_distances,
             "bonds": total, "broken": broken, "brokenFrac": broken as f32 / total.max(1) as f32,
             "structuralBonds": structural_total, "structuralBroken": structural, "cosmeticBroken": broken - structural,
-            "reach": reach, "frameBeyondReach": line.map(|_| beyond_reach),
+            "reach": reach, "frameBeyondReach": line.map(|_| beyond_reach), "fallenBeyondReach": line.map(|_| fallen_beyond),
             "byDistance": {"0-1m": by_distance[0], "1-2m": by_distance[1], "2-4m": by_distance[2], "4-8m": by_distance[3], "8m+": by_distance[4]},
             "medianBreakDistance": distances.get(distances.len() / 2),
             "impact": impact.map(|p| [p.x, p.y, p.z]),
@@ -566,6 +577,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     // The parts of the car a projectile's sphere passed through (car frame at
     // that tick), its radius, and its previous position in the car frame.
     let (mut swept, mut sweep_last, mut sweep_radius, mut sweep_ticks) = (BTreeSet::<usize>::new(), None::<(u32, Vector3<f32>)>, 0f32, 0u32);
+    // The parts whose whole cross-section the sphere held at some point (cut through).
+    let mut sectioned = BTreeSet::<usize>::new();
     // The car's pose when the projectile was first tracked (the car may be thrown and spun after).
     let mut attack_frame: Option<(Vector3<f32>, nalgebra::UnitQuaternion<f32>)> = None;
     // A shot at the scene (attack `shot`): its aim point and direction, and
@@ -596,6 +609,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     let (mut shot_prev, mut ground_j, mut ground_at_sample, mut drop_at_sample, mut energy_y0): (Option<(Vector3<f32>, f32)>, f32, f32, f32, f32) = (None, 0., 0., 0., 0.);
     // The structure's own balance window (see below), and the impactor's losses after it.
     let (mut window, mut off_house, mut ground_after_from, mut ground_after): (Option<Value>, u32, Option<u32>, f32) = (None, 0, None, 0.);
+    // The impactor's losses before it first touched the struck structure (J, ticks).
+    let mut pre_contact = (0f32, 0u32);
     let probe_target = trial["target"].as_array().map(|t| Vector3::new(t[0].as_f64().unwrap() as f32, t[1].as_f64().unwrap() as f32, t[2].as_f64().unwrap() as f32));
     let heading_of = |f: Vector3<f32>| f.x.atan2(f.z);
     // VIBE_TESTBED_EARLY_END=1: end the trial once its outcome is decided --
@@ -917,6 +932,15 @@ fn run(r: &Run, meta: &Value) -> Value {
                             let m = (0..3).map(|k| 0.5 * (hi[k] - lo[k])).fold(f32::INFINITY, f32::min);
                             let d = Vector3::new((lo[0] + m - c.x).max(c.x - hi[0] + m).max(0.), (lo[1] + m - c.y).max(c.y - hi[1] + m).max(0.), (lo[2] + m - c.z).max(c.z - hi[2] + m).max(0.));
                             if d.norm() < r { swept.insert(*i); }
+                            // Cut: at some point of its path the sphere holds the part's whole
+                            // cross-section (the two axes across its longest), within its length.
+                            // A part the sphere only clips at its rim is holed or pushed aside.
+                            let h = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+                            let long = (0..3).max_by(|&a, &b| h[a].total_cmp(&h[b])).unwrap_or(0);
+                            let centre = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])];
+                            let within = c[long] >= lo[long] && c[long] <= hi[long];
+                            let corner: f32 = (0..3).filter(|&k| k != long).map(|k| ((c[k] - centre[k]).abs() + 0.5 * h[k]).powi(2)).sum();
+                            if within && corner <= r * r { sectioned.insert(*i); }
                         }
                     }
                     if !swept.is_empty() && (sweep_ticks > 0 || swept.len() > before) { sweep_ticks += 1; }
@@ -931,7 +955,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                 probe.get_or_insert_with(|| wall_matrix::Probe::new(geometry.mass as f32, 0., trial["layer"].as_f64().unwrap_or(0.3) as f32, 0.));
                 Some((after.p, after.v, heading0, (after.p + after.forward * front - probe_target.unwrap_or(start.p)).dot(&heading0)))
             } else if let (Some(pid), Some((target, dir))) = (projectile, shot) {
-                if probe_pid != Some(pid) { probe = None; probe_last = None; probe_pid = Some(pid); energy_since = None; }
+                if probe_pid != Some(pid) { probe = None; probe_last = None; probe_pid = Some(pid); energy_since = None; shot_prev = None; }
                 arena.snapshot_dynamic_bodies().into_iter().find(|b| b.0 == pid).map(|b| {
                     let p = Vector3::new(b.1[0], b.1[1], b.1[2]);
                     if probe.is_none() {
@@ -972,6 +996,15 @@ fn run(r: &Run, meta: &Value) -> Value {
                 if !driving {
                     let g = vibe_netcode::movement::GRAVITY as f32;
                     if energy_since == Some(tick) { energy_y0 = shot_prev.map_or(p.y, |q| q.1); }
+                    // Before first contact with the struck structure: a tick that costs the
+                    // impactor more than the window's own "outside" threshold (0.5% of its
+                    // KE) touched something else first (grade, a kerb, terrain). The trial
+                    // then measures that contact too: it is mis-aimed (preContact).
+                    if let (None, Some((pv, py))) = (energy_since, shot_prev) {
+                        let before = 0.5 * pr.mass * pv.norm_squared() + pr.mass * g * py;
+                        let after = 0.5 * pr.mass * v.norm_squared() + pr.mass * g * p.y;
+                        if before - after > 0.005 * 0.5 * pr.mass * pv.norm_squared() { pre_contact.0 += before - after; pre_contact.1 += 1; }
+                    }
                     if let (Some(start), Some((pv, py))) = (energy_since, shot_prev) {
                         let before = 0.5 * pr.mass * pv.norm_squared() + pr.mass * g * py;
                         let after = 0.5 * pr.mass * v.norm_squared() + pr.mass * g * p.y;
@@ -1108,7 +1141,12 @@ fn run(r: &Run, meta: &Value) -> Value {
     let line = shot.or(house_impact.map(|p| (p, heading0)));
     // The impactor's reach across its line: a shot's radius; the car's largest
     // half-section across its heading (its hull boxes, x right and y up).
-    let reach = if shot.is_some() { probe.as_ref().map_or(0., |p| p.radius) }
+    // A volley (`shots`): its radius plus the farthest aim point from the first one's line.
+    let volley = attack.filter(|a| a["kind"] == "shots").and_then(|a| a["shots"].as_array()).map_or(0f32, |l| {
+        let t = |v: &Value| Vector3::new(v["target"][0].as_f64().unwrap_or(0.) as f32, v["target"][1].as_f64().unwrap_or(0.) as f32, v["target"][2].as_f64().unwrap_or(0.) as f32);
+        l.iter().map(|v| (t(v) - t(&l[0])).norm()).fold(0f32, f32::max)
+    });
+    let reach = if shot.is_some() { probe.as_ref().map_or(0., |p| p.radius) + volley }
         else { hulls.iter().flat_map(|(lo, hi)| [lo[0].abs().max(hi[0].abs()), (hi[1] - lo[1]) * 0.5]).fold(0f32, f32::max) };
     let house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact, line, reach));
     let scene_broken_pairs: Vec<[u32; 2]> = if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() {
@@ -1196,12 +1234,13 @@ fn run(r: &Run, meta: &Value) -> Value {
         // whether removing them cuts every path between the front and the rear
         // wheels (the car cut in two).
         let wheel = |i: usize| { let n = &geometry.parts[i].name; (n.starts_with("Front ") || n.starts_with("Rear ")) && n.ends_with(" wheel assembly") };
-        // Cut, not holed: the projectile's diameter spans the part across its
-        // middle dimension (a tube, a bracket, an arm), so no load path through
-        // it survives; a wider part (a panel, a wheel) it only holes. The stage
-        // has no partial fracture of a part, so a cut part must come off.
+        // Cut, not holed: at some point of its path the projectile's sphere held
+        // the part's whole cross-section (across its longest axis), so no load
+        // path through it survives; a part it only clipped at its rim, or a
+        // wider one (a panel, a wheel), it holes or pushes aside. The stage has
+        // no partial fracture of a part, so a cut part must come off.
         let dims = |i: usize| { let mut d = [0f32; 3]; for (j, lo, hi) in &part_boxes { if *j == i { for k in 0..3 { d[k] = d[k].max(hi[k] - lo[k]); } } } d.sort_by(f32::total_cmp); d };
-        let cut: BTreeSet<usize> = swept.iter().copied().filter(|&i| 2. * sweep_radius.max(0.) >= dims(i)[1]).collect();
+        let cut: BTreeSet<usize> = swept.iter().copied().filter(|&i| sectioned.contains(&i) && 2. * sweep_radius.max(0.) >= dims(i)[1]).collect();
         let index: HashMap<&str, usize> = geometry.parts.iter().enumerate().map(|(i, p)| (p.id.as_str(), i)).collect();
         let mut parent: Vec<usize> = (0..geometry.parts.len()).collect();
         fn root(p: &mut Vec<usize>, mut i: usize) -> usize { while p[i] != i { p[i] = p[p[i]]; i = p[i]; } i }
@@ -1255,6 +1294,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         out["probe"] = pr.summary(strength, DT);
         if let Some(p) = physics.take() { out["physics"] = p; }
         out["impactorPath"] = json!(impactor_path);
+        out["preContact"] = json!({"lossJ": pre_contact.0, "ticks": pre_contact.1});
         // Cost per impact tick: the stage's step time over the structure's window
         // (first contact to its close, else 1.5 s), for the impact-arm comparison.
         if let Some(from) = energy_since {

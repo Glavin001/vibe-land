@@ -1,4 +1,10 @@
 #!/bin/bash
+# The whole script is one { ...; exit; } block: bash parses it completely before
+# running any of it, so editing this file can't change a running instance. (An
+# in-place edit once shifted three live instances into the exclusive branch's
+# wait-for-empty loop while each held a slot: a deadlock.) Still, replace it
+# atomically (write a temp file, then mv).
+{
 # Run a GPU job under this machine's GPU admission: scripts/perf/gpu-run.sh <label> <command...>
 #
 # Two kinds of job share one Apple GPU:
@@ -19,6 +25,10 @@ SLOTS="${VIBE_GPU_SLOTS:-3}"
 LOCK="$DIR/exclusive"
 mkdir -p "$DIR"
 label=$1; shift
+# Already admitted (a script run under gpu-run that calls gpu-run for its own GPU
+# step): run it in the slot held, never queue for a second one (with every slot
+# held by such callers, that would deadlock).
+if [ -n "${VIBE_GPU_HELD:-}" ] && [ -d "$VIBE_GPU_HELD" ]; then "$@"; exit $?; fi
 
 # A lock's owner file records "pid label time started", where started is the
 # owner's process start time (ps lstart). A pid alone is not enough: after the
@@ -96,4 +106,7 @@ else
   done
   claimed "$LOCK" "$@"
 fi
-"$@"
+VIBE_GPU_HELD=$held "$@"
+
+exit $?
+}

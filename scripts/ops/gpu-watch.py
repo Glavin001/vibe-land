@@ -16,6 +16,8 @@ when it clears), never repeated while it holds. The conditions:
 - STALLED: a running job's processes used no CPU for VIBE_WATCH_STALL_S
   (default 600 s). GPU jobs use little CPU but never none for minutes;
 - LONG: a job has run longer than VIBE_WATCH_LONG_S (default 900 s; owner: no 1-2 h runs);
+- DEADLOCK?: a slot's gpu-run has only `sleep` children after a minute (it holds a
+  slot but is itself waiting, e.g. after an in-place edit of gpu-run.sh);
 - STALE SDK: a running job's SDK (PHYSX_ROOT, from its lock info or command)
   was built from a revision missing the head of a PhysX branch in
   scripts/fidelity/branches.tsv; its result will be refused as stale;
@@ -189,15 +191,16 @@ def waiters(procs):
                 problem = f"its target pid {target} has exited"
         else:
             g = re.search(r"grep[^;]*?(/\S+\.(?:log|out|output|json))", body)
-            target = g.group(1) if g else body[:80]
+            target = g.group(1) if g else None  # unknown target: never counted as a duplicate
             if g and os.path.exists(g.group(1)) and time.time() - os.path.getmtime(g.group(1)) > 1800:
                 problem = f"the file it polls ({os.path.basename(g.group(1))}) has not changed for {int((time.time() - os.path.getmtime(g.group(1))) / 60)} min"
         if problem is None and p["age"] > WAITER_S:
             problem = f"has polled for {p['age'] // 3600} h"
-        out.append(dict(pid=pid, age=p["age"], target=str(target), problem=problem))
+        out.append(dict(pid=pid, age=p["age"], target=target if target is None else str(target), problem=problem))
     seen = {}
     for w in out:
-        seen.setdefault(w["target"], []).append(w)
+        if w["target"] not in (None, "None"):
+            seen.setdefault(w["target"], []).append(w)
     for target, ws in seen.items():
         if len(ws) > 1:
             for w in sorted(ws, key=lambda w: -w["age"])[:-1]:
@@ -219,7 +222,7 @@ def board(procs):
     for q in queue:
         lines.append(f"  queued: {q['label']} ({q['kind']}, pid {q['pid']}, {int(now - q['since'])} s)")
     for w in waiters(procs):
-        lines.append(f"  waiter {w['pid']} ({w['age'] // 60} min) on {w['target'][:70]}" + (f"  PROBLEM: {w['problem']}" if w["problem"] else ""))
+        lines.append(f"  waiter {w['pid']} ({w['age'] // 60} min) on {str(w['target'])[:70]}" + (f"  PROBLEM: {w['problem']}" if w["problem"] else ""))
     return "\n".join(lines)
 
 
@@ -250,11 +253,16 @@ def stream():
                 active.pop(key + ":stall", None)
             elif now - prev[1] > STALL_S:
                 emit(key + ":stall", f"STALLED {j['label']} (pid {j['pid']}): no CPU for {int((now - prev[1]) / 60)} min; check its log")
+            kids = [c for c, pc in procs.items() if pc["ppid"] == j["pid"]]
+            if procs[j["pid"]]["age"] > 60 and kids and all(procs[c]["cmd"].startswith("sleep") for c in kids):
+                emit(key + ":deadlock", f"DEADLOCK? {j['label']} (pid {j['pid']}) holds {j['slot']} but its gpu-run is only sleeping: it never started its job")
             if procs[j["pid"]]["age"] > LONG_S:
                 emit(key + ":long", f"LONG {j['label']} (pid {j['pid']}) has run {procs[j['pid']]['age'] // 60} min")
             miss = sdk_missing(j, procs)
-            if miss:
-                emit(key + ":stale", f"STALE SDK {j['label']} (pid {j['pid']}): its SDK lacks the head of {', '.join(miss)}; the result will be refused")
+            if miss:  # once per (missing heads), not once per job: short runs start in bursts
+                heads = ", ".join(f"{b}@{sh('git', '-C', PHYSX_SOURCE, 'rev-parse', '--short', b).strip()}" for b in miss)
+                if "stale:" + heads not in active:
+                  emit("stale:" + heads, f"STALE SDK: jobs starting now (first: {j['label']}, pid {j['pid']}) run an SDK that lacks {heads}; results are provisional until the rebuild")
         for key in [k for k in started if k not in live]:
             label, t0 = started.pop(key)
             if VERBOSE or now - t0 > LONG_S / 3:
@@ -264,19 +272,19 @@ def stream():
             last_cpu.pop(key, None)
         holders = ", ".join(f"{j['label']} ({j['slot']})" for j in jobs if j["pid"] in procs) or "nothing (stale locks?)"
         for q in queue:
-            if q["pid"] in procs and now - q["since"] > QUEUE_S:
+            if q["pid"] in procs and now - q["since"] > QUEUE_S and f"queue:{q['pid']}" not in active:  # once per waiting job
                 emit(f"queue:{q['pid']}", f"QUEUED {q['label']} ({q['kind']}) has waited {int((now - q['since']) / 60)}+ min; slots held by {holders}")
         busy = sum(1 for j in jobs if j["slot"] != "exclusive" and j["pid"] in procs)
         if busy < SLOTS and not queue and not any(j["slot"] == "exclusive" for j in jobs):
             idle_since = idle_since or now
-            if now - idle_since > IDLE_S:
+            if now - idle_since > IDLE_S and "idle" not in active:  # once per idle spell
                 emit("idle", f"IDLE {SLOTS - busy} of {SLOTS} GPU slots free for {int((now - idle_since) / 60)} min, nothing queued")
         else:
             idle_since = None
             active.pop("idle", None)
         for w in waiters(procs):
             if w["problem"]:
-                emit(f"waiter:{w['pid']}", f"WAITER {w['pid']} {w['problem']} (target {w['target'][:60]})")
+                emit(f"waiter:{w['pid']}", f"WAITER {w['pid']} {w['problem']} (target {str(w['target'])[:60]})")
         time.sleep(POLL)
 
 

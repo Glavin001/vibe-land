@@ -52,7 +52,9 @@ export const CONFIGS = {
   // (garage-hifi), with its pack-build flags (VIBE_CRUSH, VIBE_REAL_CAPACITIES, centroid hulls) applied
   // to the scenario's packs: run.mjs builds a `high` variant of the spec for it.
   runtime: { env: {}, sdk: 'roof', model: 'gain' },
-  high: { env: profileEnv('high'), sdk: 'hifi', model: 'real', variant: 'high', build: { VIBE_CRUSH: '1', VIBE_REAL_CAPACITIES: '1', TOWN_KIT_HULL_ORIGIN: 'centroid' } },
+  high: { env: profileEnv('high'), sdk: 'hifi', model: 'real', variant: 'high', build: { VIBE_CRUSH: '1', VIBE_REAL_CAPACITIES: '1', TOWN_KIT_HULL_ORIGIN: 'centroid',
+    // The engine's spring law, which a pack's joint moduli are authored for (veneer-houses.mjs springLength).
+    VIBE_SECTION_ROTATION: '1' } },
 };
 
 /** The SDK a configuration runs against (PHYSX_ROOT wins). */

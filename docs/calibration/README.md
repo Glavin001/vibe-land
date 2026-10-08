@@ -12,6 +12,7 @@ come down the way the real one would?*
 | RC slab viaduct, 7 x 10 m | [bridge-piers.md](bridge-piers.md) | piers, one at a time | holds at 20 m spans (u 0.69); collapses at the 30 m span (u 1.69) | **matches**; bonds within 2% at rest | **matches** | survives the 30 m span (bending read 3.65x low) |
 | Glulam Pratt truss, 24 m | [truss-members.md](truss-members.md) | members | zero-force vertical: holds; any cut that leaves a mechanism: collapses | **matches, 6 of 6**; bonds 0.97-1.02 x hand | falls intact | carries cuts at u 3-55 |
 | Brick-veneer bungalow | [house-studs.md](house-studs.md) | front-wall studs | 4 out holds; 5 out at the plate's strength | falls intact (heels) | falls intact | holds all 5 (too strong) |
+| Brick-veneer bungalow, revision 2 | [house-headers.md](house-headers.md) | bays beside the door (jacks, kings), the truck's hole | 1-2 bays hold; the truck's 3.3 m hole past the plate's strength (local) | - | - | high: see write-up |
 | Three-storey RC frame | [frame-column.md](frame-column.md) | a ground-floor column (GSA / UFC) | ordinary design collapses (u 2.5-2.9); UFC design bridges (u 0.6-0.7) | ordinary: **matches**; UFC: collapses (open: a 3D path) | falls intact | misses the edge removal |
 | Controlled demolition | [demolition.md](demolition.md) | ground-floor columns, timed charges | into the footprint, from the side fired first | **blocked** by an engine gap | blocked | blocked |
 
