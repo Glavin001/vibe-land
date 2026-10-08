@@ -8,7 +8,7 @@ Reads the admission state of scripts/perf/gpu-run.sh (VIBE_GPU_LOCK_DIR) and the
 process table. An event is printed when a condition first appears (and again
 when it clears), never repeated while it holds. The conditions:
 
-- admitted / finished: a GPU job took or left a slot (with how long it ran);
+- finished: a job that ran over a third of VIBE_WATCH_LONG_S ended (VIBE_WATCH_VERBOSE=1: every admission and end);
 - QUEUED: a job has waited longer than VIBE_WATCH_QUEUE_S (default 60 s), with
   who holds the slots it waits for;
 - IDLE: a slot is free while nothing is queued for longer than
@@ -34,6 +34,7 @@ ENV = lambda k, d: float(os.environ.get(k, d))
 QUEUE_S, IDLE_S, STALL_S = ENV("VIBE_WATCH_QUEUE_S", 60), ENV("VIBE_WATCH_IDLE_S", 300), ENV("VIBE_WATCH_STALL_S", 600)
 LONG_S, WAITER_S, POLL = ENV("VIBE_WATCH_LONG_S", 900), ENV("VIBE_WATCH_WAITER_S", 7200), ENV("VIBE_WATCH_POLL_S", 10)
 SLOTS = int(os.environ.get("VIBE_GPU_SLOTS", "3"))
+VERBOSE = os.environ.get("VIBE_WATCH_VERBOSE") == "1"  # also every admission and short job's end
 
 
 def sh(*args):
@@ -240,7 +241,8 @@ def stream():
             live.add(key)
             if key not in started:
                 started[key] = (j["label"], now - procs[j["pid"]]["age"])
-                emit(key, f"admitted {j['label']} to {j['slot']} (pid {j['pid']})")
+                if VERBOSE:
+                    emit(key, f"admitted {j['label']} to {j['slot']} (pid {j['pid']})")
             cpu = tree_cpu(procs, j["pid"])
             prev = last_cpu.get(key)
             if prev is None or cpu > prev[0] + 0.5:
@@ -255,7 +257,8 @@ def stream():
                 emit(key + ":stale", f"STALE SDK {j['label']} (pid {j['pid']}): its SDK lacks the head of {', '.join(miss)}; the result will be refused")
         for key in [k for k in started if k not in live]:
             label, t0 = started.pop(key)
-            print(time.strftime("%H:%M:%S ") + f"finished {label} after {int((now - t0) / 60)} min", flush=True)
+            if VERBOSE or now - t0 > LONG_S / 3:
+                print(time.strftime("%H:%M:%S ") + f"finished {label} after {int((now - t0) / 60)} min", flush=True)
             for k in [k for k in active if k == key or k.startswith(key + ":")]:
                 active.pop(k)
             last_cpu.pop(key, None)
