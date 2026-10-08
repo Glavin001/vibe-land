@@ -178,7 +178,7 @@ def waiters(procs):
         if not p["cmd"].startswith(("/bin/zsh -c", "/bin/bash -c", "bash -c", "zsh -c", "/bin/sh -c")):
             continue
         cmd = p["cmd"]
-        body = cmd.split("&& eval ", 1)[-1]
+        body = cmd.split("&& eval ", 1)[-1].replace("'\"'\"'", "'")  # undo the shell's '"'"' quoting
         if not re.search(r"\b(until|while)\b", body) or "sleep" not in body:
             continue
         if "gpu-watch.py" in body:
