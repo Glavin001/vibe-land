@@ -137,7 +137,9 @@ struct NativeDestruction::State {
     /// Every hull at registration: its authored local pose and filter.
     /// Posed hulls move on the carrier; a migrated hull keeps its own frame
     /// and gets its authored filter back (see pose_vehicle_parts).
-    struct Hull { physx::PxShape *shape; std::uint32_t part; physx::PxTransform rest; physx::PxFilterData filter; };
+    // rim: a road wheel's rim hull (named kRimHullName by set_vehicle_shapes): it keeps
+    // its collision with what the road query stands on (pose_vehicle_parts).
+    struct Hull { physx::PxShape *shape; std::uint32_t part; physx::PxTransform rest; physx::PxFilterData filter; bool rim=false; };
     std::vector<Hull> hulls;
     /// The last wheel commands submitted as chunk loads (forces, N / N m).
     struct WheelLoad { physx::PxVec3 suspension, tire, couple; bool submitted=false; };

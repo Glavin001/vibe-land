@@ -265,6 +265,9 @@ pub struct PreparedGeometry {
     /// Source-frame suspension rig; absent from older caches.
     #[serde(default)]
     pub rig: Option<rig::AssetRig>,
+    /// The road wheels' tyre, where the build authors one (VIBE_VEHICLE_TYRE_BOUND).
+    #[serde(default)]
+    pub tyre: Option<AssetTyre>,
     /// Derived from validated authored identities, never supplied by the client.
     #[serde(skip)]
     pub fracture_layout: Option<FractureLayout>,
@@ -295,6 +298,22 @@ pub struct AssetPart {
 pub struct AssetShape {
     pub position: [f32; 3],
     pub vertices: Vec<[f32; 3]>,
+    /// A road wheel's rim (client/src/vehicles/tyres.mjs, VIBE_VEHICLE_TYRE_BOUND):
+    /// unlike the tyre's own hull it meets what the road query stands on.
+    #[serde(default)]
+    pub rim: bool,
+}
+
+/// The road wheels' tyre (client/src/vehicles/tyres.mjs `applyTyreBound`): its
+/// full-deflection force bounds Vehicle2's suspension in series.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetTyre {
+    pub pressure_pa: f64,
+    pub radius_m: f64,
+    pub width_m: f64,
+    pub section_m: f64,
+    pub max_force_n: f64,
 }
 
 /// Shared by private garage drives and vehicles published into the city.

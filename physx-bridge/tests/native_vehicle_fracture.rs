@@ -70,6 +70,7 @@ fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) 
             longitudinal_stiffness: 18000.,
             bump_stop_stiffness: 0.0,
             bump_stop_damping: 0.0,
+            tyre_max_force: 0.0,
             com_offset_y: 0.,
             angular_damping: 0.05,
             max_steer_radians: 0.5,
@@ -136,6 +137,7 @@ fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) 
                     part_index: 0,
                     position: v(x, 0., 0.),
                     points: cube(v(0.3, h.y, h.z)),
+                    rim: false,
                 });
             }
         } else {
@@ -143,6 +145,7 @@ fn setup_scene(wheel_strength: f32, engine_x: f32, axle: bool, free_fall: bool) 
                 part_index: i as u32,
                 position: center,
                 points: cube(h),
+                rim: false,
             });
         }
     }

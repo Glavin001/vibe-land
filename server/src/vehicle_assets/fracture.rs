@@ -228,6 +228,7 @@ impl PreparedGeometry {
                             .iter()
                             .map(|v| bridge::Vec3::new(v[0], v[1], v[2]))
                             .collect(),
+                        rim: shape.rim,
                     })
             })
             .collect();

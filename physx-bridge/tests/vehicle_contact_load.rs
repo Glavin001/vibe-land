@@ -74,7 +74,7 @@ fn setup(y: f32, wall_z: f32, speed: f32, wall: Wall) -> World {
         suspension_travel: 0.35, suspension_stiffness: 25000., suspension_damping: 3500.,
         wheel_radius: 0.4, wheel_half_width: 0.15, tyre_friction: 1.,
         front_lateral_stiffness: 45000., rear_lateral_stiffness: 45000., longitudinal_stiffness: 18000.,
-        bump_stop_stiffness: 0.0, bump_stop_damping: 0.0, com_offset_y: 0., angular_damping: 0.0,
+        bump_stop_stiffness: 0.0, bump_stop_damping: 0.0, tyre_max_force: 0.0, com_offset_y: 0., angular_damping: 0.0,
         max_steer_radians: 0.5, drive_torque: 250., brake_torque: 1500., handbrake_torque: 2200., top_speed: 30.,
         front_wheel_drive: false, rear_wheel_drive: false, sweep_road_queries: true, road_mask: STATIC,
         collision_group: VEHICLE, collision_mask: u32::MAX,
@@ -90,7 +90,7 @@ fn setup(y: f32, wall_z: f32, speed: f32, wall: Wall) -> World {
             inertia_products: v(0., 0., 0.),
             wheel: if (1..5).contains(&i) { (i - 1) as u8 } else { 255 }, engine: i == 5, drive_wheel: 255,
         });
-        shapes.push(VehiclePartShape { part_index: i as u32, position: center, points: cube(h) });
+        shapes.push(VehiclePartShape { part_index: i as u32, position: center, points: cube(h), rim: false });
     }
     world.set_vehicle_shapes(CAR, &shapes).unwrap();
     world.native_attach().unwrap();
@@ -230,7 +230,7 @@ fn a_cars_graded_load_is_the_impulse_that_changed_its_momentum() {
 /// by a truck's rear wheels after the breach: audit ticks 372-373, 712-774 kN
 /// of corner-constraint load on each rear wheel assembly against a 171 kN
 /// momentum change).
-fn setup_kerb(speed: f32, height: f32) -> World {
+fn setup_kerb(speed: f32, height: f32, tyre_max_force: f32) -> World {
     stage_env::product();
     let mut world = World::new(WorldConfig::default()).expect("required real GPU world");
     world.add_static_box(StaticBoxDesc { entity_id: 1, user_id: 0, pose: Pose { position: v(0., -0.5, 0.), rotation: Quat::IDENTITY },
@@ -246,7 +246,7 @@ fn setup_kerb(speed: f32, height: f32) -> World {
         suspension_travel: 0.35, suspension_stiffness: 25000., suspension_damping: 3500.,
         wheel_radius: 0.4, wheel_half_width: 0.15, tyre_friction: 1.,
         front_lateral_stiffness: 45000., rear_lateral_stiffness: 45000., longitudinal_stiffness: 18000.,
-        bump_stop_stiffness: 0.0, bump_stop_damping: 0.0, com_offset_y: 0., angular_damping: 0.0,
+        bump_stop_stiffness: 0.0, bump_stop_damping: 0.0, tyre_max_force, com_offset_y: 0., angular_damping: 0.0,
         max_steer_radians: 0.5, drive_torque: 250., brake_torque: 1500., handbrake_torque: 2200., top_speed: 30.,
         front_wheel_drive: false, rear_wheel_drive: false, sweep_road_queries: true, road_mask: STATIC,
         collision_group: VEHICLE, collision_mask: u32::MAX,
@@ -262,7 +262,7 @@ fn setup_kerb(speed: f32, height: f32) -> World {
             inertia_products: v(0., 0., 0.),
             wheel: if (1..5).contains(&i) { (i - 1) as u8 } else { 255 }, engine: i == 5, drive_wheel: 255,
         });
-        shapes.push(VehiclePartShape { part_index: i as u32, position: center, points: cube(h) });
+        shapes.push(VehiclePartShape { part_index: i as u32, position: center, points: cube(h), rim: false });
     }
     world.set_vehicle_shapes(CAR, &shapes).unwrap();
     world.native_attach().unwrap();
@@ -294,7 +294,7 @@ fn setup_kerb(speed: f32, height: f32) -> World {
 fn a_cars_corner_loads_are_the_impulse_that_changed_its_momentum() {
     let mut failures = Vec::new();
     for (speed, height) in [(10.0f32, 0.3f32), (14.0, 0.5)] {
-        let mut world = setup_kerb(speed, height);
+        let mut world = setup_kerb(speed, height, 0.0);
         let mass = 920f32;
         let mut worst = (0f32, 0usize, 0f32, 0f32);
         for k in 0..90 {
@@ -322,6 +322,56 @@ fn a_cars_corner_loads_are_the_impulse_that_changed_its_momentum() {
             if graded > 1.1 * needed + 0.25 * mass * G && graded / needed.max(0.05 * mass * G) > worst.0 { worst = (graded / needed.max(0.05 * mass * G), k, graded, needed); }
         }
         println!("kerb {height} m at {speed} m/s: worst ratio past tolerance {:.2} (tick {}: {:.1} kN graded against {:.1} kN)", worst.0, worst.1, worst.2 / 1e3, worst.3 / 1e3);
+        if worst.0 > 0.0 { failures.push(format!("kerb {height} m at {speed} m/s: graded {:.2}x the load that changed its momentum (tick {})", worst.0, worst.1)); }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
+
+/// A tyre in series with the suspension (VIBE_VEHICLE_TYRE_BOUND; PhysX
+/// NativeVehicleDesc::tyreMaxForce): the road reaches the wheel only through
+/// its tyre, whose force is its inflation pressure over its contact patch,
+/// largest flat on its rim, F = p b 2 sqrt(2 R sec) (Gent & Walter, NHTSA
+/// 2006, ch. 7). Over the kerbs above, every wheel's Vehicle2 suspension force
+/// stays within that bound (Vehicle2 alone put its whole jounce change into the
+/// damper: 582 kN on a monster truck's wheel at a wall's stump), what is past
+/// it bears on the wheel's own hull as a contact, and the car's graded loads
+/// still are the impulse that changed its momentum.
+#[test]
+#[ignore = "requires the native-destruction GPU SDK"]
+fn a_tyre_bounds_its_suspension_and_what_is_past_it_bears_as_a_contact() {
+    // A 0.8 m road tyre, 0.25 m tread, at 2.2 bar on a 0.457 m (18 in) rim: section 0.172 m.
+    let (p, b, r) = (2.2e5f32, 0.25f32, 0.4f32);
+    let section = r * (1.0 - 0.457 / 0.8);
+    let bound = p * b * 2.0 * (2.0 * r * section).sqrt();
+    let mut failures = Vec::new();
+    for (speed, height) in [(10.0f32, 0.3f32), (14.0, 0.5)] {
+        let mut world = setup_kerb(speed, height, bound);
+        let mass = 920f32;
+        let (mut worst, mut peak) = ((0f32, 0usize, 0f32, 0f32), 0f32);
+        for k in 0..90 {
+            let before = world.vehicle_snapshots().unwrap()[0].linear_velocity;
+            if let Err(e) = world.step() { panic!("tyre, kerb {height} m at {speed} m/s, tick {k}: {e:?}"); }
+            assert_eq!(world.native_tick().unwrap().error, 0);
+            let after = world.vehicle_snapshots().unwrap()[0].linear_velocity;
+            for w in world.native_vehicle_debug(CAR).unwrap().wheel_loads.iter() {
+                let f = (w.suspension.x * w.suspension.x + w.suspension.y * w.suspension.y + w.suspension.z * w.suspension.z).sqrt();
+                peak = peak.max(f);
+            }
+            let report = world.native_stress_solve_report().unwrap();
+            let mut all = v(0., 0., 0.);
+            for c in report.chunks.iter().filter(|c| c.structure_id == STRUCTURE) {
+                let m = [800., 20., 20., 20., 20., 40.][c.node as usize];
+                for s in [&c.prepared_linear, &c.constraint_linear, &c.contact_linear] { all = v(all.x + s.x * m, all.y + s.y * m, all.z + s.z * m); }
+            }
+            let dv = v(after.x - before.x, after.y - before.y, after.z - before.z);
+            let needed = mass * (dv.x * dv.x + dv.y * dv.y + dv.z * dv.z).sqrt() / DT;
+            let graded = (all.x * all.x + all.y * all.y + all.z * all.z).sqrt();
+            if graded > 1.1 * needed + 0.25 * mass * G && graded / needed.max(0.05 * mass * G) > worst.0 { worst = (graded / needed.max(0.05 * mass * G), k, graded, needed); }
+        }
+        println!("tyre {:.1} kN, kerb {height} m at {speed} m/s: peak suspension force {:.1} kN; worst ratio past tolerance {:.2} (tick {}: {:.1} kN graded against {:.1} kN)",
+            bound / 1e3, peak / 1e3, worst.0, worst.1, worst.2 / 1e3, worst.3 / 1e3);
+        // (the bound is applied to the force itself: only FP32 rounding past it)
+        if peak > bound * (1.0 + 1e-4) { failures.push(format!("kerb {height} m at {speed} m/s: a suspension force of {:.1} kN past the tyre's {:.1} kN", peak / 1e3, bound / 1e3)); }
         if worst.0 > 0.0 { failures.push(format!("kerb {height} m at {speed} m/s: graded {:.2}x the load that changed its momentum (tick {})", worst.0, worst.1)); }
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));

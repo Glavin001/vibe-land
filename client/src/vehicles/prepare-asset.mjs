@@ -18,6 +18,7 @@ import { mergeLightChunks, MIN_CHUNK_KG } from './chunk-merge.mjs';
 import { admitBonds, trueBondStiffness } from './bond-admission.mjs';
 import { massBudget, budgetScales, bondScale, MASS_BUDGET_VERSION } from './mass-budget.mjs';
 import { ROAD_WHEEL } from './reality.mjs';
+import { tyreBoundEnabled, applyTyreBound, TYRE_BOUND_VERSION, TYRES } from './tyres.mjs';
 import { realJointCapacitiesEnabled, applySectionBound, applyDuctility, applyWheelMountSection, vehicleJointsBrittle, REAL_JOINT_CAPACITY_VERSION } from './real-joint-capacity.mjs';
 
 let submittedConfiguration;
@@ -37,7 +38,9 @@ const trueStiffness = trueBondStiffness();
 // VIBE_REAL_VEHICLE_JOINTS=1: each joint bounded by its members' sections
 // (real-joint-capacity.mjs); such an asset is a different asset.
 const realJoints = realJointCapacitiesEnabled();
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-14',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration),...(budget&&{massBudget:{version:MASS_BUDGET_VERSION,...budget}}),...(trueStiffness&&{bondArea:'measured'}),...(realJoints&&{jointCapacity:REAL_JOINT_CAPACITY_VERSION})})).digest('hex');
+// VIBE_VEHICLE_TYRE_BOUND=1: a build with a tyre spec (tyres.mjs) gets its rim hulls and tyre bound.
+const tyreBound = tyreBoundEnabled() && TYRES[configuration.model] != null;
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-14',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration),...(budget&&{massBudget:{version:MASS_BUDGET_VERSION,...budget}}),...(trueStiffness&&{bondArea:'measured'}),...(realJoints&&{jointCapacity:REAL_JOINT_CAPACITY_VERSION}),...(tyreBound&&{tyre:TYRE_BOUND_VERSION})})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
@@ -109,6 +112,8 @@ catch (error) {
    const ductile = vehicleJointsBrittle() ? [] : applyDuctility(parts, bonds);
    process.stderr.write(`real joint capacities: ${ductile.length} metal joints ductile\n`);
  }
+ const tyre = tyreBound ? applyTyreBound(configuration.model, parts) : null;
+ if (tyre) process.stderr.write(`tyre bound: ${(tyre.maxForceN / 1e3).toFixed(0)} kN (p ${tyre.pressurePa / 1e5} bar, R ${tyre.radiusM.toFixed(3)} m, b ${tyre.widthM.toFixed(3)} m, section ${tyre.sectionM.toFixed(3)} m); rim hulls on the road wheels\n`);
  const bounds = { min: [Infinity,Infinity,Infinity], max: [-Infinity,-Infinity,-Infinity] };
  // The driving body excludes rig-moved shapes; those have their own bindings.
  for (const part of parts.filter(p => !p.motion)) for (const shape of part.shapes) for (const v of shape.vertices) {
@@ -124,7 +129,7 @@ catch (error) {
    jointTopology: 'rig-anchored-joints-3',
    excludedContacts: excludedContacts.map(({a,b,reason})=>({a,b,reason})),
    shapeCount: parts.reduce((n,p)=>n+p.shapes.length,0), bondCount: bonds.length, contactCount: surfaces.length,
-   minChunkKg: MIN_CHUNK_KG, mergedChunks: chunkMerges.merged, unmergedLightChunks: chunkMerges.unmerged, massBudget: massBudgetReport,
+   minChunkKg: MIN_CHUNK_KG, mergedChunks: chunkMerges.merged, unmergedLightChunks: chunkMerges.unmerged, massBudget: massBudgetReport, ...(tyre&&{tyre}),
    strengthProfileVersion: STRENGTH_PROFILE_VERSION, strengthQualification: 'pending-native-tests',
    mass: parts.reduce((n,p)=>n+p.mass,0), bounds,
    massProperties: combineMassProperties(parts.map(p=>p.massProperties)),

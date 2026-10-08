@@ -297,6 +297,11 @@ pub struct VehicleDesc {
     /// damping (N s/m) in place of Vehicle2's rigid suspension limit. 0: rigid.
     pub bump_stop_stiffness: f32,
     pub bump_stop_damping: f32,
+    /// The most force a tyre carries between road and wheel (N): Vehicle2's
+    /// suspension force (spring and damper) and suspension-limit rows bounded
+    /// by it, in series (PhysX NativeVehicleDesc::tyreMaxForce; client
+    /// tyres.mjs). 0: unbounded.
+    pub tyre_max_force: f32,
     /// Centre of mass below (negative) or above the actor origin, along the
     /// chassis up axis. The wheel hard points stay where they are.
     pub com_offset_y: f32,
@@ -340,6 +345,10 @@ pub struct VehiclePartShape {
     pub part_index: u32,
     pub position: Vec3,
     pub points: Vec<Vec3>,
+    /// A road wheel's rim (client tyres.mjs): it keeps its collision with
+    /// what the wheel's road query stands on when the wheel's other hulls are
+    /// excluded from it (native_pose_vehicle_parts).
+    pub rim: bool,
 }
 
 /// A rigid actor-frame delta for one authored vehicle part's hulls.
@@ -1138,6 +1147,7 @@ impl World {
                 part_index: shape.part_index,
                 position: shape.position.into(),
                 points: shape.points.iter().copied().map(Into::into).collect(),
+                rim: shape.rim,
             }).collect();
             self.inner.pin_mut().set_vehicle_shapes(entity_id, &shapes).map_err(operation_error)
         }
@@ -2220,6 +2230,7 @@ mod ffi {
         part_index: u32,
         position: FfiVec3,
         points: Vec<FfiVec3>,
+        rim: bool,
     }
 
     struct FfiVehiclePartPose {
@@ -2349,6 +2360,7 @@ mod ffi {
         longitudinal_stiffness: f32,
         bump_stop_stiffness: f32,
         bump_stop_damping: f32,
+        tyre_max_force: f32,
         com_offset_y: f32,
         angular_damping: f32,
         max_steer_radians: f32,
@@ -3234,6 +3246,7 @@ impl_ffi_from!(
         longitudinal_stiffness,
         bump_stop_stiffness,
         bump_stop_damping,
+        tyre_max_force,
         com_offset_y,
         angular_damping,
         max_steer_radians,

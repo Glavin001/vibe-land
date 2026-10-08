@@ -483,6 +483,7 @@ impl PhysxPhysicsArena {
                     part_index: part_index as u32,
                     position: bridge::Vec3::new(part.position[0]+shape.position[0], part.position[1]+shape.position[1], part.position[2]+shape.position[2]),
                     points: shape.vertices.iter().map(|p| bridge::Vec3::new(p[0],p[1],p[2])).collect(),
+                    rim: shape.rim,
                 })).collect();
             if let Err(error) = self.world.set_vehicle_shapes(NS_VEHICLE | (id & ID_MASK), &shapes) {
                 let _ = self.world.remove_actor(NS_VEHICLE | (id & ID_MASK));
@@ -551,6 +552,8 @@ impl PhysxPhysicsArena {
                 // Vehicle2's rigid suspension limit.
                 bump_stop_stiffness: prepared.map_or(0.0, |_| vehicle_bump_stop(tune.map(|t| t.spring_stiffness).unwrap_or(stiffness), sprung).0),
                 bump_stop_damping: prepared.map_or(0.0, |_| vehicle_bump_stop(tune.map(|t| t.spring_stiffness).unwrap_or(stiffness), sprung).1),
+                // The tyre in series (VIBE_VEHICLE_TYRE_BOUND assets: tyres.mjs).
+                tyre_max_force: prepared.and_then(|p| p.tyre.as_ref()).map_or(0.0, |t| t.max_force_n as f32),
                 com_offset_y: PHYSX_COM_OFFSET_Y_M,
                 angular_damping: PHYSX_ANGULAR_DAMPING,
                 max_steer_radians: tune.map(|t| t.max_steer_radians).unwrap_or_else(|| prepared.map(|p| p.max_steer_radians).unwrap_or(VEHICLE_MAX_STEER_RAD)),
@@ -3302,13 +3305,13 @@ pub(crate) mod tests {
                 wheel_half_width: 0.15,
                 max_steer_radians: VEHICLE_MAX_STEER_RAD,
                 mass,
-                mass_properties: box_mass.clone(), bonds: Vec::new(), fracture_layout: None, rig: None,
+                mass_properties: box_mass.clone(), bonds: Vec::new(), fracture_layout: None, rig: None, tyre: None,
                 bounds: crate::vehicle_assets::AssetBounds { min: [-x, -y, -z], max: [x, y, z] },
                 parts: vec![crate::vehicle_assets::AssetPart {
                     id: "test-chassis".into(), motion: None, functionality: None, position: [0.0; 3], name: String::new(),
                     visual_ids: vec!["test-chassis".into()], mass: mass as f64,
                     volume: (8.0*x*y*z) as f64, mass_properties: box_mass,
-                    shapes: vec![crate::vehicle_assets::AssetShape { position: [0.0; 3], vertices }],
+                    shapes: vec![crate::vehicle_assets::AssetShape { position: [0.0; 3], vertices, rim: false }],
                 }],
             };
             arena.spawn_vehicle_asset(7, 0, Vector3::new(p.x as f32, p.y as f32, p.z as f32),

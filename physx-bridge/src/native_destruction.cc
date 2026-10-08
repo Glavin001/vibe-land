@@ -9,6 +9,7 @@
 #include "geometry/PxGeometryQuery.h"
 
 #include <algorithm>
+#include <cstring>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -997,7 +998,8 @@ void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
     for (PxU32 h=0;h<hulls[i].size();++h) {
       auto *shape=hulls[i][h];shape->acquireReference();
       auto filter=shape->getSimulationFilterData();filter.word3|=kNativeChunkFilterBit;shape->setSimulationFilterData(filter);
-      binding.hulls.push_back({shape,i,shape->getLocalPose(),filter});
+      const bool rim=shape->getName() && std::strcmp(shape->getName(),"rim")==0;
+      binding.hulls.push_back({shape,i,shape->getLocalPose(),filter,rim});
       if(h) s.extra_shapes.push_back({shape,binding.base+i});
     }
   }
@@ -1040,7 +1042,8 @@ std::uint32_t NativeDestruction::pose_vehicle_parts(physx::native::NativeVehicle
   for(auto &hull:binding->hulls) {
     if(!posed[hull.part] || hull.shape->getActor()!=carrier) continue; // fragments keep their frames
     hull.shape->setLocalPose(deltas[hull.part]*hull.rest);
-    PxFilterData filter=hull.filter;filter.word1&=~exclude_mask;
+    // (a rim keeps meeting the road: a wheel pushed past its tyre bears on it)
+    PxFilterData filter=hull.filter;if(!hull.rim)filter.word1&=~exclude_mask;
     if(!(filter==hull.shape->getSimulationFilterData())) refilter(*hull.shape,filter);
     ++moved;
   }

@@ -2561,6 +2561,11 @@ public:
 #else
     require(desc.bump_stop_stiffness == 0.0f, "a vehicle bump stop needs an SDK with PX_NATIVE_VEHICLE_BUMP_STOP_VERSION");
 #endif
+#if defined(PX_NATIVE_VEHICLE_TYRE_MAX_FORCE_VERSION)
+    car.tyreMaxForce = desc.tyre_max_force;
+#else
+    require(desc.tyre_max_force == 0.0f, "a tyre-bounded suspension needs an SDK with PX_NATIVE_VEHICLE_TYRE_MAX_FORCE_VERSION");
+#endif
     car.tyreFriction = desc.tyre_friction;
     // Zero keeps the SDK's reference-car stiffness.
     if (desc.front_lateral_stiffness > 0.0f) car.frontLateralStiffness = desc.front_lateral_stiffness;
@@ -2707,6 +2712,10 @@ public:
         shape->setContactOffset(offset);
         configure_shape(*shape, entity_id, record.collision_group, record.collision_mask);
         shape->userData = reinterpret_cast<void *>(static_cast<std::uintptr_t>(part.part_index) + 1u);
+        // A road wheel's rim (client tyres.mjs): named, so the native stage keeps its
+        // collision with the road when it excludes the wheel's other hulls (a static
+        // string: PxShape keeps the pointer).
+        if (part.rim) shape->setName("rim");
       }
       for (PxShape *shape : prepared) require(actor->attachShape(*shape), "vehicle compound attachment failed");
       // Keep the controller's original shape alive, but it no longer participates.
