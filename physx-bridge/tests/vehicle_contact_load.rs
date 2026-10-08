@@ -224,3 +224,105 @@ fn a_cars_graded_load_is_the_impulse_that_changed_its_momentum() {
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));
 }
+
+/// The car on its wheels on a static road, coasting at `speed` into a static
+/// kerb `height` high across its path at z = 6 (the lab's wall stump, struck
+/// by a truck's rear wheels after the breach: audit ticks 372-373, 712-774 kN
+/// of corner-constraint load on each rear wheel assembly against a 171 kN
+/// momentum change).
+fn setup_kerb(speed: f32, height: f32) -> World {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("required real GPU world");
+    world.add_static_box(StaticBoxDesc { entity_id: 1, user_id: 0, pose: Pose { position: v(0., -0.5, 0.), rotation: Quat::IDENTITY },
+        half_extents: v(20., 0.5, 40.), collision_group: STATIC, collision_mask: u32::MAX }).unwrap();
+    world.add_static_box(StaticBoxDesc { entity_id: 2, user_id: 0, pose: Pose { position: v(0., height * 0.5, 6.), rotation: Quat::IDENTITY },
+        half_extents: v(4., height * 0.5, 0.25), collision_group: STATIC, collision_mask: u32::MAX }).unwrap();
+    // On its wheels: wheel radius 0.4 below the hard points (0.15 above the chassis centre, 0.35 travel).
+    let y = 0.75;
+    world.add_vehicle(VehicleDesc {
+        entity_id: CAR, user_id: 0, pose: Pose { position: v(0., y, 0.), rotation: Quat::IDENTITY },
+        chassis_half_extents: v(0.6, 0.2, 1.3), mass: 920., inertia: v(0., 0., 0.),
+        half_track: 0.95, suspension_attachment_y: 0.15, front_axle_z: 1., rear_axle_z: -1.,
+        suspension_travel: 0.35, suspension_stiffness: 25000., suspension_damping: 3500.,
+        wheel_radius: 0.4, wheel_half_width: 0.15, tyre_friction: 1.,
+        front_lateral_stiffness: 45000., rear_lateral_stiffness: 45000., longitudinal_stiffness: 18000.,
+        bump_stop_stiffness: 0.0, bump_stop_damping: 0.0, com_offset_y: 0., angular_damping: 0.0,
+        max_steer_radians: 0.5, drive_torque: 250., brake_torque: 1500., handbrake_torque: 2200., top_speed: 30.,
+        front_wheel_drive: false, rear_wheel_drive: false, sweep_road_queries: true, road_mask: STATIC,
+        collision_group: VEHICLE, collision_mask: u32::MAX,
+    }).unwrap();
+    let positions = [v(0., 0., 0.), v(-0.95, -0.1, 1.), v(0.95, -0.1, 1.), v(-0.95, -0.1, -1.), v(0.95, -0.1, -1.), v(0., 0.4, -0.7)];
+    let (mut parts, mut shapes) = (Vec::new(), Vec::new());
+    for (i, center) in positions.iter().copied().enumerate() {
+        let mass = match i { 0 => 800., 5 => 40., _ => 20. };
+        let h = if i == 0 { v(0.6, 0.2, 1.3) } else { v(0.15, 0.15, 0.15) };
+        parts.push(VehicleFracturePart {
+            part_index: i as u32, mass, volume: 8. * h.x * h.y * h.z, center,
+            inertia_diagonal: v(mass * (h.y * h.y + h.z * h.z) / 3., mass * (h.x * h.x + h.z * h.z) / 3., mass * (h.x * h.x + h.y * h.y) / 3.),
+            inertia_products: v(0., 0., 0.),
+            wheel: if (1..5).contains(&i) { (i - 1) as u8 } else { 255 }, engine: i == 5, drive_wheel: 255,
+        });
+        shapes.push(VehiclePartShape { part_index: i as u32, position: center, points: cube(h) });
+    }
+    world.set_vehicle_shapes(CAR, &shapes).unwrap();
+    world.native_attach().unwrap();
+    let bonds: Vec<_> = (1..positions.len() as u32).map(|i| ChunkBondDesc {
+        bond_index: i - 1, node0: 0, node1: i,
+        centroid: v(positions[i as usize].x * 0.5, positions[i as usize].y * 0.5, positions[i as usize].z * 0.5),
+        normal: if positions[i as usize].x < 0. { v(-1., 0., 0.) } else { v(1., 0., 0.) }, area: 0.01, material: 0,
+    }).collect();
+    let strong = StressMaterialDesc { compression_elastic: 1e12, compression_fatal: 2e12, tension_elastic: 1e12, tension_fatal: 2e12,
+        shear_elastic: 1e12, shear_fatal: 2e12, elastic_modulus: 200e9, residual_area_fraction: 0. };
+    world.native_register_vehicle(CAR, STRUCTURE, &parts, &bonds, DestructibleSettings { materials: vec![strong], ..Default::default() }).unwrap();
+    world.apply_impulse(CAR, v(0., 0., 920. * speed)).unwrap();
+    world.step().unwrap();
+    world.native_configure(NativeConfig {
+        max_iterations: 256, tolerance: 1e-3, force_tolerance: 1e-3, warm_start: true, damage_rate: 2., bend_gain_max: 3.,
+        fibre_bending: true, reserved_contact_pairs: 64, preserve_unchanged_contact_pairs: false, gpu_island_repair: true, verdict_sample_ticks: 1,
+    }).unwrap();
+    world.native_set_stress_solve_report(1).unwrap();
+    world
+}
+
+/// A car's every graded load -- prepared (gravity, Vehicle2's suspension and
+/// tyre forces), constraint (its corner constraints: suspension limit, sticky
+/// tyre) and contact -- summed over its chunks is the force that changed its
+/// momentum, m dv / dt (Newton's second law on a rigid car). A wheel striking
+/// a kerb must not grade the car's hubs on more than that.
+#[test]
+#[ignore = "requires the native-destruction GPU SDK"]
+fn a_cars_corner_loads_are_the_impulse_that_changed_its_momentum() {
+    let mut failures = Vec::new();
+    for (speed, height) in [(10.0f32, 0.3f32), (14.0, 0.5)] {
+        let mut world = setup_kerb(speed, height);
+        let mass = 920f32;
+        let mut worst = (0f32, 0usize, 0f32, 0f32);
+        for k in 0..90 {
+            let before = world.vehicle_snapshots().unwrap()[0].linear_velocity;
+            if let Err(e) = world.step() { panic!("kerb {height} m at {speed} m/s, tick {k}: {e:?}"); }
+            let status = world.native_tick().unwrap();
+            assert_eq!(status.error, 0);
+            let snap = world.vehicle_snapshots().unwrap()[0].clone();
+            let after = snap.linear_velocity;
+            let report = world.native_stress_solve_report().unwrap();
+            let (mut all, mut cons) = (v(0., 0., 0.), v(0., 0., 0.));
+            for c in report.chunks.iter().filter(|c| c.structure_id == STRUCTURE) {
+                let m = [800., 20., 20., 20., 20., 40.][c.node as usize];
+                for s in [&c.prepared_linear, &c.constraint_linear, &c.contact_linear] { all = v(all.x + s.x * m, all.y + s.y * m, all.z + s.z * m); }
+                cons = v(cons.x + c.constraint_linear.x * m, cons.y + c.constraint_linear.y * m, cons.z + c.constraint_linear.z * m);
+            }
+            let dv = v(after.x - before.x, after.y - before.y, after.z - before.z);
+            let needed = mass * (dv.x * dv.x + dv.y * dv.y + dv.z * dv.z).sqrt() / DT;
+            let graded = (all.x * all.x + all.y * all.y + all.z * all.z).sqrt();
+            let cn = (cons.x * cons.x + cons.y * cons.y + cons.z * cons.z).sqrt();
+            if std::env::var_os("CONTACT_LOAD_DEBUG").is_some() || graded > 1.1 * needed + 0.25 * mass * G {
+                println!("kerb {height} m at {speed} m/s, tick {k:2}: z {:.2} jounce {:?}: graded {:8.1} kN (constraint {:8.1}), momentum change needs {:8.1} kN",
+                    snap.pose.position.z, snap.wheel_jounce, graded / 1e3, cn / 1e3, needed / 1e3);
+            }
+            if graded > 1.1 * needed + 0.25 * mass * G && graded / needed.max(0.05 * mass * G) > worst.0 { worst = (graded / needed.max(0.05 * mass * G), k, graded, needed); }
+        }
+        println!("kerb {height} m at {speed} m/s: worst ratio past tolerance {:.2} (tick {}: {:.1} kN graded against {:.1} kN)", worst.0, worst.1, worst.2 / 1e3, worst.3 / 1e3);
+        if worst.0 > 0.0 { failures.push(format!("kerb {height} m at {speed} m/s: graded {:.2}x the load that changed its momentum (tick {})", worst.0, worst.1)); }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+}
