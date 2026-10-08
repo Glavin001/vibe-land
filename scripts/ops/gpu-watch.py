@@ -276,12 +276,12 @@ def stream():
                 active.pop(k)
             last_cpu.pop(key, None)
         holders = ", ".join(f"{j['label']} ({j['slot']})" for j in jobs if j["pid"] in procs) or "nothing (stale locks?)"
-        holders = {j["pid"]: j for j in jobs if j["pid"] in procs}
+        lockers = {j["pid"]: j for j in jobs if j["pid"] in procs}
         for q in queue:
             a, seen = procs.get(q["pid"], {}).get("ppid"), 0
             while a and a > 1 and seen < 64:  # a queued job whose own ancestor holds a lock waits forever
-                if a in holders:
-                    emit(f"selfwait:{q['pid']}", f"DEADLOCK {q['label']} (pid {q['pid']}) queues for the GPU while its ancestor {holders[a]['label']} (pid {a}) holds {holders[a]['slot']}: VIBE_GPU_HELD was not passed down")
+                if a in lockers:
+                    emit(f"selfwait:{q['pid']}", f"DEADLOCK {q['label']} (pid {q['pid']}) queues for the GPU while its ancestor {lockers[a]['label']} (pid {a}) holds {lockers[a]['slot']}: VIBE_GPU_HELD was not passed down")
                     break
                 a, seen = procs.get(a, {}).get("ppid"), seen + 1
         for q in queue:
