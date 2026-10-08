@@ -1,6 +1,6 @@
 /**
- * Real joint capacities for the vehicles (VIBE_REAL_CAPACITIES=1, the
- * high-fidelity profile; docs/verification/SCENARIOS.md, "Vehicle joints").
+ * Real joint capacities for the vehicles (VIBE_REAL_VEHICLE_JOINTS=1, opt-in;
+ * docs/verification/SCENARIOS.md, "Recalibrations").
  *
  * The joint profile (strength-profile.mjs) gives each joint an effective stress
  * (parent metal x joint efficiency, reality.mjs jointReferences) and the stage
@@ -23,7 +23,15 @@
  * and its material's density. Stiffness keeps the measured area (geometry).
  * A wheel's mount keeps its counted studs.
  */
-export const realJointCapacitiesEnabled = () => (globalThis.process?.env?.VIBE_REAL_CAPACITIES ?? '0') === '1';
+// Opt-in on its own, not yet part of the high profile's VIBE_REAL_CAPACITIES:
+// under it the monster truck broke its rear corner while coasting on a flat
+// street (vehicle lab `coast`, 2026-10-08: upright-wishbone utilisation 0.28
+// to past 1 within 5 ticks at steady 10-14 kN wheel loads). The stage's loads
+// on the corner spike several-fold with nothing hitting it, and vehicle joints
+// cannot be ductile yet (StressMaterialDesc carries no ductileSlip), so at real
+// capacities a brittle cascade follows. Both are routed to the stage owners
+// (docs/verification/SCENARIOS.md, "Engine or authoring").
+export const realJointCapacitiesEnabled = () => (globalThis.process?.env?.VIBE_REAL_VEHICLE_JOINTS ?? '0') === '1';
 export const REAL_JOINT_CAPACITY_VERSION = 'section-bound-1';
 
 /** Density of each structural category's material (kg/m3). */

@@ -53,6 +53,8 @@ if [ "$judge_only" = 0 ]; then
   want fleet && run fleet "$lab" "$out/lab.meta.json" "$(node -e "console.log(require('$ROOT/scripts/verify/scenarios.json').fleet.cars.join(','))")" "$(node "$ROOT/scripts/verify/scenarios.mjs" trials fleet)" VIBE_TESTBED_SCENE=lab
   want town && run town "$town" "$out/town.meta.json" monster "$(node "$ROOT/scripts/verify/scenarios.mjs" trials town)" VIBE_TESTBED_SCENE=town
 fi
+# extra-*.json: reruns of single cases (later runs of a case override earlier ones).
 reports=(); for n in lab fleet town; do [ -f "$out/$n.json" ] && reports+=("$out/$n.json"); done
+for f in "$out"/extra-*.json; do [ -f "$f" ] && reports+=("$f"); done
 node "$ROOT/scripts/verify/scenarios.mjs" judge "$profile" --lab "$lab" --town "$town" --out "$out/scenarios.json" "${reports[@]}" | tee "$out/verdict.txt"
 exit "${PIPESTATUS[0]}"

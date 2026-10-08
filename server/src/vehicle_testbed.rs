@@ -497,6 +497,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     // The parts of the car a projectile's sphere passed through (car frame at
     // that tick), its radius, and its previous position in the car frame.
     let (mut swept, mut sweep_last, mut sweep_radius, mut sweep_ticks) = (BTreeSet::<usize>::new(), None::<(u32, Vector3<f32>)>, 0f32, 0u32);
+    // The car's pose when the projectile was first tracked (the car may be thrown and spun after).
+    let mut attack_frame: Option<(Vector3<f32>, nalgebra::UnitQuaternion<f32>)> = None;
     // A shot at the scene (attack `shot`): its aim point and direction, and
     // how far past the aim point it got along that direction (the wall face).
     let mut shot: Option<(Vector3<f32>, Vector3<f32>)> = None;
@@ -800,7 +802,9 @@ fn run(r: &Run, meta: &Value) -> Value {
                 // box the projectile's sphere passed through, sub-stepped over the
                 // tick in the carrier's frame, for 30 ticks from the first part swept.
                 if shot.is_none() && sweep_ticks < 30 {
-                    let r = if sweep_radius > 0. { sweep_radius } else { crate::meteor::MeteorTuning::from_env().radius_m };
+                    if sweep_radius <= 0. { sweep_radius = crate::meteor::MeteorTuning::from_env().radius_m; }
+                    attack_frame.get_or_insert((after.p, after.q));
+                    let r = sweep_radius;
                     let local = after.q.inverse() * (p - after.p);
                     let from = sweep_last.filter(|(id, _)| *id == pid).map_or(local, |(_, l)| l);
                     let steps = (((local - from).norm() / (0.5 * r).max(0.05)).ceil() as usize).clamp(1, 64);
@@ -895,6 +899,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     read_damage(&mut arena, id, tick, &mut damage, geometry, 0.);
     let end = car_state(&mut arena, id);
     // Where the projectile ended, in the car's frame (x right, y up, z forward).
+    let projectile_end_world = projectile.and_then(|pid| arena.snapshot_dynamic_bodies().into_iter().find(|b| b.0 == pid)).map(|b| Vector3::new(b.1[0], b.1[1], b.1[2]));
     let projectile_end = projectile.and_then(|pid| arena.snapshot_dynamic_bodies().into_iter().find(|b| b.0 == pid)).map(|b| {
         let local = end.q.inverse() * (Vector3::new(b.1[0], b.1[1], b.1[2]) - end.p);
         [local.x, local.y, local.z].map(|v| (v * 100.).round() / 100.)
@@ -1023,23 +1028,29 @@ fn run(r: &Run, meta: &Value) -> Value {
         // whether removing them cuts every path between the front and the rear
         // wheels (the car cut in two).
         let wheel = |i: usize| { let n = &geometry.parts[i].name; (n.starts_with("Front ") || n.starts_with("Rear ")) && n.ends_with(" wheel assembly") };
+        // Cut, not holed: the projectile's diameter spans the part across its
+        // middle dimension (a tube, a bracket, an arm), so no load path through
+        // it survives; a wider part (a panel, a wheel) it only holes. The stage
+        // has no partial fracture of a part, so a cut part must come off.
+        let dims = |i: usize| { let mut d = [0f32; 3]; for (j, lo, hi) in &part_boxes { if *j == i { for k in 0..3 { d[k] = d[k].max(hi[k] - lo[k]); } } } d.sort_by(f32::total_cmp); d };
+        let cut: BTreeSet<usize> = swept.iter().copied().filter(|&i| 2. * sweep_radius.max(0.) >= dims(i)[1]).collect();
         let index: HashMap<&str, usize> = geometry.parts.iter().enumerate().map(|(i, p)| (p.id.as_str(), i)).collect();
         let mut parent: Vec<usize> = (0..geometry.parts.len()).collect();
         fn root(p: &mut Vec<usize>, mut i: usize) -> usize { while p[i] != i { p[i] = p[p[i]]; i = p[i]; } i }
         for b in &geometry.bonds {
             let (Some(&a), Some(&c)) = (index.get(b.a.as_str()), index.get(b.b.as_str())) else { continue };
-            if swept.contains(&a) || swept.contains(&c) { continue; }
+            if cut.contains(&a) || cut.contains(&c) { continue; }
             let (ra, rc) = (root(&mut parent, a), root(&mut parent, c));
             parent[ra] = rc;
         }
-        let wheels: Vec<usize> = (0..geometry.parts.len()).filter(|&i| wheel(i) && !swept.contains(&i)).collect();
+        let wheels: Vec<usize> = (0..geometry.parts.len()).filter(|&i| wheel(i) && !cut.contains(&i)).collect();
         let front: Vec<usize> = wheels.iter().copied().filter(|&i| geometry.parts[i].name.starts_with("Front")).collect();
         let rear: Vec<usize> = wheels.iter().copied().filter(|&i| geometry.parts[i].name.starts_with("Rear")).collect();
         let joined = front.iter().any(|&f| rear.iter().any(|&b| root(&mut parent, f) == root(&mut parent, b)));
         // The heaviest piece left once the swept parts are gone; everything else
         // was held on only through them and must come off with them.
         let mut by_root: HashMap<usize, f64> = HashMap::new();
-        for i in (0..geometry.parts.len()).filter(|i| !swept.contains(i)) { *by_root.entry(root(&mut parent, i)).or_default() += geometry.parts[i].mass; }
+        for i in (0..geometry.parts.len()).filter(|i| !cut.contains(i)) { *by_root.entry(root(&mut parent, i)).or_default() += geometry.parts[i].mass; }
         let kept = by_root.values().cloned().fold(0f64, f64::max);
         let separated: f64 = by_root.values().sum::<f64>() - kept;
         let mass = |set: &mut dyn Iterator<Item = usize>| set.map(|i| geometry.parts[i].mass).sum::<f64>();
@@ -1048,7 +1059,11 @@ fn run(r: &Run, meta: &Value) -> Value {
             "radius": sweep_radius, "parts": swept.len(), "names": swept.iter().take(16).map(|&i| geometry.parts[i].name.clone()).collect::<Vec<_>>(),
             "massKg": mass(&mut swept.iter().copied()), "partsOff": swept.intersection(&off).count(),
             "sweptMassOffKg": mass(&mut swept.intersection(&off).copied()), "massOffKg": mass(&mut off.iter().copied()),
-            "wheelsSwept": swept.iter().filter(|&&i| wheel(i)).count(), "frontRearJoined": joined, "separatedMassKg": separated, "totalMassKg": geometry.mass,
+            "cut": cut.len(), "cutOff": cut.intersection(&off).count(), "cutMassKg": mass(&mut cut.iter().copied()),
+            "cutNames": cut.iter().filter(|i| !off.contains(i)).take(12).map(|&i| geometry.parts[i].name.clone()).collect::<Vec<_>>(),
+            // Where the projectile ended in the car's frame as it was when attacked (x right).
+            "endInAttackFrame": attack_frame.zip(projectile_end_world).map(|((p, q), e)| { let l = q.inverse() * (e - p); [l.x, l.y, l.z].map(|v| (v * 100.).round() / 100.) }),
+            "wheelsSwept": swept.iter().filter(|&&i| wheel(i)).count(), "wheelsCut": cut.iter().filter(|&&i| wheel(i)).count(), "frontRearJoined": joined, "separatedMassKg": separated, "totalMassKg": geometry.mass,
         });
     }
     out["failedSteps"] = json!(failed_steps);

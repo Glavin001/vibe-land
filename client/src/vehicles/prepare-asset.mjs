@@ -34,7 +34,7 @@ const budget = massBudget(configuration.model);
 // Under the bridge's true bond stiffness every measured contact is a bond
 // (bond-admission.mjs); such an asset is a different asset.
 const trueStiffness = trueBondStiffness();
-// VIBE_REAL_CAPACITIES=1: each joint bounded by its members' sections
+// VIBE_REAL_VEHICLE_JOINTS=1: each joint bounded by its members' sections
 // (real-joint-capacity.mjs); such an asset is a different asset.
 const realJoints = realJointCapacitiesEnabled();
 const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-14',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration),...(budget&&{massBudget:{version:MASS_BUDGET_VERSION,...budget}}),...(trueStiffness&&{bondArea:'measured'}),...(realJoints&&{jointCapacity:REAL_JOINT_CAPACITY_VERSION})})).digest('hex');

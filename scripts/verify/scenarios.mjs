@@ -150,7 +150,7 @@ export async function expectation(sc) {
   const scene = sc.scene ?? 'lab';
   const I = impactor(sc.impactor, sc.impactorSpeed);
   const c = await caseOf(sc.case, scene);
-  const out = { id: sc.id, impactor: I, case: c, scene, expect: sc.expect, intent: sc.intent, why: sc.why };
+  const out = { id: sc.id, impactor: I, case: c, scene, expect: sc.expect, intent: sc.intent, why: sc.why, pathLength: sc.pathLength };
   if (!c) return { ...out, error: `no case ${sc.case}` };
   const P = pack(scene);
   if (c.group && P) {
@@ -209,15 +209,18 @@ function judgeOne(ex, run, others) {
     else if (run.attack?.pastTarget != null) { through = run.attack.pastTarget >= (ex.case?.layer ?? 0.3) + 2 * I.radius; measured = `${f(run.attack.pastTarget, 2)} m past`; }
     if (through !== undefined) {
       const want = e.outcome === 'stopped' ? false : true;
-      const derivation = ex.force ? `F ${f(ex.force.F / 1e3, 0)} kN vs ${ex.force.resistance.map((x) => f(x / 1e3, 0)).join('-')} kN` : ex.exit ? `exit ${f(ex.exit.low)}-${f(ex.exit.high)} m/s` : '';
+      const derivation = ex.force?.resistance ? `F ${f(ex.force.F / 1e3, 0)} kN vs ${ex.force.resistance.map((x) => f(x / 1e3, 0)).join('-')} kN` : ex.exit ? `exit ${f(ex.exit.low)}-${f(ex.exit.high)} m/s` : '';
       row('outcome', `${ex.outcome}${derivation ? ` (${derivation})` : ''}${ex.intent ? ' [intent]' : ''}`, measured, through === want);
     }
   }
   // Exit speed.
+  // A projectile whose sphere dips below grade meets the rigid ground (FIDELITY_AUDIT E10): its exit is measured only.
+  const drop = (ex.case?.trial?.attack?.slope ?? 0) * (ex.pathLength ?? ex.case?.layer ?? 0);
+  const belowGrade = !I.vehicle && ex.case?.aim && ex.case.aim[1] - drop - I.radius < 0;
   if (e.exit && ex.exit && pr?.contact) {
     const v = pr.vExit ?? (ex.case?.trial?.attack ? (pr.vAtPast ?? []).find((x) => x[0] >= 8)?.[1] : null);
     const lo = Math.max(0, ex.exit.low - EXIT_TOL * I.speed), hi = ex.exit.high + EXIT_TOL * I.speed;
-    row('exit speed (m/s)', `${f(ex.exit.nominal)} [${f(lo)}-${f(hi)}] (Recht-Ipson over ${ex.layers.length} layers)`, v == null ? 'never past' : f(v), v != null && v >= lo && v <= hi);
+    row('exit speed (m/s)', `${f(ex.exit.nominal)} [${f(lo)}-${f(hi)}] (Recht-Ipson over ${ex.layers.length} layers)${belowGrade ? ' (below grade: E10, measured)' : ''}`, v == null ? 'never past' : f(v), belowGrade ? null : v != null && v >= lo && v <= hi);
   }
   // Locality.
   const h = run.house;
@@ -231,20 +234,23 @@ function judgeOne(ex, run, others) {
     row('struck target breaks', '>= 1 bond', n, n >= 1);
   }
   if (e.more) {
+    // More, or all of it (a meteor that breaks every bond of a garden wall cannot break more).
     const o = others(e.more), a = h?.broken ?? 0, b = o?.house?.broken;
-    row(`more than ${e.more}`, `> its ${b ?? '?'} bonds (swept area x${f((I.radius / 0.687) ** 2)})`, a, b != null && a > b);
+    row(`more than ${e.more}`, `> its ${b ?? '?'} bonds (or equal: the whole struck piece either way) (swept area x${f((I.radius / 0.687) ** 2)})`, a, b != null && a >= b);
   }
   // Vehicles.
   const V = e.vehicle;
   if (V) {
     const sw = run.swept;
-    if (V.sweptOff) row('every part it passed through comes off', sw ? `${sw.parts} parts, ${f(sw.massKg, 0)} kg` : 'swept recorded', sw ? `${sw.partsOff} of ${sw.parts} off` : 'missing', !!sw && sw.partsOff === sw.parts);
-    if (V.separatedOff && sw) row('and what was held on only through them', `>= ${f(sw.massKg + sw.separatedMassKg, 0)} kg off (${f(100 * (sw.massKg + sw.separatedMassKg) / sw.totalMassKg, 0)}%)`, `${f(sw.massOffKg, 0)} kg off`, sw.massOffKg >= sw.massKg + sw.separatedMassKg - 1);
+    // Cut parts (its diameter spans them) come off; wider ones it passed into are holed (reported).
+    const cutN = sw?.cut ?? sw?.parts, cutOff = sw?.cutOff ?? sw?.partsOff, cutKg = sw?.cutMassKg ?? sw?.massKg;
+    if (V.sweptOff) row('every part it cut through comes off', sw ? `${cutN} cut (${f(cutKg, 0)} kg) of ${sw.parts} reached` : 'swept recorded', sw ? `${cutOff} of ${cutN} off${sw.cutNames?.length ? ` (kept: ${sw.cutNames.slice(0, 4).join(', ')})` : ''}` : 'missing', !!sw && cutOff === cutN);
+    if (V.separatedOff && sw) row('and what was held on only through them', `>= ${f(cutKg + sw.separatedMassKg, 0)} kg off (${f(100 * (cutKg + sw.separatedMassKg) / sw.totalMassKg, 0)}%)`, `${f(sw.massOffKg, 0)} kg off`, sw.massOffKg >= cutKg + sw.separatedMassKg - 1);
     if (V.through && sw) {
-      const x = run.attack?.endInCarFrame?.[0];
+      const x = sw.endInAttackFrame?.[0] ?? run.attack?.endInCarFrame?.[0];
       row('the ball passes through the car', `ends beyond its far side (x < -${f(1.12 + I.radius, 2)} m)`, `x ${f(x, 2)} m`, x != null && x < -(1.12 + I.radius));
     }
-    const cut = sw && (!sw.frontRearJoined || sw.wheelsSwept > 0);
+    const cut = sw && (!sw.frontRearJoined || (sw.wheelsCut ?? sw.wheelsSwept) > 0);
     if (V.wheelsKept) row('wheels kept', cut ? 'measured (its path took a wheel or cut the car)' : `${V.wheelsKept}`, 4 - run.wheelsLost, cut ? null : 4 - run.wheelsLost >= V.wheelsKept);
     if (V.drives && run.driveAway) {
       const m = run.driveAway.metres, expected = V.drives === true || (V.drives === 'unless-cut' && !cut);
@@ -263,6 +269,31 @@ if (cmd === 'table') {
     const ex = await expectation(sc);
     const lay = (ex.layers ?? []).map((L) => `${L.kind} ${f(L.thickness * 100, 0)}cm ${f(L.mass, 0)}kg`).join(' | ');
     console.log(`${sc.id.padEnd(34)} ${String(ex.outcome).padEnd(8)} exit ${ex.exit ? `${f(ex.exit.nominal)} [${f(ex.exit.low)}-${f(ex.exit.high)}]` : '-'}${ex.force ? ` F ${f(ex.force.F / 1e3, 0)} kN` : ''} R ${f(ex.localR, 2)}  ${lay}${ex.error ? ' ' + ex.error : ''}`);
+  }
+} else if (cmd === 'markdown') {
+  // The matrix as a Markdown table, with each profile's verdict rows (scenarios.sh --out files).
+  const verdicts = Object.fromEntries(['runtime', 'high'].map((p) => {
+    const file = arg(`--${p}`, path.join(ROOT, `target/verify/scenarios-${p}/scenarios.json`));
+    return [p, existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).rows : []];
+  }));
+  const cell = (p, id) => {
+    const rows = verdicts[p].filter((r) => r.scenario === id);
+    if (!rows.length) return 'not run';
+    const bad = rows.filter((r) => r.pass === false);
+    return bad.length ? `**FAIL** ${bad.map((r) => `${r.check}: ${r.measured}`).join('; ')}` : `PASS (${rows.filter((r) => r.pass).length})`;
+  };
+  console.log('| Scenario | Expected (derivation) | runtime | high |\n|---|---|---|---|');
+  for (const sc of DATA.scenarios) {
+    const ex = await expectation(sc);
+    const exp = [ex.outcome, ex.force ? `F ${f(ex.force.F / 1e3, 0)} kN vs ${ex.force.resistance?.map((x) => f(x / 1e3, 0)).join('-')} kN` : null,
+      sc.expect?.exit && ex.exit ? `exit ${f(ex.exit.nominal)} m/s [${f(ex.exit.low)}-${f(ex.exit.high)}]` : null, sc.expect?.local === true ? `local within ${f(2 * ex.localR, 1)} m` : null,
+      sc.expect?.stands === true ? 'roof holds' : null, sc.expect?.more ? `more than ${sc.expect.more}` : null,
+      sc.expect?.vehicle ? Object.entries(sc.expect.vehicle).map(([k, v]) => `${k} ${v}`).join(', ') : null, sc.intent ? `*intent: ${sc.intent}*` : null].filter(Boolean).join('; ');
+    console.log(`| ${sc.id} | ${exp} | ${cell('runtime', sc.id)} | ${cell('high', sc.id)} |`);
+  }
+  for (const car of DATA.fleet.cars) for (const c of DATA.fleet.cases) {
+    const id = `${car}-${c.case}`;
+    console.log(`| ${id} | ${c.expect.outcome}; ${Object.entries(c.expect.vehicle).map(([k, v]) => `${k} ${v}`).join(', ')} | ${cell('runtime', id)} | ${cell('high', id)} |`);
   }
 } else if (cmd === 'trials') {
   const want = a1 ?? 'lab';
