@@ -98,6 +98,15 @@ bond graph without them (`frontRearJoined`).
 - **The cannonball.** A truck cannot stop it: stopping 639 kN s within the
   ball's own 1.37 m diameter needs ~6.7 MN on a frame of ~10 chromoly tubes at
   ~266 kN each. It punches through and ends beyond the truck's far side.
+  - **How much of the truck goes (the oracle).** The explicit two-body window
+    (`scripts/impact/two-body.py --scene ball-truck --real-joints --compliant
+    --ticks 4`, FP64, at h = 2.5 and 5 us, its energy closing to +0.05% and
+    +0.10%) is the expectation, and its spread over the two steps is the band:
+    270-274 joints broken, 669-670 yielded, 1 wheel lost, the truck's Δv
+    18.6-19.2 m/s, the ball out at 51.1-51.4 m/s. That destroys a lot of the
+    truck. The 689-693 broken ("shredded": nearly every joint) the stage gave
+    before two-body and dynamic struck structures was the static verdict's
+    over-count of the rigid stop (`docs/destruction/IMPACT_STEP_PLAN.md` §8).
 
 ### Locality, standing, "more"
 
