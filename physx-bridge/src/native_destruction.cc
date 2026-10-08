@@ -169,7 +169,8 @@ static bool native_mohr_coulomb_shear() {
 /// VIBE_SHEAR_STIFFNESS=1 (SDKs with PX_DESTRUCTION_SHEAR_STIFFNESS; FIDELITY_AUDIT
 /// D11): a joint is stiffer along its normal than across it, k_s = gamma k_n,
 /// gamma per material (the pack's shearStiffnessRatio: masonry G/E = 0.4, EN
-/// 1996-1-1 3.8.3). Needs VIBE_SECTION_ROTATION. Off: every joint isotropic.
+/// 1996-1-1 3.8.3). Needs VIBE_SECTION_ROTATION (without it the stage keeps every joint
+/// isotropic). Off: every joint isotropic.
 static bool native_shear_stiffness() {
   static const bool value = native_env_f32("VIBE_SHEAR_STIFFNESS", 0.0f) != 0.0f;
   return value;
@@ -1386,10 +1387,12 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
 #endif
 #if defined(VIBE_PHYSX_HAS_SHEAR_STIFFNESS)
   // The stage reads its switch at configuration (with the section's rotational stiffness).
+  // Without the section's rotational stiffness the stage leaves every joint
+  // isotropic (it says so): the shear rows extend the rotation's bond rows.
   if (native_shear_stiffness()) {
-    native_require(native_section_rotation(), "VIBE_SHEAR_STIFFNESS needs VIBE_SECTION_ROTATION (the stress solve's bond rows)");
     setenv("PX_DESTRUCTION_SHEAR_STIFFNESS", "1", 1);
-    std::fprintf(stderr, "[destruction] shear stiffness: on (a joint k_s = gamma k_n per material)\n");
+    std::fprintf(stderr, native_section_rotation() ? "[destruction] shear stiffness: on (a joint k_s = gamma k_n per material)\n"
+                                                   : "[destruction] shear stiffness: requested without VIBE_SECTION_ROTATION; the stage keeps joints isotropic\n");
   }
 #else
   native_require(!native_shear_stiffness(),
