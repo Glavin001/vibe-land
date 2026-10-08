@@ -104,7 +104,21 @@ Steps 1-3 of §6 were carried out. Findings that change the plan:
    - 100 kg ball into masonry: stopped at the face → through, exit 28.2 m/s;
    - truck: +9.9..+14.5 m → +2.1 m;
    - cannonball: open. With the strongest-sense bound it spread (1,124-1,748 breaks, 10 ghosts,
-     late static cascades); the directional bound is under test.
+     late static cascades).
+9. **The anchored-chunk bound is not consistent yet (dev only: PhysX dev/anchored-ghost-log).**
+   PAIRWISE and CRUSH_ENERGY_BOUND are in the high profile; ANCHORED_CONTACT_BOUND is not.
+   - The bound must be the support function of the chunk's bonds' capacity sets along the force,
+     sum of (C or T)|a| + S t: never tighter than the verdict. The force-parallel minimum,
+     min(C/a, S/t), was too tight (250-1,445 ghosts per run).
+   - Ghosts remain because a contact cut at the bound must be graded by whichever model decides its
+     chunk. Routing took bounded loads out of the static solve (the rigid-stop excess, resting
+     shares, released rows), and on an island the step decides, the static verdict is replaced by a
+     step that saw only its routed rows. Keeping those loads (static, and as constant external
+     wrenches on the step's nodes) graded the rigid solver's wedge and depenetration artefacts at
+     capacity: the truck's house collapsed (2,502 bonds, roof down) and ghosts stayed (65-103).
+   - Reading: a per-chunk impulse bound inside a rigid solver with no compliance cannot satisfy
+     both graders. The compliant contact rows (two-body work: a finite contact stiffness) are the
+     physical route for contacts that never reach the step.
 
 ## Summary
 
