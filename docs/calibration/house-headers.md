@@ -265,30 +265,35 @@ only by crushing, by sliding (|V| > mu C), or when what it held has no path
 left to a support (that region splits, as before).
 
 `run.mjs house-headers --configs high`, 600 ticks, 64 iterations, FP32,
-correction limit 1, the same SDK with the flag off and on (the stage is not
-deterministic run to run: 3-4 runs each). "Frame beyond" counts frame joints
-broken more than one stud bay (0.6 m) outside the knocked-out bay.
+correction limit 1, the same SDK (402e7eb58) with the flag off and on, 3
+runs each (the stage is not deterministic run to run). "Frame beyond" counts
+frame joints broken more than one stud bay (0.6 m) outside the knocked-out
+bay; "front" those in the front wall.
 
-| Case | Off: broken (frame beyond) | On: broken (frame beyond) |
+| Case | Off: broken / frame beyond / front frame beyond | On: broken / frame beyond / front frame beyond |
 |---|---|---|
-| intact | 0, 0, 0 | 0, 0, 0, 0 |
-| bay1 | 0, 0, 0 | 0, 0, 0 (one early run: 343, the roof over the bay) |
-| bay2 | 2 (a cripple-to-lintel joint), x3 | 1 skin screw, x4: no frame joint (was the MISS) |
-| truck | 25 (6), 101 (6), 1,868 (204) | 11 (1), x4 |
-| truck-door | 1,708 (170), 2,031 (206), 2,295 (277) | 2,573 (371), 2,216 (279), 2,335 (256), 2,583 |
+| intact | 0 / 0 / 0 (x3) | 0 / 0 / 0 (x5) |
+| bay1 | 0 (x3) | 0 (x5) |
+| bay2 | 2: a cripple-to-lintel joint and a board screw (x3) | 1 board screw, no frame joint (x5) |
+| truck | 25 / 6 / 6 (x3) | 9 / 1 / 1 (x5) |
+| truck-door | 1,166-1,241 / 120-159 / 72-78 | 1,301-1,483 / 88-104 / 39-48 |
 
-Re-bearing does what C9 asked: the joints beyond the gap that the plate lifts
-off no longer break, so truck is local in every run and bay2 holds. It does
-not stop truck-door. There, the plate over the 4.3 m gap and the joints at
-and beyond both ends of it (the door header's king and jack, the next
-opening's cripples, jacks and headers) all fail in ticks 1-3 together: from
-one elastic snapshot each, which is C10. With re-bearing the per-joint verdicts
-are never harsher (a contact breaks only where the fastened joint already
-had), but the remains stay attached longer and the collapse that follows is
-about as large (+20% on these runs, within the spread of the off runs' 1,708-2,295).
-The calibration's verdict is unchanged (`either`: the plate alone is past its
-strength over the gap); the hand calculation's local answer needs C10's
-sequence as well.
+Re-bearing does what C9 asked: the uprights beyond the gap that the plate
+lifts no longer break, so truck stays local and bay2 holds (it was the MISS).
+It does not stop truck-door. There the plate over the 4.3 m gap and the
+joints at and beyond both ends of it (the door header's king and jack, the
+next opening's cripples, jacks and headers) all fail in ticks 1-3 together,
+each from one elastic snapshot: C10. Re-bearing roughly halves the front-wall
+frame broken beyond the gap and cuts all frame beyond it by a third; the
+total rises 10-20%, in the board and brick skins of the side and back walls
+(the remains stay attached longer and load them). The calibration's verdict
+is unchanged (`either`: the plate alone is past its strength over the gap);
+the hand calculation's local answer needs C10's sequence as well.
+
+On the earlier integration SDK (ec95655d5, before feat/impact-capacity's last
+commits) the same comparison gave truck-door 1,708-2,295 off and 2,216-2,583
+on, and one of five on-runs collapsed bay1 (343 broken, from the roof over the
+bay) and truck (2,295); none did on 402e7eb58.
 
 At rest (`qualify_structures.py`, the high packs): veneer-bungalow--frame and
 veneer-house--frame 0.00% broken (0.17% / 0.18% off); the as-built houses
