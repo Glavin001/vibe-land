@@ -75,6 +75,55 @@ The bridge refuses a flag its SDK lacks. Against another SDK, `check.sh
   rotation-only garage-multihull);
 - `high-fidelity(no-rotation)`: run without section rotation.
 
+### Variants of high ("arms")
+
+A named variant is high plus a small file of the flags it changes
+(`scripts/fidelity/arms/ARM.env`). `scripts/fidelity/select.sh NAME` resolves
+`runtime`, `high` or `high-ARM` (or `high` with `VIBE_FIDELITY_ARM=ARM`), and
+records the full name in `VIBE_FIDELITY_PROFILE`. `profile.sh`,
+`acceptance.sh` and `scenarios.sh` take any of these names. Packs and
+provenance are the base profile's, since the arms change only runtime flags.
+
+The impact arms compare how a hit is turned into broken bonds:
+
+| Arm | Name | Flags | Role |
+|---|---|---|---|
+| A | `high-static` | `VIBE_IMPACT_CAPACITY=0` | static solve only |
+| B | `high-step` | `VIBE_IMPACT_STEP=1`, `VIBE_IMPACT_CAPACITY=0` | static plus the linear impact step (the candidate) |
+| C | `high-oracle` | `VIBE_IMPACT_CAPACITY=1`, `PX_DESTRUCTION_IMPACT_ITERATIONS=131072`, `PX_DESTRUCTION_IMPACT_EVAL_ITERATIONS=1000000` | the ADMM impact solve at its correctness budget: the reference |
+
+```bash
+scripts/verify/impact-arms.sh                       # A, B, C on the shots, then the table
+scripts/verify/impact-arms.sh --arms static,oracle  # a subset
+scripts/verify/impact-arms.sh --judge-only          # re-tabulate existing runs
+```
+
+Each arm runs `acceptance.sh high-ARM` on the test bed's shots (the
+cannonball, the meteor, the meteor into the roof and into the upper wall), one
+GPU job at a time. `impact-arms.mjs` then prints one row per shot and arm:
+
+- **past:** metres past the point struck. FAIL when KE exceeds the path work
+  and the shot did not get through.
+- **broken, Jaccard:** the house bonds broken, and the Jaccard index of that
+  set against arm C's.
+- **locality:** the p90 distance of the broken bonds from the shot line (the
+  pack's bond centroids), and the share beyond 4 m of it.
+- **energy:** what is unaccounted over the structure's window, as a percentage
+  of KE (closes within -10% and contact + 10%).
+- **momentum:** the impulse delivered to the structure, and whether anything
+  held past its capacity.
+- **cost:** the stage's step time per tick over the window, mean and max
+  (`impactCost` in the test-bed report).
+
+It also takes test-bed reports directly, so the scenario matrix's arms can be
+compared the same way:
+`impact-arms.mjs --pack P --meta target/verify/scenarios-high-ARM/lab.meta.json --trials ... static=.../scenarios-high-static/lab.json oracle=...`.
+
+An arm that cannot run says why: B is skipped until the bridge reads
+`VIBE_IMPACT_STEP`, and `check.sh` drops it on an SDK without
+`PX_DESTRUCTION_IMPACT_STEP`. Once B exists and agrees with C on this table,
+`high.env` takes B's flags and C stays as the reference arm.
+
 ### Provenance
 
 `scripts/fidelity/provenance.sh PROFILE` checks that the SDK and the packs are

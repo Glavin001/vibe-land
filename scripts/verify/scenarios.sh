@@ -4,7 +4,9 @@
 # them on the test bed (lab with the monster truck, the fleet cars, Vibe Town),
 # then judge them against the real-world expectations.
 #
-#   scripts/verify/scenarios.sh runtime|high [--only lab,fleet,town] [--judge-only]
+#   scripts/verify/scenarios.sh runtime|high|high-ARM [--only lab,fleet,town] [--judge-only]
+# high-ARM: a named variant of high (scripts/fidelity/arms, select.sh), e.g. the
+# impact arms high-static, high-step, high-oracle.
 #
 # One GPU job at a time, a shared slot (VIBE_GPU_SHARED=1, scripts/perf/gpu-run.sh).
 # Writes target/verify/scenarios-PROFILE/{lab,fleet,town}.json and
@@ -23,13 +25,14 @@ done
 out="$ROOT/target/verify/scenarios-$profile"; mkdir -p "$out"
 case $profile in
   runtime) source "$ROOT/scripts/fidelity/runtime.env"; node "$ROOT/structures/vehicle-lab/build-lab.mjs" > /dev/null ;;
-  high) export HIGH_PHYSX_ROOT=${HIGH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/out/install/garage-hifi}
-        source "$ROOT/scripts/fidelity/high.env" ;;
-  *) echo "profile runtime|high" >&2; exit 2 ;;
+  high|high-*) export HIGH_PHYSX_ROOT=${HIGH_PHYSX_ROOT:-/Users/glavin/Development/PhysX/out/install/garage-hifi}
+        source "$ROOT/scripts/fidelity/select.sh" "$profile" || exit 2 ;;
+  *) echo "profile runtime|high|high-ARM" >&2; exit 2 ;;
 esac
+base=${profile%%-*}
 source "$ROOT/scripts/fidelity/check.sh" --degrade
-"$ROOT/scripts/fidelity/provenance.sh" "$profile" | tee "$out/provenance.log" || { echo "[scenarios] refused: see $out/provenance.log"; exit 1; }
-eval "$("$ROOT/scripts/fidelity/packs.sh" "$profile")"
+"$ROOT/scripts/fidelity/provenance.sh" "$base" | tee "$out/provenance.log" || { echo "[scenarios] refused: see $out/provenance.log"; exit 1; }
+eval "$("$ROOT/scripts/fidelity/packs.sh" "$base")"
 want() { [[ ",$only," == *",$1,"* ]]; }
 if [ "$judge_only" = 0 ]; then
   node "$ROOT/scripts/verify/scenarios.mjs" meta lab --pack "$lab" --base "${lab%.json}.meta.json" --out "$out/lab.meta.json"

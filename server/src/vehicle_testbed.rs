@@ -1160,6 +1160,16 @@ fn run(r: &Run, meta: &Value) -> Value {
     if let (Some(strength), Some(pr)) = (strength.as_ref(), probe.as_ref()) {
         out["probe"] = pr.summary(strength, DT);
         if let Some(p) = physics.take() { out["physics"] = p; }
+        // Cost per impact tick: the stage's step time over the structure's window
+        // (first contact to its close, else 1.5 s), for the impact-arm comparison.
+        if let Some(from) = energy_since {
+            let to = out["physics"]["window"]["endTick"].as_f64().map_or(from as f32 + 90., |t| t as f32);
+            let ms: Vec<f32> = stage.iter().filter(|s| s[0] >= from as f32 - 1. && s[0] <= to).map(|s| s[3]).collect();
+            if !ms.is_empty() {
+                out["impactCost"] = json!({"ticks": ms.len(), "meanMs": ms.iter().sum::<f32>() / ms.len() as f32,
+                    "maxMs": ms.iter().cloned().fold(0f32, f32::max), "totalMs": ms.iter().sum::<f32>()});
+            }
+        }
         out["layer"] = trial["layer"].clone();
         out["matrix"] = trial["matrix"].clone();
         out["expect"] = trial["expect"].clone();

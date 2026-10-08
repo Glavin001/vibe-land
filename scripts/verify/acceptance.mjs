@@ -12,6 +12,7 @@
 // gated the behaviour before (locality, roof and frame holding, crushes only
 // where hit): they are acceptance thresholds for the owner to confirm, stated
 // with the reasoning, never tuned to make a run pass.
+import { shotPhysics, jaccard, ENERGY_TOL } from './shot-physics.mjs';
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -46,43 +47,28 @@ const energyCheck = (r, kind, need) => {
   return { check: `${kind}: no energy vanishes (gets through, or the house absorbs it)`, measured: r ? (past >= need ? `through (${fmt(past)} m past)` : `stopped ${fmt(past)} m past the face: ${(ke / 1e6).toFixed(1)} MJ lost to ${h?.broken ?? '?'} joints broken, ${h?.crushedChunks ?? '?'} crushed`) : 'missing', threshold: `past >= ${need} m`, pass: !!r && past >= need };
 };
 // The physics of a shot (the test bed under VIBE_TESTBED_PROBE=1 records
-// `probe` and `physics`; docs/verification/README.md derives each criterion).
-const E_REST = 0.1; // WorldConfig restitution
-const ENERGY_TOL = 0.1; // of the impactor's KE: unmeasured fragment rotation, 3-tick sampling
+// `probe` and `physics`; docs/verification/README.md derives each criterion;
+// the numbers are shot-physics.mjs, shared with the impact-arm comparison).
 const physicsChecks = (r, kind, profile) => {
   const pr = r?.probe, ph = r?.physics;
-  if (!pr || !ph || !pr.contact) return [{ check: `${kind}: physics recorded (probe)`, measured: !r ? 'missing' : !pr ? 'no probe (VIBE_TESTBED_PROBE=1)' : 'no contact', threshold: 'recorded', pass: false }];
-  const m = ph.impactorMassKg, ke = 0.5 * m * pr.vIn * pr.vIn, past = r.attack?.pastTarget ?? -1;
-  const plug = ph.pathMassKg, carry = ke * plug / (m + plug);
-  const pathD = ph.pathFractureJ + ph.pathCrushJ + carry;
-  // The structure's own window: first contact with it to the impactor's exit
-  // or its first contact outside it (the probe's physics.window); what follows
-  // (ground, terrain, other bodies) is reported, not charged to the structure.
-  const w = ph.window;
-  const last = pr.energy?.[pr.energy.length - 1] ?? [0, 0, 0, pr.energyLost];
-  const [fragKe, pe, lost] = w ? [w.fragmentsKeJ, w.peReleasedJ, w.lostJ] : [last[1], last[2], last[3]];
-  const modelled = w ? w.fractureJ + w.crushJ : ph.fractureWorkJ + ph.crushWorkJ;
-  const contact = (1 - E_REST * E_REST) * carry; // reduced mass against the plug it set moving
-  // Outside the house: the impactor's mechanical-energy loss on ticks it
-  // touched no house chunk (floor slab, grade, kerbs), and its own drop.
-  const ground = w ? 0 : ph.groundJ ?? 0, drop = w ? w.dropJ : ph.impactorDropJ ?? 0;
-  const resid = lost + drop + pe - fragKe - modelled - ground;
+  const s = shotPhysics(r);
+  if (!s) return [{ check: `${kind}: physics recorded (probe)`, measured: !r ? 'missing' : !pr ? 'no probe (VIBE_TESTBED_PROBE=1)' : 'no contact', threshold: 'recorded', pass: false }];
+  const { ke, past, plug, carry, pathD, lost, drop, pe, fragKe, fracture, crush, contact, ground, resid } = s, w = s.window;
   const MJ = (x) => `${(x / 1e6).toFixed(2)} MJ`;
   const out = [];
   // (1) Pass-through: more KE than the straight path through the house can take.
   out.push({ check: `${kind}: gets through when its energy exceeds what its path can dissipate`, measured: `KE ${MJ(ke)} vs path ${MJ(pathD)} (fracture ${MJ(ph.pathFractureJ)}, crush ${MJ(ph.pathCrushJ)}, carrying ${(plug / 1000).toFixed(1)} t: ${MJ(carry)}); ${fmt(past)} m past`,
-    threshold: 'KE > path work => past >= 1 m', pass: ke <= pathD || past >= 1 });
-  // (2) Energy closes.
-  out.push({ check: `${kind}: energy balance closes over the structure's window (KE lost + its drop = structure dissipation + fragments' KE - PE released)`, measured: `${w ? `window to tick ${w.endTick} (${w.end})` : 'no window'}: lost ${MJ(lost)} + drop ${MJ(drop)}; fracture ${MJ(w ? w.fractureJ : ph.fractureWorkJ)} + crush ${MJ(w ? w.crushJ : ph.crushWorkJ)}; fragments ${MJ(fragKe)}, PE ${MJ(pe)}${w ? '' : `; ground ${MJ(ground)}`}: unaccounted ${MJ(resid)} (contact may take ${MJ(contact)}); after the window (reported): ${MJ(ph.afterWindowJ ?? 0)}`,
-    threshold: `-${100 * ENERGY_TOL}% KE <= unaccounted <= contact + ${100 * ENERGY_TOL}% KE`, pass: resid >= -ENERGY_TOL * ke && resid <= contact + ENERGY_TOL * ke });
+    threshold: 'KE > path work => past >= 1 m', pass: s.passed });
+  // (2) Energy closes over the structure's window; what follows it is reported.
+  out.push({ check: `${kind}: energy balance closes over the structure's window (KE lost + its drop = structure dissipation + fragments' KE - PE released)`, measured: `${w ? `window to tick ${w.endTick} (${w.end})` : 'no window'}: lost ${MJ(lost)} + drop ${MJ(drop)}; fracture ${MJ(fracture)} + crush ${MJ(crush)}; fragments ${MJ(fragKe)}, PE ${MJ(pe)}${w ? '' : `; ground ${MJ(ground)}`}: unaccounted ${MJ(resid)} (contact may take ${MJ(contact)}); after the window (reported): ${MJ(s.afterWindow)}`,
+    threshold: `-${100 * ENERGY_TOL}% KE <= unaccounted <= contact + ${100 * ENERGY_TOL}% KE`, pass: s.closes });
   // (3)+(4) Momentum through what held: no joint holds a force past its capacity.
   out.push({ check: `${kind}: nothing holds past its capacity (impulse into what held <= capacity x dt)`, measured: `peak ${(pr.peakForceN / 1e6).toFixed(2)} MN (dp/dt ${fmt(pr.momentumLost)} kg m/s), held capacity ${(pr.heldCapacityN / 1e6).toFixed(2)} MN, touched ${(pr.touchedCapacityN / 1e6).toFixed(2)} MN${pr.infiniteWall ? ': INFINITE WALL' : pr.partialHold ? ': partial hold' : ''}`,
     threshold: 'no infinite wall, no partial hold', pass: !pr.infiniteWall && !pr.partialHold });
   // (4) Reference: the impact oracle's broken set for the same graph and hit (not ground truth).
   const ref = oracleRef(kind);
   if (ref) {
-    const a = new Set(ph.brokenIds), b = new Set(ref.brokenIds);
-    const inter = [...a].filter((x) => b.has(x)).length, jac = inter / Math.max(1, new Set([...a, ...b]).size);
+    const a = new Set(ph.brokenIds), b = new Set(ref.brokenIds), jac = jaccard(ph.brokenIds, ref.brokenIds);
     out.push({ check: `${kind}: broken set against the impact oracle (reference)`, measured: `Jaccard ${jac.toFixed(2)}; ${a.size} vs oracle ${b.size}${ref.spread ? ` (spread ${ref.spread})` : ''}`, threshold: 'reported', pass: true });
   }
   return out;
@@ -318,7 +304,7 @@ if (cmd === 'list') {
       const st = c.pass ? (known ? 'FIXED' : 'PASS') : known ? 'KNOWN-GAP' : 'FAIL';
       if (st === 'FAIL') failing++;
       console.log(`  ${c.check.padEnd(64)} ${String(c.measured).padEnd(28)} ${String(c.threshold).padEnd(34)} ${st}${c.note ? `  (${c.note})` : ''}`);
-      appendFileSync(path.join(dir, 'acceptance.jsonl'), JSON.stringify({ profile, scenario: s.id, behaviour: s.behaviour, check: c.check, measured: c.measured, threshold: c.threshold, status: st, note: c.note ?? null }) + '\n');
+      appendFileSync(path.join(dir, 'acceptance.jsonl'), JSON.stringify({ profile, arm: process.env.VIBE_FIDELITY_PROFILE ?? profile, scenario: s.id, behaviour: s.behaviour, check: c.check, measured: c.measured, threshold: c.threshold, status: st, note: c.note ?? null }) + '\n');
     }
   }
   process.exitCode = failing ? 1 : 0;
