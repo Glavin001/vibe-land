@@ -111,6 +111,16 @@ static bool native_impact_capacity() {
   static const bool value = native_env_f32("VIBE_IMPACT_CAPACITY", 0.0f) != 0.0f;
   return value;
 }
+/// VIBE_IMPACT_STEP=1 (opt-in, SDKs with PX_DESTRUCTION_IMPACT_STEP): impacts
+/// are solved by the impact step -- one implicit step over the contact
+/// duration on a local patch around each struck chunk, with an exact event
+/// ramp (PhysX docs/destruction/IMPACT_CHEAP_FORMULATION.md) -- instead of the
+/// impact solve. It uses the impact capacity's materials, contact rows and
+/// bounds, so it turns those on; the other islands keep the elastic verdict.
+static bool native_impact_step() {
+  static const bool value = native_env_f32("VIBE_IMPACT_STEP", 0.0f) != 0.0f;
+  return value;
+}
 /// VIBE_BOND_TRUE_STIFFNESS=1 (high-fidelity profile; docs/verification/
 /// FIDELITY_AUDIT.md): each bond's stress-solve stiffness is E A / L at its
 /// own area and spring length, with no floors. The default floors the area at
@@ -1296,7 +1306,14 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
                  "VIBE_SECTION_BENDING needs a PhysX SDK with PX_DESTRUCTION_SECTION_BENDING (PhysX feat/real-section-bending)");
 #endif
 #if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
-  desc.impactCapacity = native_impact_capacity();
+  desc.impactCapacity = native_impact_capacity() || native_impact_step();
+#if defined(VIBE_PHYSX_HAS_IMPACT_STEP)
+  desc.impactStep = native_impact_step();
+  if (desc.impactStep)
+    std::fprintf(stderr, "[destruction] impact step: on (an implicit step over the contact duration on a local patch)\n");
+#else
+  native_require(!native_impact_step(), "VIBE_IMPACT_STEP needs a PhysX SDK with PX_DESTRUCTION_IMPACT_STEP (PhysX feat/impact-capacity)");
+#endif
   // Ci, the impact-pressure crush, goes with it where crushing is authored
   // (VIBE_IMPACT_CRUSH=0 keeps the virial crush, for A/B).
   bool crushAuthored = false;
@@ -1304,7 +1321,7 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.impactCrush = desc.impactCapacity && crushAuthored && native_env_f32("VIBE_IMPACT_CRUSH", 1.0f) != 0.0f;
   if (desc.impactCrush)
     std::fprintf(stderr, "[destruction] impact-pressure crush: on (Z1 Z2/(Z1+Z2) v at each contact)\n");
-  if (desc.impactCapacity)
+  if (desc.impactCapacity && !native_impact_step())
     std::fprintf(stderr, "[destruction] impact capacity: on (joint capacity and inertia on impact ticks)\n");
 #else
   native_require(!native_impact_capacity(),

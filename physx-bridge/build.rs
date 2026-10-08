@@ -413,6 +413,8 @@ fn add_native_destruction(
             "PX_DESTRUCTION_IMPACT_CAPACITY",
             "VIBE_PHYSX_HAS_IMPACT_CAPACITY",
         ),
+        // PxDestructionStressDesc::impactStep (opt-in, VIBE_IMPACT_STEP=1).
+        ("PX_DESTRUCTION_IMPACT_STEP", "VIBE_PHYSX_HAS_IMPACT_STEP"),
     ] {
         if text.contains(field) {
             build.define(define, None);
