@@ -129,6 +129,16 @@ struct Damage {
     /// corner constraint), for the audit of what broke.
     last: HashMap<u32, [f64; 4]>, last_wheels: Vec<[f64; 3]>,
     audits: Vec<Value>,
+    /// VIBE_TESTBED_AUDIT: every 60 ticks, the intact joints at or near their
+    /// capacity (utilisation >= 0.95): which joints a ductile car keeps at
+    /// yield, and so in the impact solve, tick after tick.
+    at_capacity: Vec<Value>,
+    /// VIBE_TESTBED_AUDIT: on each tick whose contact load on the car passes
+    /// 100 kN, the car's stress input summed over its chunks by source (kN,
+    /// vector sums in the carrier's frame, and the contact's sum of magnitudes)
+    /// against the force its measured acceleration needs, m |dv/dt|: the
+    /// stress solve's loads must balance the carrier's dynamics.
+    balance: Vec<Value>,
     /// The car body's (actor 0's) mass, at the first and the latest sample.
     body_mass: [f64; 2],
 }
@@ -180,6 +190,37 @@ fn read_damage(arena: &mut crate::movement::PhysicsArena, id: u32, tick: u32, da
     let m = |w: &Value, k: &str| (w[k].as_array().map_or(0., |v| v.iter().map(|x| x.as_f64().unwrap_or(0.).powi(2)).sum::<f64>().sqrt()) / 100.).round() / 10.;
     let wheels_now: Vec<[f64; 3]> = d["wheelLoads"].as_array().into_iter().flatten().map(|w| [m(w, "suspension"), m(w, "tire"), m(w, "constraintForce")]).collect();
     let mut contacts_logged = false;
+    if let Some(r) = &report {
+        if damage.balance.len() < 60 {
+            let (mut p, mut k, mut t, mut t_abs, mut mass) = ([0f64; 3], [0f64; 3], [0f64; 3], 0f64, 0f64);
+            for c in r.chunks.iter().filter(|c| c.structure_id == structure && (c.node as usize) < geometry.parts.len()) {
+                let m = geometry.parts[c.node as usize].mass;
+                mass += m;
+                let add = |sum: &mut [f64; 3], v: &vibe_land_physx_bridge::FfiVec3| { sum[0] += v.x as f64 * m; sum[1] += v.y as f64 * m; sum[2] += v.z as f64 * m; };
+                add(&mut p, &c.prepared_linear); add(&mut k, &c.constraint_linear); add(&mut t, &c.contact_linear);
+                let v = &c.contact_linear;
+                t_abs += ((v.x * v.x + v.y * v.y + v.z * v.z) as f64).sqrt() * m;
+            }
+            if t_abs > 100e3 {
+                let n = |v: [f64; 3]| ((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() / 1e2).round() / 10.;
+                let all = [p[0] + k[0] + t[0], p[1] + k[1] + t[1], p[2] + k[2] + t[2]];
+                damage.balance.push(json!({"tick": tick, "accelG": accel_g, "massKg": mass,
+                    "dynamicsKN": ((mass * accel_g as f64 * vibe_netcode::movement::GRAVITY as f64) / 1e2).round() / 10.,
+                    "preparedKN": n(p), "constraintKN": n(k), "contactKN": n(t), "contactAbsKN": (t_abs / 1e2).round() / 10., "allKN": n(all),
+                    "contactVecKN": t.map(|x| (x / 1e2).round() / 10.)}));
+            }
+        }
+    }
+    if auditing() && tick % 60 == 0 {
+        let mut rows: Vec<(f64, String)> = d["bonds"].as_array().into_iter().flatten().filter_map(|b| {
+            let u = b["utilisation"].as_f64().unwrap_or(0.);
+            let gone = b["remainingArea"].as_f64().is_some_and(|a| a <= 0.0) || b["verdictBroken"].as_bool() == Some(true);
+            (!gone && u >= 0.95).then(|| (u, bond_parts(geometry, b["index"].as_u64().unwrap() as u32).0))
+        }).collect();
+        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+        damage.at_capacity.push(json!({"tick": tick, "count": rows.len(), "wheelLoadsKN": wheels_now,
+            "bonds": rows.iter().take(24).map(|(u, n)| format!("{n} {u:.2}")).collect::<Vec<_>>()}));
+    }
     for b in d["bonds"].as_array().into_iter().flatten() {
         let index = b["index"].as_u64().unwrap() as u32;
         let gone = b["remainingArea"].as_f64().is_some_and(|a| a <= 0.0) || b["verdictBroken"].as_bool() == Some(true);
@@ -457,7 +498,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         *tick += 1;
     };
     for _ in 0..SETTLE_TICKS { step(&mut arena, &mut city, &mut tick, None); }
-    let mut damage = Damage { broken: BTreeMap::new(), parts_off: BTreeSet::new(), wheel_mask: 15, last: HashMap::new(), last_wheels: Vec::new(), audits: Vec::new(), body_mass: [0.; 2] };
+    let mut damage = Damage { broken: BTreeMap::new(), parts_off: BTreeSet::new(), wheel_mask: 15, last: HashMap::new(), last_wheels: Vec::new(), audits: Vec::new(), at_capacity: Vec::new(), balance: Vec::new(), body_mass: [0.; 2] };
     read_damage(&mut arena, id, tick, &mut damage, geometry, 0.);
     let settled_broken = damage.broken.len();
     let scene_before = scene_broken(&mut arena, r.scene);
@@ -1143,6 +1184,7 @@ fn run(r: &Run, meta: &Value) -> Value {
         "driveAway": drive_away, "sceneBroken": scene_damage,
     });
     out["audits"] = json!(damage.audits);
+    if auditing() { out["atCapacity"] = json!(damage.at_capacity); out["loadBalance"] = json!(damage.balance); }
     out["bodyMass"] = json!(damage.body_mass);
     out["wheelLoadsEndKN"] = json!(damage.last_wheels);
     out["actorsEnd"] = actors_end;
