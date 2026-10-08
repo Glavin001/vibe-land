@@ -32,6 +32,7 @@ stamp=$(date +%Y%m%d-%H%M%S)
 out=${VERIFY_OUT_DIR:-$ROOT/target/verify/$stamp}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)  # absolute: cargo runs tests from the package directory
+export VERIFY_RUN_DIR=$out  # this run's results, for regressions that read them (answer-drift)
 export VIBE_GPU_SHARED=1
 # The product's stage environment, as a backstop for any GPU test that does not
 # set it itself (physx-bridge/tests/common/stage_env.rs; lint-gpu-test-env.sh).
