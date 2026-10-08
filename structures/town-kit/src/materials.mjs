@@ -105,7 +105,10 @@ export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mo
  * M2.5-M9: initial shear strength f_vk0 0.15 MPa (its friction term 0.4 sigma_d
  * is masonryShear's, graded under VIBE_MOHR_COULOMB_SHEAR: FIDELITY_AUDIT C11;
  * with it the house cracks 8 joints, 0.48%, the rest D11's: one stiffness per
- * bond in every direction, where masonry's G is 0.4 E); flexural tension across the bed joint
+ * bond in every direction, where masonry's G is 0.4 E. With D11's shear
+ * stiffness, MASONRY_SHEAR_STIFFNESS, 0 at the product's 64 stress iterations,
+ * 1 at the qualification's 16: a joint at 0.99 of capacity overshot on the
+ * first tick); flexural tension across the bed joint
  * f_xk1 0.1 MPa (EN 1996-1-1 3.6.3, nationally determined; 0.05-0.1 for natural
  * stone and aggregate units in general-purpose mortar); in compression the
  * masonry's f_k = 0.45 f_b^0.7 f_m^0.3 = 10.5 MPa (eq. 3.1, the crush law's);
