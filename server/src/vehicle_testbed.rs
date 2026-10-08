@@ -378,7 +378,7 @@ impl HouseProbe {
     /// than `reach` plus the longer of its two members cannot be a member the
     /// impactor struck or one that fell from it: such breaks are progressive
     /// failure (the house's collapse), counted as `frameBeyondReach`.
-    fn finish(&self, arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex, impact: Option<Vector3<f32>>, line: Option<(Vector3<f32>, Vector3<f32>)>, reach: f32) -> Value {
+    fn finish(&self, arena: &mut crate::movement::PhysicsArena, scene: &SceneIndex, impact: Option<Vector3<f32>>, line: Option<(Vector3<f32>, Vector3<f32>)>, reach: f32, passage: Option<&(u32, BTreeSet<u32>)>) -> Value {
         let world = arena.physx_world_mut().expect("physx");
         let rows = world.native_bond_stress_rows(0).unwrap_or_default();
         let frame = |i: u32| FRAME_TYPES.contains(&scene.types.get(i as usize).map_or("", |s| s.as_str()));
@@ -387,6 +387,8 @@ impl HouseProbe {
         let mut by_distance = [0u32; 5];
         let mut distances = Vec::new();
         let mut line_distances = Vec::new();
+        // Split by the end of the impactor's passage (the locality stopgap).
+        let (mut during, mut after) = (Vec::new(), Vec::new());
         let member = |i: u32| scene.sizes.get(i as usize).map_or(0., |s| s[0].max(s[1]).max(s[2]));
         let mut beyond_reach = 0u32;
         for r in &rows {
@@ -401,6 +403,7 @@ impl HouseProbe {
                 let rel = (node_centroid(scene, r.node0) + node_centroid(scene, r.node1)) * 0.5 - o;
                 let d = (rel - dir * rel.dot(&dir)).norm();
                 line_distances.push((d * 100.).round() / 100.);
+                if passage.map_or(true, |(_, set)| set.contains(&r.bond_index)) { during.push((d * 100.).round() / 100.); } else { after.push((d * 100.).round() / 100.); }
                 if is_frame && d > reach + member(r.node0).max(member(r.node1)) { beyond_reach += 1; }
             }
             if let Some(p) = impact {
@@ -411,6 +414,7 @@ impl HouseProbe {
         }
         distances.sort_by(f32::total_cmp);
         line_distances.sort_by(f32::total_cmp);
+        for v in [&mut during, &mut after] { v.sort_by(f32::total_cmp); v.truncate(8000); }
         line_distances.truncate(8000);
         // Roof: how far its members came down; frame: how much is still on the anchored body.
         let (mut drops, mut gone) = (Vec::new(), 0u32);
@@ -419,6 +423,15 @@ impl HouseProbe {
         }
         drops.sort_by(f32::total_cmp);
         let (mut frame_nodes, mut frame_anchored, mut fallen_beyond) = (0u32, 0u32, 0u32);
+        // Each detached body's chunk count (house chunks off the anchored body):
+        // a body of two or more is an assembly that lost its load path to the
+        // anchors with its bonds intact; a body of one is a piece knocked or cut loose.
+        let mut body_size: HashMap<u32, u32> = HashMap::new();
+        for i in 0..self.is_house.len() as u32 {
+            if !self.is_house[i as usize] { continue; }
+            if let Ok(a) = world.native_chunk_aim(0, i) { if a.found && a.entity_id != self.anchored { *body_size.entry(a.entity_id).or_default() += 1; } }
+        }
+        let (mut collapsed, mut loose, mut loose_nodes) = (0u32, 0u32, Vec::new());
         for i in 0..self.is_house.len() as u32 {
             if !self.is_house[i as usize] || !frame(i) || scene.types[i as usize] == "foundation" { continue; }
             frame_nodes += 1;
@@ -432,15 +445,25 @@ impl HouseProbe {
             let fell = aim.as_ref().map_or(true, |a| !a.found || c0.y - a.center.y > size[0].min(size[1]).min(size[2]));
             if let (true, Some((o, dir))) = (fell, line) {
                 let rel = c0 - o;
-                if (rel - dir * rel.dot(&dir)).norm() > reach + member(i) { fallen_beyond += 1; }
+                if (rel - dir * rel.dot(&dir)).norm() > reach + member(i) {
+                    fallen_beyond += 1;
+                    // Collapse: it fell as part of an assembly still bonded together
+                    // (its body has other chunks): the assembly lost its path to the
+                    // anchors. Alone, it was knocked or cut loose (debris, the hit).
+                    let size = aim.as_ref().filter(|a| a.found).and_then(|a| body_size.get(&a.entity_id)).copied().unwrap_or(1);
+                    if size >= 2 { collapsed += 1; } else { loose += 1; loose_nodes.push(i); }
+                }
             }
         }
         let mean = |v: &[f32]| if v.is_empty() { 0. } else { v.iter().sum::<f32>() / v.len() as f32 };
         json!({
             "group": self.group, "lineDistances": line_distances,
+            "lineDistancesDuring": during, "lineDistancesAfter": after,
+            "passageEndTick": passage.map(|(t, _)| *t),
             "bonds": total, "broken": broken, "brokenFrac": broken as f32 / total.max(1) as f32,
             "structuralBonds": structural_total, "structuralBroken": structural, "cosmeticBroken": broken - structural,
             "reach": reach, "frameBeyondReach": line.map(|_| beyond_reach), "fallenBeyondReach": line.map(|_| fallen_beyond),
+            "collapsedMembers": line.map(|_| collapsed), "looseFallenMembers": line.map(|_| loose), "looseFallenNodes": loose_nodes,
             "byDistance": {"0-1m": by_distance[0], "1-2m": by_distance[1], "2-4m": by_distance[2], "4-8m": by_distance[3], "8m+": by_distance[4]},
             "medianBreakDistance": distances.get(distances.len() / 2),
             "impact": impact.map(|p| [p.x, p.y, p.z]),
@@ -631,6 +654,11 @@ fn run(r: &Run, meta: &Value) -> Value {
         ((2. * (hi - lo).max(0.) / vibe_netcode::movement::GRAVITY as f32).sqrt() / DT).ceil() as u32
     });
     let (mut last_break, mut ended_early) = (0u32, None::<u32>);
+    // The house bonds broken by the end of the impactor's passage (a shot's
+    // balance window closed; a car stopped or off the house for 3 ticks): the
+    // locality stopgap splits breaks during the passage from those after it
+    // (debris and aftermath). Replaced by per-bond impactor attribution.
+    let mut passage_broken: Option<(u32, BTreeSet<u32>)> = None;
     for k in 0..ticks {
         let s = car_state(&mut arena, id);
         let speed = (s.v.x * s.v.x + s.v.z * s.v.z).sqrt();
@@ -1082,6 +1110,14 @@ fn run(r: &Run, meta: &Value) -> Value {
             let spin = [after.w.x, after.w.y, after.w.z].map(|w| (w * 100.).round() / 100.);
             trace.push(json!([k, (speed * 100.).round() / 100., (after.p.z * 100.).round() / 100., (after.p.y * 1000.).round() / 1000., after.jounce.map(|j| if j.is_finite() { (j * 1000.).round() / 1000. } else { -1. }), damage.broken.len(), damage.parts_off.len(), damage.wheel_mask, after.on_road, (after.p.x * 100.).round() / 100., spin, (accel_g * 10.).round() / 10.]));
         }
+        if passage_broken.is_none() && energy_since.is_some() && (if driving {
+                probe.as_ref().is_some_and(|pr| pr.trace.last().is_some_and(|r| r[4] < 0.5) || (1..=3).all(|d| !pr.touched.contains_key(&tick.saturating_sub(d))))
+            } else { window.is_some() && attack.map_or(true, |a| a["kind"] != "shots" || a["shots"].as_array().map_or(true, |l| launched >= l.len())) }) {
+            if let Some(h) = house.as_ref() {
+                let rows = arena.physx_world_mut().expect("physx").native_bond_stress_rows(0).unwrap_or_default();
+                passage_broken = Some((tick, rows.iter().filter(|r| (r.remaining_area <= 0.0 || r.broken) && h.is_house[r.node0 as usize] && h.is_house[r.node1 as usize]).map(|r| r.bond_index).collect()));
+            }
+        }
         if early_end {
             // Every shot of a volley is out; the impactor (the probe's body) has
             // stopped or touched nothing of the struck structure for 3 ticks; a
@@ -1151,7 +1187,21 @@ fn run(r: &Run, meta: &Value) -> Value {
     });
     let reach = if shot.is_some() { probe.as_ref().map_or(0., |p| p.radius) + volley }
         else { hulls.iter().flat_map(|(lo, hi)| [lo[0].abs().max(hi[0].abs()), (hi[1] - lo[1]) * 0.5]).fold(0f32, f32::max) };
-    let house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact, line, reach));
+    let mut house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact, line, reach, passage_broken.as_ref()));
+    // Could debris have knocked the lone fallen members loose? Freeing them takes
+    // the fracture work of their joints (each once); the fragments carried at most
+    // their peak kinetic energy (the probe's samples). Work beyond that budget is
+    // not debris: those members fell because their load path failed.
+    if let (Some(hr), Some(st)) = (house_report.as_mut(), strength.as_ref()) {
+        let nodes: Vec<u32> = hr["looseFallenNodes"].as_array().map_or(Vec::new(), |v| v.iter().filter_map(|x| x.as_u64().map(|x| x as u32)).collect());
+        let bonds: BTreeSet<u32> = nodes.iter().flat_map(|&n| st.bonds_of(n)).collect();
+        let work: f32 = bonds.iter().map(|&b| st.fracture_work(b)).sum();
+        let debris = probe.as_ref().map_or(0., |p| p.energy.iter().map(|e| e[1]).fold(0f32, f32::max));
+        hr["looseFallenWorkJ"] = json!(work);
+        hr["debrisKeJ"] = json!(debris);
+        hr["collapse"] = json!(hr["collapsedMembers"].as_u64().unwrap_or(0) > 0 || work > debris);
+        if let Some(o) = hr.as_object_mut() { o.remove("looseFallenNodes"); }
+    }
     let scene_broken_pairs: Vec<[u32; 2]> = if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() {
         arena.physx_world_mut().expect("physx").native_bond_stress_rows(0).unwrap_or_default().into_iter()
             .filter(|r| r.remaining_area <= 0.0 || r.broken).map(|r| [r.node0, r.node1]).collect()

@@ -178,14 +178,14 @@ def waiters(procs):
         if not p["cmd"].startswith(("/bin/zsh -c", "/bin/bash -c", "bash -c", "zsh -c", "/bin/sh -c")):
             continue
         cmd = p["cmd"]
-        body = cmd.split("&& eval ", 1)[-1]
+        body = cmd.split("&& eval ", 1)[-1].replace("'\"'\"'", "'")  # undo the shell's '"'"' quoting
         if not re.search(r"\b(until|while)\b", body) or "sleep" not in body:
             continue
         if "gpu-watch.py" in body:
             continue
         m = re.search(r"kill -0 \$?(\w+)", body)
         target, problem = None, None
-        if "pgrep -f" in body:
+        if re.search(r"pgrep -f\s+(?!['\"]\^)", body):  # an anchored pattern ('^...') can't match the loop
             g = re.search(r"pgrep -f\s+(\"[^\"]*\"|'[^']*'|\S+)", body)
             target = g.group(1) if g else "pgrep"
             problem = "polls with `pgrep -f`, which matches the loop itself"
@@ -276,6 +276,14 @@ def stream():
                 active.pop(k)
             last_cpu.pop(key, None)
         holders = ", ".join(f"{j['label']} ({j['slot']})" for j in jobs if j["pid"] in procs) or "nothing (stale locks?)"
+        lockers = {j["pid"]: j for j in jobs if j["pid"] in procs}
+        for q in queue:
+            a, seen = procs.get(q["pid"], {}).get("ppid"), 0
+            while a and a > 1 and seen < 64:  # a queued job whose own ancestor holds a lock waits forever
+                if a in lockers:
+                    emit(f"selfwait:{q['pid']}", f"DEADLOCK {q['label']} (pid {q['pid']}) queues for the GPU while its ancestor {lockers[a]['label']} (pid {a}) holds {lockers[a]['slot']}: VIBE_GPU_HELD was not passed down")
+                    break
+                a, seen = procs.get(a, {}).get("ppid"), seen + 1
         for q in queue:
             if q["pid"] in procs and now - q["since"] > QUEUE_S and f"queue:{q['pid']}" not in active:  # once per waiting job
                 emit(f"queue:{q['pid']}", f"QUEUED {q['label']} ({q['kind']}) has waited {int((now - q['since']) / 60)}+ min; slots held by {holders}")

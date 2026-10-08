@@ -125,12 +125,50 @@ bond graph without them (`frontRearJoined`).
   veneer wall gets 4.1 m, against 2.1 m before. It comes out smaller for the
   meteor into the masonry wall: 3.0 m, against 5.5 m before.
 
-  Not covered: secondary impacts. Debris thrown through the house by the hit
-  can break a joint anywhere it lands, which is real. The test bed cannot tell
-  a debris break from a load-path break, so a debris break also counts against
-  locality. The collapse test that separates gravity from the hit is the
-  impact comparison's fallen members
-  (`impact-arms.mjs`, `house.fallenBeyondReach`).
+  **Stopgap (2026-10-08): only breaks during the passage count.** Debris
+  thrown through the house can break a joint wherever it lands, and that is
+  real. The test bed cannot yet say which impactor broke a bond, so it splits
+  the breaks in time instead:
+  - **during the passage:** from first contact to the end of the impactor's
+    passage (a shot's balance window closing; a car stopped or off the house
+    for 3 ticks). Locality is judged on these (`house.lineDistancesDuring`).
+  - **after the passage:** the debris and the aftermath. These are reported in
+    their own row, never judged (`house.lineDistancesAfter`).
+
+  Debris that lands while the impactor is still passing counts as during. The
+  impact agent's per-bond impactor attribution replaces this split. Collapse
+  (below) is a separate test.
+- **Collapse** (the impact comparison, `scripts/verify/impact-arms.mjs`).
+  A house collapses when part of it loses its load path to the ground and
+  falls. The test bed counts frame members that meet all four conditions:
+  - **off the anchored body:** no bonded path to an anchored chunk remains;
+  - **fallen:** dropped by more than their own depth, so they are off their
+    bearing;
+  - **beyond the impactor's reach:** farther from its line than its half-size
+    across it plus the member's own length, so the hit itself did not strike
+    or carry them;
+  - **in an assembly:** still bonded into a detached body of two or more
+    chunks.
+
+  The last condition separates collapse from debris. An assembly falls as one
+  because the joints that tied it to the rest of the house broke while its own
+  held: its load path was cut. A member knocked loose by debris, or cut by the
+  hit, has its own joints broken and falls alone. Those lone members are
+  counted separately (`looseFallenMembers`) and shown, but are not collapse.
+  Two members knocked off together by one piece of debris would count, which
+  is rare and an over-count.
+
+  Lone members are not automatically debris. A house whose every joint fails
+  under its own weight also drops its members one by one. So lone members
+  count as collapse too when debris cannot have freed them. Freeing them takes
+  at least the fracture work of their joints, each joint counted once. The
+  debris carried at most its peak kinetic energy (the probe's samples). If the
+  work exceeds that energy, gravity freed them, not debris
+  (`house.looseFallenWorkJ` against `house.debrisKeJ`). The outcome is local
+  when no assembly fell and the lone members fit the debris budget
+  (`house.collapse`).
+  Counts: `house.collapsedMembers` and `house.looseFallenMembers` (the test
+  bed's house summary).
 - **Stands.** No roof member down more than 0.5 m (the house probe's
   definition). The corner and roof hits only measure it, because a corner loses
   its posts and the plates over it may sag within physics.

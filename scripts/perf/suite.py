@@ -246,15 +246,19 @@ LOCKED = "import os,sys,time; print('SUITE_LOCKED', time.time(), flush=True); os
 
 
 def gpu_cmd(label: str, cmd: list[str], shared: bool) -> tuple[list[str], dict]:
-    """CMD under the machine's GPU admission, one job per hold: the exclusive
-    lock for timing (it waits for running shared jobs and blocks new ones only
-    while this one job runs), or a shared slot (VIBE_GPU_SHARED=1: timings only
+    """CMD under the machine's GPU admission: inside the suite's one exclusive
+    hold (VIBE_GPU_HELD, set by execute) it runs at once; or a shared slot
+    (VIBE_GPU_SHARED=1: warm-ups, and --shared runs whose timings are only
     indicative)."""
     return [str(GPU_RUN), label, sys.executable, "-c", LOCKED, *cmd], ({"VIBE_GPU_SHARED": "1"} if shared else {})
 
 
 def run_logged(cmd: list[str], env: dict, cwd: Path, logfile: Path, timeout: float) -> tuple[int, float, float]:
     """(rc, seconds holding the GPU, seconds waiting for it)."""
+    # Inside the suite's one exclusive hold, each job's gpu-run must see it, or it
+    # queues for the very lock its parent holds (a deadlock: job_env strips VIBE_*).
+    if os.environ.get("VIBE_GPU_HELD"):
+        env = {**env, "VIBE_GPU_HELD": os.environ["VIBE_GPU_HELD"]}
     t0 = time.time()
     with open(logfile, "w") as f:
         try:
@@ -282,8 +286,8 @@ def run_replay(binary: str, capture: Path, runs: int, logfile: Path, shared: boo
 
 
 def execute(run_dir: Path) -> None:
-    """Every GPU job, each taking the GPU lock for itself only (at most a few
-    minutes a hold), so queued correctness jobs run between them."""
+    """The untimed warm-ups on shared slots, then every timed job inside one
+    hold of the exclusive GPU lock (execute_timed)."""
     work = json.loads((run_dir / "work.json").read_text())
     shared = work.get("shared", False)
     logs = run_dir / "logs"
@@ -301,6 +305,32 @@ def execute(run_dir: Path) -> None:
     for profile, w in work["warmups"].items():
         record(f"warmup-{profile}", *run_job(work["binaries"][profile], job_env(w, work["profile_env"], work["extra_env"][profile]),
                                               logs / f"warmup-{profile}.log", 1800, True, f"warmup-{profile}"))
+    (run_dir / "timing-warmup.json").write_text(json.dumps(timing, indent=1))
+    if shared or os.environ.get("VIBE_GPU_HELD"):
+        execute_timed(run_dir)
+        return
+    # The timed jobs take the exclusive lock ONCE, together: each exclusive hold
+    # waits for the GPU to drain (the longest running shared job), and holding
+    # it per job made a quick run drain the GPU twenty times over. Inside the
+    # hold, each job's gpu-run sees VIBE_GPU_HELD and runs at once.
+    env = {k: v for k, v in os.environ.items() if k != "VIBE_GPU_SHARED"}
+    rc = subprocess.run([str(GPU_RUN), "perf-suite-timed", sys.executable, str(Path(__file__).resolve()), "--exec-timed", str(run_dir)],
+                        env=env).returncode
+    if rc != 0:
+        log(f"timed section exited {rc}")
+
+
+def execute_timed(run_dir: Path) -> None:
+    """The timed jobs (under one hold of the GPU lock, unless shared)."""
+    work = json.loads((run_dir / "work.json").read_text())
+    shared = work.get("shared", False)
+    logs = run_dir / "logs"
+    timing = json.loads((run_dir / "timing-warmup.json").read_text())
+
+    def record(name, rc, held, waited):
+        timing["jobs"].append({"job": name, "rc": rc, "seconds": held, "waited": waited})
+        log(f"{name}: {held:.1f} s on the GPU (waited {waited:.0f} s for it; rc {rc})")
+
     for rep in range(work["reps"]):
         order = work["profiles"] if rep % 2 == 0 else list(reversed(work["profiles"]))
         for profile in order:
@@ -324,8 +354,12 @@ IMPACT_EVAL = re.compile(r"\[impact\] evaluation (\d+) pass (\d+): ([\d.]+) ms i
 # diverged count and the tail (held stops, infeasible projections) are newer fields.
 IMPACT_PASS = re.compile(r"\[impact\] pass (\d+): (\d+) islands, (\d+) solves, (\d+) iterations \((\d+) capped(?:, (\d+) diverged)?\), "
                          r"(\d+) rounds, broke (\d+), yielded (\d+), (\d+) contacts from (\d+) impactors.*?error (\d+)\s*$")
+# The replay's summary line. Since the explicit step (2026-10-08) it carries
+# "N diverged (worst bond B), N infeasible, N non-finite, N energy gains; "
+# before "error": optional here, so both formats parse (scripts/perf/test_suite_replay.py).
 REPLAY = re.compile(r": (\d+) chunks, (\d+) bonds, (\d+) rows; (\d+) islands, (\d+) solves, (\d+) iterations \((\d+) capped\), (\d+) rounds; "
-                    r"broke (\d+), yielded (\d+); (\d+) contacts, (\d+) impactors; error (\d+); ([\d.]+) ms in (\d+) dispatches \(longest ([\d.]+) ms\)")
+                    r"broke (\d+), yielded (\d+); (\d+) contacts, (\d+) impactors; (?:(\d+) diverged[^;]*; )?error (\d+); "
+                    r"([\d.]+) ms in (\d+) dispatches \(longest ([\d.]+) ms\)")
 
 
 def read_job(path: Path) -> dict:
@@ -396,7 +430,8 @@ def read_replay(path: Path) -> dict | None:
     for line in path.read_text(errors="replace").splitlines():
         if (m := REPLAY.search(line)):
             runs.append({"solves": int(m[5]), "iterations": int(m[6]), "capped": int(m[7]), "rounds": int(m[8]),
-                         "error": int(m[13]), "ms": float(m[14]), "dispatches": int(m[15]), "longest": float(m[16]),
+                         "diverged": int(m[13]) if m[13] is not None else None,
+                         "error": int(m[14]), "ms": float(m[15]), "dispatches": int(m[16]), "longest": float(m[17]),
                          "chunks": int(m[1]), "bonds": int(m[2])})
     if not runs:
         return None
@@ -406,7 +441,7 @@ def read_replay(path: Path) -> dict | None:
     return {"kind": "replay", "runs": len(timed),
             "step_ms": {"median": st.median(ms), "p95": pct(ms, 95), "max": max(ms), "mean": st.fmean(ms)},
             "impact": {"evaluations": 1, "solves": r0["solves"], "steps": r0["iterations"], "capped": r0["capped"],
-                       "diverged": int(bool(r0["error"] & 2)), "round_budget": int(bool(r0["error"] & 4)),
+                       "diverged": r0["diverged"] if r0["diverged"] is not None else int(bool(r0["error"] & 2)), "round_budget": int(bool(r0["error"] & 4)),
                        "ms": st.median(ms), "longest_dispatch_ms": max(r["longest"] for r in timed),
                        "dispatches": r0["dispatches"], "chunks": r0["chunks"], "bonds": r0["bonds"]},
             "score_value": st.median(ms)}
@@ -679,8 +714,12 @@ def main() -> None:
                     "(an authoring change; --save-baseline then freezes them)")
     ap.add_argument("--shared", action="store_true", help="share the GPU (VIBE_GPU_SHARED=1): for developing the suite; timings only indicative")
     ap.add_argument("--exec", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--exec-timed", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     spec = json.loads(SPEC.read_text())
+    if args.exec_timed:
+        execute_timed(Path(args.exec_timed))
+        return
     if args.exec:
         execute(Path(args.exec))
         return

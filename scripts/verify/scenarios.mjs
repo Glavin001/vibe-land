@@ -261,8 +261,12 @@ function judgeOne(ex, run, others) {
   // Locality.
   const h = run.house;
   if (e.local && h?.lineDistances && ex.local) {
-    const far = ex.local.reach, beyond = h.lineDistances.filter((d) => d > far).length;
-    row('damage local (bonds broken beyond r + 2t + member from the line)', `0 beyond ${f(far, 2)} m (r ${f(ex.local.r, 2)} + 2t ${f(2 * ex.local.t, 2)} + member ${f(ex.local.member, 2)})`, `${beyond} of ${h.broken}`, e.local === 'reported' ? null : beyond === 0);
+    // Stopgap (SCENARIOS.md "Local"): judged on the breaks during the impactor's
+    // passage; those after it (debris, aftermath) are reported apart.
+    const far = ex.local.reach, during = h.lineDistancesDuring ?? h.lineDistances, after = h.lineDistancesAfter ?? [];
+    const beyond = during.filter((d) => d > far).length, beyondAfter = after.filter((d) => d > far).length;
+    row('damage local (bonds broken beyond r + 2t + member from the line, during the passage)', `0 beyond ${f(far, 2)} m (r ${f(ex.local.r, 2)} + 2t ${f(2 * ex.local.t, 2)} + member ${f(ex.local.member, 2)})`, `${beyond} of ${during.length}`, e.local === 'reported' ? null : beyond === 0);
+    if (h.lineDistancesAfter) row('bonds broken beyond that reach after the passage (debris, aftermath: reported)', 'reported', `${beyondAfter} of ${after.length}`, null);
   }
   if (e.stands && h?.roofMembers) row('stands (roof members down > 0.5 m)', `${ROOF_DOWN}`, `${h.roofMembersDown} of ${h.roofMembers}`, e.stands === 'reported' ? null : h.roofMembersDown <= ROOF_DOWN);
   if (e.broken) {

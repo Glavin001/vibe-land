@@ -566,6 +566,42 @@ By cause:
       With impact capacity off it crushes 15 chunks, as far as 3.24 m from the
       point struck. That is not local (the bound is 1.4 m, proposed).
 
+### Studless houses: should the two-storey house without ground-floor front studs collapse?
+
+The acceptance check `studless-houses-collapse` expects each studless variant
+to break at least 2% of its bonds at rest. The 2% is "4x the at-rest gate"
+(qualify-veneer-houses.mjs), not a derivation. For the variant
+`veneer-house--no-ground-front-studs`, the load path decides the answer:
+
+- **What is left over the gap.** With the ground floor's front studs gone, the
+  upper storey's front wall can carry its load only as a deep beam spanning the
+  9.9 m between the side walls. Its top plate is the compression chord; its
+  bottom plate, the rim joist and the ground floor's top plate are the tension
+  chord, 2.6 m below (the lever arm). The brick veneer stands on its own
+  footing and carries only itself: its ties transfer no floor load by design.
+- **The demand.** Everything above the ground floor in the front half of the
+  house, except the veneer, is 50.2 kN (the pack's masses). Uniform over the
+  span: M = W L / 8 = 62 kN m, so the chord force is 24 kN, and each end
+  reaction is 25 kN into the corners.
+- **The pack's capacity.** The chords are authored as continuous timber. Their
+  chunk joints along the span carry 97-566 kN in tension (stud-timber over the
+  member's section), far above 24 kN. As authored, the upper storey bridges the
+  gap, and the house stands. Measured on high: 0.45% broken with re-bearing,
+  0.84% without, under the 2% "collapse" share either way.
+- **A real house.** Lumber comes in 4.8-6 m lengths, so a 9.9 m plate is lap
+  spliced. The double top plate's splice is nailed (IRC R602.3.2: eight 16d
+  nails each side), about 12 kN ultimate, and the rim joist is butted at the
+  joists. A real tension chord gives at about half the demand, and the upper
+  storey comes down over the gap.
+
+So the expectation "collapses" is right for a real house. The model stands
+because the authoring has no plate splices. The row is recorded as a known
+gap (AUTHORING) in `acceptance-expected.tsv`, measured 0.45%. The fix belongs
+in the town kit: plate and rim splices with their nailing. Separately, the 2%
+share should give way to a load-path test (members that lost their path and
+fell, as `house.collapsedMembers` does on the test bed), once qualification
+records it.
+
 ## Regression tests (`scripts/verify/regressions.tsv`)
 
 One line per fix: id, tier, the fix and what the test proves, and the command.

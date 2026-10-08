@@ -104,7 +104,138 @@ Steps 1-3 of §6 were carried out. Findings that change the plan:
    - 100 kg ball into masonry: stopped at the face → through, exit 28.2 m/s;
    - truck: +9.9..+14.5 m → +2.1 m;
    - cannonball: open. With the strongest-sense bound it spread (1,124-1,748 breaks, 10 ghosts,
-     late static cascades); the directional bound is under test.
+     late static cascades).
+9. **The anchored-chunk bound is not consistent yet (dev only: PhysX dev/anchored-ghost-log).**
+   PAIRWISE and CRUSH_ENERGY_BOUND are in the high profile; ANCHORED_CONTACT_BOUND is not.
+   - The bound must be the support function of the chunk's bonds' capacity sets along the force,
+     sum of (C or T)|a| + S t: never tighter than the verdict. The force-parallel minimum,
+     min(C/a, S/t), was too tight (250-1,445 ghosts per run).
+   - Ghosts remain because a contact cut at the bound must be graded by whichever model decides its
+     chunk. Routing took bounded loads out of the static solve (the rigid-stop excess, resting
+     shares, released rows), and on an island the step decides, the static verdict is replaced by a
+     step that saw only its routed rows. Keeping those loads (static, and as constant external
+     wrenches on the step's nodes) graded the rigid solver's wedge and depenetration artefacts at
+     capacity: the truck's house collapsed (2,502 bonds, roof down) and ghosts stayed (65-103).
+   - Reading: a per-chunk impulse bound inside a rigid solver with no compliance cannot satisfy
+     both graders. The compliant contact rows (two-body work: a finite contact stiffness) are the
+     physical route for contacts that never reach the step.
+
+## Status 2026-10-08: hand-off
+
+### What landed
+
+PhysX `feat/impact-capacity` (head `577b28f08`; every commit passed the full
+`scripts/perf/rebuild-garage-sdk.sh`, install and Metal pipeline warm gate included):
+
+| Flag (high.env) | What | Commits |
+|---|---|---|
+| `PX_DESTRUCTION_IMPACT_EXPLICIT=1` | the explicit RBSM step (method 2) | `5168921c2`..`8e9006545`; perf `f43e1e60e`..`be8c29439` (perf agent: about half the cost, longest dispatch 9.5 ms) |
+| `PX_DESTRUCTION_IMPACT_ROUTE=1` | contact routing by v√(km) against capacity; resting rows | `5168921c2`, `d2e838f54` |
+| `PX_DESTRUCTION_IMPACT_BOUND_IMPACTOR=1` | the corrected pass's bounds per impactor body | `5168921c2` |
+| `PX_DESTRUCTION_CORRECTED_WARM_START=1` | the corrected pass's elastic solve from the tick's start | `944b1b723` |
+| `PX_DESTRUCTION_IMPACT_BOUND_PAIRWISE=1` | those bounds pairwise (gpusolver `contactPairMaxImpulse`) | `8a9af7ed6` |
+| `PX_DESTRUCTION_CRUSH_ENERGY_BOUND=1` | every crush paid, all or nothing, by its striker | `dfe26b799`, `8e11f7f5b` |
+| none (always) | `stepContactCritical` captures J, dJ by value (CuMetal reference capture) | `577b28f08` |
+
+The PAIRWISE and CRUSH_ENERGY_BOUND lines are in vibe-land `impact/step` `6f71c27a`, merged
+into `feat/native-macos-app` as `947d58cb`.
+
+Counters and tests (PhysX ctest, `scripts/verify/regressions.tsv`):
+- `Status::energyDeficit` ("ENERGY DEFICIT"), `destruction_gpu_impact_explicit_energy`;
+- `destruction_gpu_impact_explicit_cannon` against `scripts/impact/explicit-step.py --contacts
+  jacobi` (Jaccard 1.000, dp 0.00%);
+- `destruction_gpu_impact_static_handoff_{cannon,truck}[_unrouted,_pretick]`,
+  `destruction_gpu_impact_held_over_capacity`;
+- `destruction_gpu_impact_pair_bounds` (`_per_body` WILL_FAIL: the old rule gets 4 of 9 wrong);
+- `PxDestructionStageStatus::crushEnergyCreated` ("CRUSH ENERGY CREATED"): 0 on every run with
+  the bound; the runtime path's clamp shows it (206 kJ on one cannonball run);
+- `PxDestructionStageStatus::anchoredGhosts` (dev only, see below).
+
+### Branches and SDKs
+
+- PhysX `feat/impact-capacity` `577b28f08`: tracked; fast-forward only after a full rebuild.
+- PhysX `dev/anchored-ghost-log` `9282247b9`: the anchored-chunk bound's later work, not for
+  merging as is (routing under the bound, ContactRow::resting bit 2, the ghost log stored past the
+  saturation flags, `exExternal`).
+- PhysX `build/impact-high`, `build/impact-dev`: local build branches only (`feat/impact-capacity`
+  merged with `fix/static-ductile-steel`; `feat/rebearing` is not yet merged into them).
+- The garage-impact SDK is `577b28f08` alone (the gate build). Before the next lab run, build it
+  from `feat/impact-capacity` merged with `integration/high-fidelity`, so provenance passes.
+- vibe-land `impact/step` (`c6f01a72` plus this section): `scripts/impact/house.py` summarises
+  ghosts, crush energy created and crush payments per run; `repeat-trials.sh` runs one trial per
+  process, under 15 minutes.
+
+### Open problems
+
+1. **The anchored-chunk contact bound** (`PX_DESTRUCTION_ANCHORED_CONTACT_BOUND`, in
+   `feat/impact-capacity` but off). It is the only thing that makes the held meteors pass.
+   - With all three flags on, before → after:
+     - the meteor into masonry was held (0.11 m) → exit 133.6 m/s, floor 132.9;
+     - the stone house's upper wall bounced it → exit 135.2 m/s, floor 88.0, local by r + 2t + l
+       (0 of 982 beyond 13.07 m);
+     - the 100 kg ball into masonry stopped at the face → through, exit 28.2 m/s.
+   - It fails on ghosts: chunks whose contact is cut at the bound while the verdict keeps every
+     bond. The counter is `anchoredGhosts`; dev/anchored-ghost-log logs each ghost's impulse, bound,
+     the bonds' part, mass, closing speed and points.
+   - The bound has to be the support function of the bonds' capacity sets, Σ (C or T)|a| + S t.
+     The force-parallel minimum was too tight: 250-1,445 ghosts per run, and the truck went through.
+   - A load cut at the bound must reach the model that decides its chunk. Routing took it out of
+     the static solve. On a step island, the static verdict is replaced by a step that sees only
+     its routed rows.
+   - Carrying every non-row load into the step as a constant external wrench (`exExternal`) did
+     not fix it. It graded the rigid solver's wedge and depenetration artefacts at capacity:
+     - truck: 2,502 bonds broken, roof 83 of 102 down, still +14.1 m;
+     - cannonball: 1,104 breaks, ghosts 103.
+   - **Conclusion:** a rigid solver with per-chunk impulse bounds cannot be consistent with both
+     graders (the static verdict and the step). Each bounded contact is either a real load,
+     which has to break bonds, or a penetration artefact, which must not. A rigid contact cannot
+     tell the two apart.
+   - Reproducers: the per-ghost records above, and `target/impact-capture/wm2/*/impact-*-static.impc`
+     (replay `IMPACT_ROWS=1 IMPACT_ANCHORED=1`).
+2. **Contacts that never reach the step are infinite walls.**
+   - The meteor's and the 100 kg ball's rows exist with the right closing speeds (60 m/s;
+     72-108 m/s), but their chunks were crushed in the same trial pass. `routeRows` skips a crushed
+     chunk, the corrected pass then meets the next layer with nothing evaluated, and the meteor is
+     stopped rigidly.
+   - The ball was also stopped dead by the crush payment's clamp. CRUSH_ENERGY_BOUND fixes that
+     half.
+   - With the anchored bound on, the cannonball's remaining ghosts are its own fast single-point
+     contacts (closing 58 m/s) on chunks whose rows never reached the step. Which filter drops them
+     (crushed, cluster body, released) is not traced.
+   - Captures: `target/impact-capture/wm2/wm-masonry-{ball100,meteor}-0-r1/` (replay
+     `IMPACT_ROWS=1`: each row and routeRows' terms).
+3. **Crush granularity.**
+   - The pressure law (`extStressCrushStep`) is stress-only and volume-independent, so a coarse
+     chunk crushes whole: a 0.975 m³ footing (3.8 MJ at 3.9 MJ/m³).
+   - With CRUSH_ENERGY_BOUND such a crush is made only when its striker can pay for all of it. It
+     never erases more energy than was delivered, but it cannot crush part of a chunk.
+   - Splitting coarse chunks (authoring) or a partial-crush state is open. The crush energy
+     densities are authored (brick 3.5, concrete 3.9 MJ/m³); citing them is authoring's job.
+4. **Per-bond attribution.** Each broken bond should be tagged with its evaluation's impactor body
+   and whether that body is the shot's projectile, so locality can exclude debris impacts. Today
+   the log splits breaks only between the step and the static verdict, per pass. It should be done
+   on a dev branch with a full build. Until then the verification agent separates breaks by time.
+5. **Two locality fails** (scenarios.mjs, r + 2t + l), both on the dev SDK with all three flags:
+   - meteor into masonry: 18 of 126 beyond 3.0 m;
+   - 100 kg ball into masonry: 2 of 20 beyond 1.14 m.
+   - Not attributed yet: debris, or the step's 3 m patch.
+6. **The truck** (framed house) and `vehicle_contact_load` (1.55: graded 1,227 kN against 791 kN
+   needed) belong to the two-body agent. The trial grades the car against a wall the same tick
+   then breaks, and the anchored bound never binds there. Pairwise alone stops the truck at
+   +6.4 m (3/3).
+
+### Recommendation
+
+Make every impact contact compliant: a finite contact stiffness, Johnson's flat punch
+k = 2 a E* with 1/E* = Σ (1 - ν²)/E, a from the patch's spread, clamped between the Hertz radius
+and the smaller face. The two-body agent owns that law for vehicles.
+
+- A fast body against a held chunk then decelerates over the contact's duration, inside the step,
+  with no rigid penetration artefact to bound.
+- A contact past capacity is decided by the step's joints.
+- Fold the infinite-wall case into it: every contact on an anchored chunk, crushed-neighbour and
+  corrected-pass ones included, becomes a compliant row the step evaluates.
+- Keep the anchored bound out of the high profile until that lands.
 
 ## Summary
 

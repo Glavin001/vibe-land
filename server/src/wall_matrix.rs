@@ -54,6 +54,8 @@ impl Strength {
         let (_, _, f, k, slip) = self.bond_work[i as usize];
         if slip > 0. { f * slip } else if k > 0. { f * f / (2. * k) } else { 0. }
     }
+    /// The bonds of node `n` (indices).
+    pub fn bonds_of(&self, n: u32) -> Vec<u32> { self.bonds[n as usize].iter().map(|b| b.0).collect() }
     /// The energy to crush node `i` (J).
     pub fn crush_work(&self, i: u32) -> f32 { self.crush_j[i as usize] }
     /// What a sphere of radius `r` swept from `a` to `b` through `group` would

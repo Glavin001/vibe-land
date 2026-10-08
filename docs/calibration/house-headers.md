@@ -252,6 +252,113 @@ load needs no stud-to-plate tie-down in N1-N2 wind. It is reported as an
 engine gap: unilateral re-bearing of bearing joints whose fasteners have
 failed.
 
+## Joint stiffness against the fasteners, and the explicit impact step (2026-10-08)
+
+The perf agent suspected that the 7% of joints setting the explicit impact
+step's time step were fastened joints authored with the wood's E. They are
+not. Below is every fastened timber kind's engine stiffness k = E A / L
+(high profile; spring length per the bridge), medians over the lab house,
+against n x K_ser. K_ser comes from EN 1995-1-1 Table 7.1 at rho_m 420:
+nails 3.15 mm 0.72 kN/mm, 8d 0.75 kN/mm, M12 bolts 4.49 kN/mm, gypsum
+screws 0.5 kN/mm.
+
+| Kind | Engine k (kN/mm) | n x K_ser (kN/mm) |
+|---|---|---|
+| rafter seat (3 nails) | 2.16 | 2.16 |
+| joist seat (3 nails) | 1.76 | 2.16 (area spread) |
+| ridge (4) | 3.0 | 2.9 |
+| joist splice (4) | 3.1 | 2.9 |
+| header-king (4 x 8d) | 3.2 | 3.0 |
+| heel (M12) | 4.2 | 4.5 |
+| plate lap, stud-plate side (2) | 1.4 | 1.44 |
+| anchors (M12 per 0.108 m2) | 10.3 | 10.2 |
+| stud lap (1 per 0.054 m2) | 0.88 | 0.93 |
+| board screws (1 per 0.0135 m2) | 1.1 | 1.06 |
+
+The stiff 7% are the members' own wood. A stud or jack is two chunks, and
+the bond between its halves is E A / L of C24 over half its length:
+3.7e7 N/m for a stud, 4.5e7 N/m for a jack. A stud end bearing on its plate
+is E90 A / t: 3.3e7 N/m, correct in compression; its nails govern only in
+tension and shear, which the stage's one stiffness per bond cannot
+separate (FIDELITY_AUDIT C9).
+
+Revision 2's plate chunks a bay long, though, had become the stiffest
+elements: 1.7 kg each, 1.5e8 N/m across each cut. They doubled the bound.
+Measured with the perf agent's `IMPACT_EXPLICIT_LOCAL=1` replay
+(perf/explicit-step) on cannonball captures:
+
+| Authoring | Bound omega (rad/s) | Joints over omega/2 | Stiff set |
+|---|---|---|---|
+| revision 1 (old SDK capture) | 2.6-2.9e4 | 7% | stud and jack halves, area 0.004, 2 kg |
+| revision 2, plate a bay per chunk | 5.3-5.6e4 | 3% | plate cuts, area 0.0081, 1.7 kg, 1.5e8 N/m |
+| revision 2, plate two bays per chunk (now) | **2.7-2.9e4** | 9-12% | stud and jack halves again |
+
+So the plate is now cut every two bays (chunks 0.3-1.4 m, median 1.1 m).
+On the high profile, the calibration and the static cascade are unchanged
+in kind:
+
+- intact and one bay: 0 broken;
+- two bays: one frame joint (the stud next to the gap) plus one board screw;
+- the truck's hole: local (24 broken, 0.81 m drop);
+- truck-door: still unzips, 880 broken (C9/C10).
+
+In an impact, fastened joints now take K_u = 2/3 K_ser (EN 1995-1-1
+2.2.2(2): an ultimate state), through `impactElasticModulus`. Bearing
+joints keep their wood's stiffness. This applies to high-profile packs
+only. The other joints' median impact k is 2.16e6 -> 1.44e6 N/m. It does
+not move the bound, which the wood sets.
+
+## Re-bearing (C9), measured 2026-10-08
+
+PhysX feat/rebearing (SDK garage-rebearing 402e7eb58, which carries
+integration/high-fidelity ccfb4ebed), `VIBE_REBEARING=1`, now in the high
+profile. A bearing joint whose fasteners fail stays as a unilateral contact:
+compression to its bearing capacity (its material's, f_c,90,k for timber),
+shear by friction only (mu 0.23, EN 1995-2:2004 Table 6.2, sawn softwood
+parallel to the grain), no tension. It lifts off when the solve pulls it and
+re-bears when the solve's displacement presses its chunks together; it breaks
+only by crushing, by sliding (|V| > mu C), or when what it held has no path
+left to a support (that region splits, as before).
+
+`run.mjs house-headers --configs high`, 600 ticks, 64 iterations, FP32,
+correction limit 1, the same SDK (402e7eb58) with the flag off and on, 3
+runs each (the stage is not deterministic run to run). "Frame beyond" counts
+frame joints broken more than one stud bay (0.6 m) outside the knocked-out
+bay; "front" those in the front wall.
+
+| Case | Off: broken / frame beyond / front frame beyond | On: broken / frame beyond / front frame beyond |
+|---|---|---|
+| intact | 0 / 0 / 0 (x3) | 0 / 0 / 0 (x5) |
+| bay1 | 0 (x3) | 0 (x5) |
+| bay2 | 2: a cripple-to-lintel joint and a board screw (x3) | 1 board screw, no frame joint (x5) |
+| truck | 25 / 6 / 6 (x3) | 9 / 1 / 1 (x5) |
+| truck-door | 1,166-1,241 / 120-159 / 72-78 | 1,301-1,483 / 88-104 / 39-48 |
+
+Re-bearing does what C9 asked: the uprights beyond the gap that the plate
+lifts no longer break, so truck stays local and bay2 holds (it was the MISS).
+It does not stop truck-door. There the plate over the 4.3 m gap and the
+joints at and beyond both ends of it (the door header's king and jack, the
+next opening's cripples, jacks and headers) all fail in ticks 1-3 together,
+each from one elastic snapshot: C10. Re-bearing roughly halves the front-wall
+frame broken beyond the gap and cuts all frame beyond it by a third; the
+total rises 10-20%, in the board and brick skins of the side and back walls
+(the remains stay attached longer and load them). The calibration's verdict
+is unchanged (`either`: the plate alone is past its strength over the gap);
+the hand calculation's local answer needs C10's sequence as well.
+
+On the earlier integration SDK (ec95655d5, before feat/impact-capacity's last
+commits) the same comparison gave truck-door 1,708-2,295 off and 2,216-2,583
+on, and one of five on-runs collapsed bay1 (343 broken, from the roof over the
+bay) and truck (2,295); none did on 402e7eb58.
+
+At rest (`qualify_structures.py`, the high packs): veneer-bungalow--frame and
+veneer-house--frame 0.00% broken (0.17% / 0.18% off); the as-built houses
+0.00% either way, and with the flag off the SDK reproduces the base SDK's
+qualification exactly (unconverged shares and median residuals equal to the
+digit). The studless variants still collapse (10% broken); the two-storey with
+only its ground-floor front studs out breaks 0.45% (0.84% off), below the
+acceptance's 2% collapse share either way.
+
 ## Reproduce
 
 ```sh
