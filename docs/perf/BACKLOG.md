@@ -40,6 +40,40 @@ Fixed constraints, not levers:
 - Parallel-axis block-Jacobi diagonal: landed in 231644fb4.
 - Parked work: PhysX `wip/matched-hierarchy`.
 - At the cap, 82-100% of solves are unconverged at 16 iterations. Warm starts settle them over about 2 s.
+- 2026-10-07, **Krylov carry** (PhysX `perf/rotation-convergence` a8660b4a8 + 045933819; `BLAST_STRESS_CARRY_KRYLOV`, on by default with rotational stiffness).
+  - The settling was restarted PCG: each tick began a fresh PCG with a steepest-descent step, and 16 restarted iterations lose the Krylov space the soft modes need.
+    - The CPU replay of the captured two-storey house predicted 25 ticks to settle restarted and 8 carried; the GPU measured 24 and 7.
+    - Mailboxes and street signs never settled at all: 100% unconverged.
+  - A warm solve now continues the previous solve's direction and gamma, under four conditions:
+    - the operator is unchanged;
+    - the load moved by at most the solve tolerance;
+    - the previous solve did not converge;
+    - the recurrence has run fewer than 6 iterations per chunk.
+  - The converged answer and every stopping test are unchanged.
+  - Unconverged ticks at rest, 300 ticks, high profile (unchanged vs carried):
+
+    | Structure | Cap 16 | Cap 64 |
+    |---|---|---|
+    | Veneer house | 24 vs 7 | 1 vs 1 |
+    | Veneer bungalow | 26 vs 8 | 2 vs 1 |
+
+  - Vibe Town qualification at 16: 101 of 273 failing -> 0. Mean unconverged 23.8% -> 1.25%, worst 3.3% (cinema). Broken bonds are identical on every structure.
+  - At 64, billboard-189: 19% -> 0.3%.
+  - Oracle gate (verdicts at the cap, tick 120), largest stress error against the CPU oracle:
+    - cinema: 5.6e-2 -> 1.8e-3;
+    - library: 5.6e-2 -> 1.1e-3;
+    - bus shelter: 1.8e-2 -> 1e-5.
+    - Verdicts are identical.
+  - Not changed: iterations to tolerance from cold. That is still the polynomial's 404 (residual) / 132 (force test) / 229 (1e-3 force error) on this capture of the house.
+  - Next lever, CPU only so far (`rotbench.py`): strength-matched aggregate block-Jacobi (aggregates of 16 chunks, dense blocks, the same two-step polynomial). Cold, it halves these to 225 / 62 / 106. Each iteration costs more (two dense block solves). Not built on the GPU.
+  - Paired perf suite (quick, 3 reps, both profiles; `--env BLAST_STRESS_CARRY_KRYLOV=0|1`, 20261007-234818 vs the next run): within noise in both profiles.
+    - high SCORE 1.015; runtime 1.007 (carry forced on; it is off by default there).
+    - town-idle p95 22.6 vs 24.2 ms.
+    - The suite's idle window starts 20 ticks after a cold load, with 22 cars whose loads change. It never converges at 16 either way (30/30), so it cannot show converged structures being skipped at rest.
+  - Lessons, with the tests that pin each down:
+    - Carrying through changing loads (the parked fleet) set off the impact solve at rest. Test: `physx-bridge/tests/krylov_carry.rs`, a ball landing on the tip.
+    - Carrying past convergence: the textbook portal frame drifted for 400 ticks until its solve diverged and broke a bond. Hence carry only from an unconverged solve, at most 6 iterations per chunk.
+    - The correctness quick tier matches the baseline: high textbook 65 pass / 19 known gaps / 1 failing (redundancy-propped, pre-existing).
 
 **3. High-fidelity scene configuration**
 - Cost: +14.5 s. Vehicle lab, five monster trucks, shared GPU, 04:39 run:
