@@ -146,8 +146,8 @@ def main():
     ap.add_argument("rev_a")
     ap.add_argument("rev_b")
     ap.add_argument("--build", default=os.environ.get("KERNEL_IDENTITY_BUILD", DEFAULT_BUILD))
-    ap.add_argument("--tu", default=DEFAULT_TU, help="regex on the source path (default: gpudestruction and stressgpu)")
-    ap.add_argument("--all", action="store_true", help="every CuMetal translation unit of the build")
+    ap.add_argument("--tu", default=None, help="regex on the source path (default: gpudestruction and stressgpu)")
+    ap.add_argument("--all", action="store_true", help="every CuMetal translation unit of the build (--tu still filters)")
     ap.add_argument("--cumetalc-a", default=None, help="compiler for REV_A (default: the build's)")
     ap.add_argument("--cumetalc-b", default=None, help="compiler for REV_B (default: the build's)")
     ap.add_argument("--jobs", type=int, default=4)
@@ -159,8 +159,9 @@ def main():
     if not (checkout / ".git").exists():
         sys.exit(f"kernel-identity: {build} is not <checkout>/out/build/<name>")
     cmds = compile_commands(build)
-    if not args.all:
-        cmds = [c for c in cmds if re.search(args.tu, c[0])]
+    pattern = args.tu or (None if args.all else DEFAULT_TU)
+    if pattern:
+        cmds = [c for c in cmds if re.search(pattern, c[0])]
     if not cmds:
         sys.exit("kernel-identity: no matching cumetalc translation units in " + str(build))
 
@@ -217,7 +218,10 @@ def main():
     for r in sorted(results, key=lambda r: r["tu"]):
         if "error" in r:
             errors += 1
-            print(f"ERROR {r['tu']}: {r['error'].strip().splitlines()[-1] if r['error'].strip() else ''}")
+            lines = [l for l in r["error"].strip().splitlines() if l.strip()]
+            side, _, _ = r["error"].partition(":")
+            detail = next((l for l in lines if "failed:" in l and "device compilation failed" not in l), lines[-1] if lines else "")
+            print(f"ERROR {r['tu']} (revision {side.strip().upper()}): {detail.strip()[:300]}")
             continue
         changed = bool(r["msl_diff"] or r["air_diff"])
         failed += changed
