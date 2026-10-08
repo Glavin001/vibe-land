@@ -63,7 +63,7 @@ t0=$(date +%s)
 if want testbed; then
   trials=framed-house,house,cannonball-framed-house,meteor-framed-house,smallshots-framed-house,rest,near-miss,knock-mirror,coast,debris-wheel,drift
   label=verify-acceptance-$profile
-  (cd "$ROOT" && VIBE_CITY_SCENE="$lab" VIBE_TESTBED_META="${lab%.json}.meta.json" \
+  (cd "$ROOT" && VIBE_TESTBED_PROBE=1 VIBE_CITY_SCENE="$lab" VIBE_TESTBED_META="${lab%.json}.meta.json" \
     WATCH="$ROOT/target/vehicle-testbed/$label.log" watched "$out/testbed.log" scripts/vehicle-testbed.sh --build monster --trials "$trials" --label "$label" --report-only)
   cp "$ROOT/target/vehicle-testbed/$label.json" "$out/testbed.json" 2>/dev/null
   cp "$ROOT/target/vehicle-testbed/$label-verdict.json" "$out/testbed-verdict.json" 2>/dev/null

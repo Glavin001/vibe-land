@@ -356,24 +356,62 @@ the profile's SDK and packs, then judges.
 | turning-slalom-avoidance | test bed `drift`; the film unit tests | criteria.mjs; unit tests |
 | vibe-town-qualifies | qualification of the town pack | no FAIL, FALLS, CRUSH or ERROR |
 
-**Owner gate (hard, high fidelity):**
+**Owner gate (hard, high fidelity):** "the cannon ball should go through the
+building".
 
-- **The requirement:** "the cannon ball should go through the building".
-- **Applies to:** `cannonball-framed-house` and `meteor-framed-house`.
-- **Pass:** the projectile passes the target (`pastTarget` >= 1 m) with local
-  damage (bonds broken within the top of the oracle band: 10% for the ball,
-  20% for the meteor).
-- **Never a known gap:** `acceptance.mjs` marks the check `hard`, and the judge
-  ignores `acceptance-expected.tsv` for it.
-- **The energy balance still applies:** a stop must be accounted for by modelled
-  dissipation.
+- The cannonball and the meteor must pass the target (`pastTarget` >= 1 m).
+- The check is marked `hard`, so it is never a known gap.
 
-It fails today on garage-hifi:
+**Physics-derived criteria for the shots.** The owner asked for "physically
+accurate destruction", not a damage percentage.
 
-| Projectile | Stops at | Bonds broken |
-|---|---|---|
-| Cannonball | -0.01 m (at the face) | 47 of 3,084 |
-| Meteor | 1.43 m short | 100 |
+- The test bed records `probe` and `physics` (`VIBE_TESTBED_PROBE=1`,
+  `server/src/vehicle_testbed.rs`, `wall_matrix.rs` `Strength::path_work`,
+  `fracture_work`, `crush_work`).
+- Each criterion uses the engine's own joint model. The damage shares (and the
+  oracle's bands, 4-10% and so on) are reported, never gated.
+
+1. **Pass-through.** The straight path through the house (a sphere of the
+   shot's radius swept 12 m from the face) has a work to cut:
+   - **W_f:** the fracture work of every bond of the chunks it sweeps. A brittle
+     joint releases F^2/2k at capacity F = f A, with k = E A / max(d, sqrt A).
+     A ductile one does F times its ultimate slip.
+   - **W_c:** the crush work of those chunks (crushEnergy times volume).
+   - **The carry loss:** the kinetic energy lost carrying their mass m_p as a
+     plug (perfectly inelastic): KE m_p/(m+m_p).
+
+   If KE > W_f + W_c + KE m_p/(m+m_p), the projectile **must** get through
+   (`pastTarget` >= 1 m). The plug is the whole swept mass, so the path work is
+   an upper bound and the trigger is conservative. Below it, a stop is
+   physically allowed and reported.
+2. **Energy closes.** The impactor's KE loss, plus the potential energy the
+   fragments released, minus the fragments' translational KE, must equal the
+   dissipation the engine models. That dissipation is:
+   - the fracture work of the house bonds that broke;
+   - the crush work of the house chunks that are gone;
+   - the contact loss, at most (1 - e^2) times the carry loss above.
+
+   **Tolerance:** 10% of the impactor's KE, for fragment rotation (not
+   measured) and the 3-tick sampling. Unaccounted energy above that is "energy
+   vanished".
+3. **Momentum through what held** (the probe's `peakForceN`, `heldCapacityN`).
+   The impulse the impactor lost per tick (dp/dt) went into the struck chunks.
+   - If they all stayed on the anchored body, the bonds carrying them must have
+     held a force <= their capacity (`touchedCapacityN`, including their
+     weight).
+   - A force past the capacity of what held is an **infinite wall** (all held)
+     or a **partial hold**, and fails. The anchors' reaction is not read
+     directly, so this check is the momentum criterion.
+4. **Locality as physics.** A bond breaks only when its own verdict exceeds
+   capacity. The high profile has no sub-fatal section loss
+   (`VIBE_STRENGTH_SHORT_TERM`, tested by `fidelity_audit::sub_fatal_damage_law`),
+   and the at-rest gate shows nothing breaks without the hit. Criterion 3 shows
+   nothing holds past capacity.
+   - **Independent reference:** with `VERIFY_ORACLE_DIR` holding the impact
+     oracle's broken set for the same graph and hit
+     (`<shot>-framed-house.json`, `brokenIds`, `spread`), the judge reports the
+     Jaccard index and the counts. It is labelled a reference, not ground
+     truth.
 
 `structures/vehicle-lab/criteria.mjs` has only lower bounds ("house damaged >=
 20"), so a hit that destroys the whole house passes it. The bands above come

@@ -39,9 +39,34 @@ pub struct Strength {
     bonds: Vec<Vec<(u32, u32, f32)>>,
     pub types: Vec<String>,
     pub groups: Vec<String>,
+    /// Per bond: (nodes, upper-bound capacity N, stiffness E A / max(d, sqrt A)
+    /// N/m, ultimate slip m (0: brittle)), for the work to fracture it.
+    bond_work: Vec<(u32, u32, f32, f32, f32)>,
+    /// Per node: the energy to crush it (crushEnergy J/m^3 x volume), 0 if not crushable.
+    crush_j: Vec<f32>,
 }
 
 impl Strength {
+    /// The work the engine's model takes to break bond `i` (J): a ductile joint
+    /// (ultimate slip s > 0) yields at capacity F over s, F s; a brittle one
+    /// releases the elastic energy it stored at capacity, F^2 / 2k.
+    pub fn fracture_work(&self, i: u32) -> f32 {
+        let (_, _, f, k, slip) = self.bond_work[i as usize];
+        if slip > 0. { f * slip } else if k > 0. { f * f / (2. * k) } else { 0. }
+    }
+    /// The energy to crush node `i` (J).
+    pub fn crush_work(&self, i: u32) -> f32 { self.crush_j[i as usize] }
+    /// What a sphere of radius `r` swept from `a` to `b` through `group` would
+    /// have to do to pass: the fracture work of every bond of the chunks it
+    /// sweeps (those it must cut free or through), the crush work of those
+    /// chunks, and their mass (a plug it would have to carry). (J, J, kg, chunks)
+    pub fn path_work(&self, a: Vector3<f32>, b: Vector3<f32>, r: f32, group: &str) -> (f32, f32, f32, usize) {
+        let set: BTreeSet<u32> = self.touching_sphere(a, b, r, 0., group).into_iter().collect();
+        let fracture = self.bond_work.iter().enumerate().filter(|(_, w)| set.contains(&w.0) || set.contains(&w.1)).map(|(i, _)| self.fracture_work(i as u32)).sum();
+        let crush = set.iter().map(|&n| self.crush_j[n as usize]).sum();
+        let mass = set.iter().map(|&n| self.mass[n as usize]).sum();
+        (fracture, crush, mass, set.len())
+    }
     pub fn load(path: &str) -> Self {
         let pack: Value = serde_json::from_slice(&std::fs::read(path).expect("pack")).unwrap();
         let s = &pack["scenario"];
@@ -58,14 +83,26 @@ impl Strength {
         let modulus: Vec<f32> = nodes.iter().map(|n| materials.get(n["m"].as_u64().unwrap_or(0) as usize)
             .and_then(|m| m["elasticModulus"].as_f64()).unwrap_or(30e9) as f32).collect();
         let mut bonds = vec![Vec::new(); nodes.len()];
+        let mut bond_work = Vec::new();
         for (i, b) in s["bonds"].as_array().unwrap().iter().enumerate() {
             let (a, c) = (b["node0"].as_u64().unwrap() as u32, b["node1"].as_u64().unwrap() as u32);
-            let capacity = cap(b["m"].as_u64().unwrap_or(0) as usize) * b["area"].as_f64().unwrap_or(0.) as f32;
+            let m = b["m"].as_u64().unwrap_or(0) as usize;
+            let area = b["area"].as_f64().unwrap_or(0.) as f32;
+            let capacity = cap(m) * area;
             bonds[a as usize].push((i as u32, c, capacity));
             bonds[c as usize].push((i as u32, a, capacity));
+            let e = materials.get(m).and_then(|x| x["elasticModulus"].as_f64()).unwrap_or(30e9) as f32;
+            let d = (centroid[a as usize] - centroid[c as usize]).norm().max(area.max(0.).sqrt());
+            let slip = materials.get(m).and_then(|x| x["ductileSlip"].as_f64()).unwrap_or(0.) as f32;
+            bond_work.push((a, c, capacity, if d > 0. { e * area / d } else { 0. }, slip.max(0.)));
         }
+        let crush_j: Vec<f32> = nodes.iter().map(|n| {
+            let m = n["m"].as_u64().unwrap_or(0) as usize;
+            let energy = materials.get(m).and_then(|x| x["crush"]["crushEnergy"].as_f64()).unwrap_or(0.) as f32;
+            energy * n["volume"].as_f64().unwrap_or(0.) as f32
+        }).collect();
         let strings = |k: &str| s[k].as_array().map_or(Vec::new(), |v| v.iter().map(|x| x.as_str().unwrap_or("").to_string()).collect());
-        Self { centroid, half, mass, modulus, bonds, types: strings("nodeTypes"), groups: strings("nodeGroups") }
+        Self { centroid, half, mass, modulus, bonds, types: strings("nodeTypes"), groups: strings("nodeGroups"), bond_work, crush_j }
     }
 
     /// The non-support nodes of a node group (structure), for the energy balance.

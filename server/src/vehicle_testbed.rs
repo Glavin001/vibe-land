@@ -474,7 +474,10 @@ fn run(r: &Run, meta: &Value) -> Value {
     let mut trace = Vec::new();
     let tracing = std::env::var_os("VIBE_TESTBED_TRACE").is_some();
     // `probe`: the infinite-wall probe (wall_matrix.rs; structures/vehicle-lab/wall-matrix.mjs).
-    let strength = (trial["probe"].as_bool() == Some(true)).then(|| wall_matrix::Strength::load(&std::env::var("VIBE_CITY_SCENE").unwrap()));
+    // VIBE_TESTBED_PROBE=1: the probe on every trial (scripts/verify/acceptance.sh:
+    // the energy, momentum and pass-through physics of the house shots).
+    let probe_all = std::env::var("VIBE_TESTBED_PROBE").is_ok_and(|v| v == "1");
+    let strength = (trial["probe"].as_bool() == Some(true) || probe_all).then(|| wall_matrix::Strength::load(&std::env::var("VIBE_CITY_SCENE").unwrap()));
     let mut probe: Option<wall_matrix::Probe> = None;
     let (mut probe_last, mut probe_pid) = (None::<Vector3<f32>>, None::<u32>);
     let (mut energy_nodes, mut energy_since, mut energy_v0): (Vec<u32>, Option<u32>, f32) = (Vec::new(), None, 0.);
@@ -903,6 +906,28 @@ fn run(r: &Run, meta: &Value) -> Value {
     let actors_end = arena.vehicle_destruction_debug(id).map(|d| json!(d["actors"].as_array().into_iter().flatten()
         .map(|a| json!([a["actor"], a["mass"], a["gravityDisabled"], a["sleeping"], a["position"]])).collect::<Vec<_>>())).unwrap_or(Value::Null);
     drop(city);
+    let mut physics: Option<Value> = None;
+    if let (Some(strength), Some(pr)) = (strength.as_ref(), probe.as_ref()) {
+        // The physics of a shot at the house (scripts/verify/acceptance.mjs):
+        // what its straight path through the house would take to cut (the
+        // model's fracture and crush work, the plug's mass), and what the hit
+        // dissipated by the same model (the work of the house bonds that broke,
+        // the crush work of the house chunks that are gone).
+        if let (Some((target, dir)), Some(h)) = (shot, house.as_ref()) {
+            let (fracture, crush, mass, chunks) = strength.path_work(target - dir * pr.radius, target + dir * 12.0, pr.radius, "framed-house");
+            let world = arena.physx_world_mut().expect("physx");
+            let rows = world.native_bond_stress_rows(0).unwrap_or_default();
+            let broken: Vec<u32> = rows.iter().filter(|r| (r.remaining_area <= 0.0 || r.broken) && !h.broken_before.contains(&r.bond_index)
+                && h.is_house[r.node0 as usize] && h.is_house[r.node1 as usize]).map(|r| r.bond_index).collect();
+            let fracture_done: f32 = broken.iter().map(|&b| strength.fracture_work(b)).sum();
+            let gone: Vec<u32> = (0..h.is_house.len() as u32).filter(|&i| h.is_house[i as usize] && strength.node_mass(i) > 0.
+                && !world.native_chunk_aim(0, i).map_or(false, |a| a.found)).collect();
+            let crush_done: f32 = gone.iter().map(|&i| strength.crush_work(i)).sum();
+            physics = Some(json!({"pathFractureJ": fracture, "pathCrushJ": crush, "pathMassKg": mass, "pathChunks": chunks,
+                "fractureWorkJ": fracture_done, "crushWorkJ": crush_done, "brokenIds": broken, "goneIds": gone,
+                "impactorMassKg": pr.mass, "impactorRadiusM": pr.radius}));
+        }
+    }
     drop(arena);
     let mut out = json!({
         "car": r.car, "trial": trial["id"], "seconds": seconds,
@@ -945,6 +970,7 @@ fn run(r: &Run, meta: &Value) -> Value {
     }
     if let (Some(strength), Some(pr)) = (strength.as_ref(), probe.as_ref()) {
         out["probe"] = pr.summary(strength, DT);
+        if let Some(p) = physics.take() { out["physics"] = p; }
         out["layer"] = trial["layer"].clone();
         out["matrix"] = trial["matrix"].clone();
         out["expect"] = trial["expect"].clone();
