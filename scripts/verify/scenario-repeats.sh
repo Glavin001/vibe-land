@@ -53,12 +53,15 @@ one() {
   mkdir -p "$d"
   if [ "$c" = rest ]; then
     [ -f "$d/rest/acceptance.jsonl" ] && return 0
+    GPU_WORKERS_ROOT=$ROOT sdk_wait_current || { echo "[repeats] $arm rest r$k: the SDK is stale after 20 min"; return 1; }
     VERIFY_TRIALS='rest$' VERIFY_LABEL=$label VIBE_TESTBED_EARLY_END=1 "$ROOT/scripts/verify/acceptance.sh" "$arm" "$d/rest" \
       --skip lab,town,wire,walk,node > "$d/rest.log" 2>&1
   else
     [ -f "$d/$c.json" ] && return 0
     # A label is reused across output directories: never copy an earlier run's report.
     rm -f "$ROOT/target/vehicle-testbed/$label.json"
+    # A stale SDK (a branch moved): wait for sdk-follow's rebuild, then run on it.
+    (arm_env "$arm" > /dev/null) || { echo "[repeats] $arm $c r$k: the SDK is stale, waiting for the rebuild"; GPU_WORKERS_ROOT=$ROOT sdk_wait_current || { echo "[repeats] $arm $c r$k: still stale after 20 min"; return 1; }; }
     (arm_env "$arm" && cd "$ROOT" && env VIBE_CITY_SCENE="$LAB" VIBE_TESTBED_META="$out/$arm/lab.meta.json" VIBE_TESTBED_CARS=monster \
       VIBE_TESTBED_TRIALS="$c\$" VIBE_TESTBED_SCENE=lab VIBE_TESTBED_LABEL="$label" "$GPU_RUN" "$label" "$ROOT/$bin" vehicle_testbed --ignored --nocapture --test-threads=1) \
       > "$d/$c.log" 2>&1 || echo "[repeats] $arm $c r$k: test bed exited non-zero ($d/$c.log)"

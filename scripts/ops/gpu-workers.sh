@@ -37,3 +37,14 @@ worker_take() {
   done
 }
 worker_give() { [ -n "${WORKER_TOKEN:-}" ] && rm -rf "$WORKER_TOKEN"; WORKER_TOKEN=; }
+
+# sdk_wait_current: until the high profile's SDK passes the provenance check
+# again (sdk-follow.sh rebuilds within minutes of a push; bounded: 20 min).
+sdk_wait_current() {
+  local root=${GPU_WORKERS_ROOT:?} end=$((SECONDS + 1200))
+  while [ $SECONDS -lt $end ]; do
+    (source "$root/scripts/fidelity/high.env"; export PHYSX_ROOT=$(cd -P "$PHYSX_ROOT" && pwd); "$root/scripts/fidelity/provenance.sh" high > /dev/null 2>&1) && return 0
+    sleep 20
+  done
+  return 1
+}
