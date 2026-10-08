@@ -44,7 +44,8 @@ QUEUED="$DIR/queue/$$"
 kind=$([ "${VIBE_GPU_SHARED:-0}" = 1 ] && echo shared || echo exclusive)
 echo "$$ $label $(date +%s) $kind $(started $$)" > "$QUEUED"
 claimed() { # claimed <lockdir>: record what runs there, leave the queue
-  printf 'cwd=%s\nphysx_root=%s\ncmd=%s\n' "$PWD" "${PHYSX_ROOT:-}" "$*" > "$1/info"
+  local dir=$1; shift
+  printf 'cwd=%s\nphysx_root=%s\ncmd=%s\n' "$PWD" "${PHYSX_ROOT:-}" "$*" > "$dir/info"
   rm -f "$QUEUED"
 }
 release() { rm -f "$QUEUED"; [ -n "$held" ] && rm -rf "$held"; }
