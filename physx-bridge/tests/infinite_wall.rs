@@ -195,6 +195,13 @@ fn reported(text: &str, key: &str) -> f32 {
     text.lines().find_map(|l| l.strip_prefix(&format!("{key}="))).unwrap_or_else(|| panic!("no {key}:\n{text}")).trim().parse().unwrap()
 }
 
+/// The meteor's descent (rise over run) in an arm: 0.3, and in meteor_paving_shallow
+/// the wall matrix's landing (wm-masonry-meteor-0-land: 9.25 m/s down at 139.45 along when
+/// it reaches grade, slope 0.0663) -- a shallow landing whose last discrete step leaves the
+/// rock up to a tick's fall (0.15 m) through the 25 mm paving into its subgrade (a support:
+/// kinematic), where the lab's rock left at 22.4 m/s up (rep-c5, 2026-10-08).
+fn meteor_slope(arm: &str) -> f32 { if arm == "meteor_paving_shallow" { 9.25 / 139.45 } else { 0.3 } }
+
 /// The meteor (110 t of rock, r 2 m) at 140 m/s, descending at slope 0.3,
 /// into static ground (the city's floor is a static box): its velocity each
 /// tick [along, up].
@@ -208,7 +215,7 @@ const FOOTING: ([f32; 3], [f32; 3]) = ([0.0, 0.175, 20.0], [3.0, 0.15, 0.3]);
 /// included the footing's edge, not the paving alone.
 fn meteor_on_ground_with_edge(gap: f32, paved: bool) -> (Vec<[f32; 2]>, bool) {
     std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
-    let paved = paved || matches!(std::env::var(ARM).as_deref(), Ok("meteor_wall" | "meteor_footing" | "meteor_member_footing"));
+    let paved = paved || matches!(std::env::var(ARM).as_deref(), Ok("meteor_wall" | "meteor_footing" | "meteor_member_footing" | "meteor_paving_shallow"));
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     world.add_static_box(StaticBoxDesc { entity_id: 0x0100_0001, user_id: 1, pose: Pose { position: Vec3::new(0.0, -5.16, 0.0), rotation: identity() },
         half_extents: Vec3::new(500.0, 5.0, 500.0), collision_group: GROUP_CHUNK, collision_mask: ALL }).unwrap();
@@ -278,7 +285,8 @@ fn meteor_on_ground_with_edge(gap: f32, paved: bool) -> (Vec<[f32; 2]>, bool) {
     }
     for _ in 0..5 { world.step().unwrap(); if paved { world.native_tick().unwrap(); } }
     let ground = if paved { 0.025 } else { 0.0 };
-    let (mass, radius, speed, slope) = (110_000.0f32, 2.0f32, 140.0f32, 0.3f32);
+    let (mass, radius, speed) = (110_000.0f32, 2.0f32, 140.0f32);
+    let slope = meteor_slope(std::env::var(ARM).as_deref().unwrap_or(""));
     let n = (1.0 + slope * slope).sqrt();
     let v = Vec3::new(0.0, -speed * slope / n, speed / n);
     // Its surface `gap` over the ground at the end of the first tick: a gap
@@ -422,7 +430,10 @@ fn arm() {
         // Wherever the last step before contact leaves it: 1 cm (inside the
         // contact offset) to 0.6 m up.
         let (mut up, mut along, mut edge) = (f32::MIN, f32::MAX, true);
-        for gap in [0.01f32, 0.2, 0.4, 0.6] {
+        // The shallow landing falls 140 slope / sqrt(1 + slope^2) dt = 0.15 m a tick:
+        // its gaps span that tick (0.01 inside the contact offset, the rest found late).
+        let gaps: &[f32] = if arm == "meteor_paving_shallow" { &[0.01, 0.05, 0.1, 0.15] } else { &[0.01, 0.2, 0.4, 0.6] };
+        for &gap in gaps {
             let (track, touched) = meteor_on_ground_with_edge(gap, arm == "meteor_paving");
             // The footing edge's allowance holds only if every drop met the edge.
             edge &= touched;
@@ -554,7 +565,6 @@ fn fragment_depenetration_cap() {
 #[test]
 #[ignore = "requires the GPU and the native-destruction SDK"]
 fn meteor_rebound_off_ground() {
-    let vn = 140.0 * (0.3f32).atan().sin();
     let mut failures = Vec::new();
     // Static ground (the city's floor), and paving: slabs on a fixed subgrade, an anchored structure.
     // meteor_wall lands against the wall's foot: the footing stands 0.3 m proud,
@@ -564,7 +574,8 @@ fn meteor_rebound_off_ground() {
     // allow the rebound alone. (The arm was gated against the flat-ground bound
     // from its first commit, c3913920, and failed at 5.4 m/s ever since.)
     let edge = 30e6f32 * 0.3 * 2.0 * 2.0 * DT / 110_000.0;
-    for arm in ["meteor_ground", "meteor_paving", "meteor_wall"] {
+    for arm in ["meteor_ground", "meteor_paving", "meteor_wall", "meteor_paving_shallow"] {
+        let vn = 140.0 * meteor_slope(arm).atan().sin();
         let text = run_arm(arm, &[]);
         let (up, along) = (reported(&text, "up_max"), reported(&text, "along_end"));
         // The edge's allowance only where the rock's contact really included the
