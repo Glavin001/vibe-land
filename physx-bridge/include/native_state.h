@@ -179,6 +179,9 @@ struct NativeDestruction::State {
   std::vector<std::pair<std::uint32_t, std::uint32_t>> bond_ids;
   std::vector<physx::PxDestructionStressCluster> clusters;
   std::vector<physx::PxDestructionMaterial> materials;
+  // Per material, the static solve's stiffness of a unit-weight bond (N/m): E_ref mean^2 of its
+  // structure (append_bonds); the stage's dead-load dynamic windows integrate it.
+  std::vector<float> static_stiffness;
   /// First stage material index per structure, so a bond's authored material
   /// resolves inside its own structure's table.
   std::map<std::uint32_t, std::uint32_t> material_base;

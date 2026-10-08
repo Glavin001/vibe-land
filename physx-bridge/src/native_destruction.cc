@@ -468,6 +468,7 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
 #endif
     ++index;
     s.materials.push_back(out);
+    s.static_stiffness.push_back(0.0f);
   }
   return material_base;
 }
@@ -661,8 +662,10 @@ void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uin
     // The weights are sqrt(E/E_ref A/L) over their geometric mean, so a bond's
     // stiffness E A / L is E_ref mean^2 complianceScale^2: the structure's
     // materials (appended just before its bonds) carry that modulus.
-    for (std::size_t m = material_base; m < s.materials.size(); ++m)
+    for (std::size_t m = material_base; m < s.materials.size(); ++m) {
       s.materials[m].impactStiffness *= kReferenceModulusPa * mean * mean;
+      s.static_stiffness[m] = kReferenceModulusPa * mean * mean;
+    }
 #endif
   }
 }
@@ -1285,6 +1288,10 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.chunkMassProperties = s.properties.data();
   desc.materials = s.materials.data();
   desc.materialCount = static_cast<PxU32>(s.materials.size());
+#if defined(VIBE_PHYSX_HAS_SEQUENCE_STATIC_STIFFNESS)
+  // The static solve's stiffness (the dynamic sequence's dead-load windows).
+  desc.materialStaticStiffness = s.static_stiffness.size() == s.materials.size() ? s.static_stiffness.data() : nullptr;
+#endif
 #if PX_DESTRUCTION_SCENE_VERSION >= 22
   std::vector<PxDestructionStressShape> extras;
   for (const auto &extra : s.extra_shapes) {

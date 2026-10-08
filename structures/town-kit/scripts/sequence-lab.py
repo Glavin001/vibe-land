@@ -56,6 +56,9 @@ MU = 0.23   # timber on timber, EN 1995-2:2004 Table 6.2 (PhysX kRebearingTimber
 SKIN = {'drywall', 'brick-veneer', 'veneer-lintel-course', 'ceiling-lining', 'glazing', 'window-frame', 'door-frame',
         'roof-covering', 'ivory-trim', 'roof-batten', 'gable-weatherboard'}
 ROOF = {'rafter', 'ridge-board', 'ceiling-joist', 'hip-rafter', 'gable-frame'}
+# The dynamic model's stiffness and inertia: the stage's by default (--stiffness, --inertia): a
+# dead-load window integrates the static model's stiffness, whose equilibrium it starts from.
+STIFFNESS = 'static'; INERTIA = 'scalar'
 CASES = {'intact': (0, None), 'bay1': (14, (1.45, 1.65)), 'bay2': (28, (0.9, 1.65)), 'truck': (42, (-1.5, 1.3)), 'truck-door': (56, (-1.5, 1.65))}
 
 
@@ -114,8 +117,15 @@ class Structure:
             mt = self.mats[bd['m']]
             E = mt.get('bearingElasticModulus') or mt.get('elasticModulus') or 30e9
             L = max(abs(nrm @ (pos[j] - pos[i])), np.sqrt(bd['area']))
+            w[b] = np.sqrt(E * bd['area'] / L / 30e9)   # (the static solve's weights: the gravity-sharing modulus)
+            # The dynamic step's stiffness: the static solve's (STIFFNESS static, the stage's
+            # dead-load windows: PxDestructionStressDesc::materialStaticStiffness), or the impact
+            # solve's (impact: PhysX impactStiffness, the impact modulus over the solve's where a
+            # material authors one -- a fastened joint's K_u = 2/3 K_ser, EN 1995-1-1 2.2.2(1),
+            # a wall tie's axial stiffness).
+            Ei = mt.get('impactElasticModulus') or 0.0
+            if STIFFNESS == 'impact' and Ei > 0 and mt.get('elasticModulus'): E = E * Ei / mt['elasticModulus']
             k[b] = E * bd['area'] / L
-            w[b] = np.sqrt(k[b] / 30e9)
             for node, sign in ((j, 1.0), (i, -1.0)):
                 if row[node] < 0: continue
                 arm = cen - pos[node]
@@ -308,7 +318,9 @@ def ramp(S, live0, f0, df, rebearing, gap, max_solves=6000):
 
 
 def inertia(S):
-    """Per chunk principal moments (kg m^2) from its collider's box (a hull's AABB)."""
+    """Per chunk principal moments (kg m^2) from its collider's box (a hull's AABB); INERTIA
+    'scalar' (the stage's: its stress chunks carry one inertia, the tensor's trace / 3,
+    physx-bridge native_destruction.cc) their mean on every axis."""
     out = np.zeros((S.n, 3))
     for i, c in enumerate(S.s['nodeColliders']):
         if c['kind'] == 'shape': c = S.s['shapeLibrary'][c['shape']]
@@ -316,6 +328,7 @@ def inertia(S):
         else:
             pts = np.array(c.get('points', [0.05] * 3)).reshape(-1, 3); h = (pts.max(0) - pts.min(0)) / 2
         m = S.mass[i]; out[i] = m / 3 * np.array([h[1] ** 2 + h[2] ** 2, h[0] ** 2 + h[2] ** 2, h[0] ** 2 + h[1] ** 2])
+    if INERTIA == 'scalar': out[:] = out.mean(1)[:, None]
     return np.maximum(out, 1e-9)
 
 
@@ -664,6 +677,15 @@ def dynamic_seq(S, live0, J0, g, removed, gap, T=0.4, safety=0.8, zeta=ZETA_TIMB
             E = ke + float(strainv(J)[alive & ~contact].sum() + contactv(P, J)[alive & contact & closedNow].sum()) + float(u @ g)
             worstGain = max(worstGain, E + released + slipWork + dashWork - E0)
     name = lambda b: S.types[bd[b]['node0']] + '|' + S.types[bd[b]['node1']]
+    if os.environ.get('SEQ_STATE'):
+        # (diagnostics: the end state -- open contacts and the kinetic energy by member type)
+        oc = collections.Counter(name(b) for b in np.nonzero(alive & contact & ~closedNow)[0])
+        kt = collections.Counter(); vmin = {}
+        for k, i in enumerate(fr):
+            if S.row[i] < 0: continue
+            vv = v[6 * k:6 * k + 3]; kt[S.types[i]] += 0.5 * S.mass[i] * float(vv @ vv); vmin[S.types[i]] = min(vmin.get(S.types[i], 0.0), float(vv[1]))
+        print('open contacts at the end:', oc.most_common(12))
+        print('KE by type (J, min v_y):', [(t, round(e, 1), round(vmin[t], 2)) for t, e in kt.most_common(10)])
     late = [o for o in order if freezeAt is not None and o[0] > freezeAt]
     return summary(S, broken, gap, {'mode': 'dynamic', 'law': 'stage', 'zeta': zeta, 'slide': slide, 'substeps': steps, 'dtMicroseconds': round(dt * 1e6, 3),
                                     'simulated': round(steps * dt, 4), 'seconds': round(time.time() - t0, 1), 'contacts': int(contact.sum()), 'events': dict(kinds),
@@ -777,8 +799,12 @@ def main():
     p.add_argument('--slide', choices=['seat', 'permanent', 'break'], default='seat', help='--law stage: when a sliding contact is lost')
     p.add_argument('--ensemble', type=int, default=0, help='--export: also run this many perturbed-substep references (PREFIX.ensemble)')
     p.add_argument('--export', help='--law stage: write the problem and the answer for the GPU replay (EXPORT.bin, EXPORT.expected)')
+    p.add_argument('--stiffness', choices=['static', 'impact'], default='static', help="the dynamic step's joint stiffness: the static solve's (the stage's dead-load windows) or the impact solve's (a material's impact modulus where authored: K_u, a tie's axial)")
+    p.add_argument('--inertia', choices=['scalar', 'box'], default='scalar', help="chunk inertia: the stage's scalar (mean of the box's principal moments) or the box's per axis (the study's)")
     p.add_argument('--handback', action='store_true', help='--law stage: stop at the freeze (else record it and run on to T)'); p.add_argument('--safety', type=float, default=0.8, help='dynamic: substep as this fraction of 2 / omega_max')
     a = p.parse_args()
+    global STIFFNESS, INERTIA
+    STIFFNESS, INERTIA = a.stiffness, a.inertia
     scene = json.load(open(a.scene)); mats = scene['defaults']['solver']['materials']
     dz, gap = CASES[a.case]
     t0 = time.time()

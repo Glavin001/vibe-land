@@ -407,6 +407,9 @@ fn add_native_destruction(
         // f_v0 + mu sigma_c (opt-in, VIBE_MOHR_COULOMB_SHEAR=1 -> the stage's
         // PX_DESTRUCTION_MOHR_COULOMB_SHEAR; the materials' shearFriction).
         ("PX_DESTRUCTION_MOHR_COULOMB_SHEAR", "VIBE_PHYSX_HAS_MOHR_COULOMB_SHEAR"),
+        // The static model's stiffness per material for the dynamic sequence's
+        // dead-load windows (PxDestructionStressDesc::materialStaticStiffness).
+        ("PX_DESTRUCTION_SEQUENCE_STATIC_STIFFNESS", "VIBE_PHYSX_HAS_SEQUENCE_STATIC_STIFFNESS"),
         // A crushed chunk splits off as its own body and its step completes
         // under the correction; without it a crush freezes the scene, so the
         // bridge refuses to pass crush properties to an SDK that lacks it.
