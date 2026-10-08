@@ -74,8 +74,18 @@ export const mortarJointsEnabled = () => (globalThis.process?.env?.VIBE_BRICK_JO
  * runtime packs stay byte-identical.
  */
 export const MASONRY_FRICTION = 0.4;
+/**
+ * A masonry joint's shear stiffness over its normal stiffness (FIDELITY_AUDIT
+ * D11; the stage reads it under VIBE_SHEAR_STIFFNESS, PhysX
+ * PX_DESTRUCTION_SHEAR_STIFFNESS): EN 1996-1-1 3.8.3, the shear modulus G of
+ * masonry may be taken as 40% of its elastic modulus E. A bond's stiffness is
+ * the wall's E A / L along its normal, G A / L across it. With one stiffness in
+ * every direction a head joint drew 2.5x its share of a pier stone's load in
+ * vertical shear (docs/calibration/house-headers.md "Stone").
+ */
+export const MASONRY_SHEAR_STIFFNESS = 0.4;
 export const masonryShear = (fb) => (globalThis.process?.env?.VIBE_REAL_CAPACITIES ?? '0') === '1'
-  ? { shearFriction: MASONRY_FRICTION, shearCapacityLimit: 0.065 * fb } : {};
+  ? { shearFriction: MASONRY_FRICTION, shearCapacityLimit: 0.065 * fb, shearStiffnessRatio: MASONRY_SHEAR_STIFFNESS } : {};
 export const BRICK_FB = 20e6, STONE_FB = 50e6;
 /** Masonry by name: a concrete facade with a brick texture is still concrete. */
 export const isMasonry = (name) => /^brick(-|$)/.test(name) || /masonry/.test(name) && !/connection|seam/.test(name);

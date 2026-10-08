@@ -1409,6 +1409,8 @@ impl CityRuntime {
                 // Mohr-Coulomb joint shear (opt-in, VIBE_MOHR_COULOMB_SHEAR=1; FIDELITY_AUDIT C11).
                 (settings.shear_friction, settings.shear_capacity_limit) =
                     vibe_land_destruction::scene_pack::shear_friction_tables(payload);
+                // Shear stiffness apart from normal stiffness (opt-in, VIBE_SHEAR_STIFFNESS=1; FIDELITY_AUDIT D11).
+                settings.shear_stiffness_ratio = vibe_land_destruction::scene_pack::shear_stiffness_table(payload);
                 if !settings.crush.is_empty() {
                     let crushable = settings.crush.iter().filter(|c| c.cap_pressure > 0.0).count();
                     tracing::info!(crushable, "scene authors chunk crushing");
