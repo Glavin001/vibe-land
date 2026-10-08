@@ -131,6 +131,27 @@ bond graph without them (`frontRearJoined`).
   locality. The collapse test that separates gravity from the hit is the
   impact comparison's fallen members
   (`impact-arms.mjs`, `house.fallenBeyondReach`).
+- **Collapse** (the impact comparison, `scripts/verify/impact-arms.mjs`).
+  A house collapses when part of it loses its load path to the ground and
+  falls. The test bed counts frame members that meet all four conditions:
+  - **off the anchored body:** no bonded path to an anchored chunk remains;
+  - **fallen:** dropped by more than their own depth, so they are off their
+    bearing;
+  - **beyond the impactor's reach:** farther from its line than its half-size
+    across it plus the member's own length, so the hit itself did not strike
+    or carry them;
+  - **in an assembly:** still bonded into a detached body of two or more
+    chunks.
+
+  The last condition separates collapse from debris. An assembly falls as one
+  because the joints that tied it to the rest of the house broke while its own
+  held: its load path was cut. A member knocked loose by debris, or cut by the
+  hit, has its own joints broken and falls alone. Those lone members are
+  counted separately (`looseFallenMembers`) and shown, but are not collapse.
+  Two members knocked off together by one piece of debris would count, which
+  is rare and an over-count. The outcome is local when no member collapsed.
+  Counts: `house.collapsedMembers` and `house.looseFallenMembers` (the test
+  bed's house summary).
 - **Stands.** No roof member down more than 0.5 m (the house probe's
   definition). The corner and roof hits only measure it, because a corner loses
   its posts and the plates over it may sag within physics.

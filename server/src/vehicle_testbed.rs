@@ -416,6 +416,15 @@ impl HouseProbe {
         }
         drops.sort_by(f32::total_cmp);
         let (mut frame_nodes, mut frame_anchored, mut fallen_beyond) = (0u32, 0u32, 0u32);
+        // Each detached body's chunk count (house chunks off the anchored body):
+        // a body of two or more is an assembly that lost its load path to the
+        // anchors with its bonds intact; a body of one is a piece knocked or cut loose.
+        let mut body_size: HashMap<u32, u32> = HashMap::new();
+        for i in 0..self.is_house.len() as u32 {
+            if !self.is_house[i as usize] { continue; }
+            if let Ok(a) = world.native_chunk_aim(0, i) { if a.found && a.entity_id != self.anchored { *body_size.entry(a.entity_id).or_default() += 1; } }
+        }
+        let (mut collapsed, mut loose) = (0u32, 0u32);
         for i in 0..self.is_house.len() as u32 {
             if !self.is_house[i as usize] || !frame(i) || scene.types[i as usize] == "foundation" { continue; }
             frame_nodes += 1;
@@ -429,7 +438,14 @@ impl HouseProbe {
             let fell = aim.as_ref().map_or(true, |a| !a.found || c0.y - a.center.y > size[0].min(size[1]).min(size[2]));
             if let (true, Some((o, dir))) = (fell, line) {
                 let rel = c0 - o;
-                if (rel - dir * rel.dot(&dir)).norm() > reach + member(i) { fallen_beyond += 1; }
+                if (rel - dir * rel.dot(&dir)).norm() > reach + member(i) {
+                    fallen_beyond += 1;
+                    // Collapse: it fell as part of an assembly still bonded together
+                    // (its body has other chunks): the assembly lost its path to the
+                    // anchors. Alone, it was knocked or cut loose (debris, the hit).
+                    let size = aim.as_ref().filter(|a| a.found).and_then(|a| body_size.get(&a.entity_id)).copied().unwrap_or(1);
+                    if size >= 2 { collapsed += 1; } else { loose += 1; }
+                }
             }
         }
         let mean = |v: &[f32]| if v.is_empty() { 0. } else { v.iter().sum::<f32>() / v.len() as f32 };
@@ -438,6 +454,7 @@ impl HouseProbe {
             "bonds": total, "broken": broken, "brokenFrac": broken as f32 / total.max(1) as f32,
             "structuralBonds": structural_total, "structuralBroken": structural, "cosmeticBroken": broken - structural,
             "reach": reach, "frameBeyondReach": line.map(|_| beyond_reach), "fallenBeyondReach": line.map(|_| fallen_beyond),
+            "collapsedMembers": line.map(|_| collapsed), "looseFallenMembers": line.map(|_| loose),
             "byDistance": {"0-1m": by_distance[0], "1-2m": by_distance[1], "2-4m": by_distance[2], "4-8m": by_distance[3], "8m+": by_distance[4]},
             "medianBreakDistance": distances.get(distances.len() / 2),
             "impact": impact.map(|p| [p.x, p.y, p.z]),
