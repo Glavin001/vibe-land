@@ -187,7 +187,8 @@ def waiters(procs):
             problem = "polls with `pgrep -f`, which matches the loop itself"
         elif m and m.group(1).isdigit():
             target = m.group(1)
-            if int(target) not in procs:
+            looping = any(q["ppid"] == pid and q["cmd"].startswith("sleep") for q in procs.values())
+            if int(target) not in procs and looping:  # gone, and the loop is still sleeping on it
                 problem = f"its target pid {target} has exited"
         else:
             g = re.search(r"grep[^;]*?(/\S+\.(?:log|out|output|json))", body)
