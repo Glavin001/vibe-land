@@ -394,6 +394,21 @@ accurate destruction", not a damage percentage.
    **Tolerance:** 10% of the impactor's KE, for fragment rotation (not
    measured) and the 3-tick sampling. Unaccounted energy above that is "energy
    vanished".
+
+   The balance has two more terms (the ground term is reported separately):
+
+   - **The impactor's own drop** (m g dh over the window), on the supply side.
+   - **Ground contact.** The impactor's mechanical-energy loss, ½ m |v|^2 + m g y,
+     summed over the window's ticks on which it touches no house chunk. That
+     covers the floor slab, grade and kerbs: static, anchored, or outside the
+     house's graph. It includes the inelastic normal loss ½ m Δv_n^2 and the
+     friction and rolling work there.
+   - **Why the ground term exists.** A meteor that ploughs into the slab (about
+     113 MJ normal plus about 187 MJ of friction in one tick) and then rolls on
+     terrain was otherwise charged to the house. A tick on which it touches both
+     the house and the ground is charged to the house.
+   - **Terrain.** It offers no penetration resistance (FIDELITY_AUDIT E10). That
+     gap stays recorded.
 3. **Momentum through what held** (the probe's `peakForceN`, `heldCapacityN`).
    The impulse the impactor lost per tick (dp/dt) went into the struck chunks.
    - If they all stayed on the anchored body, the bonds carrying them must have

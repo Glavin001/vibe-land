@@ -513,6 +513,13 @@ fn run(r: &Run, meta: &Value) -> Value {
     let mut probe: Option<wall_matrix::Probe> = None;
     let (mut probe_last, mut probe_pid) = (None::<Vector3<f32>>, None::<u32>);
     let (mut energy_nodes, mut energy_since, mut energy_v0): (Vec<u32>, Option<u32>, f32) = (Vec::new(), None, 0.);
+    // A shot's contacts outside the struck house (the floor slab, grade, kerbs:
+    // static or anchored bodies, or members not in the house): the impactor's
+    // mechanical energy lost on ticks it touches no house chunk -- the
+    // inelastic normal loss and the friction and rolling work there -- summed
+    // over the balance window. (previous tick's velocity and height; ground J;
+    // at the last balance sample: ground J, the impactor's drop m g dh)
+    let (mut shot_prev, mut ground_j, mut ground_at_sample, mut drop_at_sample, mut energy_y0): (Option<(Vector3<f32>, f32)>, f32, f32, f32, f32) = (None, 0., 0., 0., 0.);
     let probe_target = trial["target"].as_array().map(|t| Vector3::new(t[0].as_f64().unwrap() as f32, t[1].as_f64().unwrap() as f32, t[2].as_f64().unwrap() as f32));
     let heading_of = |f: Vector3<f32>| f.x.atan2(f.z);
     for k in 0..ticks {
@@ -855,6 +862,7 @@ fn run(r: &Run, meta: &Value) -> Value {
                     strength.touching_box(p, &after.q, geometry.bounds.min, geometry.bounds.max, 0.1, group)
                 } else { strength.touching_sphere(probe_last.unwrap_or(p), p, pr.radius, 0.1, group) };
                 probe_last = Some(p);
+                let touched_house = !driving && house.as_ref().map_or(false, |h| touched.iter().any(|&n| h.is_house[n as usize]));
                 if !touched.is_empty() {
                     let anchored = vibe_land_physx_bridge::native_entity_id(0, 0);
                     let world = arena.physx_world_mut().expect("physx");
@@ -866,6 +874,19 @@ fn run(r: &Run, meta: &Value) -> Value {
                 if energy_nodes.is_empty() { energy_nodes = strength.nodes_of(group); }
                 // From first contact: the impactor's speed then is what it can lose.
                 if pr.touched.contains_key(&(tick - 1)) && energy_since.is_none() { energy_since = Some(tick); energy_v0 = pr.trace.iter().rev().nth(1).map_or(speed, |r| r[4]); }
+                if !driving {
+                    let g = vibe_netcode::movement::GRAVITY as f32;
+                    if energy_since == Some(tick) { energy_y0 = shot_prev.map_or(p.y, |q| q.1); }
+                    if let (Some(start), Some((pv, py))) = (energy_since, shot_prev) {
+                        if tick - start <= 90 && !touched_house {
+                            let before = 0.5 * pr.mass * pv.norm_squared() + pr.mass * g * py;
+                            let after = 0.5 * pr.mass * v.norm_squared() + pr.mass * g * p.y;
+                            if before > after { ground_j += before - after; }
+                        }
+                        if tick - start <= 90 && (tick - start) % 3 == 0 { ground_at_sample = ground_j; drop_at_sample = pr.mass * g * (energy_y0 - p.y); }
+                    }
+                    shot_prev = Some((v, p.y));
+                }
                 if energy_since.is_some_and(|s| tick - s <= 90 && (tick - s) % 3 == 0) {
                     let world = arena.physx_world_mut().expect("physx");
                     let anchored = vibe_land_physx_bridge::native_entity_id(0, 0);
@@ -996,7 +1017,8 @@ fn run(r: &Run, meta: &Value) -> Value {
             let crush_done: f32 = gone.iter().map(|&i| strength.crush_work(i)).sum();
             physics = Some(json!({"pathLengthM": length, "pathFractureJ": fracture, "pathCrushJ": crush, "pathMassKg": mass, "pathChunks": chunks,
                 "fractureWorkJ": fracture_done, "crushWorkJ": crush_done, "brokenIds": broken, "goneIds": gone,
-                "impactorMassKg": pr.mass, "impactorRadiusM": pr.radius}));
+                "impactorMassKg": pr.mass, "impactorRadiusM": pr.radius,
+                "groundJ": ground_at_sample, "impactorDropJ": drop_at_sample}));
         }
     }
     drop(arena);

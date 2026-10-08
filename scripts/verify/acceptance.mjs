@@ -59,14 +59,17 @@ const physicsChecks = (r, kind, profile) => {
   const [, fragKe, pe, lost] = last;
   const modelled = ph.fractureWorkJ + ph.crushWorkJ;
   const contact = (1 - E_REST * E_REST) * carry; // reduced mass against the plug it set moving
-  const resid = lost + pe - fragKe - modelled;
+  // Outside the house: the impactor's mechanical-energy loss on ticks it
+  // touched no house chunk (floor slab, grade, kerbs), and its own drop.
+  const ground = ph.groundJ ?? 0, drop = ph.impactorDropJ ?? 0;
+  const resid = lost + drop + pe - fragKe - modelled - ground;
   const MJ = (x) => `${(x / 1e6).toFixed(2)} MJ`;
   const out = [];
   // (1) Pass-through: more KE than the straight path through the house can take.
   out.push({ check: `${kind}: gets through when its energy exceeds what its path can dissipate`, measured: `KE ${MJ(ke)} vs path ${MJ(pathD)} (fracture ${MJ(ph.pathFractureJ)}, crush ${MJ(ph.pathCrushJ)}, carrying ${(plug / 1000).toFixed(1)} t: ${MJ(carry)}); ${fmt(past)} m past`,
     threshold: 'KE > path work => past >= 1 m', pass: ke <= pathD || past >= 1 });
   // (2) Energy closes.
-  out.push({ check: `${kind}: energy balance closes (lost = modelled dissipation + fragments' KE - PE released)`, measured: `lost ${MJ(lost)}, fracture ${MJ(ph.fractureWorkJ)} + crush ${MJ(ph.crushWorkJ)}, fragments ${MJ(fragKe)}, PE ${MJ(pe)}: unaccounted ${MJ(resid)} (contact may take ${MJ(contact)})`,
+  out.push({ check: `${kind}: energy balance closes (KE lost + its drop = house dissipation + ground contact + fragments' KE - PE released)`, measured: `lost ${MJ(lost)} + drop ${MJ(drop)}; house: fracture ${MJ(ph.fractureWorkJ)} + crush ${MJ(ph.crushWorkJ)}; ground ${MJ(ground)}; fragments ${MJ(fragKe)}, PE ${MJ(pe)}: unaccounted ${MJ(resid)} (house contact may take ${MJ(contact)})`,
     threshold: `-${100 * ENERGY_TOL}% KE <= unaccounted <= contact + ${100 * ENERGY_TOL}% KE`, pass: resid >= -ENERGY_TOL * ke && resid <= contact + ENERGY_TOL * ke });
   // (3)+(4) Momentum through what held: no joint holds a force past its capacity.
   out.push({ check: `${kind}: nothing holds past its capacity (impulse into what held <= capacity x dt)`, measured: `peak ${(pr.peakForceN / 1e6).toFixed(2)} MN (dp/dt ${fmt(pr.momentumLost)} kg m/s), held capacity ${(pr.heldCapacityN / 1e6).toFixed(2)} MN, touched ${(pr.touchedCapacityN / 1e6).toFixed(2)} MN${pr.infiniteWall ? ': INFINITE WALL' : pr.partialHold ? ': partial hold' : ''}`,
