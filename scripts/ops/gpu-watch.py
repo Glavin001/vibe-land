@@ -16,6 +16,8 @@ when it clears), never repeated while it holds. The conditions:
 - STALLED: a running job's processes used no CPU for VIBE_WATCH_STALL_S
   (default 600 s). GPU jobs use little CPU but never none for minutes;
 - LONG: a job has run longer than VIBE_WATCH_LONG_S (default 900 s; owner: no 1-2 h runs);
+- DEADLOCK?: a slot's gpu-run has only `sleep` children after a minute (it holds a
+  slot but is itself waiting, e.g. after an in-place edit of gpu-run.sh);
 - STALE SDK: a running job's SDK (PHYSX_ROOT, from its lock info or command)
   was built from a revision missing the head of a PhysX branch in
   scripts/fidelity/branches.tsv; its result will be refused as stale;
@@ -251,6 +253,9 @@ def stream():
                 active.pop(key + ":stall", None)
             elif now - prev[1] > STALL_S:
                 emit(key + ":stall", f"STALLED {j['label']} (pid {j['pid']}): no CPU for {int((now - prev[1]) / 60)} min; check its log")
+            kids = [c for c, pc in procs.items() if pc["ppid"] == j["pid"]]
+            if procs[j["pid"]]["age"] > 60 and kids and all(procs[c]["cmd"].startswith("sleep") for c in kids):
+                emit(key + ":deadlock", f"DEADLOCK? {j['label']} (pid {j['pid']}) holds {j['slot']} but its gpu-run is only sleeping: it never started its job")
             if procs[j["pid"]]["age"] > LONG_S:
                 emit(key + ":long", f"LONG {j['label']} (pid {j['pid']}) has run {procs[j['pid']]['age'] // 60} min")
             miss = sdk_missing(j, procs)
