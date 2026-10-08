@@ -71,11 +71,19 @@ Fixed constraints, not levers:
 - Done: the native sleep commit's five setters share one host wait (72be6dea3): sleepCommit 1.29 -> 0.76 ms on the ticks that commit sleep.
 - Both replay perf_bench meteor (1,207 ticks) with identical per-tick broken bonds, iterations, convergence, contacts and clusters.
 - Rejected: an early exit for the motion-mode pointer jumping. Its rounds past the longest tour already cost ~3 us each.
+- Measured, not kept:
+  - **CuMetal batch kick** (`CUMETAL_BATCH_KICK_DISPATCHES` 16 or 0): slower than the default 4.
+  - **The component stress solve's critical path.** The phase probe does not compile under cumetalc, so the cost is read from the solve's GPU time against its iteration count:
+    - lab: about 65 us per iteration plus 0.45 ms fixed (4.47 ms at 64 iterations);
+    - town: about 27 us per iteration plus 0.73 ms fixed.
+    - The largest components are about 1,000 nodes in the lab and about 1,400 in town, so the cost is not row-bound.
+  - **512-thread stress blocks:** the solve is 12% faster in the lab and 6% faster in town, with identical per-tick verdicts and native lines over 1,877 ticks, but the suite score is 0.998 (no measurable gain). 1,024 threads fail the Metal pipeline gate.
+  - A multi-threadgroup row split would gain less than that, so it is not pursued.
 - Next levers:
-  - the component stress solve, one threadgroup per component on CuMetal: the biggest component is the critical path;
+  - the component stress solve's serial and barrier phases per iteration (thread-0 sections, reductions, motion projection), and its fixed setup;
   - the whole-scene union-find and sorts in every topology rebuild;
   - the second rebuild when the corrected pass fractures again;
-  - the remaining host waits in the correction path (finishAndReserve, acceptCorrection, finalPublication).
+  - the corrected pass's host handshakes in the PhysX core (about 20 waits at 0.2-0.5 ms of GPU idle each, plus 3-4 ms of host-only stages): about 3-7 ms, a deep Sc/Pxg pipeline change.
 
 ## The performance suite
 Built: `scripts/perf/suite.sh` (`--quick`, `--compare`), described in
