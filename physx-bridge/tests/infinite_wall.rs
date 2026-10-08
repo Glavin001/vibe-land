@@ -43,9 +43,8 @@
 //!   -p vibe-land-physx-bridge --features native-destruction \
 //!   --test infinite_wall -- --ignored --test-threads=1 --nocapture
 
-use vibe_land_physx_bridge::ground_mesh::from_boxes;
 use vibe_land_physx_bridge::{
-    ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, LaunchedBallDesc, NativeConfig, Pose, Quat, StaticBoxDesc, StaticMeshDesc, StressMaterialDesc, Vec3,
+    ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, LaunchedBallDesc, NativeConfig, Pose, Quat, StaticBoxDesc, StressMaterialDesc, Vec3,
     World, WorldConfig,
 };
 
@@ -217,21 +216,16 @@ const FOOTING: ([f32; 3], [f32; 3]) = ([0.0, 0.175, 20.0], [3.0, 0.15, 0.3]);
 fn meteor_on_ground_with_edge(gap: f32, paved: bool) -> (Vec<[f32; 2]>, bool) {
     std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
     let paved = paved || matches!(std::env::var(ARM).as_deref(), Ok("meteor_wall" | "meteor_footing" | "meteor_member_footing" | "meteor_paving_shallow"));
-    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
-    world.add_static_box(StaticBoxDesc { entity_id: 0x0100_0001, user_id: 1, pose: Pose { position: Vec3::new(0.0, -5.16, 0.0), rotation: identity() },
-        half_extents: Vec3::new(500.0, 5.0, 500.0), collision_group: GROUP_CHUNK, collision_mask: ALL }).unwrap();
-    // VIBE_STATIC_GROUND=1 (the high profile's ground, scripts/fidelity/high.env):
-    // paving is static ground, as roads and pavements are built then -- the
-    // same subgrade and slabs as one static triangle mesh (ground_mesh), not
-    // anchored chunks. Only a wall or footing standing on it is a structure.
+    // VIBE_STATIC_GROUND=1 (the high profile's lab, scripts/fidelity/high.env;
+    // build-lab.mjs): no paving, the lanes are the city's flat static ground at
+    // y = 0, one plane with no seams. Only a wall or footing standing on it is a
+    // structure (the footing, authored on the paving, then stands 25 mm clear of
+    // it: a kinematic support, held where it was put).
     let static_ground = paved && std::env::var("VIBE_STATIC_GROUND").as_deref() == Ok("1");
-    if static_ground {
-        let mut boxes = vec![([-6.0f32, -0.16, -6.0], [6.0f32, 0.0, 22.0])];
-        for z in [-2.0f32, 2.0, 6.0, 10.0, 14.0, 18.0] { for x in [-2.0f32, 2.0] { boxes.push(([x - 2.0, 0.0, z - 2.0], [x + 2.0, 0.025, z + 2.0])); } }
-        let mesh = from_boxes(&boxes);
-        world.add_static_mesh(StaticMeshDesc { entity_id: 0x0100_0002, user_id: 1, pose: Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: identity() },
-            friction: -1.0, restitution: 0.0, collision_group: GROUP_CHUNK, collision_mask: ALL }, &mesh.vertices, &mesh.indices).unwrap();
-    }
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    world.add_static_box(StaticBoxDesc { entity_id: 0x0100_0001, user_id: 1,
+        pose: Pose { position: Vec3::new(0.0, if static_ground { -5.0 } else { -5.16 }, 0.0), rotation: identity() },
+        half_extents: Vec3::new(500.0, 5.0, 500.0), collision_group: GROUP_CHUNK, collision_mask: ALL }).unwrap();
     let structure = matches!(std::env::var(ARM).as_deref(), Ok("meteor_wall" | "meteor_footing" | "meteor_member_footing"));
     let paved = paved && (!static_ground || structure);
     if paved {
@@ -299,7 +293,7 @@ fn meteor_on_ground_with_edge(gap: f32, paved: bool) -> (Vec<[f32; 2]>, bool) {
             fibre_bending: true, reserved_contact_pairs: 64, preserve_unchanged_contact_pairs: true, gpu_island_repair: true, verdict_sample_ticks: 1 }).unwrap();
     }
     for _ in 0..5 { world.step().unwrap(); if paved { world.native_tick().unwrap(); } }
-    let ground = if paved { 0.025 } else { 0.0 };
+    let ground = if paved && !static_ground { 0.025 } else { 0.0 };
     let (mass, radius, speed) = (110_000.0f32, 2.0f32, 140.0f32);
     let slope = meteor_slope(std::env::var(ARM).as_deref().unwrap_or(""));
     let n = (1.0 + slope * slope).sqrt();

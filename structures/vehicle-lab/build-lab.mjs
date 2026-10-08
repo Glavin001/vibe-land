@@ -38,6 +38,17 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../..');
 const KEY = 'vehicle-lab';
 const HALF_LANE = 4;
+/**
+ * VIBE_STATIC_GROUND=1 (the high profile's packs, scripts/fidelity/high.env):
+ * no paving. Every lane is the city's own flat static ground at y = 0, one
+ * plane with no seams. Destructible paving is 4 m chunks on a fixed subgrade:
+ * flush boxes, whose seams catch whatever slides over them (the internal-edge
+ * or ghost-collision problem: a 1.5 t box at 20 m/s snagged to a stop on stock
+ * PhysX, CPU and GPU alike; a 110 t meteor skimming the lab's paving left a
+ * seam at 22 m/s up). A lane keeps `paved` in the meta only where it is paved.
+ */
+const STATIC_GROUND = (process.env.VIBE_STATIC_GROUND ?? '0') === '1';
+const paved = (lane) => Boolean(lane.paved) && !STATIC_GROUND;
 
 /** Deterministic pseudo-random numbers for debris placement. */
 function rng(seed) {
@@ -54,10 +65,10 @@ function buildGround() {
   for (const lane of LANES) {
     const x0 = lane.x - HALF_LANE, x1 = lane.x + HALF_LANE;
     const z0 = START_Z - 10, z1 = START_Z + (lane.length ?? LANE_LENGTH);
-    if (lane.paved && lane.paveTo != null) {
+    if (paved(lane) && lane.paveTo != null) {
       b.box({ min: [x0, -0.16, z0], max: [x1, 0, lane.paveTo], material: M.footing, fixed: true, type: 'foundation' });
       b.box({ min: [x0, 0, z0], max: [x1, 0.025, lane.paveTo], material: asphalt, type: 'road', split: [2, 1, Math.round((lane.paveTo - z0) / 4)] });
-    } else if (lane.paved) {
+    } else if (paved(lane)) {
       // Vibe Town's street: 2.5 cm of asphalt in ~4 m pieces on a fixed subgrade.
       b.box({ min: [x0, -0.16, z0], max: [x1, 0, z1], material: M.footing, fixed: true, type: 'foundation' });
       b.box({ min: [x0, 0, z0], max: [x1, 0.025, z1], material: asphalt, type: 'road', split: [2, 1, Math.round((z1 - z0) / 4)] });
@@ -94,7 +105,7 @@ function buildLoose() {
   };
   for (const lane of LANES) {
     const o = lane.obstacle;
-    const base = lane.paved ? 0.026 : 0.001;
+    const base = paved(lane) ? 0.026 : 0.001;
     if (o.kind === 'debris') {
       // A field of loose pieces across the lane, every size of DEBRIS.
       const random = rng(o.seed);
@@ -225,7 +236,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // brick and gypsum, materials.mjs CRUSH), as vehicle-lab-crush.*.
   const key = KEY + (crushEnabled() ? '-crush' : '');
   writeFileSync(path.join(out, `${key}.json`), JSON.stringify(pack));
-  writeFileSync(path.join(out, `${key}.meta.json`), JSON.stringify({ lanes: LANES, pads: PADS, startZ: START_Z, debris: DEBRIS, trials, places }, null, 1));
+  writeFileSync(path.join(out, `${key}.meta.json`), JSON.stringify({ lanes: LANES.map((lane) => ({ ...lane, paved: paved(lane) })), pads: PADS, startZ: START_Z, debris: DEBRIS, trials, places }, null, 1));
   writeFileSync(path.join(out, `${key}.slots`), trials.map((t) => t.slot.join(',')).join(';'));
   const masses = loose.map((n) => n.mass).sort((a, b) => a - b);
   console.log(`${key}: ${pack.scenario.nodes.length} nodes, ${pack.scenario.bonds.length} bonds; ${loose.length} loose pieces ${masses[0]?.toFixed(0)}-${masses.at(-1)?.toFixed(0)} kg; ${trials.length} trials`);
