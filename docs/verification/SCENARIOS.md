@@ -101,14 +101,36 @@ bond graph without them (`frontRearJoined`).
 
 ### Locality, standing, "more"
 
-- **Local.** No broken bond is farther from the line of travel than 2R, where
-  R is the sum of:
-  - the impactor's radius (a car's half-width);
-  - the struck layer's thickness (a 45 degree breakout cone);
-  - the struck chunk's size (the stage breaks whole chunks).
+- **Local.** No broken bond is farther from the line of travel than the hit's
+  reach, r + 2t + l:
+  - **r:** the impactor's radius (a car's half-width).
+  - **2t:** the punching perimeter around it. A concentrated load through a
+    slab or wall of depth t fails on a cone whose control perimeter lies 2t out
+    from the loaded area (EN 1992-1-1 6.4.2, basic control perimeter u1 at 2d;
+    a cone at 26.6 degrees). Past it the remaining wall carries only what the
+    perimeter's joints carried when they broke (momentum and the joints'
+    capacity), and that load spreads and falls off with distance in the plane,
+    so it breaks nothing farther out.
+  - **l:** the longest member with a joint inside that perimeter. A member cut
+    or hinged there (a stud, a plate, a sheet, a veneer panel on its ties)
+    hangs from or falls about its other joints, up to its own length away, and
+    can break them. Every member is a chunk, so that is the chunk's longest
+    dimension, read from the pack for each case.
 
-  Past the plug's perimeter the load on the remaining wall is bounded by what
-  the perimeter bonds carried when they broke, so nothing farther should break.
+  This replaces "2R", R = r + t + the struck chunk's size. The factor 2 had no
+  derivation. The old R used a 45 degree cone (t) where the code's perimeter is
+  2t. It also counted only the struck chunk, not the longest member reaching
+  into the perimeter. The reach comes out larger for light balls, where long
+  members (a sheet, a plate) reach into the perimeter: the 100 kg ball into the
+  veneer wall gets 4.1 m, against 2.1 m before. It comes out smaller for the
+  meteor into the masonry wall: 3.0 m, against 5.5 m before.
+
+  Not covered: secondary impacts. Debris thrown through the house by the hit
+  can break a joint anywhere it lands, which is real. The test bed cannot tell
+  a debris break from a load-path break, so a debris break also counts against
+  locality. The collapse test that separates gravity from the hit is the
+  impact comparison's fallen members
+  (`impact-arms.mjs`, `house.fallenBeyondReach`).
 - **Stands.** No roof member down more than 0.5 m (the house probe's
   definition). The corner and roof hits only measure it, because a corner loses
   its posts and the plates over it may sag within physics.

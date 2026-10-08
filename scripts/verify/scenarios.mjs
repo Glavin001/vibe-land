@@ -18,10 +18,10 @@
 //   exit      the speed after the struck layer(s) within [the engine's chunk
 //             plug at the nominal strengths, the real swept plug at the weak end],
 //             +-10% of the speed in for the tick sampling (as acceptance.mjs).
-//   local     no broken bond farther from the line of travel than 2 R, R = the
-//             impactor's radius (a car: its half-width) + the struck layer's
-//             thickness (a 45 degree breakout cone) + the struck chunk's size
-//             (the stage breaks whole chunks).
+//   local     no broken bond farther from the line of travel than r + 2t + l:
+//             the impactor's radius (a car: its half-width), the punching
+//             perimeter 2t past it (EN 1992-1-1 6.4.2), and the longest member
+//             with a joint inside that perimeter (it can break its own far joints).
 //   stands    no roof member down more than 0.5 m (the house probe's own definition).
 //   more      a meteor breaks more of a target than a cannonball (swept area x8.5).
 //   vehicle   every part the projectile passed through (to its mid-plane) is
@@ -178,10 +178,23 @@ export async function expectation(sc) {
     } else {
       out.outcome = weak.through && strong.through ? 'through' : !weak.through && !strong.through ? 'stopped' : 'either';
     }
-    // Locality: R = impactor radius (a car's half-width) + the struck layer + the struck chunk.
+    // Locality (docs/verification/SCENARIOS.md, "Local"): the reach of the hit
+    // from its line is the punching perimeter, r + 2t (EN 1992-1-1 6.4.2: the
+    // basic control perimeter lies 2d from the loaded area), plus the longest
+    // member with a joint inside it (a member cut or hinged there can break its
+    // own other joints, up to its length away).
     const struck = layers[0];
-    const chunk = c.chunk && P.scenario.nodeSizes[c.chunk.index] ? Math.max(...Object.values(P.scenario.nodeSizes[c.chunk.index])) : struck ? Math.max(...(struck.names.length ? [0.6] : [0.6])) : 0.6;
-    out.localR = (I.front ? I.front[0] / 2 : I.radius) + (struck?.thickness ?? c.layer ?? 0.3) + chunk;
+    const r = I.front ? I.front[0] / 2 : I.radius, t = struck?.thickness ?? c.layer ?? 0.3, perimeter = r + 2 * t;
+    let member = 0;
+    for (let i = 0; i < P.scenario.nodes.length; i += 1) {
+      if (!P.scenario.nodeGroups[i].startsWith(c.group) || !(P.scenario.nodes[i].mass > 0)) continue;
+      const q = P.scenario.nodes[i].centroid, sz = P.scenario.nodeSizes[i];
+      const rel = [q.x - aim[0], q.y - aim[1], q.z - aim[2]], along = rel[0] * dir[0] + rel[1] * dir[1] + rel[2] * dir[2];
+      const perp = Math.hypot(rel[0] - along * dir[0], rel[1] - along * dir[1], rel[2] - along * dir[2]);
+      const half = 0.5 * Math.hypot(sz.x, sz.y, sz.z);
+      if (perp - half <= perimeter && along + half >= -r && along - half <= t + r) member = Math.max(member, sz.x, sz.y, sz.z);
+    }
+    out.local = { r, t, perimeter, member, reach: perimeter + member };
   }
   if (sc.expect?.outcome === 'either' || (out.outcome === 'either' && sc.intent)) out.outcome = sc.intent ? sc.intent.split(':')[0] : 'either';
   if (!out.outcome) out.outcome = sc.expect?.outcome;
@@ -247,9 +260,9 @@ function judgeOne(ex, run, others) {
   }
   // Locality.
   const h = run.house;
-  if (e.local && h?.lineDistances) {
-    const far = 2 * ex.localR, beyond = h.lineDistances.filter((d) => d > far).length;
-    row('damage local (bonds broken > 2R from the line)', `0 beyond ${f(far, 2)} m (R ${f(ex.localR, 2)})`, `${beyond} of ${h.broken}`, e.local === 'reported' ? null : beyond === 0);
+  if (e.local && h?.lineDistances && ex.local) {
+    const far = ex.local.reach, beyond = h.lineDistances.filter((d) => d > far).length;
+    row('damage local (bonds broken beyond r + 2t + member from the line)', `0 beyond ${f(far, 2)} m (r ${f(ex.local.r, 2)} + 2t ${f(2 * ex.local.t, 2)} + member ${f(ex.local.member, 2)})`, `${beyond} of ${h.broken}`, e.local === 'reported' ? null : beyond === 0);
   }
   if (e.stands && h?.roofMembers) row('stands (roof members down > 0.5 m)', `${ROOF_DOWN}`, `${h.roofMembersDown} of ${h.roofMembers}`, e.stands === 'reported' ? null : h.roofMembersDown <= ROOF_DOWN);
   if (e.broken) {
@@ -294,7 +307,7 @@ if (cmd === 'table') {
   for (const sc of DATA.scenarios) {
     const ex = await expectation(sc);
     const lay = (ex.layers ?? []).map((L) => `${L.kind} ${f(L.thickness * 100, 0)}cm ${f(L.mass, 0)}kg`).join(' | ');
-    console.log(`${sc.id.padEnd(34)} ${String(ex.outcome).padEnd(8)} exit ${ex.exit ? `${f(ex.exit.nominal)} [${f(ex.exit.low)}-${f(ex.exit.high)}]` : '-'}${ex.force ? ` F ${f(ex.force.F / 1e3, 0)} kN` : ''} R ${f(ex.localR, 2)}  ${lay}${ex.error ? ' ' + ex.error : ''}`);
+    console.log(`${sc.id.padEnd(34)} ${String(ex.outcome).padEnd(8)} exit ${ex.exit ? `${f(ex.exit.nominal)} [${f(ex.exit.low)}-${f(ex.exit.high)}]` : '-'}${ex.force ? ` F ${f(ex.force.F / 1e3, 0)} kN` : ''} reach ${f(ex.local?.reach, 2)}  ${lay}${ex.error ? ' ' + ex.error : ''}`);
   }
 } else if (cmd === 'markdown') {
   // The matrix as a Markdown table, with each profile's verdict rows (scenarios.sh --out files).
@@ -312,7 +325,7 @@ if (cmd === 'table') {
   for (const sc of DATA.scenarios) {
     const ex = await expectation(sc);
     const exp = [ex.outcome, ex.force ? `F ${f(ex.force.F / 1e3, 0)} kN vs ${ex.force.resistance?.map((x) => f(x / 1e3, 0)).join('-')} kN` : null,
-      sc.expect?.exit && ex.exit ? `exit ${f(ex.exit.nominal)} m/s [${f(ex.exit.low)}-${f(ex.exit.high)}]` : null, sc.expect?.local === true ? `local within ${f(2 * ex.localR, 1)} m` : null,
+      sc.expect?.exit && ex.exit ? `exit ${f(ex.exit.nominal)} m/s [${f(ex.exit.low)}-${f(ex.exit.high)}]` : null, sc.expect?.local === true ? `local within ${f(ex.local?.reach, 1)} m` : null,
       sc.expect?.stands === true ? 'roof holds' : null, sc.expect?.more ? `more than ${sc.expect.more}` : null,
       sc.expect?.vehicle ? Object.entries(sc.expect.vehicle).map(([k, v]) => `${k} ${v}`).join(', ') : null, sc.intent ? `*intent: ${sc.intent}*` : null].filter(Boolean).join('; ');
     console.log(`| ${sc.id} | ${exp} | ${cell('runtime', sc.id)} | ${cell('high', sc.id)} |`);
