@@ -144,7 +144,7 @@ def sdk_missing(job, procs):
         rev = json.load(open(os.path.join(root, "sdk-artifacts.json"))).get("source_revision", "")
     except Exception:
         return None
-    missing = []
+    missing, contained = [], 0
     try:
         rows = [l.rstrip("\n").split("\t") for l in open(os.path.join(ROOT, "scripts/fidelity/branches.tsv"))]
     except OSError:
@@ -164,7 +164,11 @@ def sdk_missing(job, procs):
             ok = ok or _rev_cache[key]
         if not ok:
             missing.append(row[1])
-    return missing
+        else:
+            contained += 1
+    # An SDK that contains none of the tracked branches is a runtime (shipping)
+    # SDK, which by design lacks them all: not stale.
+    return missing if contained else []
 
 
 def waiters(procs):
