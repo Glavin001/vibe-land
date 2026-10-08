@@ -164,6 +164,15 @@ class Explicit:
         # each contact row's 3x3 effective inverse mass W = B_c^T M^-1 B_c (normal + 2 tangents)
         self.Bc = [self.B[:, 6 * l:6 * l + 3] for l in self.contacts]
         self.W = [np.asarray((b.T @ self.Mi @ b).todense()) for b in self.Bc]
+        # Mass splitting (the GPU's Jacobi rows): each node's inverse mass times its row count.
+        rowc = np.zeros(nn)
+        for l in self.contacts:
+            for c in P.d['link_u'][l, 1:3]:
+                k = P.index.get(int(c))
+                if k is not None: rowc[k] += 1
+        S = sp.diags(np.repeat(np.maximum(rowc, 1), 6))
+        self.Ws = [np.asarray((b.T @ (self.Mi @ S) @ b).todense()) for b in self.Bc]
+        self.jacobi = False
 
     def scale_rotation(self, Mi, target):
         """Rotational inertia raised so no node's rotational Gershgorin frequency exceeds `target` (rad/s)."""
@@ -221,7 +230,17 @@ class Explicit:
                 v = self.S(dt, live) @ v
             # contacts: Moreau impulse per substep, Gauss-Seidel over the rows, Coulomb cone
             Pc = np.zeros((len(self.contacts), 3))
-            for _ in range(sweeps):
+            if self.jacobi:
+                # The GPU step: every row from the same velocities, each with its nodes' inverse
+                # masses times their row counts (mass splitting), then all applied at once.
+                dv = np.zeros_like(v)
+                for i, l in enumerate(self.contacts):
+                    g = np.asarray(self.Bc[i].T @ v).ravel()
+                    Ps = -np.linalg.solve(self.Ws[i], g)
+                    Pi = cone_coulomb(self.Ws[i], g, Ps, self.mu[i]) if self.cone == 'coulomb' else cone_metric(self.Ws[i], Ps, self.mu[i])
+                    Pc[i] = Pi; dv += Mi @ (self.Bc[i] @ Pi)
+                v = v + dv.astype(v.dtype)
+            for _ in range(0 if self.jacobi else sweeps):
                 for i, l in enumerate(self.contacts):
                     g = np.asarray(self.Bc[i].T @ v).ravel()
                     old = Pc[i].copy()
@@ -337,11 +356,13 @@ def main():
     ap.add_argument('--fp32', action='store_true'); ap.add_argument('--mass-scale', type=float, default=None,
                     help='target rotational frequency (rad/s); default none')
     ap.add_argument('--dt-us', type=float, default=None); ap.add_argument('--sweeps', type=int, default=4); ap.add_argument('--json'); ap.add_argument('--zeta', type=float, default=0.0, help='damping ratio at the hop frequency (beta = 2 zeta / omega_hop)'); ap.add_argument('--handoff', action='store_true')
+    ap.add_argument('--contacts', default='gauss-seidel', choices=['gauss-seidel', 'jacobi'], help='rows one after another (--sweeps of them), or all from the same velocities with mass splitting (the GPU step)')
     ap.add_argument('--cone', default='coulomb', choices=['coulomb', 'metric', 'clamp'], help='the contact impulse: Coulomb sliding with the metric projection as its energy-safe fallback (the GPU step), the projection alone, or the tangential clamp')
     a = ap.parse_args()
     P = cf.Problem(a.dump, True, [2217, 2218])
     E = json.loads(pathlib.Path(a.e_json).read_text()); eb = E['broken']
     X = Explicit(P, patch=a.patch, boundary=a.boundary, dtype=np.float32 if a.fp32 else np.float64, mass_scale=a.mass_scale, cone=a.cone)
+    X.jacobi = a.contacts == 'jacobi'
     wmax, wg = X.omega_max()
     k_med = np.median(X.k[P.joint & P.alive0][:, 0]); w_hop = np.sqrt(k_med / np.median(P.mass))
     X.damping = 2 * a.zeta / w_hop if a.zeta else 0.0
