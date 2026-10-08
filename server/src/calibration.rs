@@ -20,6 +20,7 @@
 //! VIBE_CALIB_SAMPLE    every this many ticks, every chunk's position (default 30)
 //! VIBE_CALIB_ROWS_AT   comma list of ticks at which every bond's stress row is kept (default 2,
 //!                      the first solve at rest)
+//! VIBE_CALIB_WAKE     every this many ticks, wake every body (default 0: never)
 //! VIBE_CALIB_TRACE    per tick (the first 20, then every 60): each case's most utilised bond and
 //!                      how many of its bonds read zero health or broken
 //! VIBE_CALIB_CHARGES   a JSON file: [{"tick": t, "boxes": [[min, max], ...]}, ...] -- static
@@ -110,6 +111,12 @@ fn calibration_run() {
 
     let mut first_broken: BTreeMap<u32, (u32, Value)> = BTreeMap::new();
     let trace = std::env::var_os("VIBE_CALIB_TRACE").is_some();
+    let wake = env_u32("VIBE_CALIB_WAKE", 0);
+    let pokes: Vec<(u32, [f32; 3], f32, f32)> = std::env::var("VIBE_CALIB_POKES").ok().map(|path| {
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).expect("pokes file")).expect("pokes json");
+        v.as_array().expect("pokes: a list").iter().map(|p| (p["tick"].as_u64().unwrap() as u32,
+            [0, 1, 2].map(|k| p["at"][k].as_f64().unwrap() as f32), p["mass"].as_f64().unwrap_or(5.0) as f32, p["speed"].as_f64().unwrap_or(2.0) as f32)).collect()
+    }).unwrap_or_default();
     let mut last_row: BTreeMap<u32, Value> = BTreeMap::new();
     let mut rows_kept: Vec<Value> = Vec::new();
     let mut positions: Vec<Value> = Vec::new();
@@ -134,6 +141,18 @@ fn calibration_run() {
     let started = std::time::Instant::now();
     for tick in 1..=ticks {
         if let Some(c) = charges.as_mut() { c.apply(tick, offset, arena.physx_world_mut().unwrap()); }
+        // VIBE_CALIB_POKES: a light ball dropped onto each listed point at its tick (is a structure
+        // that should move held, or only asleep?): [{"tick", "at": [x, y, z], "mass", "speed"}].
+        for p in &pokes {
+            if p.0 == tick {
+                let at = nalgebra::Vector3::new(p.1[0] + offset[0], p.1[1] + offset[1], p.1[2] + offset[2]);
+                let from = at + nalgebra::Vector3::new(0.0, 0.6, 0.0);
+                arena.launch_ball_from_muzzle(from, nalgebra::Vector3::new(0.0, -p.3, 0.0), 0.1, p.2, 300);
+                eprintln!("[calibration] tick {tick}: poke at {:?}", p.1);
+            }
+        }
+        // VIBE_CALIB_WAKE=N: wake every body every N ticks (is a piece at rest held, or only asleep?).
+        if wake > 0 && tick % wake == 0 { arena.physx_world_mut().unwrap().wake_bodies_near(vibe_land_physx_bridge::Vec3::new(offset[0], offset[1], offset[2]), 1.0e4).ok(); }
         if trace && tick == 1 { arena.physx_world_mut().unwrap().native_set_stress_solve_report(1).ok(); }
         arena.step_vehicles_and_dynamics(DT);
         let _ = city.step(tick, DT, gravity, arena.physx_world_mut());
