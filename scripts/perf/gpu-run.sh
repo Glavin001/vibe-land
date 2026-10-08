@@ -1,4 +1,10 @@
 #!/bin/bash
+# The whole script is one { ...; exit; } block: bash parses it completely before
+# running any of it, so editing this file can't change a running instance. (An
+# in-place edit once shifted three live instances into the exclusive branch's
+# wait-for-empty loop while each held a slot: a deadlock.) Still, replace it
+# atomically (write a temp file, then mv).
+{
 # Run a GPU job under this machine's GPU admission: scripts/perf/gpu-run.sh <label> <command...>
 #
 # Two kinds of job share one Apple GPU:
@@ -101,3 +107,6 @@ else
   claimed "$LOCK" "$@"
 fi
 VIBE_GPU_HELD=$held "$@"
+
+exit $?
+}
