@@ -15,7 +15,7 @@ when it clears), never repeated while it holds. The conditions:
   VIBE_WATCH_IDLE_S (default 300 s; reported once per idle spell);
 - STALLED: a running job's processes used no CPU for VIBE_WATCH_STALL_S
   (default 600 s). GPU jobs use little CPU but never none for minutes;
-- LONG: a job has run longer than VIBE_WATCH_LONG_S (default 3600 s);
+- LONG: a job has run longer than VIBE_WATCH_LONG_S (default 900 s; owner: no 1-2 h runs);
 - STALE SDK: a running job's SDK (PHYSX_ROOT, from its lock info or command)
   was built from a revision missing the head of a PhysX branch in
   scripts/fidelity/branches.tsv; its result will be refused as stale;
@@ -32,7 +32,7 @@ DIR = os.environ.get("VIBE_GPU_LOCK_DIR", os.path.expanduser("~/Library/Caches/v
 PHYSX_SOURCE = os.environ.get("PHYSX_SOURCE", "/Users/glavin/Development/PhysX")
 ENV = lambda k, d: float(os.environ.get(k, d))
 QUEUE_S, IDLE_S, STALL_S = ENV("VIBE_WATCH_QUEUE_S", 60), ENV("VIBE_WATCH_IDLE_S", 300), ENV("VIBE_WATCH_STALL_S", 600)
-LONG_S, WAITER_S, POLL = ENV("VIBE_WATCH_LONG_S", 3600), ENV("VIBE_WATCH_WAITER_S", 7200), ENV("VIBE_WATCH_POLL_S", 10)
+LONG_S, WAITER_S, POLL = ENV("VIBE_WATCH_LONG_S", 900), ENV("VIBE_WATCH_WAITER_S", 7200), ENV("VIBE_WATCH_POLL_S", 10)
 SLOTS = int(os.environ.get("VIBE_GPU_SLOTS", "3"))
 
 
