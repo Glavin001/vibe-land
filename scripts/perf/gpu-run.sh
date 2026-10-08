@@ -64,8 +64,21 @@ trap 'release; exit 130' INT TERM
 
 if [ "${VIBE_GPU_SHARED:-0}" = 1 ]; then
   # A shared job waits while timing work holds the GPU, then takes a free slot.
+  # Fairness: a timing job waits for an idle GPU, so a steady stream of shared
+  # jobs could starve it. Once one has waited VIBE_GPU_EXCL_WAIT s (default 300),
+  # new shared jobs hold back until it has run.
+  excl_starving() {
+    local f pid lbl since kind
+    for f in "$DIR"/queue/*; do
+      [ -f "$f" ] || continue
+      read -r pid lbl since kind _ < "$f" 2>/dev/null || continue
+      [ "$kind" = exclusive ] && kill -0 "$pid" 2>/dev/null && [ $(( $(date +%s) - since )) -gt "${VIBE_GPU_EXCL_WAIT:-300}" ] && return 0
+    done
+    return 1
+  }
   while [ -z "$held" ]; do
     if [ -d "$LOCK" ]; then stale "$LOCK" && rm -rf "$LOCK"; sleep 2; continue; fi
+    if excl_starving; then sleep 2; continue; fi
     for i in $(seq 1 "$SLOTS"); do
       slot="$DIR/slot-$i"
       if mkdir "$slot" 2>/dev/null; then
