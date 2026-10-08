@@ -9,7 +9,9 @@
 # again during a build is picked up by the next check, so a burst of commits costs
 # one more build, not one per commit. In-flight runs keep the revision they started
 # on; new runs start at most one build behind (about 5-10 min).
-# One line per event on stdout (and in target/ops/sdk-follow.log):
+# One line per event on stdout (and in target/ops/sdk-follow.log), an "alive" line
+# every hour, and its own exit (status or signal). One instance (target/ops/sdk-follow.lock).
+# Run it detached: nohup scripts/ops/sdk-follow.sh > /dev/null 2>&1 &
 #   rebuilt <rev> with <branch> <head>, ...
 #   CONFLICT merging <branch> <head>: merge aborted, nothing built (a person resolves it)
 #   BUILD FAILED at <rev>: <log>
@@ -27,12 +29,20 @@ while [ $# -gt 0 ]; do
 done
 mkdir -p "$ROOT/target/ops"
 LOG=$ROOT/target/ops/sdk-follow.log
-lock=$ROOT/target/ops/sdk-follow.pid
-if [ -f "$lock" ] && kill -0 "$(cat "$lock")" 2>/dev/null && [ "$(cat "$lock")" != $$ ]; then
-  echo "sdk-follow: already running as $(cat "$lock")" >&2; exit 1
+say() { local line; line="$(date +%H:%M:%S) $*"; echo "$line" >> "$LOG"; echo "$line" 2>/dev/null || true; }
+# One instance: an atomic lock directory holding the owner's pid. A lock whose
+# owner is gone is taken over (and said so).
+lock=$ROOT/target/ops/sdk-follow.lock
+if ! mkdir "$lock" 2>/dev/null; then
+  owner=$(cat "$lock/pid" 2>/dev/null)
+  if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then echo "sdk-follow: already running as $owner (lock $lock)" >&2; exit 1; fi
+  say "taking over the lock of $owner (no longer running)"; rm -rf "$lock"; mkdir "$lock" || exit 1
 fi
-echo $$ > "$lock"; trap 'rm -f "$lock"' EXIT
-say() { echo "$(date +%H:%M:%S) $*" | tee -a "$LOG"; }
+echo $$ > "$lock/pid"
+# Every exit is logged: its status, or the signal that ended it.
+trap 'status=$?; say "exited (status $status)"; rm -rf "$lock"' EXIT
+for sig in HUP INT TERM; do trap "say \"stopped by SIG$sig\"; exit 143" $sig; done
+alive_at=$SECONDS
 # The PhysX branches the high profile needs (the first name of an a|b pair), and
 # the build-only ones (scripts/ops/sdk-follow.tsv: not provenance, never "stale").
 branches() { awk -F'\t' '$1=="physx"{split($2,a,"|"); print a[1]}' "$ROOT/scripts/fidelity/branches.tsv" "$ROOT/scripts/ops/sdk-follow.tsv"; }
@@ -76,5 +86,6 @@ while true; do
     fi
   fi
   [ $once = 1 ] && exit 0
+  if [ $((SECONDS - alive_at)) -ge 3600 ]; then say "alive: $INTEGRATION at $(git -C "$SRC" rev-parse --short=9 HEAD), $NAME -> $(readlink "$SRC/out/install/$NAME")"; alive_at=$SECONDS; fi
   sleep "$interval"
 done
