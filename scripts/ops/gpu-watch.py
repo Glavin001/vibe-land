@@ -189,15 +189,16 @@ def waiters(procs):
                 problem = f"its target pid {target} has exited"
         else:
             g = re.search(r"grep[^;]*?(/\S+\.(?:log|out|output|json))", body)
-            target = g.group(1) if g else body[:80]
+            target = g.group(1) if g else None  # unknown target: never counted as a duplicate
             if g and os.path.exists(g.group(1)) and time.time() - os.path.getmtime(g.group(1)) > 1800:
                 problem = f"the file it polls ({os.path.basename(g.group(1))}) has not changed for {int((time.time() - os.path.getmtime(g.group(1))) / 60)} min"
         if problem is None and p["age"] > WAITER_S:
             problem = f"has polled for {p['age'] // 3600} h"
-        out.append(dict(pid=pid, age=p["age"], target=str(target), problem=problem))
+        out.append(dict(pid=pid, age=p["age"], target=target if target is None else str(target), problem=problem))
     seen = {}
     for w in out:
-        seen.setdefault(w["target"], []).append(w)
+        if w["target"] not in (None, "None"):
+            seen.setdefault(w["target"], []).append(w)
     for target, ws in seen.items():
         if len(ws) > 1:
             for w in sorted(ws, key=lambda w: -w["age"])[:-1]:
@@ -219,7 +220,7 @@ def board(procs):
     for q in queue:
         lines.append(f"  queued: {q['label']} ({q['kind']}, pid {q['pid']}, {int(now - q['since'])} s)")
     for w in waiters(procs):
-        lines.append(f"  waiter {w['pid']} ({w['age'] // 60} min) on {w['target'][:70]}" + (f"  PROBLEM: {w['problem']}" if w["problem"] else ""))
+        lines.append(f"  waiter {w['pid']} ({w['age'] // 60} min) on {str(w['target'])[:70]}" + (f"  PROBLEM: {w['problem']}" if w["problem"] else ""))
     return "\n".join(lines)
 
 
@@ -278,7 +279,7 @@ def stream():
             active.pop("idle", None)
         for w in waiters(procs):
             if w["problem"]:
-                emit(f"waiter:{w['pid']}", f"WAITER {w['pid']} {w['problem']} (target {w['target'][:60]})")
+                emit(f"waiter:{w['pid']}", f"WAITER {w['pid']} {w['problem']} (target {str(w['target'])[:60]})")
         time.sleep(POLL)
 
 
