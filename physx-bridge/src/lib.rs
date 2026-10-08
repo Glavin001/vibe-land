@@ -5,6 +5,8 @@
 //! `gpu` builds the C++ bridge and requires a working CUDA/PhysX GPU scene at
 //! runtime; there is deliberately no CPU PhysX fallback.
 
+pub mod ground_mesh;
+
 use std::fmt;
 
 pub const FIXED_TIMESTEP: f32 = 1.0 / 60.0;
@@ -180,6 +182,20 @@ pub struct StaticBoxDesc {
     pub user_id: u32,
     pub pose: Pose,
     pub half_extents: Vec3,
+    pub collision_group: u32,
+    pub collision_mask: u32,
+}
+
+/// A static triangle mesh (`World::add_static_mesh`). `friction < 0` takes the
+/// world's default material (WorldConfig friction and restitution).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(C)]
+pub struct StaticMeshDesc {
+    pub entity_id: u32,
+    pub user_id: u32,
+    pub pose: Pose,
+    pub friction: f32,
+    pub restitution: f32,
     pub collision_group: u32,
     pub collision_mask: u32,
 }
@@ -411,6 +427,7 @@ pub enum BodyKind {
     DynamicBox = 3,
     DynamicSphere = 4,
     VehicleChassis = 5,
+    StaticMesh = 7,
 }
 
 impl BodyKind {
@@ -422,6 +439,7 @@ impl BodyKind {
             3 => Self::DynamicBox,
             4 => Self::DynamicSphere,
             5 => Self::VehicleChassis,
+            7 => Self::StaticMesh,
             _ => unreachable!("C++ returned invalid body kind {value}"),
         }
     }
@@ -1048,6 +1066,22 @@ impl World {
         #[cfg(not(feature = "gpu"))]
         {
             let _ = (desc, samples);
+            Err(stub_unavailable())
+        }
+    }
+
+    /// A static triangle mesh: `vertices` xyz triplets, `indices` triangles
+    /// (counter-clockwise seen from outside). Cooked with active edges, so the
+    /// edges between its coplanar triangles are no edges to a body sliding over
+    /// them (see `ground_mesh` for flat ground built from boxes).
+    pub fn add_static_mesh(&mut self, desc: StaticMeshDesc, vertices: &[f32], indices: &[u32]) -> Result<(), BridgeError> {
+        #[cfg(feature = "gpu")]
+        {
+            self.inner.pin_mut().add_static_mesh(&desc.into(), vertices, indices).map_err(operation_error)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = (desc, vertices, indices);
             Err(stub_unavailable())
         }
     }
@@ -1860,6 +1894,15 @@ impl World {
         self.inner.pin_mut().native_set_impactor_impedance(entity_id, impedance).map_err(operation_error)
     }
 
+    /// Take a structure's authored chunks (node indices) out of every contact
+    /// pair: chunks standing for geometry another collider carries (ground
+    /// surfaces drawn as chunks, colliding as one static mesh). Queries still
+    /// see them. Returns how many changed.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_exclude_chunk_contacts(&mut self, structure_id: u32, nodes: &[u32]) -> Result<u32, BridgeError> {
+        self.inner.pin_mut().native_exclude_chunk_contacts(structure_id, nodes).map_err(operation_error)
+    }
+
     #[cfg(feature = "native-destruction")]
     pub fn native_crush_material(&self, structure_id: u32, material: u32) -> Result<CrushMaterialDesc, BridgeError> {
         self.inner.native_crush_material(structure_id, material).map(|c| CrushMaterialDesc {
@@ -2137,6 +2180,16 @@ mod ffi {
         user_id: u32,
         pose: FfiPose,
         half_extents: FfiVec3,
+        collision_group: u32,
+        collision_mask: u32,
+    }
+
+    struct FfiStaticMeshDesc {
+        entity_id: u32,
+        user_id: u32,
+        pose: FfiPose,
+        friction: f32,
+        restitution: f32,
         collision_group: u32,
         collision_mask: u32,
     }
@@ -2921,6 +2974,12 @@ mod ffi {
             desc: &FfiHeightfieldDesc,
             samples: &[f32],
         ) -> Result<()>;
+        fn add_static_mesh(
+            self: Pin<&mut World>,
+            desc: &FfiStaticMeshDesc,
+            vertices: &[f32],
+            indices: &[u32],
+        ) -> Result<()>;
         fn add_dynamic_box(self: Pin<&mut World>, desc: &FfiDynamicBoxDesc) -> Result<()>;
         fn add_dynamic_sphere(self: Pin<&mut World>, desc: &FfiDynamicSphereDesc) -> Result<()>;
         fn launch_dynamic_ball(self: Pin<&mut World>, desc: &FfiLaunchedBallDesc) -> Result<()>;
@@ -3058,6 +3117,7 @@ mod ffi {
         fn native_take_crush_events(self: Pin<&mut World>) -> Result<Vec<FfiChunkCrushEvent>>;
         fn native_crush_material(self: &World, structure_id: u32, material: u32) -> Result<FfiCrushMaterial>;
         fn native_set_impactor_impedance(self: Pin<&mut World>, entity_id: u32, impedance: f32) -> Result<()>;
+        fn native_exclude_chunk_contacts(self: Pin<&mut World>, structure_id: u32, nodes: &[u32]) -> Result<u32>;
         fn native_chunk_body_snapshots(self: &World) -> Result<&[FfiChunkBodySnapshot]>;
         fn native_bond_stress_rows(
             self: &World,
@@ -3134,6 +3194,19 @@ impl_ffi_from!(
         user_id,
         pose,
         half_extents,
+        collision_group,
+        collision_mask,
+    }
+);
+#[cfg(feature = "gpu")]
+impl_ffi_from!(
+    StaticMeshDesc,
+    ffi::FfiStaticMeshDesc {
+        entity_id,
+        user_id,
+        pose,
+        friction,
+        restitution,
         collision_group,
         collision_mask,
     }

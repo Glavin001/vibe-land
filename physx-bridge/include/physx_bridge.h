@@ -11,6 +11,7 @@ struct FfiVec3;
 struct FfiWorldConfig;
 struct FfiStaticBoxDesc;
 struct FfiHeightfieldDesc;
+struct FfiStaticMeshDesc;
 struct FfiDynamicBoxDesc;
 struct FfiChunkAim;
 struct FfiChunkRayHit;
@@ -63,6 +64,9 @@ public:
   void add_static_box(const FfiStaticBoxDesc &desc);
   void add_heightfield(const FfiHeightfieldDesc &desc,
                        rust::Slice<const float> samples);
+  void add_static_mesh(const FfiStaticMeshDesc &desc,
+                       rust::Slice<const float> vertices,
+                       rust::Slice<const std::uint32_t> indices);
   void add_dynamic_box(const FfiDynamicBoxDesc &desc);
   void add_dynamic_sphere(const FfiDynamicSphereDesc &desc);
   void launch_dynamic_ball(const FfiLaunchedBallDesc &desc);
@@ -183,6 +187,8 @@ public:
   rust::Vec<FfiChunkCrushEvent> native_take_crush_events();
   FfiCrushMaterial native_crush_material(std::uint32_t structure_id, std::uint32_t material) const;
   void native_set_impactor_impedance(std::uint32_t entity_id, float impedance);
+  std::uint32_t native_exclude_chunk_contacts(std::uint32_t structure_id,
+                                              rust::Slice<const std::uint32_t> nodes);
   rust::Slice<const FfiChunkBodySnapshot> native_chunk_body_snapshots() const;
   rust::Vec<FfiBondStressRow> native_bond_stress_rows(std::uint32_t structure_id) const;
   FfiDestructionStats native_stats() const;

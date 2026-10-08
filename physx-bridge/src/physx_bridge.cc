@@ -134,6 +134,7 @@ enum class RecordKind : std::uint8_t {
   DynamicSphere = 4,
   VehicleChassis = 5,
   Player = 6,
+  StaticMesh = 7,
 };
 
 struct Record {
@@ -2277,6 +2278,74 @@ public:
     }
   }
 
+  // A static triangle mesh (PxTriangleMeshGeometry), cooked with PhysX's
+  // defaults -- mesh cleaning welds coincident vertices, and active edges are
+  // precomputed, so an edge between coplanar triangles is inactive and a body
+  // sliding across it meets no edge (the standard answer to ghost contacts on
+  // flat ground built from pieces) -- and with GPU data for the GPU
+  // narrowphase. Negative friction: the world's default material.
+  void add_static_mesh(const FfiStaticMeshDesc &desc,
+                       rust::Slice<const float> vertices,
+                       rust::Slice<const std::uint32_t> indices) {
+    ensure_new_id(desc.entity_id);
+    require(vertices.size() >= 9 && vertices.size() % 3 == 0,
+            "static mesh needs at least three xyz vertices");
+    require(indices.size() >= 3 && indices.size() % 3 == 0,
+            "static mesh indices must be whole triangles");
+    const std::size_t vertex_count = vertices.size() / 3;
+    for (const float v : vertices) require(finite(v), "static mesh vertex is not finite");
+    for (const std::uint32_t i : indices) require(i < vertex_count, "static mesh index out of range");
+    PxTriangleMeshDesc mesh_desc;
+    mesh_desc.points.count = static_cast<PxU32>(vertex_count);
+    mesh_desc.points.stride = 3 * sizeof(float);
+    mesh_desc.points.data = vertices.data();
+    mesh_desc.triangles.count = static_cast<PxU32>(indices.size() / 3);
+    mesh_desc.triangles.stride = 3 * sizeof(std::uint32_t);
+    mesh_desc.triangles.data = indices.data();
+    PxPhysics &physics = runtime_->physics();
+    PxCookingParams cooking(physics.getTolerancesScale());
+    cooking.buildGPUData = true;
+    PxTriangleMesh *mesh = PxCreateTriangleMesh(cooking, mesh_desc, physics.getPhysicsInsertionCallback());
+    require(mesh != nullptr, "PhysX triangle mesh cooking failed");
+    PxRigidStatic *actor = physics.createRigidStatic(to_px(desc.pose));
+    if (actor == nullptr) {
+      mesh->release();
+      throw std::runtime_error("failed to create static mesh actor");
+    }
+    PxMaterial *mesh_material = nullptr;
+    try {
+      if (desc.friction >= 0.0f) {
+        require(finite(desc.friction) && finite(desc.restitution) &&
+                    desc.restitution >= 0.0f && desc.restitution <= 1.0f,
+                "static mesh material values are invalid");
+        mesh_material = physics.createMaterial(desc.friction, desc.friction, desc.restitution);
+        require(mesh_material != nullptr, "failed to create static mesh material");
+      }
+      PxShape *shape = PxRigidActorExt::createExclusiveShape(
+          *actor, PxTriangleMeshGeometry(mesh), mesh_material != nullptr ? *mesh_material : *material_);
+      if (mesh_material != nullptr) {
+        mesh_material->release();
+        mesh_material = nullptr;
+      }
+      mesh->release();
+      mesh = nullptr;
+      require(shape != nullptr, "failed to create static mesh shape");
+      configure_shape(*shape, desc.entity_id, desc.collision_group,
+                      desc.collision_mask);
+      tag_actor(*actor, desc.entity_id);
+      scene_->addActor(*actor);
+      records_.emplace(desc.entity_id,
+                       Record{desc.entity_id, desc.user_id,
+                              desc.collision_group, desc.collision_mask,
+                              RecordKind::StaticMesh, actor});
+    } catch (...) {
+      if (mesh_material != nullptr) mesh_material->release();
+      if (mesh != nullptr) mesh->release();
+      actor->release();
+      throw;
+    }
+  }
+
   void add_heightfield(const FfiHeightfieldDesc &desc,
                        rust::Slice<const float> heights) {
     ensure_new_id(desc.entity_id);
@@ -4214,6 +4283,12 @@ public:
 
   FfiNativeStatus native_last_status() const { return native().last_status(); }
 
+  std::uint32_t native_exclude_chunk_contacts(std::uint32_t structure_id,
+                                              rust::Slice<const std::uint32_t> nodes) {
+    require(!step_in_flight_, "native_exclude_chunk_contacts must run outside a step");
+    return native().exclude_chunk_contacts(structure_id, nodes);
+  }
+
   void native_set_impactor_impedance(std::uint32_t entity_id, float impedance) {
     require(!step_in_flight_, "native_set_impactor_impedance must run outside a step");
     Record &record = find(entity_id);
@@ -4533,6 +4608,12 @@ void World::add_static_box(const FfiStaticBoxDesc &desc) {
   impl_->add_static_box(desc);
 }
 
+void World::add_static_mesh(const FfiStaticMeshDesc &desc,
+                            rust::Slice<const float> vertices,
+                            rust::Slice<const std::uint32_t> indices) {
+  impl_->add_static_mesh(desc, vertices, indices);
+}
+
 void World::add_heightfield(const FfiHeightfieldDesc &desc,
                             rust::Slice<const float> samples) {
   impl_->add_heightfield(desc, samples);
@@ -4815,6 +4896,11 @@ rust::Vec<FfiIslandBodyEvent> World::native_take_island_events() {
 rust::Vec<FfiChunkCrushEvent> World::native_take_crush_events() {
   return impl_->native_take_crush_events();
 }
+std::uint32_t World::native_exclude_chunk_contacts(std::uint32_t structure_id,
+                                                  rust::Slice<const std::uint32_t> nodes) {
+  return impl_->native_exclude_chunk_contacts(structure_id, nodes);
+}
+
 void World::native_set_impactor_impedance(std::uint32_t entity_id, float impedance) {
   impl_->native_set_impactor_impedance(entity_id, impedance);
 }

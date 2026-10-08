@@ -140,6 +140,12 @@ public:
   /// A non-destructible body's acoustic impedance for the impact-pressure
   /// crush (0 forgets it). No effect on SDKs without it.
   void set_impactor_impedance(std::uint32_t gpu_index, float impedance);
+  /// Take authored chunks out of every contact pair (their simulation filter's
+  /// mask cleared; queries still see them): chunks that stand for geometry the
+  /// world carries in another collider, such as ground surfaces drawn as chunks
+  /// whose collision is one static mesh. Returns how many it changed.
+  std::uint32_t exclude_chunk_contacts(std::uint32_t structure_id,
+                                       rust::Slice<const std::uint32_t> nodes);
 
   /// Where a named chunk is now, and which body owns it.
   FfiChunkAim chunk_aim(std::uint32_t structure_id,

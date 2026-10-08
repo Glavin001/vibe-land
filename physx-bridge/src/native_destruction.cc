@@ -9,6 +9,7 @@
 #include "geometry/PxGeometryQuery.h"
 
 #include <algorithm>
+#include <unordered_set>
 #include <cfloat>
 #include <chrono>
 #include <cmath>
@@ -1873,6 +1874,22 @@ std::uint32_t NativeDestruction::fire_round(const FfiRoundDesc &desc) {
       NativeRound{body, s.tick_index + std::max<std::uint32_t>(desc.ttl_ticks, 1u)});
   s.rounds_fired += 1;
   return static_cast<std::uint32_t>(s.rounds.size());
+}
+
+std::uint32_t NativeDestruction::exclude_chunk_contacts(std::uint32_t structure_id,
+                                                      rust::Slice<const std::uint32_t> nodes) {
+  State &s = *state_;
+  std::unordered_set<std::uint32_t> wanted(nodes.begin(), nodes.end());
+  std::uint32_t changed = 0;
+  for (auto &chunk : s.chunks) {
+    if (chunk.structure != structure_id || chunk.shape == nullptr || !wanted.count(chunk.authored)) continue;
+    PxFilterData filter = chunk.shape->getSimulationFilterData();
+    if (filter.word1 == 0) continue;
+    filter.word1 = 0;  // collides with no group: the filter shader suppresses every pair
+    chunk.shape->setSimulationFilterData(filter);
+    changed += 1;
+  }
+  return changed;
 }
 
 void NativeDestruction::set_impactor_impedance(std::uint32_t gpu_index, float impedance) {
