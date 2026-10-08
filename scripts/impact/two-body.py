@@ -242,7 +242,7 @@ def pcg(A, b, prec, tol=1e-6, maxit=200):
 
 
 def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, DT), J0=None, sweeps=1, quiet=False,
-        implicit=None, iters=1, sms=None, theta=1.0, row_theta=1.0, hybrid=False):
+        implicit=None, iters=1, sms=None, theta=1.0, row_theta=1.0, hybrid=False, last_apply=True):
     """The window. Returns the trace and the books.
 
     implicit: a body name (or None). Its joints (both ends in it) are integrated linearly
@@ -398,7 +398,7 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
                 depth[i] = max(depth[i] + (row_theta * gn + (1 - row_theta) * gb) * h, 0.0)
         # implicit joints: each by itself, backward Euler on its two (split) nodes
         if implicit:
-            for _ in range(iters):
+            for sweep in range(iters):
                 idx = np.where(imp & live)[0]
                 # theta 1: backward Euler; 1/2: the trapezoidal rule (the joint rate at the
                 # substep's start and end)
@@ -409,7 +409,9 @@ def run(model, T=DT, h=None, dtype=np.float64, record=(1e-3, 2e-3, 4e-3, 8e-3, D
                 Jnew = Jt.copy(); kill(brit, Jnew, t)
                 change = np.zeros_like(J); change[idx] = Jnew[idx] - J[idx]
                 ke1 = KE(v)
-                v = v + h * apply_inv(B @ change.reshape(-1))
+                # (last_apply False: the last sweep's increment reaches v through the next
+                # substep's gather of J, not in its own phase -- one node phase fewer)
+                if last_apply or sweep < iters - 1: v = v + h * apply_inv(B @ change.reshape(-1))
                 J = np.where(imp[:, None], Jnew, J)
         # explicit joints (all of them without `implicit`)
         e = (Bt @ v).reshape(nl, 6)
@@ -795,6 +797,7 @@ def main():
     ap.add_argument('--implicit', action='store_true', help="the car's joints linearly implicit (block Jacobi, split masses) at the struck body's explicit step")
     ap.add_argument('--compliant', action='store_true', help="the car's rigid rows as elastic flat contacts (Johnson's punch), not rigid")
     ap.add_argument('--accuracy', type=float, default=0.02, help="the implicit window's period error target on the shortest contact (the gate's spread)")
+    ap.add_argument('--defer-last', action='store_true', help="the last implicit sweep's increment applied through the next substep's gather")
     ap.add_argument('--hybrid', action='store_true', help='only the joints explicitly unstable at h are implicit')
     ap.add_argument('--row-theta', type=float, default=1.0, help='compliant rows: 1 backward Euler (dissipative), 0.5 trapezoidal')
     ap.add_argument('--theta', type=float, default=1.0, help='implicit joints: 1 backward Euler, 0.5 the trapezoidal rule')
@@ -834,7 +837,7 @@ def main():
     print(f"omega_max {om:.4g} rad/s -> h {h * 1e6:.2f} us{' (the struck body; the car implicit)' if a.implicit else ''}{f' (SMS to {a.sms:.3g})' if a.sms else ''}")
     R = run(model, T=DT * a.ticks, h=h, dtype=np.float32 if a.fp32 else np.float64, J0=J0,
             record=tuple(t * 1e-3 for t in (1, 2, 4, 8)) + tuple(DT * (k + 1) for k in range(a.ticks)),
-            implicit=car if a.implicit else None, iters=a.iters, sms=(car, a.sms) if a.sms else None, theta=a.theta, row_theta=a.row_theta, hybrid=a.hybrid)
+            implicit=car if a.implicit else None, iters=a.iters, sms=(car, a.sms) if a.sms else None, theta=a.theta, row_theta=a.row_theta, hybrid=a.hybrid, last_apply=not a.defer_last)
     out = report(model, R, info, a)
     if a.export: export(model, info, J0, R['h'], R, a.export)
     out['implicit_joints'] = R['implicit_joints']; print(f"  implicit joints {R['implicit_joints']}")
