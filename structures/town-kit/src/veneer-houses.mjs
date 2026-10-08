@@ -31,7 +31,7 @@
  * is y 0.15; the veneer's outer faces are x +-5.0 and z +-3.9.
  */
 import {Builder,composeScene,round,v} from './geometry.mjs';
-import {M,MORTAR_JOINT,C24,DOUBLE_TOP_PLATE,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,REVISION_2_CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled,ULTIMATE_SLIP,fastenerRow} from './materials.mjs';
+import {M,MORTAR_JOINT,C24,DOUBLE_TOP_PLATE,SPLICES,STOCK_LENGTH,SPLICE_LAP,GYPSUM,ROOF_TILE_LAYER,WEATHERBOARD,CONNECTIONS,REVISION_2_CONNECTIONS,WALL_TIE,LONG_TERM,BEARING,CRUSH,crushEnabled,ULTIMATE_SLIP,fastenerRow} from './materials.mjs';
 import {cornerReferencedHulls} from './parts/hull-origins.mjs';
 import {realCapacitiesEnabled} from './real-capacities.mjs';
 import {planStair,checkStair,requiredVoid,checkHeadroom,buildTimberStair,frameFloorOpening,stairConnection,housingShear,STAIR_CONNECTIONS,STAIR_TYPES,OPENING_TYPES,STAIR_SIZES} from './stairs-timber.mjs';
@@ -154,6 +154,50 @@ export function springLength(s,bond){
 function tieMaterial(b,tie,L){
  const m=structuredClone(b.table[tie]);m.elasticModulus=WALL_TIE.stiffness*L/WALL_TIE.area;m.impactElasticModulus=WALL_TIE.axialStiffness*L/WALL_TIE.area;
  return b.table.push(m)-1;
+}
+
+/**
+ * Where long runs are jointed (materials.mjs SPLICES): per top plate, rim and
+ * bottom plate piece, a joint every stock length from its start, at the cut
+ * between its chunks nearest to it (for a double member, the middle of the
+ * 610 mm lap between its plies' joints). Returns Map(pieceId -> [{k, u, kind}]).
+ */
+function spliceCuts(s,members){
+ const out=new Map(),pieces=new Map();
+ for(const m of members){if(!['top-plate','bottom-plate','rim-joist'].includes(m.type))continue;const e=pieces.get(m.pieceId)??{type:m.type,nodes:[]};e.nodes.push(...m.nodes);pieces.set(m.pieceId,e);}
+ for(const [pieceId,{type,nodes}] of pieces){
+  const lo=k=>Math.min(...nodes.map(i=>s.nodes[i].centroid[k]-s.nodeSizes[i][k]/2)),hi=k=>Math.max(...nodes.map(i=>s.nodes[i].centroid[k]+s.nodeSizes[i][k]/2));
+  const k=hi('x')-lo('x')>=hi('z')-lo('z')?'x':'z',a=lo(k),c=hi(k);
+  const cuts=[...new Set(nodes.map(i=>round(s.nodes[i].centroid[k]+s.nodeSizes[i][k]/2)))].filter(u=>u<c-1e-6).sort((p,q)=>p-q);
+  const kind=type==='top-plate'?'plate-splice':type==='rim-joist'?'rim-splice':'butt',lap=type==='bottom-plate'?0:SPLICE_LAP/2;
+  for(let j=1;a+j*STOCK_LENGTH<c-1e-6;j++){
+   const want=a+j*STOCK_LENGTH+lap;
+   const taken=out.get(pieceId)??[],free=cuts.filter(u=>!taken.some(t=>t.u===u));if(!free.length)break;
+   const u=free.reduce((m,v)=>Math.abs(v-want)<Math.abs(m-want)?v:m);out.set(pieceId,[...taken,{k,u,kind}]);
+  }
+ }
+ return out;
+}
+/** The splice (spliceCuts) a bond within one piece crosses, if any. */
+function spliceAt(splices,s,bond){
+ const k=Math.abs(bond.normal.x)>=Math.abs(bond.normal.z)?'x':'z';
+ return (splices.get(s.nodePieces[bond.node0])??[]).find(t=>t.k===k&&Math.abs(t.u-bond.centroid[k])<1e-3)?.kind;
+}
+/**
+ * A splice's joint (materials.mjs SPLICES): in tension its nails, n F_v,Rk, and
+ * as stiff as their slip, n K_ser; in bending the plies that run through the
+ * lap (M_Rk = f_m,k sum W_ply, graded as N / T + M / M_Rk with S = A M_Rk / T),
+ * at their own bending stiffness (radius sqrt(E I / (L K))); in compression
+ * and shear the timber's (the ply ends bear, both plies cross the lap).
+ */
+function spliceMaterial(b,kind,s,bond){
+ const sp=SPLICES[kind],n=bond.normal,k=Math.abs(n.x)>=Math.abs(n.z)?'x':'z',z=s.nodeSizes[bond.node0],w=k==='x'?z.z:z.x,h=z.y;
+ const ply=sp.ply(h,w),plies=2*ply.b*ply.t**2/6,I=2*ply.b*ply.t**3/12;   // two plies, each bending on its own
+ const T=sp.nails*sp.nail.lateral,K=sp.nails*sp.nail.slip,L=springLength(s,bond),A=bond.area,E=C24.elasticModulus,MRk=C24.tensionFatal*plies;
+ const elastic=K*L/A,LT=connectionElastic();
+ return b.table.push({...structuredClone(b.table[M.frame]),name:`${kind}-joint`,color:'#986d43',textureKey:null,residualAreaFraction:0,elasticModulus:elastic,impactElasticModulus:2/3*elastic,ductileSlip:ULTIMATE_SLIP,
+  tensionFatal:T/A,tensionElastic:LT*T/A,compressionFatal:C24.compressionFatal,compressionElastic:C24.compressionElastic,shearFatal:C24.shearFatal,shearElastic:C24.shearElastic,
+  bendSection:MRk/T,bendGyration:Math.sqrt(E*I/(L*K))})-1;
 }
 
 /** The connection kind joining two node types (different pieces). */
@@ -573,9 +617,18 @@ export function buildVeneerHouse(options={}){
  // ---- bonds: contacts as built, each a real connection; ties added ----
  let pack=b.build();
  const s=pack.scenario,kinds=new Map();
+ // Joint stiffness at the stage's own spring length and bearing joints' twist at their nails' strength
+ // (two authoring bugs, house-headers.md), and the long runs' splices: revision 2 always; revision 1 in
+ // packs built for the high profile's engine law, its runtime packs unchanged.
+ const engineLaw=C.revision>=2||sectionRotationLaw();
+ const splices=engineLaw?spliceCuts(s,members):new Map();
  for(const bond of s.bonds){
   const ta=s.nodeTypes[bond.node0],tb=s.nodeTypes[bond.node1];
-  if(s.nodePieces[bond.node0]===s.nodePieces[bond.node1])continue;   // within one member: its own material
+  if(s.nodePieces[bond.node0]===s.nodePieces[bond.node1]){   // within one member: its own material, but at a splice
+   const sp=spliceAt(splices,s,bond);
+   if(sp==='butt')bond.drop=true;else if(sp)bond.m=spliceMaterial(b,sp,s,bond);
+   continue;
+  }
   let kind=connection(ta,tb,wallOf[bond.node0]??'',wallOf[bond.node1]??'',bond.normal,C.revision);
   // The birdsmouth's plumb heel cut stands against the plate's outer face; the seat is what is nailed.
   if(kind==='rafter-seat'&&Math.abs(bond.normal.y)<.5)kind=null;
@@ -589,10 +642,6 @@ export function buildVeneerHouse(options={}){
  // The housings' shear is the ledge a tread or riser bears on, which its size sets.
  if(stair){const shear=housingShear(stair.plan);stairTable=Object.fromEntries(Object.entries(STAIR_CONNECTIONS).map(([k,c])=>[k,c.shear==null?{...c,shear:shear[k]}:c]));}
  const median=v=>v.sort((x,y)=>x-y)[v.length>>1],c=i=>s.nodes[i].centroid;
- // Joint stiffness at the stage's own spring length and bearing joints' twist at their nails' strength
- // (two authoring bugs, house-headers.md): revision 2 always; revision 1 in packs built for the high
- // profile's engine law, its runtime packs unchanged.
- const engineLaw=C.revision>=2||sectionRotationLaw();
  for(const [kind,list] of kinds){
   const table=C.revision>=2&&kind in REVISION_2_CONNECTIONS?REVISION_2_CONNECTIONS:kind in CONNECTIONS?CONNECTIONS:stairTable;
   const make=(area,length)=>kind==='flooring-nail'||kind==='landing-deck'?jointMaterialFlooring(b,length,`${kind}-joint`):jointMaterial(b,kind,area,length,table,engineLaw,engineLaw);

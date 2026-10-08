@@ -332,6 +332,36 @@ export const NAIL_8D = { lateral: 850, withdrawal: 276, slip: 751e3 };
  */
 const FACE_NAILED_PLATE = 0.406 * 0.09;
 /**
+ * Splices in long timber runs (veneer-houses.mjs splices; high-profile packs).
+ * Lumber comes in stock lengths; 16 ft (4.877 m) is a standard one (ALSC PS
+ * 20 / NLGA), so a plate or rim longer than that is jointed.
+ * - Double top plate: the two plies' end joints offset >= 24 in. (610 mm), with
+ *   8-16d common face nails each side of a joint within the lap (IRC 2021
+ *   R602.3.2, Table R602.3(1) item 13). A tension in the plate crosses from
+ *   one ply to the other through the 8 nails between the two joints.
+ * - Doubled rim (band) joist, a built-up member: 2-20d common at each splice,
+ *   20d at 32 in. staggered top and bottom (Table R602.3(1), built-up girders
+ *   and beams); the lap between the plies' joints (taken at the plate's 610
+ *   mm) holds the 2 + 2 splice nails.
+ * - Bottom plate, a single 45 mm ply: a butt joint, nothing across it (its
+ *   pieces are nailed down each on their own: R602.3(1) item 14).
+ * Nails (EN 1995-1-1 8.2.2 mode f, C24 rho_k 350, as NAIL; K_ser Table 7.1 at
+ * rho_m 420): 16d common 4.11 x 88.9 mm: M_y,Rk 7.1 N m, f_h,k 18.8 MPa,
+ * F_v,Rk 1.21 kN, K_ser 0.89 kN/mm; 20d common 4.88 x 101.6 mm: M_y,Rk 11.1 N m,
+ * f_h,k 17.8 MPa, F_v,Rk 1.60 kN, K_ser 1.02 kN/mm.
+ */
+export const NAIL_16D_COMMON = { lateral: 1207, slip: 889e3 };
+export const NAIL_20D_COMMON = { lateral: 1596, slip: 1020e3 };
+export const STOCK_LENGTH = 4.877;
+export const SPLICE_LAP = 0.610;
+export const SPLICES = {
+  // The two plies (90 x 45 each) stacked: in-plane they bend apart (DOUBLE_TOP_PLATE).
+  'plate-splice': { nails: 8, nail: NAIL_16D_COMMON, ply: (h, w) => ({ b: w, t: h / 2 }) },
+  // The rim's two plies (45 thick each) side by side: each its full depth.
+  'rim-splice': { nails: 4, nail: NAIL_20D_COMMON, ply: (h, w) => ({ b: w / 2, t: h }) },
+};
+
+/**
  * The house's load path, re-authored (veneer-houses.mjs `revision: 2`,
  * 2026-10-08; docs/calibration/house-headers.md): the connections revision 1
  * rated as something else.

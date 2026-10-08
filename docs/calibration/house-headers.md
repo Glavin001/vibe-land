@@ -359,6 +359,62 @@ digit). The studless variants still collapse (10% broken); the two-storey with
 only its ground-floor front studs out breaks 0.45% (0.84% off), below the
 acceptance's 2% collapse share either way.
 
+## Splices in the long runs (2026-10-08)
+
+Lumber comes in stock lengths, so the kit's continuous 9.7 m plates and rims
+were stronger in tension than any real run. A spliced chord carries 10 kN,
+where revision 1's continuous timber carried 97-566 kN. In high-profile
+packs (both revisions; runtime packs byte-identical), runs are now jointed
+every 16 ft (4.877 m, a standard length), at the chunk cut nearest each
+joint (`spliceCuts`; materials.mjs `SPLICES`):
+
+| Run | Splice | Tension (nails, EN 1995 mode f) | Bending | Stiffness |
+|---|---|---|---|---|
+| double top plate | plies' joints offset 610 mm, 8-16d common each side (IRC R602.3.2, R602.3(1) item 13). The chord crosses through the 8 nails between the joints. | 8 x 1.21 kN = 9.7 kN | the plies through the lap: 2 f_m,k b t^2/6 = 1.46 kN m (graded N/T + M/M_Rk) | 8 x K_ser 0.89 = 7.1 kN/mm; plies' E I |
+| doubled rim joist | built-up member: 2-20d common at each splice (R602.3(1), built-up girders), lap as the plate's | 4 x 1.60 kN = 6.4 kN | the two 45 x 262 plies, 20.7 kN m | 4 x 1.02 = 4.1 kN/mm |
+| bottom plate (one ply) | butt joint: nothing across it (each piece nailed down, item 14) | 0 (bond dropped) | | |
+
+Checks (high profile, garage-hifi 3536ce049 with re-bearing):
+
+- **At rest:** the bungalow and the two-storey, intact and frame-only, break
+  0.00%. The oracle's at-rest worst joints are unchanged: no splice is
+  loaded at rest.
+- **house-headers:**
+  - intact, bay1 and bay2 hold with 0 broken (bay2 is now a pass, with
+    re-bearing);
+  - truck: the plate over the 3.33 m hole, splice included, fails, and the
+    roof edge over the hole comes down. 90 chunks dropped more than 0.5 m,
+    80% of them within x -2.4..2.65 around the -1.8..1.53 gap. 741 bonds
+    broke, the predicted "either", where it held before.
+  - truck-door: comes down the same way, 147 chunks over -1.8..3.6.
+- **Explicit step:** the bound is unchanged at 2.6-2.9e4 rad/s. The stiff
+  set is still the stud and jack halves (3.7e7 and 4.5e7 N/m). The splices
+  replace existing cuts, add no chunks, and are softer than the timber they
+  replace (7.1e6 N/m against 1.5e8).
+- **`veneer-house--no-ground-front-studs` still stands: 0.64% broken (2%
+  is "collapse").** The splices do not bring it down, because the 24 kN
+  chord in the verification README's derivation is not this variant's load
+  path:
+  1. `withoutStuds` keeps junction studs, so the partition's junction at
+     x -1.8 still stands under the front wall. The span is 6.66 m, not 9.9
+     m: M = w L^2 / 8 = 5.07 kN/m x 6.66^2 / 8 = 28 kN m, so the chord force
+     is 10.8 kN over the 2.6 m lever arm (9.1 kN at the splices, near x 0).
+     The plate and rim splices in parallel carry 16 kN.
+  2. Even with the junction stud removed as well (9.9 m), the oracle stands
+     it (92 bonds broken, frame 100% anchored). The chords carry only
+     about 2 kN: the plate splice 1.95 kN, the rim splice 0.5 kN.
+     - The upper storey hangs on its veneer ties: 18-21 kN of its 50 kN,
+       about 0.17 kN a tie. That is under their 0.4 kN sliding capacity, at
+       about 8 mm of tie slip (0.02 kN/mm, BS EN 845-1 movement-tolerant
+       ties).
+     - The README takes the ties to carry no floor load "by design". They
+       are flexible, not free: at 10 mm a real tie holds about 0.2 kN (the
+       kit's WALL_TIE data). So the house sags onto its brick, and whether
+       it then comes down is a question of tie capacity, not of the chord.
+  3. The expectation "collapses" therefore needs re-deriving, with the ties
+     and the junction stud in the load path, before it is a gate. I have
+     changed neither the ties nor the variant to force it.
+
 ## Reproduce
 
 ```sh
