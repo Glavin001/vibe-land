@@ -1406,6 +1406,9 @@ impl CityRuntime {
                 (settings.twist_gyration, settings.twist_reach) = vibe_land_destruction::scene_pack::twist_table(payload);
                 (settings.bearing_modulus, settings.bend_gyration, settings.bend_section, settings.bearing_joint) =
                     vibe_land_destruction::scene_pack::bearing_tables(payload);
+                // Mohr-Coulomb joint shear (opt-in, VIBE_MOHR_COULOMB_SHEAR=1; FIDELITY_AUDIT C11).
+                (settings.shear_friction, settings.shear_capacity_limit) =
+                    vibe_land_destruction::scene_pack::shear_friction_tables(payload);
                 if !settings.crush.is_empty() {
                     let crushable = settings.crush.iter().filter(|c| c.cap_pressure > 0.0).count();
                     tracing::info!(crushable, "scene authors chunk crushing");

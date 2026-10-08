@@ -40,7 +40,7 @@
 export const realCapacitiesEnabled = () => (globalThis.process?.env?.VIBE_REAL_CAPACITIES ?? '0') === '1';
 
 // ------------------------------------------------------------- materials ---
-import { MORTAR_JOINT, C24 as KIT_C24 } from './materials.mjs';
+import { MORTAR_JOINT, C24 as KIT_C24, masonryShear, BRICK_FB } from './materials.mjs';
 const MPa = 1e6;
 export const STEEL = {
   S235: { fy: 235 * MPa, fu: 360 * MPa },
@@ -274,6 +274,7 @@ export function applyRealProp(pack, type) {
       const material = { ...table[bond.m], name: `${type}-${x === '*' ? 'member' : `${x}-${y}`}-real`, residualAreaFraction: 0 };
       for (const key2 of LIMIT_KEYS) if (values[key2] != null) material[key2] = values[key2];
       if (values.elasticModulus) material.elasticModulus = values.elasticModulus;
+      if (values.shearFriction) { material.shearFriction = values.shearFriction; material.shearCapacityLimit = values.shearCapacityLimit ?? 0; }
       made.set(key, table.push(material) - 1);
     }
     bond.m = made.get(key);
@@ -303,7 +304,8 @@ export function greenWood(family) {
 
 // ------------------------------------------------------------ masonry ---
 const MASONRY_FK = 0.55 * 20 ** 0.7 * 5 ** 0.3 * MPa;   // EN 1996-1-1 eq. 3.2: clay group 1, f_b 20, M5
-const MASONRY_JOINT = { ...MORTAR_JOINT, compressionElastic: KMOD_PERMANENT * MASONRY_FK, compressionFatal: MASONRY_FK };
+// Its shear grows with the compression across it (EN 1996-1-1 3.6.2; materials.mjs masonryShear).
+const MASONRY_JOINT = { ...MORTAR_JOINT, compressionElastic: KMOD_PERMANENT * MASONRY_FK, compressionFatal: MASONRY_FK, ...masonryShear(BRICK_FB) };
 
 // -------------------------------------------------------------- furniture ---
 /**

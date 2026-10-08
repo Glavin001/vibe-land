@@ -403,6 +403,10 @@ fn add_native_destruction(
         // A bearing joint whose fasteners fail becomes a unilateral contact
         // (opt-in, VIBE_REBEARING=1 -> the stage's PX_DESTRUCTION_REBEARING).
         ("PX_DESTRUCTION_REBEARING", "VIBE_PHYSX_HAS_REBEARING"),
+        // An intact joint's shear strength grows with the compression across it,
+        // f_v0 + mu sigma_c (opt-in, VIBE_MOHR_COULOMB_SHEAR=1 -> the stage's
+        // PX_DESTRUCTION_MOHR_COULOMB_SHEAR; the materials' shearFriction).
+        ("PX_DESTRUCTION_MOHR_COULOMB_SHEAR", "VIBE_PHYSX_HAS_MOHR_COULOMB_SHEAR"),
         // A crushed chunk splits off as its own body and its step completes
         // under the correction; without it a crush freezes the scene, so the
         // bridge refuses to pass crush properties to an SDK that lacks it.

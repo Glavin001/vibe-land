@@ -96,6 +96,11 @@ pub struct StressSolverSettings {
     /// Empty, or parallel to `materials`: 1 for a fastened bearing joint,
     /// graded by its fasteners once the contact opens (section bending).
     pub bearing_joint: Vec<f32>,
+    /// Empty, or parallel to `materials`: a joint's friction coefficient and
+    /// shear strength cap (Pa, 0 uncapped), Mohr-Coulomb shear under
+    /// VIBE_MOHR_COULOMB_SHEAR (FIDELITY_AUDIT C11); 0 none.
+    pub shear_friction: Vec<f32>,
+    pub shear_capacity_limit: Vec<f32>,
     /// Damping applied to fracture debris.
     pub linear_damping: f32,
     pub angular_damping: f32,
@@ -127,6 +132,8 @@ impl Default for StressSolverSettings {
             bend_gyration: Vec::new(),
             bend_section: Vec::new(),
             bearing_joint: Vec::new(),
+            shear_friction: Vec::new(),
+            shear_capacity_limit: Vec::new(),
             linear_damping: 0.25,
             angular_damping: 0.35,
             maximum_bodies: 48,

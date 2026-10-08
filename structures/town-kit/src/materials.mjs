@@ -60,29 +60,118 @@ export const concreteFooting = () => ({ ...structuredClone(base.find((m) => m.na
  */
 export const MORTAR_JOINT = { tensionElastic: 0.2e6, tensionFatal: 0.6e6, shearElastic: 0.33e6, shearFatal: 1.0e6 };
 export const mortarJointsEnabled = () => (globalThis.process?.env?.VIBE_BRICK_JOINTS ?? 'mortar') !== 'unit';
+/**
+ * Mohr-Coulomb shear of a masonry mortar joint (FIDELITY_AUDIT C11; the stage
+ * reads it under VIBE_MOHR_COULOMB_SHEAR, PhysX PX_DESTRUCTION_MOHR_COULOMB_SHEAR):
+ * EN 1996-1-1 3.6.2 eq. 3.5, all joints filled, general-purpose mortar:
+ * f_vk = f_vk0 + 0.4 sigma_d, but not greater than 0.065 f_b (or the
+ * nationally determined f_vlt). sigma_d is the compression across the joint;
+ * f_vk0 is the joint's authored shear strength, 0.4 its friction coefficient
+ * (the code's, from triplet tests: EN 1052-3). The cap 0.065 f_b (Pa) is where
+ * the units split in tension rather than the joint sliding, so it is the unit's:
+ * clay brick f_b 20 MPa (CRUSH.brickVeneer) 1.3 MPa, natural stone f_b 50 MPa
+ * (CRUSH.stone) 3.25 MPa. High-profile packs only (VIBE_REAL_CAPACITIES=1):
+ * runtime packs stay byte-identical.
+ */
+export const MASONRY_FRICTION = 0.4;
+export const masonryShear = (fb) => (globalThis.process?.env?.VIBE_REAL_CAPACITIES ?? '0') === '1'
+  ? { shearFriction: MASONRY_FRICTION, shearCapacityLimit: 0.065 * fb } : {};
+export const BRICK_FB = 20e6, STONE_FB = 50e6;
 /** Masonry by name: a concrete facade with a brick texture is still concrete. */
 export const isMasonry = (name) => /^brick(-|$)/.test(name) || /masonry/.test(name) && !/connection|seam/.test(name);
 /** What masonry is bedded on (its bed joint is mortar too). */
 export const isBed = (name) => /concrete|footing|slab/.test(name);
 /** The mortar-joint material, from a brick material. */
-export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mortar-joint', ...(mortarJointsEnabled() ? MORTAR_JOINT : {}) });
+export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mortar-joint', ...(mortarJointsEnabled() ? { ...MORTAR_JOINT, ...masonryShear(BRICK_FB) } : {}) });
+/**
+ * Natural-stone masonry's mortar joints: opt-in, VIBE_STONE_JOINTS=mortar on a
+ * high-profile pack build (VIBE_REAL_CAPACITIES=1); off, the joints keep the
+ * stone's own strength (the asset as it was). Off by default because at rest a
+ * skyline stone house cracks 10 of its 1,652 joints (0.61%, nothing falls):
+ * head joints at the window sills, sheared past f_vk0 with no compression on
+ * them, where the stage's intact-joint shear has no f_vk0 + 0.4 sigma_d
+ * friction term (FIDELITY_AUDIT C11; docs/calibration/house-headers.md "Stone"). A stone wall is units in mortar, and fails at its joints as brick does:
+ * EN 1996-1-1 Table 3.4, dimensioned natural stone in general-purpose mortar
+ * M2.5-M9: initial shear strength f_vk0 0.15 MPa (its friction term 0.4 sigma_d
+ * is masonryShear's, graded under VIBE_MOHR_COULOMB_SHEAR: FIDELITY_AUDIT C11;
+ * with it the house cracks 8 joints, 0.48%, the rest D11's: one stiffness per
+ * bond in every direction, where masonry's G is 0.4 E); flexural tension across the bed joint
+ * f_xk1 0.1 MPa (EN 1996-1-1 3.6.3, nationally determined; 0.05-0.1 for natural
+ * stone and aggregate units in general-purpose mortar); in compression the
+ * masonry's f_k = 0.45 f_b^0.7 f_m^0.3 = 10.5 MPa (eq. 3.1, the crush law's);
+ * stiffness E = 1000 f_k = 10.5 GPa (3.7.2), the wall's, mortar included.
+ * Characteristic, short-term values: elastic = fatal (masonry has no k_mod).
+ * A bed or head joint is a bearing contact with a weak tensile bond: once the
+ * bond cracks it bears on in compression and slides on friction, which is how
+ * masonry stands over openings (arching) and under a slab's end rotation. So it
+ * is a bearing joint (bearingJoint: PX_DESTRUCTION_BEARING_JOINTS grading, and
+ * under VIBE_REBEARING a cracked joint re-bears; FIDELITY_AUDIT C9). What stays
+ * approximate: the stage grades a bearing joint's tension as fasteners at its
+ * centre, T = M/d + N, so the crack moment of a bed joint in pure bending reads
+ * 3x the flexural f_xk1 W (exact in direct tension). Re-bearing's friction is
+ * the material's mu under VIBE_MOHR_COULOMB_SHEAR (masonry 0.4, EN 1996-1-1
+ * 3.6.2), timber's 0.23 without it.
+ */
+export const STONE_MORTAR_JOINT = { tensionElastic: 0.1e6, tensionFatal: 0.1e6, shearElastic: 0.15e6, shearFatal: 0.15e6,
+  compressionElastic: 10.5e6, compressionFatal: 10.5e6, elasticModulus: 10.5e9, bearingJoint: 1 };
+export const stoneJointsEnabled = () => (globalThis.process?.env?.VIBE_REAL_CAPACITIES ?? '0') === '1' && (globalThis.process?.env?.VIBE_STONE_JOINTS ?? 'unit') === 'mortar';
+const isStone = (name) => name === 'stone';
+/**
+ * The head joints inside a stone lintel. A stone wall spans an opening on a
+ * lintel (a single stone, or a timber or steel lintel) bearing >= 150 mm each
+ * side (BS 5628-3 / BS EN 1996-2 practice, as the veneer's lintel course), not
+ * on stones hung from their mortar. The skyline assets' course over each
+ * window or door is cut into wall-sized stones: their head joints within the
+ * opening's width plus 150 mm bearing each side, in the course above its head,
+ * are the inside of one lintel stone and keep the stone's strength. Returns a
+ * predicate on bonds.
+ */
+function lintelJoints(s, names) {
+  const box = (i) => { const c = s.nodes[i].centroid, z = s.nodeSizes?.[i]; return z ? [[c.x - z.x / 2, c.y - z.y / 2, c.z - z.z / 2], [c.x + z.x / 2, c.y + z.y / 2, c.z + z.z / 2]] : null; };
+  const openings = [];
+  for (let i = 0; i < s.nodes.length; i++) {
+    if (!/glass|door/.test(names[i] ?? '') && !/glazing|door/.test(s.nodeTypes?.[i] ?? '')) continue;
+    const b = box(i); if (!b) continue;
+    const thin = [0, 2].reduce((k, j) => (b[1][j] - b[0][j] < b[1][k] - b[0][k] ? j : k));   // the wall's normal axis
+    openings.push({ along: thin === 0 ? 2 : 0, normal: thin, lo: b[0], hi: b[1] });
+  }
+  const k = ['x', 'y', 'z'];
+  return (bond) => {
+    const n = bond.normal, c = [bond.centroid.x, bond.centroid.y, bond.centroid.z];
+    return openings.some((o) => Math.abs(n[k[o.along]]) > 0.5 && c[1] > o.hi[1] && c[1] < o.hi[1] + 0.7
+      && c[o.along] > o.lo[o.along] - 0.15 && c[o.along] < o.hi[o.along] + 0.15 && Math.abs(c[o.normal] - (o.lo[o.normal] + o.hi[o.normal]) / 2) < 0.4);
+  };
+}
 /**
  * A pack's masonry bonds as mortar joints (in place): the pack gains a
  * `mortar-joint` material and every bond between two masonry nodes, or
- * masonry and its bed, uses it. Returns how many bonds changed.
+ * masonry and its bed, uses it; with stone joints on, a `stone-mortar-joint`
+ * likewise for stone on stone or on its bed. Returns how many bonds changed.
  */
 export function mortarJoints(pack) {
-  if (!mortarJointsEnabled()) return 0;
   const table = pack.defaults.solver.materials, s = pack.scenario;
-  const brick = table.find((m) => isMasonry(m.name));
-  if (!brick) return 0;
   const names = s.nodeMaterials ?? s.nodes.map((n) => table[n.m ?? 0].name);
-  let index = table.findIndex((m) => m.name === 'mortar-joint');
-  if (index < 0) { index = table.length; table.push(mortarMaterial(brick)); }
   let changed = 0;
-  for (const b of s.bonds) {
-    const x = names[b.node0], y = names[b.node1];
-    if ((isMasonry(x) && (isMasonry(y) || isBed(y))) || (isMasonry(y) && isBed(x))) { b.m = index; changed += 1; }
+  const brick = mortarJointsEnabled() && table.find((m) => isMasonry(m.name));
+  if (brick) {
+    let index = table.findIndex((m) => m.name === 'mortar-joint');
+    if (index < 0) { index = table.length; table.push(mortarMaterial(brick)); }
+    for (const b of s.bonds) {
+      const x = names[b.node0], y = names[b.node1];
+      if ((isMasonry(x) && (isMasonry(y) || isBed(y))) || (isMasonry(y) && isBed(x))) { b.m = index; changed += 1; }
+    }
+  }
+  const stone = stoneJointsEnabled() && table.find((m) => isStone(m.name));
+  if (stone) {
+    let index = table.findIndex((m) => m.name === 'stone-mortar-joint');
+    if (index < 0) { index = table.length; table.push({ ...structuredClone(stone), name: 'stone-mortar-joint', residualAreaFraction: 0, ...STONE_MORTAR_JOINT, ...masonryShear(STONE_FB) }); delete table[index].crush; }
+    const lintel = lintelJoints(s, names);
+    for (const b of s.bonds) {
+      const x = names[b.node0], y = names[b.node1];
+      if (isStone(x) && isStone(y) && lintel(b)) continue;
+      // Stone on stone, on its bed, or with brick laid on it (a mortar bed too, the weaker unit's).
+      if ((isStone(x) && (isStone(y) || isBed(y) || isMasonry(y))) || (isStone(y) && (isBed(x) || isMasonry(x)))) { b.m = index; changed += 1; }
+    }
   }
   return changed;
 }
@@ -332,6 +421,36 @@ export const NAIL_8D = { lateral: 850, withdrawal: 276, slip: 751e3 };
  */
 const FACE_NAILED_PLATE = 0.406 * 0.09;
 /**
+ * Splices in long timber runs (veneer-houses.mjs splices; high-profile packs).
+ * Lumber comes in stock lengths; 16 ft (4.877 m) is a standard one (ALSC PS
+ * 20 / NLGA), so a plate or rim longer than that is jointed.
+ * - Double top plate: the two plies' end joints offset >= 24 in. (610 mm), with
+ *   8-16d common face nails each side of a joint within the lap (IRC 2021
+ *   R602.3.2, Table R602.3(1) item 13). A tension in the plate crosses from
+ *   one ply to the other through the 8 nails between the two joints.
+ * - Doubled rim (band) joist, a built-up member: 2-20d common at each splice,
+ *   20d at 32 in. staggered top and bottom (Table R602.3(1), built-up girders
+ *   and beams); the lap between the plies' joints (taken at the plate's 610
+ *   mm) holds the 2 + 2 splice nails.
+ * - Bottom plate, a single 45 mm ply: a butt joint, nothing across it (its
+ *   pieces are nailed down each on their own: R602.3(1) item 14).
+ * Nails (EN 1995-1-1 8.2.2 mode f, C24 rho_k 350, as NAIL; K_ser Table 7.1 at
+ * rho_m 420): 16d common 4.11 x 88.9 mm: M_y,Rk 7.1 N m, f_h,k 18.8 MPa,
+ * F_v,Rk 1.21 kN, K_ser 0.89 kN/mm; 20d common 4.88 x 101.6 mm: M_y,Rk 11.1 N m,
+ * f_h,k 17.8 MPa, F_v,Rk 1.60 kN, K_ser 1.02 kN/mm.
+ */
+export const NAIL_16D_COMMON = { lateral: 1207, slip: 889e3 };
+export const NAIL_20D_COMMON = { lateral: 1596, slip: 1020e3 };
+export const STOCK_LENGTH = 4.877;
+export const SPLICE_LAP = 0.610;
+export const SPLICES = {
+  // The two plies (90 x 45 each) stacked: in-plane they bend apart (DOUBLE_TOP_PLATE).
+  'plate-splice': { nails: 8, nail: NAIL_16D_COMMON, ply: (h, w) => ({ b: w, t: h / 2 }) },
+  // The rim's two plies (45 thick each) side by side: each its full depth.
+  'rim-splice': { nails: 4, nail: NAIL_20D_COMMON, ply: (h, w) => ({ b: w / 2, t: h }) },
+};
+
+/**
  * The house's load path, re-authored (veneer-houses.mjs `revision: 2`,
  * 2026-10-08; docs/calibration/house-headers.md): the connections revision 1
  * rated as something else.
@@ -423,10 +542,14 @@ export const WEATHERBOARD = { density: 450 };
  * - 1/sqrt(F80)) kWh/t with Bond's (1961) work indices. crushViscosity: the
  * overstress the CEB-FIP Model Code 1990 (2.1.6.4) dynamic increase factor
  * gives at a 30/s strain rate, over that rate: (DIF - 1) fc / 30.
- * Timber and steel members are not crushable (they snap or bend); nor are
- * concrete tiles or glass, which fail in flexure (EN 490, EN 572).
+ * Natural-stone masonry, structural softwood and roof tiles crush too (below,
+ * each cited). Steel does not: see `crushFor`.
  */
 const crushOf = (fc, energy, viscosity, impedance, k = 1.2) => ({ capPressure: 2.5 * fc, cohesion: fc * (1 - k / 3), frictionSlope: k, crushEnergy: energy, crushViscosity: viscosity, impedance });
+/** Bond (1961): specific comminution energy, J/m^3, from F80 to P80 (m) at work index Wi (kWh/t) and density rho. */
+const bond = (wi, from, to, rho) => 10 * wi * (1 / Math.sqrt(to * 1e6) - 1 / Math.sqrt(from * 1e6)) * 3.6e6 / 1000 * rho;
+/** CEB-FIP MC90 (2.1.6.4) compressive DIF at 30/s for strength fc (Pa), as the viscosity (DIF - 1) fc / 30. */
+const mc90Viscosity = (fc) => { const a = 1 / (5 + 9 * fc / 10e6); return (Math.pow(30 / 30e-6, 1.026 * a) - 1) * fc / 30; };
 /**
  * Acoustic impedance rho c = sqrt(rho E), Pa s/m: the native stage's
  * impact-pressure crush (PhysX impactImpedance, opt-in with
@@ -464,13 +587,64 @@ export const CRUSH = {
   glass: { capPressure: 45e6, cohesion: 45e6, frictionSlope: 0, crushEnergy: 5.2e6, crushViscosity: 3.2e3, debrisMassFraction: 1, debrisFragmentCount: 12,
     // E 70 GPa (EN 572-1) at 2500 kg/m^3: 13 MPa s/m.
     impedance: impedance(2500, 70e9) },
+  // Natural-stone masonry (a wall of dimensioned limestone or sandstone units in
+  // mortar, as the brick veneer is of brick): f_k = K f_b^0.7 f_m^0.3 (EN 1996-1-1
+  // eq. 3.1, Table 3.3 natural stone K 0.45) = 10.5 MPa for units of f_b 50 MPa
+  // (building limestone and sandstone, 30-90 MPa unconfined: BS EN 1926 tests,
+  // e.g. Portland limestone ~50 MPa) in M4 mortar. Rubble to 20 mm from 100 mm
+  // at Wi 11.6 kWh/t (limestone, Bond 1961; sandstone similar): 0.45 kWh/t =
+  // 1.6 kJ/kg x 2600 = 4.2 MJ/m^3. MC90 DIF 2.67 at 30/s -> 5.8e5 Pa s.
+  // E = 1000 f_k (EN 1996-1-1 3.7.2) = 10.5 GPa at 2600 kg/m^3: 5.2 MPa s/m.
+  // The bonds' 102 MPa (the legacy table's) is a solid stone's, not a wall's.
+  stone: crushOf(10.5e6, bond(11.6, 0.1, 0.02, 2600), mc90Viscosity(10.5e6), impedance(2600, 10.5e9)),
+  // Structural softwood (C24, EN 338): a member is destroyed when its fibres
+  // fail, crushing along the grain at f_c,0,k 21 MPa. Across the grain it
+  // yields at f_c,90,k 2.5 MPa, but that densifies the wood (a dent) and keeps
+  // the member, and the stage's cone is one isotropic law, so the along-grain
+  // strength is the crush. Energy: the crush plateau to densification, f_c,0
+  // x (1 - rho / rho_cell) = 21 MPa x (1 - 420 / 1500) = 15 MJ/m^3 (cellular
+  // crushing of wood along the grain, Reid & Peng 1997, Int. J. Impact Eng.
+  // 19(5-6); cell-wall density ~1500 kg/m^3, Wood Handbook FPL-GTR-282 ch. 4).
+  // Rate: strength rises ~10% per tenfold loading rate (Wood Handbook ch. 5),
+  // 30/s against a 1e-5/s test: 6.5 decades, DIF 1.86 -> 6.0e5 Pa s.
+  // E_0 11 GPa at 420 kg/m^3: 2.1 MPa s/m.
+  softwood: crushOf(21e6, 21e6 * (1 - 420 / 1500), (Math.pow(1.1, 6.5) - 1) * 21e6 / 30, impedance(420, 11e9)),
+  // Concrete roof tiles (EN 490/491; the kit's ROOF_TILE_LAYER, a 50 mm layer
+  // of 920 kg/m^3 smearing tiles of 2300 kg/m^3 and air): a tile breaks in
+  // flexure, pressure-independent like glass, at the flexural tensile strength
+  // of its concrete, f_ctm,fl = (1.6 - h/1000) f_ctm = 1.59 x 3.5 MPa = 5.6 MPa
+  // (EN 1992-1-1 3.1.8, C40/50 f_ctm 3.5 MPa, 12 mm tile), on the layer's
+  // stress (its virial over the smeared volume) 920/2300 of that: 2.2 MPa.
+  // Pieces to 5 mm from 12 mm at Wi 11.6: 0.58 kWh/t = 2.1 kJ/kg x 920 =
+  // 1.9 MJ/m^3. MC90 tensile DIF at 30/s 1.53 -> 3.9e4 Pa s. Shards: all of its
+  // mass in pieces. Z: sqrt(920 x 0.4 x 30 GPa) = 3.3 MPa s/m.
+  roofTile: { capPressure: 2.2e6, cohesion: 2.2e6, frictionSlope: 0, crushEnergy: bond(11.6, 0.012, 0.005, 920), crushViscosity: 0.53 * 2.2e6 / 30,
+    debrisMassFraction: 1, debrisFragmentCount: 8, impedance: impedance(920, 0.4 * 30e9) },
+  // Roofing slate (EN 12326): a natural stone that also breaks in flexure,
+  // modulus of rupture >= 35 MPa along the grain (EN 12326-1 characteristic,
+  // typical slates 50-90), on a 2100 kg/m^3 layer of 2800 kg/m^3 slate: 26 MPa.
+  // Pieces to 5 mm from 6 mm slates at Wi 13.8 kWh/t (slate, Bond 1961 table): 0.17
+  // kWh/t = 0.58 kJ/kg x 2100 = 1.2 MJ/m^3. Rate-insensitive as glass (an
+  // assumption). Z: sqrt(2100 x 0.75 x 60 GPa) = 9.7 MPa s/m.
+  slate: { capPressure: 26e6, cohesion: 26e6, frictionSlope: 0, crushEnergy: bond(13.8, 0.006, 0.005, 2100), crushViscosity: 3.2e3,
+    debrisMassFraction: 1, debrisFragmentCount: 8, impedance: impedance(2100, 0.75 * 60e9) },
 };
 /**
- * The crush block a material gets by what it is, by name: masonry, concrete,
- * gypsum and glass crush; timber, steel, trim and roofing do not (they snap at
- * their joints). Anchors (zero-mass chunks) never crush whatever they are.
+ * The crush block a material gets by what it is, by name: masonry (brick and
+ * natural stone), concrete, gypsum, glass, structural softwood and roof tiles
+ * crush. Steel does not: it is ductile, so a struck steel member yields and
+ * bends (its joints' ductileSlip, the bonds' yield to rupture), and under the
+ * pressures here it never comminutes (S355's f_y 355 MPa sets an indentation,
+ * not rubble; a cone fitted to it would delete a member a ball only dents).
+ * Trim, joinery, siding, furniture timber and trees are left as they were (not
+ * structural softwood; their own values are another item). Anchors (zero-mass
+ * chunks) never crush whatever they are.
  */
 export function crushFor(name = '') {
+  if (/^stone$/.test(name)) return CRUSH.stone;
+  if (/^(stud-timber|double-top-plate|wood-frame|structure-timber)$/.test(name)) return CRUSH.softwood;
+  if (/^concrete-roof-tile$/.test(name)) return CRUSH.roofTile;
+  if (/^slate-roof$/.test(name)) return CRUSH.slate;
   if (/^(brick|garden-masonry)/.test(name) || /masonry/.test(name) && !/connection|seam|joint/.test(name)) return CRUSH.brickVeneer;
   if (/^(reinforced-concrete|concrete-slab|concrete-wall|concrete-footing|pale-paving)$/.test(name)) return CRUSH.concrete;
   if (/^(plaster|drywall|gypsum)$/.test(name)) return CRUSH.gypsum;

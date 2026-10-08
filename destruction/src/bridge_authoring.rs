@@ -164,6 +164,8 @@ pub(crate) fn ffi_settings(settings: &StressSolverSettings) -> DestructibleSetti
         bend_gyration: settings.bend_gyration.clone(),
         bend_section: settings.bend_section.clone(),
         bearing_joint: settings.bearing_joint.clone(),
+        shear_friction: settings.shear_friction.clone(),
+        shear_capacity_limit: settings.shear_capacity_limit.clone(),
         maximum_bodies: settings.maximum_bodies,
         maximum_fractures_per_actor_per_tick: settings.maximum_fractures_per_actor_per_tick,
         apply_excess_forces: settings.apply_excess_forces,

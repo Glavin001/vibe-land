@@ -26,6 +26,9 @@ import argparse, json, sys
 import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
+import os
+# The stage's Mohr-Coulomb joint shear (VIBE_MOHR_COULOMB_SHEAR=1; FIDELITY_AUDIT C11).
+MOHR_COULOMB = os.environ.get('VIBE_MOHR_COULOMB_SHEAR') == '1'
 
 G = 9.81
 
@@ -313,8 +316,17 @@ def stresses(s, mats, J, bending='capped', sections=None, pos=None):
             # (PX_DESTRUCTION_BEARING_JOINTS).
             T = abs(ang @ sec[0]) / sec[8] + abs(ang @ sec[1]) / sec[9] + normal * a   # N signed: + pull
             tension = max(T, 0.0) / a
-        util = max(compression / m['compressionElastic'], tension / m['tensionElastic'], shear / m['shearElastic'])
-        fatal = max(compression / m['compressionFatal'], tension / m['tensionFatal'], shear / m['shearFatal'])
+        if MOHR_COULOMB and m.get('shearFriction', 0) > 0 and normal < 0:
+            # Mohr-Coulomb joint shear (the stage's extStressFrictionStrength,
+            # VIBE_MOHR_COULOMB_SHEAR; FIDELITY_AUDIT C11): mu sigma_c added to
+            # both shear limits, capped so f_v0 + it <= shearCapacityLimit.
+            fric = -m['shearFriction'] * normal
+            cap = m.get('shearCapacityLimit', 0)
+            if cap > 0: fric = min(fric, max(cap - m['shearFatal'], 0.0))
+            graded = max(shear - fric, 0.0)
+        else: graded = shear
+        util = max(compression / m['compressionElastic'], tension / m['tensionElastic'], graded / m['shearElastic'])
+        fatal = max(compression / m['compressionFatal'], tension / m['tensionFatal'], graded / m['shearFatal'])
         out.append((util, fatal, compression, tension, shear, bend))
     return np.array(out)
 
