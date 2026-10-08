@@ -50,11 +50,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MYSTRAL_ROOT="${MYSTRAL_ROOT:-$(cd "$ROOT/.." && pwd)/mystralnative}"
+# Sibling checkouts (../mystralnative, ../PhysX) sit beside the main checkout,
+# also when this runs from a worktree (.claude/worktrees/X).
+SIBLINGS="$(cd "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)/../.." && pwd)"
+MYSTRAL_ROOT="${MYSTRAL_ROOT:-$SIBLINGS/mystralnative}"
 # The PhysX SDK the sim links: the garage's (vehicle bump stops and drive
 # masks, which the destructible city fleet needs), as
 # scripts/perf/garage-vehicle-server.sh builds against.
-export PHYSX_ROOT="${PHYSX_ROOT:-$(cd "$ROOT/.." && pwd)/PhysX/out/install/garage-multihull}"
+export PHYSX_ROOT="${PHYSX_ROOT:-$SIBLINGS/PhysX/out/install/garage-multihull}"
 # VIBE_SIM_TARGET: a separate cargo tree for the sim, e.g. for another PHYSX_ROOT
 # (a changed PHYSX_ROOT rebuilds the bridge; sharing one tree thrashes it).
 SIM_TARGET="${VIBE_SIM_TARGET:-$ROOT/target/native-sim}"

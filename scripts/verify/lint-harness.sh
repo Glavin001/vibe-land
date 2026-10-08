@@ -10,6 +10,8 @@
 #  3. The native app ran the high profile's engine flags on the runtime packs
 #     (2,719 lab bonds broken at rest): under high.env every scene with a high
 #     pack resolves to it, and without it to the runtime pack.
+#  4. The native app kept the GPU awake (CuMetal's server keep-alive) and hung
+#     WindowServer: its defaults set both keep-alive switches to 0.
 # Exit 1 on any violation, with each one named. CPU only, no GPU, no launch.
 set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -47,5 +49,11 @@ for scene in lab town; do
   esac
 done
 
-[ "$bad" = 0 ] && echo "lint-harness: ctest rows, SDK paths, regression SDKs and the app's packs: ok"
+# 4. The native app lets the GPU idle: no CuMetal keep-alive in its defaults
+#    (the 250 us heartbeat hung WindowServer 52-68 s after launch, 4 of 4 runs).
+for key in CUMETAL_GPU_KEEPALIVE_US CUMETAL_GPU_KEEPALIVE_BUSY; do
+  grep -qE "\(\"$key\", \"0\"\)" sim-native/src/city.rs || fail "sim-native apply_app_defaults does not set $key to 0 (the app must not keep the GPU awake)"
+done
+
+[ "$bad" = 0 ] && echo "lint-harness: ctest rows, SDK paths, regression SDKs, the app's packs and its GPU keep-alive: ok"
 exit $bad

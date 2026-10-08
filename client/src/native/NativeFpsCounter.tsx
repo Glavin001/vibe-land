@@ -93,7 +93,9 @@ export function NativeFpsCounter() {
   // The frame's work: from before its callbacks to after its render.
   const work = useRef({ started: 0, waitMs: 0, totalMs: 0, worstMs: 0, frames: 0 });
   // The GPU time of the latest frame read back (null before the first, or without timestamp queries).
-  const gpu = useRef<{ countdown: number; ms: number | null }>({ countdown: TIMESTAMP_EVERY, ms: null });
+  // At most one readback in flight: three maps one result buffer, and resolving again while it is
+  // still mapped (a slow frame) is a WebGPU validation error and a rejected submit, every frame after.
+  const gpu = useRef<{ countdown: number; ms: number | null; pending: boolean }>({ countdown: TIMESTAMP_EVERY, ms: null, pending: false });
   const gl = useThree((state) => state.gl);
   useEffect(() => {
     const restore = timeDisplayWaits(gl, (ms) => { work.current.waitMs += ms; });
@@ -102,11 +104,12 @@ export function NativeFpsCounter() {
     const before = addEffect(() => {
       // Before this frame's work: the GPU timestamps of the frames before it.
       const g = gpu.current;
-      if (tracking && resolveTimestamps && --g.countdown <= 0) {
+      if (tracking && resolveTimestamps && !g.pending && --g.countdown <= 0) {
         g.countdown = TIMESTAMP_EVERY;
+        g.pending = true;
         void resolveTimestamps('render').then((ms) => {
           if (typeof ms === 'number' && ms > 0) g.ms = ms;
-        }).catch(() => {});
+        }).catch(() => {}).finally(() => { g.pending = false; });
       }
       work.current.started = performance.now();
       work.current.waitMs = 0;
