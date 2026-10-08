@@ -88,7 +88,8 @@ for arm in ${arms//,/ }; do
   for d in "$out/$arm"/r*/; do
     reports=(); for f in "$d"*.json; do case $f in *scenarios.json) ;; *) reports+=("$f") ;; esac; done
     [ ${#reports[@]} -gt 0 ] || continue
-    (arm_env "$arm" > /dev/null && node "$ROOT/scripts/verify/scenarios.mjs" judge "$arm" --lab "$LAB" --town "$TOWN" --out "$d/scenarios.json" "${reports[@]}" > "$d/verdict.txt" 2>&1)
+    # Judging reads the packs only: no provenance check (the SDK may have moved on since the runs).
+    (eval "$("$ROOT/scripts/fidelity/packs.sh" high)"; LAB=$lab TOWN=$town; node "$ROOT/scripts/verify/scenarios.mjs" judge "$arm" --lab "$LAB" --town "$TOWN" --out "$d/scenarios.json" "${reports[@]}" > "$d/verdict.txt" 2>&1)
   done
 done
 node - "$ROOT" "$out" "$cases" ${arms//,/ } <<'EOF' | tee "$out/repeats.txt"
