@@ -453,10 +453,14 @@ export const WEATHERBOARD = { density: 450 };
  * - 1/sqrt(F80)) kWh/t with Bond's (1961) work indices. crushViscosity: the
  * overstress the CEB-FIP Model Code 1990 (2.1.6.4) dynamic increase factor
  * gives at a 30/s strain rate, over that rate: (DIF - 1) fc / 30.
- * Timber and steel members are not crushable (they snap or bend); nor are
- * concrete tiles or glass, which fail in flexure (EN 490, EN 572).
+ * Natural-stone masonry, structural softwood and roof tiles crush too (below,
+ * each cited). Steel does not: see `crushFor`.
  */
 const crushOf = (fc, energy, viscosity, impedance, k = 1.2) => ({ capPressure: 2.5 * fc, cohesion: fc * (1 - k / 3), frictionSlope: k, crushEnergy: energy, crushViscosity: viscosity, impedance });
+/** Bond (1961): specific comminution energy, J/m^3, from F80 to P80 (m) at work index Wi (kWh/t) and density rho. */
+const bond = (wi, from, to, rho) => 10 * wi * (1 / Math.sqrt(to * 1e6) - 1 / Math.sqrt(from * 1e6)) * 3.6e6 / 1000 * rho;
+/** CEB-FIP MC90 (2.1.6.4) compressive DIF at 30/s for strength fc (Pa), as the viscosity (DIF - 1) fc / 30. */
+const mc90Viscosity = (fc) => { const a = 1 / (5 + 9 * fc / 10e6); return (Math.pow(30 / 30e-6, 1.026 * a) - 1) * fc / 30; };
 /**
  * Acoustic impedance rho c = sqrt(rho E), Pa s/m: the native stage's
  * impact-pressure crush (PhysX impactImpedance, opt-in with
@@ -494,13 +498,64 @@ export const CRUSH = {
   glass: { capPressure: 45e6, cohesion: 45e6, frictionSlope: 0, crushEnergy: 5.2e6, crushViscosity: 3.2e3, debrisMassFraction: 1, debrisFragmentCount: 12,
     // E 70 GPa (EN 572-1) at 2500 kg/m^3: 13 MPa s/m.
     impedance: impedance(2500, 70e9) },
+  // Natural-stone masonry (a wall of dimensioned limestone or sandstone units in
+  // mortar, as the brick veneer is of brick): f_k = K f_b^0.7 f_m^0.3 (EN 1996-1-1
+  // eq. 3.1, Table 3.3 natural stone K 0.45) = 10.5 MPa for units of f_b 50 MPa
+  // (building limestone and sandstone, 30-90 MPa unconfined: BS EN 1926 tests,
+  // e.g. Portland limestone ~50 MPa) in M4 mortar. Rubble to 20 mm from 100 mm
+  // at Wi 11.6 kWh/t (limestone, Bond 1961; sandstone similar): 0.45 kWh/t =
+  // 1.6 kJ/kg x 2600 = 4.2 MJ/m^3. MC90 DIF 2.67 at 30/s -> 5.8e5 Pa s.
+  // E = 1000 f_k (EN 1996-1-1 3.7.2) = 10.5 GPa at 2600 kg/m^3: 5.2 MPa s/m.
+  // The bonds' 102 MPa (the legacy table's) is a solid stone's, not a wall's.
+  stone: crushOf(10.5e6, bond(11.6, 0.1, 0.02, 2600), mc90Viscosity(10.5e6), impedance(2600, 10.5e9)),
+  // Structural softwood (C24, EN 338): a member is destroyed when its fibres
+  // fail, crushing along the grain at f_c,0,k 21 MPa. Across the grain it
+  // yields at f_c,90,k 2.5 MPa, but that densifies the wood (a dent) and keeps
+  // the member, and the stage's cone is one isotropic law, so the along-grain
+  // strength is the crush. Energy: the crush plateau to densification, f_c,0
+  // x (1 - rho / rho_cell) = 21 MPa x (1 - 420 / 1500) = 15 MJ/m^3 (cellular
+  // crushing of wood along the grain, Reid & Peng 1997, Int. J. Impact Eng.
+  // 19(5-6); cell-wall density ~1500 kg/m^3, Wood Handbook FPL-GTR-282 ch. 4).
+  // Rate: strength rises ~10% per tenfold loading rate (Wood Handbook ch. 5),
+  // 30/s against a 1e-5/s test: 6.5 decades, DIF 1.86 -> 6.0e5 Pa s.
+  // E_0 11 GPa at 420 kg/m^3: 2.1 MPa s/m.
+  softwood: crushOf(21e6, 21e6 * (1 - 420 / 1500), (Math.pow(1.1, 6.5) - 1) * 21e6 / 30, impedance(420, 11e9)),
+  // Concrete roof tiles (EN 490/491; the kit's ROOF_TILE_LAYER, a 50 mm layer
+  // of 920 kg/m^3 smearing tiles of 2300 kg/m^3 and air): a tile breaks in
+  // flexure, pressure-independent like glass, at the flexural tensile strength
+  // of its concrete, f_ctm,fl = (1.6 - h/1000) f_ctm = 1.59 x 3.5 MPa = 5.6 MPa
+  // (EN 1992-1-1 3.1.8, C40/50 f_ctm 3.5 MPa, 12 mm tile), on the layer's
+  // stress (its virial over the smeared volume) 920/2300 of that: 2.2 MPa.
+  // Pieces to 5 mm from 12 mm at Wi 11.6: 0.58 kWh/t = 2.1 kJ/kg x 920 =
+  // 1.9 MJ/m^3. MC90 tensile DIF at 30/s 1.53 -> 3.9e4 Pa s. Shards: all of its
+  // mass in pieces. Z: sqrt(920 x 0.4 x 30 GPa) = 3.3 MPa s/m.
+  roofTile: { capPressure: 2.2e6, cohesion: 2.2e6, frictionSlope: 0, crushEnergy: bond(11.6, 0.012, 0.005, 920), crushViscosity: 0.53 * 2.2e6 / 30,
+    debrisMassFraction: 1, debrisFragmentCount: 8, impedance: impedance(920, 0.4 * 30e9) },
+  // Roofing slate (EN 12326): a natural stone that also breaks in flexure,
+  // modulus of rupture >= 35 MPa along the grain (EN 12326-1 characteristic,
+  // typical slates 50-90), on a 2100 kg/m^3 layer of 2800 kg/m^3 slate: 26 MPa.
+  // Pieces to 5 mm from 6 mm slates at Wi 13.8 kWh/t (slate, Bond 1961 table): 0.17
+  // kWh/t = 0.58 kJ/kg x 2100 = 1.2 MJ/m^3. Rate-insensitive as glass (an
+  // assumption). Z: sqrt(2100 x 0.75 x 60 GPa) = 9.7 MPa s/m.
+  slate: { capPressure: 26e6, cohesion: 26e6, frictionSlope: 0, crushEnergy: bond(13.8, 0.006, 0.005, 2100), crushViscosity: 3.2e3,
+    debrisMassFraction: 1, debrisFragmentCount: 8, impedance: impedance(2100, 0.75 * 60e9) },
 };
 /**
- * The crush block a material gets by what it is, by name: masonry, concrete,
- * gypsum and glass crush; timber, steel, trim and roofing do not (they snap at
- * their joints). Anchors (zero-mass chunks) never crush whatever they are.
+ * The crush block a material gets by what it is, by name: masonry (brick and
+ * natural stone), concrete, gypsum, glass, structural softwood and roof tiles
+ * crush. Steel does not: it is ductile, so a struck steel member yields and
+ * bends (its joints' ductileSlip, the bonds' yield to rupture), and under the
+ * pressures here it never comminutes (S355's f_y 355 MPa sets an indentation,
+ * not rubble; a cone fitted to it would delete a member a ball only dents).
+ * Trim, joinery, siding, furniture timber and trees are left as they were (not
+ * structural softwood; their own values are another item). Anchors (zero-mass
+ * chunks) never crush whatever they are.
  */
 export function crushFor(name = '') {
+  if (/^stone$/.test(name)) return CRUSH.stone;
+  if (/^(stud-timber|double-top-plate|wood-frame|structure-timber)$/.test(name)) return CRUSH.softwood;
+  if (/^concrete-roof-tile$/.test(name)) return CRUSH.roofTile;
+  if (/^slate-roof$/.test(name)) return CRUSH.slate;
   if (/^(brick|garden-masonry)/.test(name) || /masonry/.test(name) && !/connection|seam|joint/.test(name)) return CRUSH.brickVeneer;
   if (/^(reinforced-concrete|concrete-slab|concrete-wall|concrete-footing|pale-paving)$/.test(name)) return CRUSH.concrete;
   if (/^(plaster|drywall|gypsum)$/.test(name)) return CRUSH.gypsum;
