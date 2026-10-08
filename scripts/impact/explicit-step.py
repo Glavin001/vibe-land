@@ -79,8 +79,33 @@ def cone_metric(W, Ps, mu):
     return l * d
 
 
+def cone_coulomb(W, g, Ps, mu):
+    """The GPU step's contact impulse: sticking when Ps = -W^-1 g is in the cone; else Coulomb
+    sliding with the normal approach stopped (P_N = -g_N / (W_NN - mu W_NT . t), P_T = -mu P_N t,
+    t the slip direction after the impulse, to a fixed point) when that pulls nowhere and adds no
+    kinetic energy; else the projection in the metric W (cone_metric, which may dilate)."""
+    tn = np.hypot(Ps[1], Ps[2])
+    if Ps[0] <= 0 and tn <= mu * -Ps[0]: return Ps.copy()
+    if Ps[0] <= 0 and mu > 0 and tn > 0:
+        t = Ps[1:] / tn; ok = False; PN = 0.0
+        for _ in range(8):
+            den = W[0, 0] - mu * (W[0, 1] * t[0] + W[0, 2] * t[1])
+            if not den > 0: ok = False; break
+            PN = -g[0] / den
+            if not PN <= 0: ok = False; break
+            P = np.array([PN, -mu * PN * t[0], -mu * PN * t[1]])
+            slip = (g + W @ P)[1:]; sn = np.hypot(*slip); ok = True
+            if not sn > 0: break
+            u = -slip / sn; change = np.abs(u - t).sum(); t = u
+            if change < 1e-4: break
+        if ok:
+            P = np.array([PN, -mu * PN * t[0], -mu * PN * t[1]])
+            if g @ P + 0.5 * P @ W @ P <= 0: return P
+    return cone_metric(W, Ps, mu)
+
+
 class Explicit:
-    def __init__(self, P, patch=None, boundary='fixed', dtype=np.float64, mass_scale=None, damping=0.0, cone='metric'):
+    def __init__(self, P, patch=None, boundary='fixed', dtype=np.float64, mass_scale=None, damping=0.0, cone='coulomb'):
         self.P = P; nn, nl = P.nn, P.nl; self.dtype = dtype; self.cone = cone
         imp = P.imp[0]; self.imp = imp
         # node positions: the mean of their joints' centroids (as cheap-contact-time.py)
@@ -201,7 +226,9 @@ class Explicit:
                     g = np.asarray(self.Bc[i].T @ v).ravel()
                     old = Pc[i].copy()
                     trial = old - np.linalg.solve(self.W[i], g)
-                    if self.cone == 'metric':
+                    if self.cone == 'coulomb':
+                        trial = old + cone_coulomb(self.W[i], g, trial - old, self.mu[i]) if not old.any() else cone_coulomb(self.W[i], g + self.W[i] @ old, trial - old, self.mu[i]) + old
+                    elif self.cone == 'metric':
                         trial = cone_metric(self.W[i], trial, self.mu[i])
                     elif trial[0] > 0: trial[:] = 0.0                          # separating (P_N <= 0 is compression)
                     else:
@@ -310,7 +337,7 @@ def main():
     ap.add_argument('--fp32', action='store_true'); ap.add_argument('--mass-scale', type=float, default=None,
                     help='target rotational frequency (rad/s); default none')
     ap.add_argument('--dt-us', type=float, default=None); ap.add_argument('--sweeps', type=int, default=4); ap.add_argument('--json'); ap.add_argument('--zeta', type=float, default=0.0, help='damping ratio at the hop frequency (beta = 2 zeta / omega_hop)'); ap.add_argument('--handoff', action='store_true')
-    ap.add_argument('--cone', default='metric', choices=['metric', 'clamp'], help='the friction cone: projection in the metric W (the GPU step), or the tangential clamp')
+    ap.add_argument('--cone', default='coulomb', choices=['coulomb', 'metric', 'clamp'], help='the contact impulse: Coulomb sliding with the metric projection as its energy-safe fallback (the GPU step), the projection alone, or the tangential clamp')
     a = ap.parse_args()
     P = cf.Problem(a.dump, True, [2217, 2218])
     E = json.loads(pathlib.Path(a.e_json).read_text()); eb = E['broken']
