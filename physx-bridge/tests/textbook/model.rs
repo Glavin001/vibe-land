@@ -356,7 +356,10 @@ impl Config {
         // all on (here the ones the stress solve and grading see: section
         // rotational stiffness, which implies section bending).
         // "section-bending" alone is a diagnostic step between them.
-        let impact = flag("VIBE_IMPACT_CAPACITY");
+        // The stage's impact machinery is on with either impact model: the
+        // retired ADMM solve (VIBE_IMPACT_CAPACITY) or the impact step the high
+        // profile runs (VIBE_IMPACT_STEP; the bridge sets desc.impactCapacity for both).
+        let impact = flag("VIBE_IMPACT_CAPACITY") || flag("VIBE_IMPACT_STEP");
         let rotation = flag("VIBE_SECTION_ROTATION");
         let true_stiffness = rotation || flag("VIBE_BOND_TRUE_STIFFNESS");
         if rotation {

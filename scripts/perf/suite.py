@@ -246,9 +246,9 @@ LOCKED = "import os,sys,time; print('SUITE_LOCKED', time.time(), flush=True); os
 
 
 def gpu_cmd(label: str, cmd: list[str], shared: bool) -> tuple[list[str], dict]:
-    """CMD under the machine's GPU admission, one job per hold: the exclusive
-    lock for timing (it waits for running shared jobs and blocks new ones only
-    while this one job runs), or a shared slot (VIBE_GPU_SHARED=1: timings only
+    """CMD under the machine's GPU admission: inside the suite's one exclusive
+    hold (VIBE_GPU_HELD, set by execute) it runs at once; or a shared slot
+    (VIBE_GPU_SHARED=1: warm-ups, and --shared runs whose timings are only
     indicative)."""
     return [str(GPU_RUN), label, sys.executable, "-c", LOCKED, *cmd], ({"VIBE_GPU_SHARED": "1"} if shared else {})
 
@@ -282,8 +282,8 @@ def run_replay(binary: str, capture: Path, runs: int, logfile: Path, shared: boo
 
 
 def execute(run_dir: Path) -> None:
-    """Every GPU job, each taking the GPU lock for itself only (at most a few
-    minutes a hold), so queued correctness jobs run between them."""
+    """The untimed warm-ups on shared slots, then every timed job inside one
+    hold of the exclusive GPU lock (execute_timed)."""
     work = json.loads((run_dir / "work.json").read_text())
     shared = work.get("shared", False)
     logs = run_dir / "logs"
@@ -301,6 +301,32 @@ def execute(run_dir: Path) -> None:
     for profile, w in work["warmups"].items():
         record(f"warmup-{profile}", *run_job(work["binaries"][profile], job_env(w, work["profile_env"], work["extra_env"][profile]),
                                               logs / f"warmup-{profile}.log", 1800, True, f"warmup-{profile}"))
+    (run_dir / "timing-warmup.json").write_text(json.dumps(timing, indent=1))
+    if shared or os.environ.get("VIBE_GPU_HELD"):
+        execute_timed(run_dir)
+        return
+    # The timed jobs take the exclusive lock ONCE, together: each exclusive hold
+    # waits for the GPU to drain (the longest running shared job), and holding
+    # it per job made a quick run drain the GPU twenty times over. Inside the
+    # hold, each job's gpu-run sees VIBE_GPU_HELD and runs at once.
+    env = {k: v for k, v in os.environ.items() if k != "VIBE_GPU_SHARED"}
+    rc = subprocess.run([str(GPU_RUN), "perf-suite-timed", sys.executable, str(Path(__file__).resolve()), "--exec-timed", str(run_dir)],
+                        env=env).returncode
+    if rc != 0:
+        log(f"timed section exited {rc}")
+
+
+def execute_timed(run_dir: Path) -> None:
+    """The timed jobs (under one hold of the GPU lock, unless shared)."""
+    work = json.loads((run_dir / "work.json").read_text())
+    shared = work.get("shared", False)
+    logs = run_dir / "logs"
+    timing = json.loads((run_dir / "timing-warmup.json").read_text())
+
+    def record(name, rc, held, waited):
+        timing["jobs"].append({"job": name, "rc": rc, "seconds": held, "waited": waited})
+        log(f"{name}: {held:.1f} s on the GPU (waited {waited:.0f} s for it; rc {rc})")
+
     for rep in range(work["reps"]):
         order = work["profiles"] if rep % 2 == 0 else list(reversed(work["profiles"]))
         for profile in order:
@@ -679,8 +705,12 @@ def main() -> None:
                     "(an authoring change; --save-baseline then freezes them)")
     ap.add_argument("--shared", action="store_true", help="share the GPU (VIBE_GPU_SHARED=1): for developing the suite; timings only indicative")
     ap.add_argument("--exec", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--exec-timed", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args()
     spec = json.loads(SPEC.read_text())
+    if args.exec_timed:
+        execute_timed(Path(args.exec_timed))
+        return
     if args.exec:
         execute(Path(args.exec))
         return

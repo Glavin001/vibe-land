@@ -101,14 +101,64 @@ bond graph without them (`frontRearJoined`).
 
 ### Locality, standing, "more"
 
-- **Local.** No broken bond is farther from the line of travel than 2R, where
-  R is the sum of:
-  - the impactor's radius (a car's half-width);
-  - the struck layer's thickness (a 45 degree breakout cone);
-  - the struck chunk's size (the stage breaks whole chunks).
+- **Local.** No broken bond is farther from the line of travel than the hit's
+  reach, r + 2t + l:
+  - **r:** the impactor's radius (a car's half-width).
+  - **2t:** the punching perimeter around it. A concentrated load through a
+    slab or wall of depth t fails on a cone whose control perimeter lies 2t out
+    from the loaded area (EN 1992-1-1 6.4.2, basic control perimeter u1 at 2d;
+    a cone at 26.6 degrees). Past it the remaining wall carries only what the
+    perimeter's joints carried when they broke (momentum and the joints'
+    capacity), and that load spreads and falls off with distance in the plane,
+    so it breaks nothing farther out.
+  - **l:** the longest member with a joint inside that perimeter. A member cut
+    or hinged there (a stud, a plate, a sheet, a veneer panel on its ties)
+    hangs from or falls about its other joints, up to its own length away, and
+    can break them. Every member is a chunk, so that is the chunk's longest
+    dimension, read from the pack for each case.
 
-  Past the plug's perimeter the load on the remaining wall is bounded by what
-  the perimeter bonds carried when they broke, so nothing farther should break.
+  This replaces "2R", R = r + t + the struck chunk's size. The factor 2 had no
+  derivation. The old R used a 45 degree cone (t) where the code's perimeter is
+  2t. It also counted only the struck chunk, not the longest member reaching
+  into the perimeter. The reach comes out larger for light balls, where long
+  members (a sheet, a plate) reach into the perimeter: the 100 kg ball into the
+  veneer wall gets 4.1 m, against 2.1 m before. It comes out smaller for the
+  meteor into the masonry wall: 3.0 m, against 5.5 m before.
+
+  **Stopgap (2026-10-08): only breaks during the passage count.** Debris
+  thrown through the house can break a joint wherever it lands, and that is
+  real. The test bed cannot yet say which impactor broke a bond, so it splits
+  the breaks in time instead:
+  - **during the passage:** from first contact to the end of the impactor's
+    passage (a shot's balance window closing; a car stopped or off the house
+    for 3 ticks). Locality is judged on these (`house.lineDistancesDuring`).
+  - **after the passage:** the debris and the aftermath. These are reported in
+    their own row, never judged (`house.lineDistancesAfter`).
+
+  Debris that lands while the impactor is still passing counts as during. The
+  impact agent's per-bond impactor attribution replaces this split. Collapse
+  (below) is a separate test.
+- **Collapse** (the impact comparison, `scripts/verify/impact-arms.mjs`).
+  A house collapses when part of it loses its load path to the ground and
+  falls. The test bed counts frame members that meet all four conditions:
+  - **off the anchored body:** no bonded path to an anchored chunk remains;
+  - **fallen:** dropped by more than their own depth, so they are off their
+    bearing;
+  - **beyond the impactor's reach:** farther from its line than its half-size
+    across it plus the member's own length, so the hit itself did not strike
+    or carry them;
+  - **in an assembly:** still bonded into a detached body of two or more
+    chunks.
+
+  The last condition separates collapse from debris. An assembly falls as one
+  because the joints that tied it to the rest of the house broke while its own
+  held: its load path was cut. A member knocked loose by debris, or cut by the
+  hit, has its own joints broken and falls alone. Those lone members are
+  counted separately (`looseFallenMembers`) and shown, but are not collapse.
+  Two members knocked off together by one piece of debris would count, which
+  is rare and an over-count. The outcome is local when no member collapsed.
+  Counts: `house.collapsedMembers` and `house.looseFallenMembers` (the test
+  bed's house summary).
 - **Stands.** No roof member down more than 0.5 m (the house probe's
   definition). The corner and roof hits only measure it, because a corner loses
   its posts and the plates over it may sag within physics.
@@ -290,16 +340,66 @@ observed outcome.
    Engine: the vehicle contact model (E8's frontal impedance does not hold the
    force down). The truck's exit speeds behind walls are also 30-60% under
    plug momentum in runtime (2.6 against 8.3, 9.9 against 16.9 m/s).
+
+   **Root cause (2026-10-08, the test bed's `loadBalance` audit,
+   `VIBE_TESTBED_AUDIT=1`).** The audit compares the stress input on the car
+   with the force its measured momentum change needs. The car's joints are
+   graded in the trial pass, where the struck wall or house chunks are still
+   anchored (kinematic, infinite mass). So the car takes a dead stop, plus the
+   solver's position correction for up to 0.36 m of first-tick penetration.
+   Its breaks are committed from that pass, and the corrected pass then lets
+   the wall go.
+
+   Monster truck, high (explicit step), default joints, first tick of contact:
+
+   | Trial | Graded | Measured |
+   |---|---|---|
+   | Masonry wall at 10 m/s | 3.2 MN (a dead stop) | 1.7 MN |
+   | Masonry wall at 20 m/s | 38.9 MN | 0.20 MN |
+   | Lab wall | 42.7 MN | 0.52 MN |
+   | Framed house | 44.2 MN | 7.0 MN |
+
+   Stopping the truck dead in one tick takes 6.5 MN. The excess is the same
+   with the impact step off, crush off, or any depenetration cap.
+
+   The wheels go by their own inertia under these loads: about 800 g on 293
+   kg. At 10 m/s, Vehicle2's corner constraint adds 520 kN per front wheel,
+   about 0.37 MN m at the hub against the square-patch mount's 69 kN m.
+
+   - **Test:** `physx-bridge/tests/vehicle_contact_load.rs` (regression
+     `vehicle-contact-load`). It grades 1227 kN against 791 kN of momentum
+     change (1.55x) on a wall the car breaks, and 1.00 on static and unbroken
+     walls.
+   - **Fix:** the impact agent's anchored-contact bound in the rigid solver.
+     Every contact on an anchored chunk, in every pass, is bounded by what
+     that chunk can transmit, C dt + m v_close.
+
+   The authoring side is the joints' brittleness. Next item.
 4. **Corner load spike with nothing hitting the car** (found by the joint
    bound). Coasting on a flat street, the rear upright-wishbone bond went from
    0.28 utilisation to past 1 within 5 ticks, at steady 10-14 kN wheel loads
    (`target/vehicle-testbed/scen-ab-on.json`, coast, audits). Stiffness is
    unchanged by the bound, so the forces are the stage's own, and the spike
    exists in the default assets too. It is hidden there by 100x joints.
-5. **Vehicle joints cannot be ductile.** `StressMaterialDesc` (the bridge's
-   vehicle materials, `server/src/vehicle_assets/fracture.rs`) has no
-   `ductileSlip`, so steel joints at real capacity break brittle and cascade
-   (EN 1993-1-1 3.2.2 ductility).
+5. **Vehicle joints cannot be ductile.** Ductile slip reached the stage
+   (0193a7e2), but only the ADMM impact solve used it. That solve is now
+   retired, and the static verdict grades steel brittle at fatal.
+
+   PhysX fix/static-ductile-steel (`PX_DESTRUCTION_STATIC_DUCTILE`) gives metal
+   joints (E >= 50 GPa) with an ultimate slip a static rule:
+   - they strain-harden between the elastic and fatal limits with no section
+     loss;
+   - past fatal they neck by the slip of the excess, (u - 1) F_u / k plus
+     1/2 (u - 1) F_u / m_light dt^2;
+   - they rupture at the ultimate slip.
+
+   Vehicle metal joints yield at a cited f_y/f_u (S355, 10.9, 6061-T6). Test:
+   `static_ductile.rs`.
+
+   On the trucks the rule waits for item 3's bound. Mode 1, the rule as built,
+   still loses wheels against the 39 MN over-count, though the cannonball
+   shreds the truck (675 bonds). Mode 2, the return mapping alone, keeps every
+   wheel but stops the cannonball shredding it (47 bonds).
 6. **Runtime grading** (known gaps 1-2). From one hit the whole veneer house
    comes down: 1,900-2,990 bonds broken beyond 2R, roof 77-102 of 102 members
    down. This covers the cannonball, the 1 t ball and the trucks.

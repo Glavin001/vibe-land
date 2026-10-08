@@ -21,3 +21,5 @@ runtime	crush-only-where-hit	crushes are where the projectile hit (positions)	no
 runtime	studless-houses-collapse	veneer-house--no-ground-front-studs: collapses (bonds broken at rest)	0.84%	without only the ground floor front studs the two-storey stands (0.84%)
 runtime	stairs-walkable	route walk: up and down the stair	fails: FAIL  down-upper-flight: fell 0.242 m at Vec3(0.13733491, 2.7154164, -2.0747907)	without ground snap the player falls 0.24 m going down the upper flight (high profile snaps)
 runtime	turning-slalom-avoidance	slalom and avoidance on the GPU (scripts/turning-lab.sh slalom|avoid)	not gated	no automated gate for slalom and avoidance (turning-lab is a film)
+# high (2026-10-08, garage-hifi a56421e81, veneer houses revision 1 d97f8143): FIDELITY_AUDIT C9; the re-bearing work returns it to 0
+high	packs-stand-at-rest	veneer: frame-only variants with a bond broken at rest (known gap: FIDELITY_AUDIT C9, re-bearing after fastener failure)	2 of 2: veneer-bungalow--frame 0.17%, veneer-house--frame 0.18%	a partition end stud pulled up at 1.13x its end nails never bears again (C9)

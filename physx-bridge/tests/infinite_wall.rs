@@ -198,7 +198,15 @@ fn reported(text: &str, key: &str) -> f32 {
 /// The meteor (110 t of rock, r 2 m) at 140 m/s, descending at slope 0.3,
 /// into static ground (the city's floor is a static box): its velocity each
 /// tick [along, up].
-fn meteor_on_ground(gap: f32, paved: bool) -> Vec<[f32; 2]> {
+fn meteor_on_ground(gap: f32, paved: bool) -> Vec<[f32; 2]> { meteor_on_ground_with_edge(gap, paved).0 }
+
+/// The footing the walled and footing arms carry: its box (centre, half extents).
+const FOOTING: ([f32; 3], [f32; 3]) = ([0.0, 0.175, 20.0], [3.0, 0.15, 0.3]);
+
+/// The same, and whether the rock's sphere reached the footing's box on any
+/// tick (its path segment over the tick within r of the box): the contact
+/// included the footing's edge, not the paving alone.
+fn meteor_on_ground_with_edge(gap: f32, paved: bool) -> (Vec<[f32; 2]>, bool) {
     std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
     let paved = paved || matches!(std::env::var(ARM).as_deref(), Ok("meteor_wall" | "meteor_footing" | "meteor_member_footing"));
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
@@ -291,14 +299,22 @@ fn meteor_on_ground(gap: f32, paved: bool) -> Vec<[f32; 2]> {
     world.launch_dynamic_ball(LaunchedBallDesc { entity_id: BALL, user_id: 1, pose: Pose { position: start, rotation: identity() },
         radius, mass, linear_velocity: v, collision_group: GROUP_BALL, collision_mask: ALL }).unwrap();
     let mut out = Vec::new();
+    let has_footing = matches!(std::env::var(ARM).as_deref(), Ok("meteor_wall" | "meteor_footing" | "meteor_member_footing"));
+    let (mut prev, mut edge) = ([start.x, start.y, start.z], false);
+    // Distance from a point to the footing's box.
+    let to_box = |p: [f32; 3]| (0..3).map(|k| ((p[k] - FOOTING.0[k]).abs() - FOOTING.1[k]).max(0.0).powi(2)).sum::<f32>().sqrt();
     for _ in 0..30 {
         world.step().unwrap();
         if paved { let status = world.native_tick().unwrap(); if status.broken_bonds > 0 { println!("paving broke {} bonds", status.broken_bonds); } }
         let ball = world.body_snapshots().unwrap().into_iter().find(|b| b.entity_id == BALL).expect("meteor");
         println!("meteor y {:.2} along {:.2} up {:.2}", ball.pose.position.y, ball.linear_velocity.z, ball.linear_velocity.y);
+        let now = [ball.pose.position.x, ball.pose.position.y, ball.pose.position.z];
+        // Sub-sampled over the tick (the rock moves ~2 m a tick).
+        if has_footing && (0..=16).any(|i| { let t = i as f32 / 16.0; to_box([0, 1, 2].map(|k| prev[k] + (now[k] - prev[k]) * t)) <= radius + 0.02 }) { edge = true; }
+        prev = now;
         out.push([ball.linear_velocity.z, ball.linear_velocity.y]);
     }
-    out
+    (out, edge)
 }
 
 /// The heavy impactor's wall (arm `heavy_wall`): masonry-like, 6 m wide and
@@ -405,9 +421,11 @@ fn arm() {
     if arm.starts_with("meteor_") {
         // Wherever the last step before contact leaves it: 1 cm (inside the
         // contact offset) to 0.6 m up.
-        let (mut up, mut along) = (f32::MIN, f32::MAX);
+        let (mut up, mut along, mut edge) = (f32::MIN, f32::MAX, true);
         for gap in [0.01f32, 0.2, 0.4, 0.6] {
-            let track = meteor_on_ground(gap, arm == "meteor_paving");
+            let (track, touched) = meteor_on_ground_with_edge(gap, arm == "meteor_paving");
+            // The footing edge's allowance holds only if every drop met the edge.
+            edge &= touched;
             let u = track.iter().map(|v| v[1]).fold(f32::MIN, f32::max);
             println!("gap {gap}: up {u:.2} along {:.2}", track.last().unwrap()[0]);
             up = up.max(u);
@@ -415,6 +433,7 @@ fn arm() {
         }
         println!("up_max={up}");
         println!("along_end={along}");
+        println!("footing_edge={}", edge as u8);
         return;
     }
     let plates = match arm.as_str() { "one_plate" | "unbreakable" | "light_ball" => 1, "grid" => 4, _ => 2 };
@@ -538,11 +557,24 @@ fn meteor_rebound_off_ground() {
     let vn = 140.0 * (0.3f32).atan().sin();
     let mut failures = Vec::new();
     // Static ground (the city's floor), and paving: slabs on a fixed subgrade, an anchored structure.
+    // meteor_wall lands against the wall's foot: the footing stands 0.3 m proud,
+    // so the rock meets its top edge as well as the paving, and an edge may add
+    // what crushing concrete can push back over a tick (meteor_on_a_foundation's
+    // bound: sigma h 2r dt / m, 5.5 m/s) to the rebound. Flat ground and paving
+    // allow the rebound alone. (The arm was gated against the flat-ground bound
+    // from its first commit, c3913920, and failed at 5.4 m/s ever since.)
+    let edge = 30e6f32 * 0.3 * 2.0 * 2.0 * DT / 110_000.0;
     for arm in ["meteor_ground", "meteor_paving", "meteor_wall"] {
         let text = run_arm(arm, &[]);
         let (up, along) = (reported(&text, "up_max"), reported(&text, "along_end"));
-        println!("{arm}: up to {up:.1} m/s (e v_n = {:.1}), along {along:.1}", 0.1 * vn);
-        if up > 0.1 * vn + 1.0 { failures.push(format!("{arm}: the meteor left at {up:.1} m/s up, restitution allows {:.1}\n{text}", 0.1 * vn)); }
+        // The edge's allowance only where the rock's contact really included the
+        // footing's edge (its sphere reached the footing box in every drop);
+        // flat ground and paving stay at e v_n.
+        let on_edge = arm == "meteor_wall" && reported(&text, "footing_edge") == 1.0;
+        if arm == "meteor_wall" && !on_edge { failures.push(format!("{arm}: the rock never reached the wall's footing: the case no longer tests the edge\n{text}")); }
+        let bound = 0.1 * vn + if on_edge { edge } else { 0.0 };
+        println!("{arm}: up to {up:.1} m/s (allowed {bound:.1}: e v_n = {:.1}{}), along {along:.1}", 0.1 * vn, if on_edge { " + a crushing footing edge" } else { "" });
+        if up > bound + 1.0 { failures.push(format!("{arm}: the meteor left at {up:.1} m/s up, the contact allows {bound:.1}\n{text}")); }
     }
     assert!(failures.is_empty(), "energy from the contact:\n{}", failures.join("\n"));
 }

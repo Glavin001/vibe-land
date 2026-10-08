@@ -30,6 +30,13 @@ def impact_summary(txt, indent='  '):
     if ev: print(f"{indent}impact: {len(ev)} evaluations, mean {sum(ev)/len(ev):.0f} ms, max {max(ev):.0f} ms, longest dispatch {max(disp) if disp else 0:.0f} ms;"
                  f" capped {total('capped,')}, fallen back {total('capped fallback')}, diverged {total('diverged')}, energy gains {total('energy gains')}, infeasible {total('infeasible projections')},"
                  f" held over capacity {sum(int(m.group(1)) for m in re.finditer(r'HELD OVER CAPACITY: (\\d+)', txt))}")
+    ghosts = sum(int(m.group(1)) for m in re.finditer(r'ANCHORED GHOSTS: (\d+)', txt))
+    created = sum(float(m.group(1)) for m in re.finditer(r'CRUSH ENERGY CREATED: ([\d.e+-]+) J', txt))
+    paid = [(float(m.group(1)), float(m.group(2)), float(m.group(3)), float(m.group(5))) for m in re.finditer(
+        r'crush pass \d: paid (\d+) \(([\d.e+-]+) J\); not crushed: (\d+) by no body that can pay \(([\d.e+-]+) J\), (\d+) past', txt)]
+    if ev or ghosts or created or paid:
+        print(f"{indent}anchored ghosts {ghosts}, crush energy created {created:.4g} J"
+              + (f"; crushes paid {sum(p[0] for p in paid):.0f} ({sum(p[1] for p in paid):.4g} J), not crushed: {sum(p[2] for p in paid):.0f} unpayable, {sum(p[3] for p in paid):.0f} past their striker's KE" if paid else ""))
     if by: print(f"{indent}breaks by source: impact {sum(a for a, _ in by)}, static {sum(b for _, b in by)} (largest static pass {max(b for _, b in by)})"
                  + ''.join(f"; {m.group(0)}" for m in re.finditer(r'static collapse: [^\n]*', txt)))
 for path in sys.argv[1:]:

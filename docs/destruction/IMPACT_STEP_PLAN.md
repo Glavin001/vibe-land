@@ -65,6 +65,46 @@ Steps 1-3 of §6 were carried out. Findings that change the plan:
      1.000. The impactor's Δp is within 0.09% at 32 µs and within 0.18% at the production substep.
    - **Substep:** the smaller Gershgorin bound of M⁻¹K and M⁻¹ᐟ²KM⁻¹ᐟ² is rigorous. It gives 49 µs
      against the true 64 µs, where M⁻¹K alone gives 32 µs.
+5. **Contact bounds act on pairs, not bodies** (`PX_DESTRUCTION_IMPACT_BOUND_PAIRWISE`).
+   - A rigid body's max contact impulse holds for all its contacts. So the impactor's bound (what
+     the step delivered per point) also capped its contacts with debris, the ground and chunks new in
+     the corrected pass. The truck pushed through debris it could not carry: +10..+17 m (h2, h3).
+   - Pairwise, the bound holds only between the impactor and the clusters its rows struck. The
+     truck stops inside the house: +6.4 m, 3/3 (C: 5.9 m).
+   - gpusolver `contactPairMaxImpulse`; PhysX `destruction_gpu_impact_pair_bounds` (the per-body
+     rule fails 4 of 9 cases).
+6. **Infinite walls: contacts on anchored chunks that never reach the step.** Static captures of
+   the held meteors and 100 kg balls (replay `IMPACT_ROWS`):
+   - The rows exist, with correct start-of-tick closing speeds (60 m/s; 72-108 m/s), but are not
+     routed: their struck chunks were crushed in the same trial pass, and routing skips a crushed
+     chunk. The meteor then meets the next layer in the corrected pass, a contact no step saw: a
+     rigid stop against an infinite mass.
+   - **The anchored-chunk contact bound** (`PX_DESTRUCTION_ANCHORED_CONTACT_BOUND`): the rigid
+     solver's contact pre-prep bounds every contact on a chunk of a kinematic cluster, every pass,
+     at what the chunk can take over the step: each live bond's capacity in the load's direction
+     (compression or tension for the axial share, shear for the transverse; the routing's reading)
+     summed, times dt, plus its mass times the closing speed (gpusolver `PxgAnchoredContactBound.h`).
+     A load past it loads some bond past its fatal limit, so the verdict breaks it.
+   - **Ghost walls** are counted (`anchoredGhosts`, "ANCHORED GHOSTS"): a chunk whose contact was
+     cut at its bound and whose bonds the pass's verdict all kept. Must be 0.
+7. **Crushing is energy-bounded** (`PX_DESTRUCTION_CRUSH_ENERGY_BOUND`).
+   - The payment stopped a 100 kg ball at 60 m/s (180 kJ) dead against a 0.073 m³ brick chunk
+     (3.5 MJ/m³: 256 kJ), and crushed the chunk anyway: an infinite wall, and 76 kJ created. A
+     0.975 m³ footing (3.8 MJ) was crushed whole by a cannonball that lost 1.55 MJ in the window.
+   - Every crush, every pass, is paid by the body that struck it hardest, all or nothing, out of its
+     kinetic energy; a crush no body can pay is not made (its damage stays just short of 1, and its
+     bonds go to the step). Chunks crush whole: a coarse chunk crushes only when its striker can
+     pay for all of it.
+   - `crushEnergyCreated` ("CRUSH ENERGY CREATED"): the energy of crushes no body paid. 0 by
+     construction with the bound; the runtime path's clamp shows it (206 kJ on one cannonball run).
+8. **Before and after** (high profile, the three flags; wall cases on the verification agent's
+   clear-of-grade aim):
+   - meteor into masonry: held (0.11 m) → exit 133.6 m/s, floor 132.9;
+   - meteor into the stone house's upper wall: bounced back → exit 135.2 m/s, floor 88.0;
+   - 100 kg ball into masonry: stopped at the face → through, exit 28.2 m/s;
+   - truck: +9.9..+14.5 m → +2.1 m;
+   - cannonball: open. With the strongest-sense bound it spread (1,124-1,748 breaks, 10 ghosts,
+     late static cascades); the directional bound is under test.
 
 ## Summary
 
