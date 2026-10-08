@@ -38,6 +38,8 @@ struct Scene {
     markers: bool,
     /// Player 1 walks forward, turning slowly, as a client holding W would.
     walking: bool,
+    /// steady harness: VIBE_PERF_FAST_SETUP=1 skips pacing until a measured window starts.
+    pace_now: bool,
 }
 
 /// The clock C++'s steady_clock reads on macOS, so CUMETAL_TRACE_COMMITS lines
@@ -66,7 +68,7 @@ impl Scene {
         };
         city.add_client(1);
         arena.set_tolerate_rejected_steps(true);
-        Self { arena, city, tick: 0, markers: false, walking: false }
+        Self { arena, city, tick: 0, markers: false, walking: false, pace_now: std::env::var("VIBE_PERF_FAST_SETUP").is_err() }
     }
 
     /// One server tick's physics and destruction, in the server's order.
@@ -132,7 +134,7 @@ impl Scene {
     /// what a tick costs from cold clocks is what the live server pays.
     fn run(&mut self, ticks: u32) -> Vec<Tick> {
         let pace_mode = std::env::var("VIBE_PERF_PACE").unwrap_or_default();
-        let pace = !pace_mode.is_empty() && pace_mode != "0";
+        let pace = !pace_mode.is_empty() && pace_mode != "0" && self.pace_now;
         // `spin`: wait out the period busy on the CPU, so only the GPU idles.
         let spin = pace_mode == "spin";
         let period = std::time::Duration::from_secs_f32(DT);
@@ -162,6 +164,7 @@ impl Scene {
     /// (`VIBE_PERF_MARKERS`), so they bound the ticks a CuMetal trace is
     /// attributed to.
     fn measure(&mut self, ticks: u32) -> Vec<Tick> {
+        self.pace_now = true;
         self.markers = std::env::var("VIBE_PERF_MARKERS").is_ok();
         let ticks = self.run(ticks);
         self.markers = false;
@@ -249,6 +252,12 @@ fn report(name: &str, ticks: &[Tick]) {
             ));
         }
         std::fs::write(format!("{dir}/{name}.csv"), csv).expect("write trace");
+        // steady harness: every tick's stage/zones line.
+        let mut stages = String::new();
+        for t in ticks {
+            stages.push_str(&format!("{} {:.3} {}\n", t.tick, t.total_ms, t.stage));
+        }
+        std::fs::write(format!("{dir}/{name}.stages.txt"), stages).expect("write stages");
     }
     let total: Vec<f32> = ticks.iter().map(|t| t.total_ms).collect();
     let dynamics: Vec<f32> = ticks.iter().map(|t| t.dyn_ms).collect();
@@ -432,6 +441,7 @@ fn perf_bench() {
         // A ball rolled into the rubble every 10 ticks, from a fixed arc of
         // points, keeps it moving the way players and stray shots do.
         scene.markers = std::env::var("VIBE_PERF_MARKERS").is_ok();
+        scene.pace_now = true;
         let ticks: u32 = std::env::var("VIBE_PERF_IDLE_TICKS").ok().and_then(|v| v.parse().ok()).unwrap_or(300);
         let mut measured = Vec::new();
         for t in 0..ticks {
@@ -515,6 +525,39 @@ fn perf_bench() {
         scene.markers = false;
         eprintln!("METEOR {{\"first_launch_tick\":{first},\"second_launch_tick\":{}}}", first + 434);
         report("meteor_pair", &ticks);
+    }
+
+    // steady harness: meteors onto building roofs from a seeded planner
+    // (VIBE_PERF_METEOR_SEED, VIBE_PERF_METEORS buildings), for comparing
+    // fracture outcome distributions between builds.
+    if wanted("seeded_meteor") {
+        let mut scene = Scene::city();
+        scene.run(120);
+        let (_, manifest, _) = crate::city::manifest_asset().expect("city manifest");
+        let buildings = vibe_land_destruction::buildings::enumerate_min(manifest, 20);
+        let count: usize = std::env::var("VIBE_PERF_METEORS").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+        let seed: u64 = std::env::var("VIBE_PERF_METEOR_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+        let tuning = crate::meteor::MeteorTuning::from_env();
+        let mut rng = crate::meteor::Rng::new(seed);
+        let g = vibe_netcode::movement::default_world_gravity();
+        let gravity = Vec3::new(g[0], g[1], g[2]);
+        let mut measured = Vec::new();
+        for b in buildings.iter().take(count) {
+            let target = Vec3::new(b.centre[0], b.top, b.centre[2]);
+            let launch = crate::meteor::plan(target, gravity, &tuning, &mut rng);
+            scene.arena.launch_meteor(
+                nalgebra::Vector3::new(launch.start.x, launch.start.y, launch.start.z),
+                nalgebra::Vector3::new(launch.velocity.x, launch.velocity.y, launch.velocity.z),
+                tuning.radius_m, tuning.mass_kg, tuning.ttl_ticks,
+            ).expect("meteor launched");
+            measured.extend(scene.run(300));
+        }
+        let below = scene.world().native_chunk_body_snapshots().map(|v| v.iter().filter(|b| b.position.y < -3.0).count()).unwrap_or(0);
+        let awake = scene.world().native_chunk_body_snapshots().map(|v| v.iter().filter(|b| !b.sleeping && !b.kinematic).count()).unwrap_or(0);
+        eprintln!("OUTCOME {{\"seed\":{seed},\"bonds\":{},\"bodies_below_minus3\":{below},\"awake_chunk_bodies\":{awake},\"chunk_bodies\":{}}}",
+            measured.last().map(|t| t.broken_bonds).unwrap_or(0),
+            scene.world().native_chunk_body_snapshots().map(|v| v.len()).unwrap_or(0));
+        report("seeded_meteor", &measured);
     }
 
     if wanted("rubble_sleep") {
