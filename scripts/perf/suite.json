@@ -167,7 +167,6 @@
             "standard": 240,
             "quick": 240
           },
-          "replay": "truck-house",
           "drive": {
             "cars": [
               0
@@ -177,9 +176,6 @@
           },
           "why": "a 4 t monster truck floored into a brick-veneer timber-frame house (impact about 3 s in)"
         }
-      ],
-      "live": [
-        "runtime"
       ]
     },
     {
@@ -199,7 +195,6 @@
             "standard": 90,
             "quick": 60
           },
-          "replay": "cannonball-house",
           "events": [
             {
               "tick": 0,
@@ -216,9 +211,6 @@
           ],
           "why": "the game's cannonball into the brick-veneer house"
         }
-      ],
-      "live": [
-        "runtime"
       ]
     },
     {
@@ -238,7 +230,6 @@
             "standard": 120,
             "quick": 90
           },
-          "replay": "meteor-house",
           "events": [
             {
               "tick": 0,
@@ -255,9 +246,6 @@
           ],
           "why": "the game's meteor into the brick-veneer house"
         }
-      ],
-      "live": [
-        "runtime"
       ]
     },
     {
