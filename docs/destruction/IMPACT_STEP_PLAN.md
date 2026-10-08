@@ -643,3 +643,134 @@ Notes on the plan:
   neighbours; PhysX resolves that next tick. The same holds for every impact model so far.
 - **Not measured on the GPU.** The ms figures are operation-count estimates. Checkpoint 3 is the
   first measurement.
+
+## 8. Two-body impacts: a destructible car in the window (2026-10-08)
+
+**Problem.** A car's joints were graded in the trial pass against struck chunks that are still
+anchored, so they saw a dead stop. The corrected pass then freed the chunks and gave the car far
+less Δv. Grading the car only on the corrected pass is forbidden (it would defer its splits past
+the corrected re-simulation).
+- Detector: `physx-bridge/tests/vehicle_contact_load.rs` compares the load a car is graded on with
+  m|Δv|/dt.
+  - Breakable wall: 1,227 kN graded against 791 kN (1.55x).
+  - Lab monster truck, first contact: 42.7 MN graded against 0.58 MN.
+  - Lab, per chunk: grille −21 MN and bumper +17 MN, which are not momentum exchanges.
+- First-contact penetration is not the cause:
+  - the car starts its first contact tick 0.26 m into the wall in the fixture, 0.21 m in the lab;
+  - a contact offset ≥ v·dt finds the wall before the car penetrates, and still grades 1,226.6 kN (fixture) and 107.7 MN (lab).
+- Speculative CCD on the car fails the stage (FIDELITY_AUDIT H7).
+
+**Model** (harness `scripts/impact/two-body.py`, law `scripts/impact/contact_law.py`):
+- **Patch:** both bodies' bond graphs. The car's island joins the struck patch as nodes, moving
+  with its rigid motion at the tick's start, and its joints as links rotated into the struck frame.
+- **Rows between the bodies are compliant:**
+  - Johnson's flat punch, k = 2aE*, with 1/E* = 1/E_a + 1/E_b. Each chunk's E is recovered from its own
+    joints, E = kL/A. Poisson's ratio is left out (≤ 10% on k).
+  - a = min(face, max(σ, √(R d))), where σ is the patch points' spread, R is Hertz's relative curvature
+    1/R = 1/R_a + 1/R_b (a rigid impactor's R_b = √(5I/2m)), and face is the smaller chunk's.
+  - The force is the integral of that tangent stiffness: a flat patch, then Hertz, then the face's punch.
+    A single-point contact therefore follows Hertz.
+  - Each row has a gap and is integrated by backward Euler. Coulomb friction is the stick impulse,
+    clipped.
+- **Hybrid car joints:**
+  - A car joint stays explicit where its own split-mass frequency satisfies ω_j·h ≤ 1.8.
+  - Stiffer car joints are trapezoidal-implicit (A = (I + h²/2 K W̃)⁻¹hK, block Jacobi with split
+    masses, two sweeps).
+  - The struck structure stays explicit, with its own bound.
+- **Step:** h = min(explicit bound, √(3ε m/k) over the compliant rows, 50 µs). This is backward
+  Euler's period error (ωh)²/3 on the shortest contact τ = π√(m/k), with ε = 0.1.
+
+**Why not cheaper schemes.** Steel sets the CFL limit: the monster's ω_max is 3.6e5 rad/s, so
+h = 5 µs and 3,336 substeps a tick. Against that explicit reference (h 5 and 2.5 µs, compliant rows):
+
+| Scheme | Substeps/tick | Verdict |
+|---|---|---|
+| Selective mass scaling, M + B diag(μ) Bᵀ (Olovsson 2005) | 278-926 | Accurate at 1e5 rad/s, but 8-31 PCG iterations a solve, each about one GPU phase: no saving |
+| Struck region plus a rigid remainder | — | Steel's c·dt = 86 m ≫ 4.3 m: the region is the whole car |
+| Rigid (Moreau) rows | — | Every coarse scheme depends on h (car Δv 1.3 → 2.7 m/s over 5 → 140 µs): contact time set by the light parts' hop time. Compliant rows converge |
+| Plain trapezoidal Jacobi | — | Gained energy at small h (+3.6%, +7%). The hybrid fixed it |
+| Hybrid, trapezoidal, 2 sweeps (chosen) | 733-753 at ε 0.1 | — |
+
+**ε and the scheme's known error.** Sweep of ε from 0.02 to 1 against the reference's spread over
+h = 2.5-5 µs (6 runs):
+
+| Case | Reference: dv / broken / yielded | Hybrid, ε 0.02 → 1: dv / broken / yielded | Energy closure |
+|---|---|---|---|
+| Wall 21.7 m/s, real joints | 2.58-2.59 / 49 / 368-372 | 2.55 → 2.46 / 43-48 / 380 → 342 | +0.8% → −1.9% |
+| Wall 10 m/s, real joints | 0.80-0.81 / 38-39 / 74-80 | 0.82-0.87 / 29-33 / 55-75 | |
+| Wall 21.7 m/s, default brittle joints | dv 1.90-1.96, broken 169-196 | dv 1.87-2.15, broken 154-169 | |
+| Wall 10 m/s, default brittle joints | dv 0.86-0.94, broken 100-109 | dv 0.77-1.24, broken 77-86 | |
+
+- No ε lands inside the reference's spread on every measure.
+- The gap comes from the implicit joints filtering the highest-frequency transients, not from ε.
+- **Known error of the scheme:** broken joints −5 to −25%, yielded 0 to −25%, car Δv within 1-5%.
+- ε = 0.1 is a cost choice. Energy closes within 1% there, and the vehicle gates (wheels, the
+  cannonball shredding, energy) decide.
+
+**Hertz check** (`contact_law.py`, 10 kg steel sphere, R 0.1 m, 1 m/s onto rigid steel), against
+Hertz's closed form:
+
+| ε | Contact time | F_max |
+|---|---|---|
+| 0.1 | +8.7% | −24% |
+| 0.02 | +3.3% | −15% |
+| 0.005 | +0.2% | −9% |
+
+The F_max deficit is backward Euler's numerical damping.
+
+**GPU** (PhysX `feat/two-body-impact`, `PX_DESTRUCTION_IMPACT_TWO_BODY`, `PX_DESTRUCTION_IMPACT_COMPLIANT_ROWS`):
+- **ContactRow v3:** `other`, `otherPose`, `patch`.
+- **Car rows:** a car row goes to the window when either side is an impact: the routing's
+  struck-side test, or the same test mirrored on the car's chunk, v_n√(k_c m_c) against its weakest
+  joint. Without the mirror test, a car scraping frozen debris opened about 950 extra windows.
+- **Hand-off records for the corrected pass:** end velocities and the rows the window decided.
+- **The stress report** carries the window's loads on the car's chunks.
+- **Flags off:** bit-identical (IMPACT_HASH).
+- **Parity** (`destruction_gpu_two_body_*`, against `two-body.py --export`):
+
+  | Case | Jaccard | Car Δv |
+  |---|---|---|
+  | Truck, 21.7 m/s, real joints | 1.000 | +0.25% |
+  | Truck, 10 m/s | 0.973 | 3.9% (tolerance 9%: the case's own h-spread) |
+  | Hertz | — | exact |
+
+- **Cost:** 40 ms on the 992-joint truck window, clock held. The implicit sweeps are 70% of it.
+  This is the first optimisation target.
+- **Cannonball into a truck:** the derivation picks h ≈ 3 µs (16 µs steel-on-steel contacts on 2 kg
+  parts), about 6,000 substeps a tick, 60-95 ms in resumable dispatches.
+  - Accepted for now.
+  - It is the extreme mass-ratio case for a multi-rate scheme later. Power-of-two AVI levels
+    resonated (ρ − 1 up to 0.61 per period: the multi-rate agent, scripts/impact/multirate.py), so
+    a stable node-partitioned scheme (Gravouil-Combescure) is the candidate.
+
+**Lab** (monster truck, high profile, real joints and static-ductile steel, 3 repeats each):
+
+| Trial | Two-body off: car bonds broken / wheels lost | Two-body on: car bonds broken / wheels lost |
+|---|---|---|
+| Wall, 21.7 m/s | 724-729 / 4 | 159-245 / 4 |
+| Wall, 10.9 m/s | 270-287 / 4 | 165-376 / 4 |
+| Framed house | 728-733 / 4 | 567-689 / 4 |
+| Debris on a wheel | 115-146 / 2 | 119 / 2 (after the mirrored test) |
+| Cannonball into the truck | 689-690 / 4 (shredded) | 674-693 / 4 (shredded) |
+
+- First contact, graded/measured: 54x and 137x without two-body; 0.1-1.7 with it.
+- `vehicle_contact_load`: the main hit is 0.80. One tick fails at 1.19. Stage and static walls are 1.00.
+
+**Wheel loss** (full audit, `VIBE_TESTBED_AUDIT_MAX`) has three causes, and the corrected pass is
+behind all three:
+1. Rear wishbones break in the impact tick's corrected pass. It grades the car statically against
+   its rigid 1.2-3.6 MN stop, where the window gave 0.74-0.82 MN. The harness breaks no suspension
+   joint.
+2. After the breach, quasi-static contacts with the wall's remains are graded by the static verdict.
+3. A rear wheel's suspension-limit row at the wall stump carries 753 kN. The hubs break in the trial,
+   and the corrected pass then detaches them (182 kN measured). A kerb test shows the limit row is
+   momentum-consistent when nothing breaks (633 kN graded, 633 kN measured).
+
+**Open:**
+- **Corrected-pass hand-off** (impact-compliant agent): the window's end velocities as its start;
+  pairs the window decided kept out of its rigid solve; the window's verdict standing for its
+  islands, the car's included.
+- **Then, if rear-wheel loss at the stump persists:** a tyre-bounded Vehicle2 limit row (maxImpulse
+  from the pneumatic sidewall force, 148 kN for the monster: 1.6 bar, Monster Jam / BKT) together
+  with the rim as a compliant row in the window. Never one without the other.
+- **Then:** turn on `VIBE_REAL_VEHICLE_JOINTS` and `PX_DESTRUCTION_STATIC_DUCTILE` in high.env.
