@@ -157,6 +157,15 @@ static bool native_rebearing() {
   static const bool value = native_env_f32("VIBE_REBEARING", 0.0f) != 0.0f;
   return value;
 }
+/// VIBE_MOHR_COULOMB_SHEAR=1 (SDKs with PX_DESTRUCTION_MOHR_COULOMB_SHEAR;
+/// FIDELITY_AUDIT C11): an intact joint's shear strength grows with the
+/// compression across it, f_v0 + mu sigma_c up to its cap (EN 1996-1-1 3.6.2:
+/// f_vk = f_vk0 + 0.4 sigma_d <= f_vlt), mu and the cap per material (the
+/// pack's shearFriction, shearCapacityLimit). Off: the authored mu is ignored.
+static bool native_mohr_coulomb_shear() {
+  static const bool value = native_env_f32("VIBE_MOHR_COULOMB_SHEAR", 0.0f) != 0.0f;
+  return value;
+}
 /// VIBE_STRENGTH_SHORT_TERM=1: see append_materials.
 static bool native_short_term_strength() {
   static const bool value = native_env_f32("VIBE_STRENGTH_SHORT_TERM", 0.0f) != 0.0f;
@@ -449,6 +458,14 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
     native_require(settings.bearing_joint.empty() || settings.bearing_joint.size() == settings.materials.size(),
                    "bearing joint table must be empty or parallel to the materials");
     s.bearing_joint.push_back(settings.bearing_joint.empty() ? 0.0f : settings.bearing_joint[index]);
+    native_require(settings.shear_friction.empty() || (settings.shear_friction.size() == settings.materials.size() &&
+                                                        settings.shear_capacity_limit.size() == settings.materials.size()),
+                   "shear friction tables must be empty or parallel to the materials");
+#if defined(VIBE_PHYSX_HAS_MOHR_COULOMB_SHEAR)
+    // Mohr-Coulomb joint shear (the stage zeroes mu unless its switch is on).
+    out.shearFriction = settings.shear_friction.empty() ? 0.0f : std::max(0.0f, settings.shear_friction[index]);
+    out.shearCapacityLimit = settings.shear_capacity_limit.empty() ? 0.0f : std::max(0.0f, settings.shear_capacity_limit[index]);
+#endif
     ++index;
     s.materials.push_back(out);
   }
@@ -1342,6 +1359,16 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   }
 #else
   native_require(!native_rebearing(), "VIBE_REBEARING needs a PhysX SDK with PX_DESTRUCTION_REBEARING (PhysX feat/rebearing)");
+#endif
+#if defined(VIBE_PHYSX_HAS_MOHR_COULOMB_SHEAR)
+  // The stage reads its switch at configuration.
+  if (native_mohr_coulomb_shear()) {
+    setenv("PX_DESTRUCTION_MOHR_COULOMB_SHEAR", "1", 1);
+    std::fprintf(stderr, "[destruction] Mohr-Coulomb shear: on (an intact joint resists f_v0 + mu sigma_c)\n");
+  }
+#else
+  native_require(!native_mohr_coulomb_shear(),
+                 "VIBE_MOHR_COULOMB_SHEAR needs a PhysX SDK with PX_DESTRUCTION_MOHR_COULOMB_SHEAR (PhysX feat/mohr-coulomb-shear)");
 #endif
   // One trial evaluation plus one corrected rigid pass. Zero would leave the
   // stage in its diagnostic mode, where any membership-changing verdict is

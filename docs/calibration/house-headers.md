@@ -414,6 +414,148 @@ over the hole, and nothing beyond.
 - **C9 is necessary:** without it the dynamic run unzips too. The uprights
   beyond the gap break at 3-18 ms, before the plate.
 
+## Splices in the long runs (2026-10-08)
+
+Lumber comes in stock lengths, so the kit's continuous 9.7 m plates and rims
+were stronger in tension than any real run. A spliced chord carries 10 kN,
+where revision 1's continuous timber carried 97-566 kN. In high-profile
+packs (both revisions; runtime packs byte-identical), runs are now jointed
+every 16 ft (4.877 m, a standard length), at the chunk cut nearest each
+joint (`spliceCuts`; materials.mjs `SPLICES`):
+
+| Run | Splice | Tension (nails, EN 1995 mode f) | Bending | Stiffness |
+|---|---|---|---|---|
+| double top plate | plies' joints offset 610 mm, 8-16d common each side (IRC R602.3.2, R602.3(1) item 13). The chord crosses through the 8 nails between the joints. | 8 x 1.21 kN = 9.7 kN | the plies through the lap: 2 f_m,k b t^2/6 = 1.46 kN m (graded N/T + M/M_Rk) | 8 x K_ser 0.89 = 7.1 kN/mm; plies' E I |
+| doubled rim joist | built-up member: 2-20d common at each splice (R602.3(1), built-up girders), lap as the plate's | 4 x 1.60 kN = 6.4 kN | the two 45 x 262 plies, 20.7 kN m | 4 x 1.02 = 4.1 kN/mm |
+| bottom plate (one ply) | butt joint: nothing across it (each piece nailed down, item 14) | 0 (bond dropped) | | |
+
+Checks (high profile, garage-hifi 3536ce049 with re-bearing):
+
+- **At rest:** the bungalow and the two-storey, intact and frame-only, break
+  0.00%. The oracle's at-rest worst joints are unchanged: no splice is
+  loaded at rest.
+- **house-headers:**
+  - intact, bay1 and bay2 hold with 0 broken (bay2 is now a pass, with
+    re-bearing);
+  - truck: the plate over the 3.33 m hole, splice included, fails, and the
+    roof edge over the hole comes down. 90 chunks dropped more than 0.5 m,
+    80% of them within x -2.4..2.65 around the -1.8..1.53 gap. 741 bonds
+    broke, the predicted "either", where it held before.
+  - truck-door: comes down the same way, 147 chunks over -1.8..3.6.
+- **Explicit step:** the bound is unchanged at 2.6-2.9e4 rad/s. The stiff
+  set is still the stud and jack halves (3.7e7 and 4.5e7 N/m). The splices
+  replace existing cuts, add no chunks, and are softer than the timber they
+  replace (7.1e6 N/m against 1.5e8).
+- **`veneer-house--no-ground-front-studs` still stands: 0.64% broken (2%
+  is "collapse").** The splices do not bring it down, because the 24 kN
+  chord in the verification README's derivation is not this variant's load
+  path:
+  1. `withoutStuds` keeps junction studs, so the partition's junction at
+     x -1.8 still stands under the front wall. The span is 6.66 m, not 9.9
+     m: M = w L^2 / 8 = 5.07 kN/m x 6.66^2 / 8 = 28 kN m, so the chord force
+     is 10.8 kN over the 2.6 m lever arm (9.1 kN at the splices, near x 0).
+     The plate and rim splices in parallel carry 16 kN.
+  2. Even with the junction stud removed as well (9.9 m), the oracle stands
+     it (92 bonds broken, frame 100% anchored). The chords carry only
+     about 2 kN: the plate splice 1.95 kN, the rim splice 0.5 kN.
+     - The upper storey hangs on its veneer ties: 18-21 kN of its 50 kN,
+       about 0.17 kN a tie. That is under their 0.4 kN sliding capacity, at
+       about 8 mm of tie slip (0.02 kN/mm, BS EN 845-1 movement-tolerant
+       ties).
+     - The README takes the ties to carry no floor load "by design". They
+       are flexible, not free: at 10 mm a real tie holds about 0.2 kN (the
+       kit's WALL_TIE data). So the house sags onto its brick, and whether
+       it then comes down is a question of tie capacity, not of the chord.
+  3. Re-derived in docs/verification/README.md "Studless houses". As built,
+     the variant stands (check `studless-upper-storey-stands`, < 2%). The new
+     `veneer-house--frame-no-ground-front-studs` (bare frame, junction studs
+     out too) collapses, because the rim alone spans 9.7 m at u 1.44
+     (`studless-houses-collapse`, >= 2%). Measured 2026-10-08:
+
+     | Variant | high | runtime |
+     |---|---|---|
+     | as built | 0.62% | 0.84% |
+     | bare frame, junction studs out | 40.95% | 3.26% |
+
+## Stone (2026-10-08)
+
+**Crush laws.** These sit in materials.mjs `CRUSH`, applied by `crushFor` in
+VIBE_CRUSH packs. All four are in the default high packs.
+
+| Material | Law | Citations |
+|---|---|---|
+| Natural-stone masonry | f_k 10.5 MPa (cohesion 6.3 MPa, k 1.2, cap 26 MPa), 4.2 MJ/m3 | EN 1996-1-1 eq. 3.1 and Table 3.3; Bond limestone Wi 11.6 kWh/t |
+| Structural softwood | along the grain, 21 MPa, 15 MJ/m3 | EN 338; Reid & Peng 1997 |
+| Concrete roof tile | flexural, 2.2 MPa on the smeared layer | EN 1992-1-1 3.1.8 |
+| Slate | flexural, 26 MPa on its layer | EN 12326 |
+
+Steel gets no crush law: it is ductile, so it dents, never comminutes.
+
+**Results with the crush laws:**
+- The 100 kg ball through the stone house: 35.9 m/s, within its judged band
+  of 0-38.4.
+- Meteors: 128.7 and 127.6 m/s.
+- At rest: houses 0.00%, Vibe Town 273/273.
+
+**Mortar joints (opt-in, `VIBE_STONE_JOINTS=mortar` on a high build).**
+- **What changes.** Stone-to-stone bonds, stone on its bed and brick on
+  stone become `stone-mortar-joint`:
+  - f_vk0 0.15 MPa and f_xk1 0.1 MPa (EN 1996-1-1 Table 3.4 and 3.6.3,
+    natural stone in M2.5-M9 mortar);
+  - compression 10.5 MPa, E 10.5 GPa;
+  - a bearing joint, so a crack re-bears.
+- **Lintels.** The head joints of the course over each opening, across its
+  width plus 150 mm bearing each side, stay stone: a stone wall spans an
+  opening on a lintel. Without them, the stones over the windows hang on
+  their mortar: 15.9% broken at rest.
+- **Impact.** The compliant agent's harness, run with `--joints-source pack`:
+  - the 100 kg ball exits at 33.0 m/s, 35.9 before;
+  - the struck stone's joints let go and it moves off as a 330 kg block
+    while the ball crushes into it: a one-stone plug, with crush taking
+    114 of the 125 kJ;
+  - 58 joints broke, the farthest 4.36 m from the ball's line;
+  - meteors 127.7 and 128.8 m/s.
+- **At rest it cracks:** 10 of 1,652 joints (0.61%) on tick 1. They are head
+  joints at the window sills, sheared past f_vk0 with no compression on them.
+  The cause is FIDELITY_AUDIT C11: an intact joint's shear has no
+  f_vk0 + 0.4 sigma friction term. That fails the 0.5% gate, so the joints
+  are off by default and the default packs are byte-identical to before
+  (stone-strength joints). The lab's street-1 house and 28 Vibe Town houses
+  use this asset.
+
+**Mohr-Coulomb shear (C11, `VIBE_MOHR_COULOMB_SHEAR=1`, PhysX
+feat/mohr-coulomb-shear).** The masonry mortar joints carry mu 0.4 and the
+cap 0.065 f_b (EN 1996-1-1 eq. 3.5) in high packs, and the stage grades an
+intact joint's shear against f_v0 + mu sigma_c. Measured 2026-10-08
+(garage-mohr-coulomb d03f51a50), the stone house with mortar joints at rest:
+
+| | broken at rest | |
+|---|---|---|
+| without the friction term | 10 (0.61%) | FALLS |
+| with it | 8 (0.48%) | under the 0.5% gate, not 0 |
+
+- **What it saves:** the two head joints with compression across them
+  (sigma_c 0.007 and 0.045 MPa).
+- **What is left:** seven head joints at the sills (bonds 1370, 1382, 1415,
+  1438, 1467, 1469, 1473) with sigma_c <= 0.05 MPa or in tension, sheared
+  vertically at 0.15-0.23 MPa, where mu sigma_c adds at most 0.02; and one
+  slab bearing (bond 1000) lifted in tension at the slab's end.
+- **Why the head joints shear:** a pier stone (155: 67 kN from above) puts
+  54 kN on its bed and hangs 16 kN on its neighbour's head joint (1382,
+  0.069 m^2). The split is by stiffness, and the solve gives a bond one
+  stiffness in every direction (FIDELITY_AUDIT D11). Masonry's shear modulus
+  is 0.4 E (EN 1996-1-1 3.8.3), so the head joint draws about 2.5x its share.
+  The CPU oracle (stress-share.py) with G = 0.4 E on mortar joints: the head
+  joint carries 9.1 kN (1.08 x f_v0 without friction, 0.99 with), and the
+  round-0 cracks fall from 8 to 2 without friction and 1 with it, the slab
+  bearing in tension (1.17 f_xk1, which re-bearing holds as a contact).
+- So the stone joints stay opt-in until D11: anisotropic joint stiffness
+  (axial E A / L, shear G A / L).
+- **Regressions, flag on, default high packs:** lab 0, veneer houses 0 (as
+  built and frame-only), Vibe Town 273/273 under the gate with library-151 at
+  0.08%. That is two glazing joints, identical on the stock garage-hifi with
+  the flag off, so it is not C11's.
+
 ## Reproduce
 
 ```sh
