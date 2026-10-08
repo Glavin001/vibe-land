@@ -268,13 +268,23 @@ impl Probe {
             "impactorUpMax": t[first..].iter().map(|r| r[3]).fold(f32::MIN, f32::max),
             // Energy from a contact, which the structure's balance above cannot see (the
             // 2026-10-08 ground kick: up 22 m/s off a 9 m/s landing while the rock lost more
-            // along its path): over each tick the impactor's upward velocity change, gravity
-            // removed, is at most a contact that stops its descent and returns e of it,
-            // (1 + e) max(0, -v_up before) (Hibbeler, Dynamics, 15.4; e the world's restitution,
-            // WorldConfig: VIBE_WORLD_RESTITUTION, 0.1). The most any tick exceeded it (m/s).
+            // along its path). A tick applies gravity before its contacts (PhysX integrates the
+            // tick's velocity first), so a contact meets the descent -v_up(before) + g dt and may
+            // stop it and return e of it (Hibbeler, Dynamics, 15.4; e the world's restitution,
+            // WorldConfig: VIBE_WORLD_RESTITUTION, 0.1): the tick's upward change, gravity
+            // removed, is at most (1 + e) max(0, -v_up(before) + g dt) -- a body at rest on the
+            // ground (contact removing g dt each tick) exactly meets it. The most any tick
+            // exceeded it (m/s), less the f32 rounding of the two speeds it compares (eps |v|
+            // each, a few roundings: 4 eps (|v before| + |v after|)): energy from nowhere when
+            // > 0, no allowance beyond that. Only ticks clear of the struck layer (at_layer: a
+            // roof's or a sill's slope may lift it): there the lab's only contact is level ground.
             "impactorReboundExcess": {
                 let e = std::env::var("VIBE_WORLD_RESTITUTION").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.1);
-                (first..t.len()).map(|k| (t[k][3] - t[k - 1][3] + G * dt) - (1. + e) * (-t[k - 1][3]).max(0.)).fold(0f32, f32::max)
+                (first..t.len()).filter(|&k| !at_layer(k)).map(|k| {
+                    let (before, after) = (t[k - 1][3], t[k][3]);
+                    let rounding = 4. * f32::EPSILON * (t[k - 1][4].abs() + t[k][4].abs());
+                    (after - before + G * dt) - (1. + e) * (-before + G * dt).max(0.) - rounding
+                }).fold(0f32, f32::max)
             },
             "impactorUpIn": t[first - 1][3],
             // Every tick from first contact for 1.5 s: [tick, past, v along, v up].
