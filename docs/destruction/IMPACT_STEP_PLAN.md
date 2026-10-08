@@ -774,3 +774,14 @@ behind all three:
   from the pneumatic sidewall force, 148 kN for the monster: 1.6 bar, Monster Jam / BKT) together
   with the rim as a compliant row in the window. Never one without the other.
 - **Then:** turn on `VIBE_REAL_VEHICLE_JOINTS` and `PX_DESTRUCTION_STATIC_DUCTILE` in high.env.
+
+**Codegen lesson: new paths go in separate branches.** Metal codegen can round an algebraically
+exact no-op differently. Two-body rows subtract an open gap from the normal rate, `g[0] -= gap/h`.
+With the flags off gap is 0, so the subtraction is exact. Merged into every rigid row's path, it
+still changed cannon-first's `IMPACT_HASH` (ce3e69550d6e675d to b79c17d2a00b01e0). 656 of 8,961
+bond forces moved, by at most 1e-5 relative, and no verdict changed. Putting it behind
+`if(gap > 0)` did not restore the hash, since the compiler if-converts it. Only a separate branch,
+with the rigid row's original lines untouched, did (PhysX 6c7e35e07). A flags-off change must leave
+existing arithmetic textually unchanged. Check it with `IMPACT_HASH` on a replay, and with
+`scripts/ops/kernel-identity.sh` per kernel. A bisect must include every commit: the first one
+skipped here put the blame on the wrong commit.
