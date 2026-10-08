@@ -208,19 +208,29 @@ fn a_cars_graded_load_is_the_impulse_that_changed_its_momentum() {
         assert!(!hit.is_empty(), "the car reached the wall at {speed} m/s");
         // The most any contact can do to it in a tick: stop it dead and send it back at full speed.
         let ceiling = 2.0 * mass * speed / DT;
-        let mut worst = 0f32;
+        let (mut worst, mut resting) = (0f32, Vec::new());
         for (k, t) in &hit {
             let ratio = t.load_n / t.needed_n.max(0.05 * mass * G);
             println!("{speed:4.1} m/s tick {k:2}: graded load {:9.1} kN, momentum change needs {:9.1} kN, ratio {ratio:6.2}, front {:+.3} m in the face at the tick's start", t.load_n / 1e3, t.needed_n / 1e3, t.depth_m);
             // Tolerance: 10% (the solver's FP32 impulses against the velocity
-            // difference) and a quarter of the car's weight (one tick's gravity
-            // sampled against a contact that starts or ends mid-tick).
-            if t.load_n > 1.1 * t.needed_n + 0.25 * mass * G { worst = worst.max(ratio); }
+            // difference). (A quarter of the car's weight was allowed too, "one
+            // tick's gravity sampled against a contact that starts or ends
+            // mid-tick"; but the graded impulses and the momentum change are the
+            // same tick's, gravity is out of both, so it had no derivation.)
+            // A tick whose momentum change needs less than the car's weight is a
+            // resting contact; one failing there is the rigid solver's position
+            // correction pinching a chunk (FIDELITY_AUDIT H7; the compliant
+            // agent's ground-kick fix), reported apart but still a failure.
+            if t.load_n > 1.1 * t.needed_n {
+                worst = worst.max(ratio);
+                if t.needed_n < mass * G { resting.push(format!("tick {k} ({:.1} kN against {:.1} kN)", t.load_n / 1e3, t.needed_n / 1e3)); }
+            }
             assert!(t.load_n <= ceiling, "{speed} m/s tick {k}: a contact load of {:.0} kN is more than reversing the car in a tick ({:.0} kN)", t.load_n / 1e3, ceiling / 1e3);
         }
         let under = hit.iter().map(|(_, t)| t.load_n / t.needed_n.max(0.05 * mass * G)).fold(f32::MAX, f32::min);
         println!("{speed} m/s, {wall:?}: worst ratio past tolerance {worst:.2}, least {under:.2}");
-        if worst != 0.0 { failures.push(format!("{speed} m/s, {wall:?} wall: the car's joints were graded against {worst:.2}x the load that changed its momentum")); }
+        if !resting.is_empty() { println!("{speed} m/s, {wall:?}: resting ticks past it (H7, position correction): {}", resting.join(", ")); }
+        if worst != 0.0 { failures.push(format!("{speed} m/s, {wall:?} wall: the car's joints were graded against {worst:.2}x the load that changed its momentum ({} of them resting ticks: H7)", resting.len())); }
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));
 }
@@ -315,11 +325,11 @@ fn a_cars_corner_loads_are_the_impulse_that_changed_its_momentum() {
             let needed = mass * (dv.x * dv.x + dv.y * dv.y + dv.z * dv.z).sqrt() / DT;
             let graded = (all.x * all.x + all.y * all.y + all.z * all.z).sqrt();
             let cn = (cons.x * cons.x + cons.y * cons.y + cons.z * cons.z).sqrt();
-            if std::env::var_os("CONTACT_LOAD_DEBUG").is_some() || graded > 1.1 * needed + 0.25 * mass * G {
+            if std::env::var_os("CONTACT_LOAD_DEBUG").is_some() || graded > 1.1 * needed {
                 println!("kerb {height} m at {speed} m/s, tick {k:2}: z {:.2} jounce {:?}: graded {:8.1} kN (constraint {:8.1}), momentum change needs {:8.1} kN",
                     snap.pose.position.z, snap.wheel_jounce, graded / 1e3, cn / 1e3, needed / 1e3);
             }
-            if graded > 1.1 * needed + 0.25 * mass * G && graded / needed.max(0.05 * mass * G) > worst.0 { worst = (graded / needed.max(0.05 * mass * G), k, graded, needed); }
+            if graded > 1.1 * needed && graded / needed.max(0.05 * mass * G) > worst.0 { worst = (graded / needed.max(0.05 * mass * G), k, graded, needed); }
         }
         println!("kerb {height} m at {speed} m/s: worst ratio past tolerance {:.2} (tick {}: {:.1} kN graded against {:.1} kN)", worst.0, worst.1, worst.2 / 1e3, worst.3 / 1e3);
         if worst.0 > 0.0 { failures.push(format!("kerb {height} m at {speed} m/s: graded {:.2}x the load that changed its momentum (tick {})", worst.0, worst.1)); }
@@ -345,34 +355,45 @@ fn a_tyre_bounds_its_suspension_and_what_is_past_it_bears_as_a_contact() {
     let bound = p * b * 2.0 * (2.0 * r * section).sqrt();
     let mut failures = Vec::new();
     for (speed, height) in [(10.0f32, 0.3f32), (14.0, 0.5)] {
-        let mut world = setup_kerb(speed, height, bound);
-        let mass = 920f32;
-        let (mut worst, mut peak) = ((0f32, 0usize, 0f32, 0f32), 0f32);
-        for k in 0..90 {
-            let before = world.vehicle_snapshots().unwrap()[0].linear_velocity;
-            if let Err(e) = world.step() { panic!("tyre, kerb {height} m at {speed} m/s, tick {k}: {e:?}"); }
-            assert_eq!(world.native_tick().unwrap().error, 0);
-            let after = world.vehicle_snapshots().unwrap()[0].linear_velocity;
-            for w in world.native_vehicle_debug(CAR).unwrap().wheel_loads.iter() {
-                let f = (w.suspension.x * w.suspension.x + w.suspension.y * w.suspension.y + w.suspension.z * w.suspension.z).sqrt();
-                peak = peak.max(f);
+        // Unbounded first (the kerb must ask more of a corner than its tyre gives,
+        // or the bound is untested), then with the tyre.
+        let mut unbounded = 0f32;
+        for tyre in [0.0, bound] {
+            let mut world = setup_kerb(speed, height, tyre);
+            let mass = 920f32;
+            let (mut worst, mut suspension, mut limit) = ((0f32, 0usize, 0f32, 0f32), 0f32, 0f32);
+            for k in 0..90 {
+                let before = world.vehicle_snapshots().unwrap()[0].linear_velocity;
+                if let Err(e) = world.step() { panic!("tyre {tyre}, kerb {height} m at {speed} m/s, tick {k}: {e:?}"); }
+                assert_eq!(world.native_tick().unwrap().error, 0);
+                let after = world.vehicle_snapshots().unwrap()[0].linear_velocity;
+                let n = |x: &vibe_land_physx_bridge::FfiVec3| (x.x * x.x + x.y * x.y + x.z * x.z).sqrt();
+                for w in world.native_vehicle_debug(CAR).unwrap().wheel_loads.iter() {
+                    suspension = suspension.max(n(&w.suspension));
+                    limit = limit.max(n(&w.constraint_force));
+                }
+                let report = world.native_stress_solve_report().unwrap();
+                let mut all = v(0., 0., 0.);
+                for c in report.chunks.iter().filter(|c| c.structure_id == STRUCTURE) {
+                    let m = [800., 20., 20., 20., 20., 40.][c.node as usize];
+                    for s in [&c.prepared_linear, &c.constraint_linear, &c.contact_linear] { all = v(all.x + s.x * m, all.y + s.y * m, all.z + s.z * m); }
+                }
+                let dv = v(after.x - before.x, after.y - before.y, after.z - before.z);
+                let needed = mass * (dv.x * dv.x + dv.y * dv.y + dv.z * dv.z).sqrt() / DT;
+                let graded = (all.x * all.x + all.y * all.y + all.z * all.z).sqrt();
+                if graded > 1.1 * needed && graded / needed.max(0.05 * mass * G) > worst.0 { worst = (graded / needed.max(0.05 * mass * G), k, graded, needed); }
             }
-            let report = world.native_stress_solve_report().unwrap();
-            let mut all = v(0., 0., 0.);
-            for c in report.chunks.iter().filter(|c| c.structure_id == STRUCTURE) {
-                let m = [800., 20., 20., 20., 20., 40.][c.node as usize];
-                for s in [&c.prepared_linear, &c.constraint_linear, &c.contact_linear] { all = v(all.x + s.x * m, all.y + s.y * m, all.z + s.z * m); }
-            }
-            let dv = v(after.x - before.x, after.y - before.y, after.z - before.z);
-            let needed = mass * (dv.x * dv.x + dv.y * dv.y + dv.z * dv.z).sqrt() / DT;
-            let graded = (all.x * all.x + all.y * all.y + all.z * all.z).sqrt();
-            if graded > 1.1 * needed + 0.25 * mass * G && graded / needed.max(0.05 * mass * G) > worst.0 { worst = (graded / needed.max(0.05 * mass * G), k, graded, needed); }
+            println!("tyre {:.1} kN, kerb {height} m at {speed} m/s: peak suspension force {:.1} kN, corner constraint {:.1} kN; worst ratio past tolerance {:.2} (tick {}: {:.1} kN graded against {:.1} kN)",
+                tyre / 1e3, suspension / 1e3, limit / 1e3, worst.0, worst.1, worst.2 / 1e3, worst.3 / 1e3);
+            if tyre == 0.0 { unbounded = suspension.max(limit); continue; }
+            // (the bound is applied to the force itself: only FP32 rounding past it)
+            if suspension > bound * (1.0 + 1e-4) { failures.push(format!("kerb {height} m at {speed} m/s: a suspension force of {:.1} kN past the tyre's {:.1} kN", suspension / 1e3, bound / 1e3)); }
+            // The corner's limit rows too (their impulse over the step; at these
+            // speeds the sticky-tyre rows are idle, so the corner constraint is them).
+            if limit > bound * (1.0 + 1e-3) { failures.push(format!("kerb {height} m at {speed} m/s: a corner constraint of {:.1} kN past the tyre's {:.1} kN", limit / 1e3, bound / 1e3)); }
+            if worst.0 > 0.0 { failures.push(format!("kerb {height} m at {speed} m/s: graded {:.2}x the load that changed its momentum (tick {})", worst.0, worst.1)); }
         }
-        println!("tyre {:.1} kN, kerb {height} m at {speed} m/s: peak suspension force {:.1} kN; worst ratio past tolerance {:.2} (tick {}: {:.1} kN graded against {:.1} kN)",
-            bound / 1e3, peak / 1e3, worst.0, worst.1, worst.2 / 1e3, worst.3 / 1e3);
-        // (the bound is applied to the force itself: only FP32 rounding past it)
-        if peak > bound * (1.0 + 1e-4) { failures.push(format!("kerb {height} m at {speed} m/s: a suspension force of {:.1} kN past the tyre's {:.1} kN", peak / 1e3, bound / 1e3)); }
-        if worst.0 > 0.0 { failures.push(format!("kerb {height} m at {speed} m/s: graded {:.2}x the load that changed its momentum (tick {})", worst.0, worst.1)); }
+        if !(unbounded > bound) { failures.push(format!("kerb {height} m at {speed} m/s: unbounded, a corner took {:.1} kN, under the tyre's {:.1} kN: the bound is not exercised", unbounded / 1e3, bound / 1e3)); }
     }
     assert!(failures.is_empty(), "{}", failures.join("; "));
 }
