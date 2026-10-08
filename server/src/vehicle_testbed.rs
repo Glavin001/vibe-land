@@ -374,18 +374,29 @@ impl HouseProbe {
             match world.native_chunk_aim(0, i) { Ok(a) if a.found => drops.push(y0 - a.center.y), _ => gone += 1 }
         }
         drops.sort_by(f32::total_cmp);
-        let (mut frame_nodes, mut frame_anchored) = (0u32, 0u32);
+        let (mut frame_nodes, mut frame_anchored, mut fallen_beyond) = (0u32, 0u32, 0u32);
         for i in 0..self.is_house.len() as u32 {
             if !self.is_house[i as usize] || !frame(i) || scene.types[i as usize] == "foundation" { continue; }
             frame_nodes += 1;
-            if world.native_chunk_aim(0, i).map_or(false, |a| a.found && a.entity_id == self.anchored) { frame_anchored += 1; }
+            let aim = world.native_chunk_aim(0, i).ok();
+            if aim.as_ref().map_or(false, |a| a.found && a.entity_id == self.anchored) { frame_anchored += 1; continue; }
+            // A frame member off the house that has fallen (dropped by more than
+            // its own depth, off its bearing; or gone) while it lay beyond the
+            // impactor's reach plus its own length: gravity took it, not the hit.
+            let c0 = node_centroid(scene, i);
+            let size = scene.sizes.get(i as usize).copied().unwrap_or([0.; 3]);
+            let fell = aim.as_ref().map_or(true, |a| !a.found || c0.y - a.center.y > size[0].min(size[1]).min(size[2]));
+            if let (true, Some((o, dir))) = (fell, line) {
+                let rel = c0 - o;
+                if (rel - dir * rel.dot(&dir)).norm() > reach + member(i) { fallen_beyond += 1; }
+            }
         }
         let mean = |v: &[f32]| if v.is_empty() { 0. } else { v.iter().sum::<f32>() / v.len() as f32 };
         json!({
             "group": self.group, "lineDistances": line_distances,
             "bonds": total, "broken": broken, "brokenFrac": broken as f32 / total.max(1) as f32,
             "structuralBonds": structural_total, "structuralBroken": structural, "cosmeticBroken": broken - structural,
-            "reach": reach, "frameBeyondReach": line.map(|_| beyond_reach),
+            "reach": reach, "frameBeyondReach": line.map(|_| beyond_reach), "fallenBeyondReach": line.map(|_| fallen_beyond),
             "byDistance": {"0-1m": by_distance[0], "1-2m": by_distance[1], "2-4m": by_distance[2], "4-8m": by_distance[3], "8m+": by_distance[4]},
             "medianBreakDistance": distances.get(distances.len() / 2),
             "impact": impact.map(|p| [p.x, p.y, p.z]),
@@ -1067,7 +1078,12 @@ fn run(r: &Run, meta: &Value) -> Value {
     let line = shot.or(house_impact.map(|p| (p, heading0)));
     // The impactor's reach across its line: a shot's radius; the car's largest
     // half-section across its heading (its hull boxes, x right and y up).
-    let reach = if shot.is_some() { probe.as_ref().map_or(0., |p| p.radius) }
+    // A volley (`shots`): its radius plus the farthest aim point from the first one's line.
+    let volley = attack.filter(|a| a["kind"] == "shots").and_then(|a| a["shots"].as_array()).map_or(0f32, |l| {
+        let t = |v: &Value| Vector3::new(v["target"][0].as_f64().unwrap_or(0.) as f32, v["target"][1].as_f64().unwrap_or(0.) as f32, v["target"][2].as_f64().unwrap_or(0.) as f32);
+        l.iter().map(|v| (t(v) - t(&l[0])).norm()).fold(0f32, f32::max)
+    });
+    let reach = if shot.is_some() { probe.as_ref().map_or(0., |p| p.radius) + volley }
         else { hulls.iter().flat_map(|(lo, hi)| [lo[0].abs().max(hi[0].abs()), (hi[1] - lo[1]) * 0.5]).fold(0f32, f32::max) };
     let house_report = house.as_ref().map(|h| h.finish(&mut arena, r.scene, house_impact, line, reach));
     let scene_broken_pairs: Vec<[u32; 2]> = if std::env::var_os("VIBE_TESTBED_SCENE_BONDS").is_some() {

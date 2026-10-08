@@ -13,11 +13,13 @@
 //             wall, no partial hold)
 //   driving   enters, slows, held
 // and the outcome:
-//   local     no frame joint broke beyond the impactor's reach: its half-size
-//             across its line plus the longer of the joint's two members (the
-//             farthest a struck member, or one falling from it, can act)
-//   collapse  frame joints broke beyond that reach: progressive failure
-// (the test bed's house.frameBeyondReach). Per trial and arm the table counts
+//   local     no frame member fell beyond the impactor's reach: none came off
+//             the house and dropped by more than its own depth (off its bearing)
+//             while it lay farther from the line than the impactor's half-size
+//             across it plus the member's own length (house.fallenBeyondReach)
+//   collapse  frame members fell beyond that reach: gravity took them, not the hit
+// The frame joints broken beyond reach (house.frameBeyondReach) are shown too:
+// debris thrown by the hit can break a joint there without a collapse. Per trial and arm the table counts
 // local vs collapse and each gate's passes, and gives the spread (min-max) of
 // the broken bonds, the frame joints beyond reach, the frame still anchored,
 // the roof members down, the exit speed, the energy residual and the cost.
@@ -53,11 +55,11 @@ const all = inputs.flatMap(loadRuns);
 function verdict(run) {
   const { s, checks } = gates(run);
   const h = run.house ?? {};
-  const beyond = h.frameBeyondReach;
+  const fallen = h.fallenBeyondReach;
   return {
-    checks, outcome: beyond == null ? '?' : beyond === 0 ? 'local' : 'collapse', beyond,
+    checks, outcome: fallen == null ? '?' : fallen === 0 ? 'local' : 'collapse', beyond: h.frameBeyondReach, fallen,
     broken: h.broken, frame: h.frameAnchoredFrac, roofDown: h.roofMembersDown, reach: h.reach,
-    exit: run.probe?.vExit ?? null, energyPct: s?.window ? 100 * s.resid / s.ke : null,
+    exit: run.probe?.vExit ?? null, energyPct: s?.window && run.attack?.kind === 'shot' ? 100 * s.resid / s.ke : null,
     costMean: run.impactCost?.meanMs ?? null, costMax: run.impactCost?.maxMs ?? null, seconds: run.endedEarlyS ?? run.seconds ?? null,
   };
 }
@@ -84,7 +86,8 @@ const cachedRow = (trial, reach) => {
   if (beyond == null && reach != null && t.broken?.length) {
     beyond = t.broken.filter(([i, d]) => { const b = P.bonds[i]; return b && d != null && FRAME.has(P.nodeTypes[b.node0]) && FRAME.has(P.nodeTypes[b.node1]) && d > reach + Math.max(member(b.node0), member(b.node1)); }).length;
   }
-  return { arm: 'C (cached, retired)', n: 1, local: beyond === 0 ? 1 : 0, collapse: beyond > 0 ? 1 : 0,
+  // Fallen members were not recorded for C: its outcome is unknown ('?').
+  return { arm: 'C (cached, retired)', n: 1, local: 0, collapse: 0, fallen: [null],
     gates: Object.fromEntries((t.gates ?? []).map((g) => [g.gate, `${g.pass ? 1 : 0}/1`])),
     broken: [t.broken?.length || h.broken], beyond: [beyond], frame: [h.frameAnchoredFrac], roofDown: [h.roofMembersDown], exit: [t.exitSpeed],
     energyPct: [t.metrics?.energy ? 100 * t.metrics.energy.residJ / t.metrics.keJ : null], costMean: [t.cost?.meanMs], costMax: [t.cost?.maxMs], seconds: [null], note: c.note };
@@ -102,7 +105,7 @@ for (const trial of trialsWanted) {
     rows.push({ trial, arm, n: vs.length,
       local: vs.filter((v) => v.outcome === 'local').length, collapse: vs.filter((v) => v.outcome === 'collapse').length,
       gates: Object.fromEntries(gateNames.map((g) => [g, `${vs.filter((v) => v.checks.find((x) => x.gate === g)?.pass).length}/${vs.length}`])),
-      ...Object.fromEntries(['broken', 'beyond', 'frame', 'roofDown', 'exit', 'energyPct', 'costMean', 'costMax', 'seconds'].map((k) => [k, vs.map((v) => v[k])])),
+      ...Object.fromEntries(['broken', 'beyond', 'fallen', 'frame', 'roofDown', 'exit', 'energyPct', 'costMean', 'costMax', 'seconds'].map((k) => [k, vs.map((v) => v[k])])),
       sdk: [...new Set(runs.filter((r) => r.arm === arm).map((r) => r.sdk))].join(', ') });
   }
 }
@@ -113,7 +116,7 @@ const cols = [
   ['trial', (r) => r.trial.replace('-framed-house', '').replace('framed-house', 'truck')], ['arm', (r) => r.arm], ['n', (r) => String(r.n)],
   ['local/collapse', (r) => !r.n ? 'no runs' : r.local + r.collapse ? `${r.local}/${r.collapse}` : '?'],
   ['gates passed', (r) => r.gates ? Object.entries(r.gates).map(([g, v]) => `${g} ${v}`).join(', ') : ''],
-  ['broken', (r) => spread(r.broken)], ['frame beyond reach', (r) => spread(r.beyond)], ['frame anchored', (r) => spread(r.frame, 2)],
+  ['broken', (r) => spread(r.broken)], ['fallen beyond reach', (r) => spread(r.fallen)], ['frame joints beyond reach', (r) => spread(r.beyond)], ['frame anchored', (r) => spread(r.frame, 2)],
   ['roof down', (r) => spread(r.roofDown)], ['exit m/s', (r) => spread(r.exit, 1)], ['energy %KE', (r) => spread(r.energyPct, 1)],
   ['ms/impact tick mean (max)', (r) => r.costMean ? `${spread(r.costMean)} (${spread(r.costMax)})` : '-'], ['s run', (r) => spread(r.seconds, 1)],
 ];

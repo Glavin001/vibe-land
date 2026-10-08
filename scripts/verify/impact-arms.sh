@@ -34,7 +34,7 @@ if [ "$judge_only" = 0 ]; then
         dir=$out/$arm/$trial-r$k
         [ -f "$dir/testbed.json" ] && { echo "[arms] $arm $trial r$k: done before"; continue; }
         mkdir -p "$out/$arm"; t0=$(date +%s)
-        VERIFY_TRIALS=$trial VERIFY_LABEL="impact-arms-$arm-$trial-r$k" "$ROOT/scripts/verify/acceptance.sh" "$arm" "$dir" \
+        VERIFY_TRIALS="$trial\$" VERIFY_LABEL="impact-arms-$arm-$trial-r$k" "$ROOT/scripts/verify/acceptance.sh" "$arm" "$dir" \
           --skip veneer,lab,town,wire,walk,node > "$dir.log" 2>&1 || echo "[arms] $arm $trial r$k: acceptance exited non-zero ($dir.log)"
         grep -E "refused|NOT IN THIS SDK" "$dir.log" | sed "s/^/[arms] $arm: /"
         echo "[arms] $arm $trial r$k: $(( $(date +%s) - t0 )) s"
