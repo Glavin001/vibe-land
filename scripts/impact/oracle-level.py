@@ -72,6 +72,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('dump')
     ap.add_argument('--solver', default='CLARABEL')
+    ap.add_argument('--out', help='write the optimum J (nl x 6 float64, link order) for destruction_impact_level_replay')
     a = ap.parse_args()
     d = load(a.dump)
     nn, nl, dt = d['nn'], d['nl'], d['dt']
@@ -134,6 +135,7 @@ def main():
     print(f"  {a.solver}: {prob.status}, objective {prob.value:.9g} (the last converged state's J: {objective(d['J'].reshape(-1)):.9g}; J = 0: {objective(np.zeros(6 * nl)):.9g})")
     if x.value is None: return 1
     Jopt = x.value.reshape(nl, 6)
+    if a.out: np.ascontiguousarray(Jopt, np.float64).tofile(a.out)
     u = np.array([utilisation(d['link_f'][l], Jopt[l]) for l in J_]) if len(J_) else np.zeros(0)
     at = J_[u >= 1 - d['band']]
     ductile = (d['link_u'][at, 3] & DUCTILE) != 0
