@@ -22,17 +22,20 @@ def punch_stiffness(area, E1, E2, nu1=0.3, nu2=0.2):
     return 2.0 * a / ((1 - nu1 ** 2) / E1 + (1 - nu2 ** 2) / E2)
 
 
-def punch_row(Ea, Eb, pts, Va, Vb=None):
+def punch_row(Ea, Eb, pts, Va, Vb=None, Rb=None):
     """The kernel's compliant row (PxgDestructionImpactExplicit.cuh exBuild): 1/E* = 1/E_a + 1/E_b
     (Poisson's ratio left out; a rigid side 1/E = 0), the patch's spread sigma (its points' RMS
-    distance from their centroid), the smaller chunk's equivalent sphere R and face radius:
-    k(d) = 2 E* min(face, max(sigma, sqrt(R d)))."""
+    distance from their centroid), Hertz's relative curvature 1/R = 1/R_a + 1/R_b (each chunk's
+    equivalent sphere; a rigid impactor's Rb from its own mass and inertia, sqrt(5 I / 2 m)), the
+    smaller chunk's face radius: k(d) = 2 E* min(face, max(sigma, sqrt(R d)))."""
     pts = np.asarray(pts, float); c = pts.mean(0)
     sigma = float(np.sqrt(np.mean(np.sum((pts - c) ** 2, 1)))) if len(pts) > 1 else 0.0
     V = min(Va, Vb) if Vb else Va
-    return dict(Estar=1.0 / (1.0 / Ea + (1.0 / Eb if Eb else 0.0)), sigma=sigma, Rh=(0.75 * V / np.pi) ** (1 / 3),
+    Ra = (0.75 * Va / np.pi) ** (1 / 3)
+    if Rb is None and Vb: Rb = (0.75 * Vb / np.pi) ** (1 / 3)
+    R = Ra * Rb / (Ra + Rb) if Rb else Ra
+    return dict(Estar=1.0 / (1.0 / Ea + (1.0 / Eb if Eb else 0.0)), sigma=sigma, Rh=R,
                 face=np.sqrt(V ** (2 / 3) / np.pi), sec=np.inf)
-
 
 def row_k(t, d):
     """A compliant row's stiffness at depth d."""

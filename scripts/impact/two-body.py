@@ -711,7 +711,7 @@ def ball_truck(real_joints=False, mass=10650.0, speed=60.0, ticks=1, compliant=F
         hit = pts[(d_perp <= r) & (pts[:, 0] >= side - reach)]
         if not len(hit): continue
         lead = hit[:, 0].max()
-        t = punch_row(210e9, 0.0, np.c_[np.full(len(hit), lead), hit[:, 1:]], [p['volume'] for p in meta['parts'] if p['id'] == pid][0]) if compliant else None
+        t = punch_row(210e9, 0.0, np.c_[np.full(len(hit), lead), hit[:, 1:]], [p['volume'] for p in meta['parts'] if p['id'] == pid][0], Rb=r) if compliant else None
         m.row(ids[pid], ball, (lead, hit[:, 1].mean(), hit[:, 2].mean()), (-1, 0, 0), 0.3, gap=side - lead, tyre=t)
     wheels = [ids[p['id']] for p in meta['parts'] if (p.get('motion') or {}).get('role') == 'wheel']
     return m, dict(car='truck', ids=ids, meta=meta, speed=speed, mass=sum(p['mass'] for p in meta['parts']), wheels=wheels, ball=ball, ball_mass=mass)
