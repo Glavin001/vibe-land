@@ -18,6 +18,7 @@ import { mergeLightChunks, MIN_CHUNK_KG } from './chunk-merge.mjs';
 import { admitBonds, trueBondStiffness } from './bond-admission.mjs';
 import { massBudget, budgetScales, bondScale, MASS_BUDGET_VERSION } from './mass-budget.mjs';
 import { ROAD_WHEEL } from './reality.mjs';
+import { realJointCapacitiesEnabled, applySectionBound, REAL_JOINT_CAPACITY_VERSION } from './real-joint-capacity.mjs';
 
 let submittedConfiguration;
 async function main() {
@@ -33,7 +34,10 @@ const budget = massBudget(configuration.model);
 // Under the bridge's true bond stiffness every measured contact is a bond
 // (bond-admission.mjs); such an asset is a different asset.
 const trueStiffness = trueBondStiffness();
-const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-14',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration),...(budget&&{massBudget:{version:MASS_BUDGET_VERSION,...budget}}),...(trueStiffness&&{bondArea:'measured'})})).digest('hex');
+// VIBE_REAL_CAPACITIES=1: each joint bounded by its members' sections
+// (real-joint-capacity.mjs); such an asset is a different asset.
+const realJoints = realJointCapacitiesEnabled();
+const geometryHash = createHash('sha256').update(JSON.stringify({recipe:'vehicle-physics-interface-14',strength:STRENGTH_PROFILE_VERSION,geometry:geometryKey(configuration),...(budget&&{massBudget:{version:MASS_BUDGET_VERSION,...budget}}),...(trueStiffness&&{bondArea:'measured'}),...(realJoints&&{jointCapacity:REAL_JOINT_CAPACITY_VERSION})})).digest('hex');
 const directory = join(root, geometryHash);
 let metadata;
 try { metadata = JSON.parse(await readFile(join(directory, 'metadata.json'), 'utf8')); }
@@ -97,6 +101,10 @@ catch (error) {
    shapes: part.shapes.map(simplePhysicsShape),
  }));
  requireConnectedAssembly(parts, bonds);
+ if (realJoints) {
+   const changed = applySectionBound(parts, bonds);
+   process.stderr.write(`real joint capacities: ${changed.length} of ${bonds.length} joints bounded by their members' sections\n`);
+ }
  const bounds = { min: [Infinity,Infinity,Infinity], max: [-Infinity,-Infinity,-Infinity] };
  // The driving body excludes rig-moved shapes; those have their own bindings.
  for (const part of parts.filter(p => !p.motion)) for (const shape of part.shapes) for (const v of shape.vertices) {
