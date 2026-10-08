@@ -461,6 +461,12 @@ One line per fix: id, tier, the fix and what the test proves, and the command.
 | Mortar joints (01ec017a) | town-kit `veneer-houses.test.mjs`; Vibe Town qualification (acceptance) |
 | Section bending and rotation (f3288d7c, 63284285) | `section_bending.rs`, `section_rotation.rs` |
 | Stiffness floors and spin clamp (200f31b0) | `fidelity_audit.rs` (both profiles; see docs/verification/FIDELITY_AUDIT.md) |
+| Monster truck at its real weight, 5000 kg on 293 kg wheels (908def37) | `mass-budget.test.ts` (`monster-mass`) |
+| Chassis anchor at the rear crossmember; wheels on lug studs, ISO 898-1 10.9 (1526105b, ee38c294) | acceptance car-coasts-ride-height wheels-kept rows; test bed `blast-*`, `knock-mirror` (`chassis-anchor-lug-studs`) |
+| House stop: an anchored brick in the corrected pass (6bd0e913) | acceptance truck-through-house (`house-stop`) |
+| Vehicle joints 100-1000x too strong: each joint bounded by its members' sections, opt-in `VIBE_REAL_VEHICLE_JOINTS` (2ea3a19b, c365c1f4) | `real-joint-capacity.test.ts` (`real-joint-capacity`): a panel on a tube holds what the tube can; wheel studs keep their counted section |
+| Brittle vehicle joints cascading at real capacity: metal joints ductile, ultimate slip A x 5.65 sqrt(S) (0193a7e2) | `real-joint-capacity.test.ts` (ductility); `fracture.rs` `native_conversion_carries_ductile_slip_parallel_to_materials` (`vehicle-ductile-slip`: the slip reaches the stage) |
+| Coasting truck breaking its rear corners on the paved lane's 25 mm lip (0193a7e2) | scenario `coast-over-paving-lip` (`vehicle-coast-lip`): 251 bonds and 4 wheels brittle (`VIBE_VEHICLE_JOINTS_BRITTLE=1`), 0 ductile |
 
 ## Acceptance scenarios (`scripts/verify/acceptance.mjs`)
 
