@@ -70,29 +70,6 @@ SAFETY = 0.9         # Settings::explicitSafety
 PROJECTILES = {'meteor': (110584.0625, 2.0), 'cannonball': (10650.0, 0.6870), 'ball100': (100.0, 0.14488183), 'ball1000': (1000.0, 0.31213844)}
 
 
-def crush_law(mat):
-    """(onset, plateau) contact pressures of a chunk's material. With a crush law: the onset its
-    uniaxial crush stress (crush_strength), the plateau its crush energy density, at most the onset.
-    Without one (capPressure 0: stone, timber, steel in the packs): the contact cannot carry more than
-    the material's compressive strength (its compressionFatalLimit) without the material failing
-    under it, so it yields there, onset and plateau alike (Johnson, Contact Mechanics, 1985, sec.
-    11.5: past first yield an impact's contact is plastic and dissipative)."""
-    sy = crush_strength(mat)
-    if np.isfinite(sy): return sy, min(float(mat['crushEnergy']), sy)
-    c = float(mat['compressionFatalLimit'])
-    return (c, c) if c > 0 else (np.inf, np.inf)
-
-
-def crush_strength(mat):
-    """The chunk material's uniaxial crush stress from its own crush law (extStressCrushStep): a
-    uniaxial compression sigma has p = sigma / 3, q = sigma; the cone q = c + s p is reached at
-    c / (1 - s / 3) (never for s >= 3), the cap p = p_cap at 3 p_cap."""
-    c, s, cap = float(mat['cohesion']), float(mat['frictionSlope']), float(mat['capPressure'])
-    if not cap > 0: return np.inf
-    cone = c / (1.0 - s / 3.0) if s < 3.0 and c > 0 else np.inf
-    return min(cone, 3.0 * cap)
-
-
 class Scene:
     """The struck structure near the shot's line: chunks (nodes), their hulls, joints, the impactor."""
 
@@ -266,9 +243,10 @@ def run(case, args):
     Emod = {c: C.modulus(c) for c in chunks}
     mats = {c: C.materials[C.chunks[c]['material']] for c in chunks}
     vol = {c: float(C.chunks[c]['volume']) for c in chunks}
-    row_law = {c: law.punch_row(Emod[c], None, [np.zeros(3)], vol[c]) for c in chunks if Emod[c] > 0}
-    laws = {c: crush_law(mats[c]) for c in chunks}
+    row_law = {c: law.punch_row(Emod[c], None, [np.zeros(3)], vol[c], Rb=np.sqrt(2.5 * I_imp / m_imp)) for c in chunks if Emod[c] > 0}
+    laws = {c: law.crush_of(mats[c]) for c in chunks}
     sig_y = {c: laws[c][0] for c in chunks}; sig_pl = {c: laws[c][1] for c in chunks}
+    crush_state = [dict(on=laws[c][0], pl=laws[c][1], crushing=False, d_tot=0.0, R=(r if args.crater == 'impactor' else None)) for c in chunks]
     h_row = min((law.row_step(1 / mass[sc.index[c]] + 1 / m_imp, law.row_k(row_law[c], 1e9), EPS_ROW)
                  for c in row_law if dyn[sc.index[c]]), default=H_CAP) if args.rows == 'compliant' else H_CAP
     h = args.dt_us * 1e-6 if args.dt_us else min(SAFETY * 2 / omega if omega > 0 else H_CAP, h_row, H_CAP)
@@ -302,7 +280,8 @@ def run(case, args):
                 print(f"    break {why} t {t * 1e3:.2f} ms joint {l} chunks {tuple(jchunks[l])} at {np.round(centroid[l], 2)} n {np.round(J[l]['R'][0], 2)} "
                       f"util {float(ut[0]):.2f} J {np.round(Jt_last[l].astype(float) / 1e3, 1) if Jt_last is not None else ''} kN cap {np.round(F[l, :3] / 1e3)}")
 
-    t = 0.0; Jt_last = None; fixed = []; dt_tick = C.settings['dt']; next_rebuild = 0.0; refresh = args.refresh_us * 1e-6 if args.refresh_us else dt_tick
+    t = 0.0; Jt_last = None; fixed = []; dt_tick = C.settings['dt']; next_rebuild = 0.0; refresh = args.refresh_us * 1e-6 if args.refresh_us else dt_tick; refreshes = []
+    contact_face = {c: row_law[c]['face'] for c in row_law}
     for s in range(steps):
         t = (s + 1) * h
         # 1. joints' forces and the dead load (f0 = -B J0 on the chunks); gravity on the impactor
@@ -316,6 +295,14 @@ def run(case, args):
         cen = x[nc]; rows = []
         vimp = v[6 * nc:6 * nc + 3].astype(float)
         if args.geometry == 'fixed' and t - h >= next_rebuild - 1e-12:
+            if args.refresh_us is None:
+                # auto: a fixed row is the tangent plane of its pair's distance at the rebuild; it holds
+                # while the contact point stays on the chunk's face, so rebuild after the impactor has
+                # moved one face radius (the smallest of the chunks it can reach) relative to them
+                near = [contact_face[c] for i, c in enumerate(chunks) if dyn[i] and not crushed[i] and c in contact_face
+                        and np.linalg.norm(cen - x[i]) <= r + sc.hull[c][1] + float(np.linalg.norm(vimp)) * dt_tick]
+                refresh = min(dt_tick, min(near, default=np.inf) / max(float(np.linalg.norm(vimp)), 1e-9))
+                refreshes.append(refresh)
             next_rebuild += refresh
             # the kernel's rows: at the tick's start, one per chunk the sphere can reach in the tick (its
             # signed gap, PhysX's speculative contact within the contact offset |v| dt), fixed point and
@@ -378,20 +365,15 @@ def run(case, args):
                     Mc = np.diag(np.r_[[1 / mass[i]] * 3, [1 / inert[i]] * 3])
                     Ws += Rf @ (Jch @ Mc @ Jch.T) @ Rf.T
                 if args.rows == 'compliant' and c in row_law:
-                    # the contact radius: the law's at the elastic depth; once crushing, the crater's,
-                    # at the whole intrusion d_el + delta_p (the row then a flat punch of that radius)
-                    rl = row_law[c]
-                    if crushing[i]: rl = dict(rl, sigma=max(rl['sigma'], min(rl['face'], np.sqrt(rl['Rh'] * max(pen, 0.0)))))
-                    a_c = min(rl['face'], max(rl['sigma'], np.sqrt(rl['Rh'] * max(d_el, 0.0))))
-                    P = law.compliant_impulse(Ws, g, d_el, rl, mu, h)
-                    A = np.pi * a_c * a_c; Fn = -P[0] / h
-                    if not crushing[i] and A > 0 and Fn >= sig_y[c] * A:
-                        crushing[i] = True; onset[i] = t
+                    cr = crush_state[i]; cr['d_tot'] = pen
+                    was = cr['crushing']
+                    P = law.compliant_impulse(Ws, g, d_el, row_law[c], mu, h, crush=cr)
+                    if cr['crushing'] and not was:
+                        onset[i] = t
                         if depth_t[i] == 0:
                             V = sc.hull[c][0] @ rot[i].T; pr = V @ Rf[0]; depth_t[i] = float(pr.max() - pr.min())
-                    if crushing[i] and Fn > sig_pl[c] * A:
-                        P = P * (sig_pl[c] * A / Fn)            # the plateau; the tangential within mu of it
-                    rowstate[i] = (rl, a_c, -P[0] / h)
+                    crushing[i] = cr['crushing']
+                    rowstate[i] = True
                 else:
                     gg = g.copy(); gg[0] += max(pen, 0.0) * 0.0
                     P = ex.cone_coulomb(Ws, g, -np.linalg.solve(Ws, g), mu)
@@ -431,13 +413,11 @@ def run(case, args):
             if args.rows == 'compliant':
                 for (i, c, Rf, rc, rs, g, d_el, pen) in rows:
                     if not crushing[i] or i not in rowstate: continue
-                    rl, a_c, Fa = rowstate[i]
+                    cr = crush_state[i]
                     vc = v[6 * i:6 * i + 3] + np.cross(v[6 * i + 3:6 * i + 6], rc) if dyn[i] else np.zeros(3)
                     vs = v[6 * nc:6 * nc + 3] + np.cross(v[6 * nc + 3:6 * nc + 6], rs)
-                    gN = float(Rf[0] @ (vc - vs)); dn = d_el + h * gN
-                    dy = Fa / (2.0 * a_c * rl['Estar']) if a_c > 0 else 0.0
-                    if dn > dy:
-                        dp[i] += dn - dy; books['crush'] += Fa * (dn - dy)
+                    dd = law.crush_advance(cr, d_el, float(Rf[0] @ (vc - vs)), h)
+                    dp[i] += dd; books['crush'] += cr['F'] * dd
                     if dp[i] >= depth_t[i] > 0 and not crushed[i]:
                         crushed[i] = True
                         kill(np.where(live & ((jchunks[:, 0] == c) | (jchunks[:, 1] == c)))[0], 'crush')
@@ -526,6 +506,7 @@ def run(case, args):
                books={k: round(v_ / 1e3, 2) for k, v_ in dict(impactor_lost=ke_imp, dead=books['dead'], U0=U0, house_ke=ke_house, U=U,
                                                          fracture=books['fracture'], crushed_bonds=books['crushed_bonds'], plastic=books['plastic'],
                                                          crush=books['crush'], plug=books['plug'], contact_ke=books['contact'], residual=supplied - spent).items()},
+               refresh_us=round(float(np.mean(refreshes)) * 1e6, 1) if refreshes else None, rebuilds=len(refreshes),
                routing=dict(rows=len(routing), routed=sum(r_['routed'] for r_ in routing), min_ratio=min((r_['F_peak'] / min(r_['cap'] if r_['cap'] > 0 else np.inf, r_['F_crush']) for r_ in routing), default=None)), routing_rows=routing,
                trace=trace, distances=[round(float(x_), 2) for x_ in dist])
     return out
@@ -537,7 +518,8 @@ def main():
     ap.add_argument('--capture', default=str(DEFAULT_CAPTURE)); ap.add_argument('--pack', default=str(DEFAULT_PACK))
     ap.add_argument('--meta', default=str(DEFAULT_META))
     ap.add_argument('--rows', default='compliant', choices=['compliant', 'rigid'])
-    ap.add_argument('--refresh-us', type=float, default=None, help='fixed geometry: rows rebuilt this often (default: each tick)')
+    ap.add_argument('--refresh-us', type=float, default=None, help='fixed geometry: rows rebuilt this often (default: auto, one face radius of travel)')
+    ap.add_argument('--crater', default='law', choices=['law', 'impactor'], help="the crater's curvature: the law's relative R, or the impactor's own radius (a sphere into a flat face)")
     ap.add_argument('--geometry', default='exact', choices=['exact', 'fixed'], help="rows from the bodies' positions every substep, or the kernel's: fixed at each tick's start with their signed gap")
     ap.add_argument('--ticks', type=int, default=3); ap.add_argument('--margin', type=float, default=3.0)
     ap.add_argument('--speed', type=float, default=None); ap.add_argument('--dt-us', type=float, default=None)
@@ -551,7 +533,7 @@ def main():
         print(f"  exit {o['exit_v']} m/s at {o['exit_ms']} ms (v_in {o['v_in']:.1f}, end {o['v_end']:.2f}); struck {o['struck']}, crushed {o['crushed']}, partial {o['partial']}; "
               f"broken {o['broken']} ({o['broken_by_crush']} by crush), farthest {o['reach_max']:.2f} m; swept-intact {o['swept_intact']}; peak row {o['peak_force_MN']} MN", flush=True)
         print(f"  books kJ {o['books']}", flush=True)
-        print(f"  routing at first contact: {o['routing']}", flush=True)
+        print(f"  routing at first contact: {o['routing']}; geometry rebuilds {o['rebuilds']} (mean every {o['refresh_us']} us)", flush=True)
     if a.json: pathlib.Path(a.json).write_text(json.dumps(res, indent=1))
 
 
