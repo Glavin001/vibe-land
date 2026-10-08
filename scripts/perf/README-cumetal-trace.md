@@ -69,3 +69,9 @@ scripts/perf/gpu-run.sh sample python3 scripts/perf/sample_suite_job.py target/p
 - The job runs in the suite's own environment, under macOS `sample`.
 - Merge several runs: a correction tick yields only about 30 one-millisecond samples.
 - Keep the stacks inside the physics step and drop the wait leaves (`__psynch_cvwait`, `semaphore_wait_trap`, ...).
+
+## 5. Which code waits, by stack
+
+`VIBE_GPU_SHARED=1 scripts/perf/gpu-run.sh lldb python3 scripts/perf/lldb_suite_job.py target/perf-suite/runs/<run> lab-truck out.log`
+runs one suite job under lldb and prints a backtrace at every CuMetal host wait
+(`lldb-wait-stacks.cmds`). The SUITE_TICK lines close each tick. Use it for attribution only.
