@@ -72,16 +72,15 @@ def crush_of(mat):
     own crush law, min(c / (1 - s / 3), 3 p_cap) (q = sigma, p = sigma / 3; the cone never for
     s >= 3). The plateau: its crush energy density (J/m^3 = Pa: the work per crushed volume is the
     plateau stress, Gibson & Ashby, Cellular Solids, 1997, ch. 5), at most the onset. A material with
-    no crush law (capPressure 0) cannot carry more than its compressive strength under the contact
-    without failing there: onset and plateau both (Johnson 1985, sec. 11.5: the contact of an impact
-    past first yield is plastic and dissipative)."""
+    no crush law (capPressure 0) does not crush, as the stage's own crush law has it
+    (extStressCrushStep): its compressive limit is its joints' (a material's fatal limits grade the
+    bonds made of it), not the body's -- the kernel's crushLaw."""
     c, s, cap = float(mat['cohesion']), float(mat['frictionSlope']), float(mat['capPressure'])
     if cap > 0:
         cone = c / (1.0 - s / 3.0) if s < 3.0 and c > 0 else np.inf
         on = min(cone, 3.0 * cap)
         return on, min(float(mat['crushEnergy']), on)
-    cf = float(mat['compressionFatalLimit'])
-    return (cf, cf) if cf > 0 else (np.inf, np.inf)
+    return np.inf, np.inf
 
 
 def crater_row(row, crush, R=None):
