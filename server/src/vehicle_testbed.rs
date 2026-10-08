@@ -536,6 +536,8 @@ fn run(r: &Run, meta: &Value) -> Value {
     // The parts of the car a projectile's sphere passed through (car frame at
     // that tick), its radius, and its previous position in the car frame.
     let (mut swept, mut sweep_last, mut sweep_radius, mut sweep_ticks) = (BTreeSet::<usize>::new(), None::<(u32, Vector3<f32>)>, 0f32, 0u32);
+    // The parts whose whole cross-section the sphere held at some point (cut through).
+    let mut sectioned = BTreeSet::<usize>::new();
     // The car's pose when the projectile was first tracked (the car may be thrown and spun after).
     let mut attack_frame: Option<(Vector3<f32>, nalgebra::UnitQuaternion<f32>)> = None;
     // A shot at the scene (attack `shot`): its aim point and direction, and
@@ -889,6 +891,15 @@ fn run(r: &Run, meta: &Value) -> Value {
                             let m = (0..3).map(|k| 0.5 * (hi[k] - lo[k])).fold(f32::INFINITY, f32::min);
                             let d = Vector3::new((lo[0] + m - c.x).max(c.x - hi[0] + m).max(0.), (lo[1] + m - c.y).max(c.y - hi[1] + m).max(0.), (lo[2] + m - c.z).max(c.z - hi[2] + m).max(0.));
                             if d.norm() < r { swept.insert(*i); }
+                            // Cut: at some point of its path the sphere holds the part's whole
+                            // cross-section (the two axes across its longest), within its length.
+                            // A part the sphere only clips at its rim is holed or pushed aside.
+                            let h = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+                            let long = (0..3).max_by(|&a, &b| h[a].total_cmp(&h[b])).unwrap_or(0);
+                            let centre = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])];
+                            let within = c[long] >= lo[long] && c[long] <= hi[long];
+                            let corner: f32 = (0..3).filter(|&k| k != long).map(|k| ((c[k] - centre[k]).abs() + 0.5 * h[k]).powi(2)).sum();
+                            if within && corner <= r * r { sectioned.insert(*i); }
                         }
                     }
                     if !swept.is_empty() && (sweep_ticks > 0 || swept.len() > before) { sweep_ticks += 1; }
@@ -1181,12 +1192,13 @@ fn run(r: &Run, meta: &Value) -> Value {
         // whether removing them cuts every path between the front and the rear
         // wheels (the car cut in two).
         let wheel = |i: usize| { let n = &geometry.parts[i].name; (n.starts_with("Front ") || n.starts_with("Rear ")) && n.ends_with(" wheel assembly") };
-        // Cut, not holed: the projectile's diameter spans the part across its
-        // middle dimension (a tube, a bracket, an arm), so no load path through
-        // it survives; a wider part (a panel, a wheel) it only holes. The stage
-        // has no partial fracture of a part, so a cut part must come off.
+        // Cut, not holed: at some point of its path the projectile's sphere held
+        // the part's whole cross-section (across its longest axis), so no load
+        // path through it survives; a part it only clipped at its rim, or a
+        // wider one (a panel, a wheel), it holes or pushes aside. The stage has
+        // no partial fracture of a part, so a cut part must come off.
         let dims = |i: usize| { let mut d = [0f32; 3]; for (j, lo, hi) in &part_boxes { if *j == i { for k in 0..3 { d[k] = d[k].max(hi[k] - lo[k]); } } } d.sort_by(f32::total_cmp); d };
-        let cut: BTreeSet<usize> = swept.iter().copied().filter(|&i| 2. * sweep_radius.max(0.) >= dims(i)[1]).collect();
+        let cut: BTreeSet<usize> = swept.iter().copied().filter(|&i| sectioned.contains(&i) && 2. * sweep_radius.max(0.) >= dims(i)[1]).collect();
         let index: HashMap<&str, usize> = geometry.parts.iter().enumerate().map(|(i, p)| (p.id.as_str(), i)).collect();
         let mut parent: Vec<usize> = (0..geometry.parts.len()).collect();
         fn root(p: &mut Vec<usize>, mut i: usize) -> usize { while p[i] != i { p[i] = p[p[i]]; i = p[i]; } i }
