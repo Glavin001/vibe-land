@@ -267,7 +267,7 @@ def stream():
             last_cpu.pop(key, None)
         holders = ", ".join(f"{j['label']} ({j['slot']})" for j in jobs if j["pid"] in procs) or "nothing (stale locks?)"
         for q in queue:
-            if q["pid"] in procs and now - q["since"] > QUEUE_S:
+            if q["pid"] in procs and now - q["since"] > QUEUE_S and f"queue:{q['pid']}" not in active:  # once per waiting job
                 emit(f"queue:{q['pid']}", f"QUEUED {q['label']} ({q['kind']}) has waited {int((now - q['since']) / 60)}+ min; slots held by {holders}")
         busy = sum(1 for j in jobs if j["slot"] != "exclusive" and j["pid"] in procs)
         if busy < SLOTS and not queue and not any(j["slot"] == "exclusive" for j in jobs):
