@@ -72,6 +72,8 @@ if [ "${VIBE_GPU_SHARED:-0}" = 1 ]; then
     for f in "$DIR"/queue/*; do
       [ -f "$f" ] || continue
       read -r pid lbl since kind _ < "$f" 2>/dev/null || continue
+      # an orphan (parent gone, reparented to launchd) has no one to report to: never wait for it
+      [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = 1 ] && continue
       [ "$kind" = exclusive ] && kill -0 "$pid" 2>/dev/null && [ $(( $(date +%s) - since )) -gt "${VIBE_GPU_EXCL_WAIT:-300}" ] && return 0
     done
     return 1
