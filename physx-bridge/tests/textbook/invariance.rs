@@ -1,6 +1,9 @@
 //! Invariance: the stage's answer cannot depend on how a structure is placed
-//! or described, and below capacity it is linear in the load (every mass
-//! doubled doubles every answer: superposition). A statics case solved as authored, mirrored (x -> -x), turned
+//! or described, below capacity it is linear in the load (every mass doubled
+//! doubles every answer: superposition), and it scales as dimensional
+//! analysis says (twice the size: forces 8x, stresses 2x, twist 16x). The
+//! last one is how a grading formula with the wrong units shows: runtime's
+//! capped grade fails it on 21 of 23 cases, the exact model with it. A statics case solved as authored, mirrored (x -> -x), turned
 //! a quarter about the vertical ((x, y, z) -> (z, y, -x)), and with every
 //! bond's two chunks listed the other way round (its normal reversed) must
 //! grade every bond the same: axial and shear force, twist, and the graded
@@ -75,6 +78,35 @@ pub fn masses_doubled(s: &Structure) -> Structure {
     t
 }
 
+/// Twice the size, same materials: every length doubled, every chunk 8x the
+/// mass (same density). Under self-weight, linear elasticity scales forces by
+/// 8 (weight), stresses by 2 (sigma ~ rho g L) and twist by 16 (force x
+/// length): dimensional analysis ([Gere] 1.8 / Buckingham Pi).
+pub fn twice_the_size(s: &Structure) -> Structure {
+    let mut t = map(s, |v| [2.0 * v[0], 2.0 * v[1], 2.0 * v[2]], |h| [2.0 * h[0], 2.0 * h[1], 2.0 * h[2]]);
+    // map() turns normals with the points; a normal is a direction.
+    for (b, o) in t.bonds.iter_mut().zip(&s.bonds) {
+        b.normal = o.normal;
+    }
+    for c in &mut t.chunks {
+        c.mass *= 8.0;
+    }
+    t
+}
+
+fn scaled(rows: &[Graded], force: f64, stress: f64, twist: f64) -> Vec<Graded> {
+    rows.iter().map(|g| Graded {
+        normal: stress * g.normal,
+        shear: stress * g.shear,
+        bend: stress * g.bend,
+        tension: stress * g.tension,
+        compression: stress * g.compression,
+        axial_force: force * g.axial_force,
+        shear_force: force * g.shear_force,
+        twist: twist * g.twist,
+    }).collect()
+}
+
 fn doubled(rows: &[Graded]) -> Vec<Graded> {
     rows.iter().map(|g| Graded {
         normal: 2.0 * g.normal,
@@ -138,6 +170,13 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
             println!("\n{name} -- the same answer mirrored, turned and with its bonds reversed");
             let base = solve(&case.structure);
             let exact = super::model::model_graded(&case.structure, cases::G, config);
+            // A stage that carries no load (zeros everywhere) would compare
+            // equal to itself in every variant: no answer, nothing proved.
+            let peak = |rows: &[Graded]| rows.iter().flat_map(|g| [g.normal, g.shear, g.bend]).filter(|v| v.is_finite()).map(f64::abs).fold(0.0, f64::max);
+            let answered = peak(&base) >= TOL * peak(&exact);
+            if !answered {
+                println!("  the stage's largest stress {:.3e} is under 1% of the exact model's {:.3e}: no answer to compare", peak(&base), peak(&exact));
+            }
             if std::env::var_os("VERIFY_VERBOSE").is_some() {
                 let again = solve(&case.structure);
                 println!("  the same structure solved again: worst difference {:.2e}", worst_difference(&case.structure, &exact, &base, &again));
@@ -162,7 +201,7 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
                         }
                     }
                 }
-                row(config, &name, &format!("same bond answers, {label}"), "max |difference| / scale <= 1%", "invariance under reflection, rotation and relabelling", "1=yes", 1.0, f64::NAN, if worst <= TOL { 1.0 } else { 0.0 }, 1.0, expected, out);
+                row(config, &name, &format!("same bond answers, {label}"), "max |difference| / scale <= 1%", "invariance under reflection, rotation and relabelling", "1=yes", 1.0, f64::NAN, if answered && worst <= TOL { 1.0 } else { 0.0 }, 1.0, expected, out);
             }
             // Superposition: twice the load, twice every answer (scales: the
             // doubled structure's exact model).
@@ -170,7 +209,13 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
             let exact2 = super::model::model_graded(&heavier, cases::G, config);
             let worst = worst_difference(&heavier, &exact2, &doubled(&base), &solve(&heavier));
             println!("  every mass doubled: worst difference from twice the answers {worst:.2e}");
-            row(config, &name, "every mass doubled: every answer doubled", "max |difference| / scale <= 1%", "[Gere] 1.8 / [Hibbeler] 4.3: superposition (linear elastic, below capacity)", "1=yes", 1.0, f64::NAN, if worst <= TOL { 1.0 } else { 0.0 }, 1.0, expected, out);
+            let bigger = twice_the_size(&case.structure);
+            let exact8 = super::model::model_graded(&bigger, cases::G, config);
+            let worst8 = worst_difference(&bigger, &exact8, &scaled(&base, 8.0, 2.0, 16.0), &solve(&bigger));
+            let model8 = worst_difference(&bigger, &exact8, &scaled(&exact, 8.0, 2.0, 16.0), &exact8);
+            println!("  twice the size: worst difference from (8F, 2 sigma, 16T) {worst8:.2e} (exact model {model8:.2e})");
+            row(config, &name, "twice the size: forces 8x, stresses 2x, twist 16x", "max |difference| / scale <= 1%", "[Gere] 1.8 / dimensional analysis: sigma ~ rho g L under self-weight", "1=yes", 1.0, if model8 <= TOL { 1.0 } else { 0.0 }, if answered && worst8 <= TOL { 1.0 } else { 0.0 }, 1.0, expected, out);
+            row(config, &name, "every mass doubled: every answer doubled", "max |difference| / scale <= 1%", "[Gere] 1.8 / [Hibbeler] 4.3: superposition (linear elastic, below capacity)", "1=yes", 1.0, f64::NAN, if answered && worst <= TOL { 1.0 } else { 0.0 }, 1.0, expected, out);
         });
     }
 }
