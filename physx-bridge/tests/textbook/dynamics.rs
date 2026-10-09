@@ -104,7 +104,7 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
         }
         tier == Tier::Quick || want == Tier::Full
     };
-    let wanted = |name: &str| wanted_tier(name, if ["impact-momentum", "split-momentum", "impact-plate-punch", "impact-restitution", "crush-locality", "impact-energy"].contains(&name) { Tier::Quick } else { Tier::Full });
+    let wanted = |name: &str| wanted_tier(name, if ["impact-momentum", "split-momentum", "contact-load-stack", "impact-plate-punch", "impact-restitution", "crush-locality", "impact-energy"].contains(&name) { Tier::Quick } else { Tier::Full });
     if std::env::var("VERIFY_MODEL_ONLY").is_ok_and(|v| v == "1") {
         return;
     }
@@ -126,6 +126,9 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
     // Crushing is a high-fidelity capability (an SDK with crush correction).
     if wanted("crush-locality") && std::env::var("VIBE_NATIVE_CRUSH").is_ok_and(|v| v == "1") {
         super::guard(config, "crush-locality", expected, out, |out| crush_locality(config, expected, out));
+    }
+    if wanted("contact-load-stack") {
+        super::guard(config, "contact-load-stack", expected, out, |out| contact_load_stack(config, expected, out));
     }
     if wanted("split-momentum") {
         super::guard(config, "split-momentum", expected, out, |out| split_momentum(config, expected, out));
@@ -176,6 +179,69 @@ fn momentum(config: Config, expected: &[Expectation], out: &mut Output) {
     row(config, "impact-momentum", "momentum after impact", "m v' + M V = m v", source, "N s", p0, p0, m * vb + big_m * vblock, p0, expected, out);
     let want = m * v * (1.0 + e) / (m + big_m);
     row(config, "impact-momentum", "block velocity", "m v (1+e)/(m+M)", source, "m/s", want, want, vblock, want, expected, out);
+}
+
+/// Three loose 500 kg blocks stacked on a slab that stands on a fixed post:
+/// the structure carries them through PhysX contacts alone (Newton III), so
+/// once they settle the post's base carries the structure's weight plus the
+/// stack's. Read awake (the mean over ticks 10-20, settled) and again at 4 s,
+/// after PhysX has put the stack to sleep (near tick 30): the known gap
+/// rest-load-asleep, here with a stack -- a sleeping body stops loading what
+/// it rests on, so rubble settled on a floor stops loading it.
+fn contact_load_stack(config: Config, expected: &[Expectation], out: &mut Output) {
+    let source = "[Hibbeler Statics] 5.3 / Newton III: a resting body loads its support with its weight";
+    println!("\ncontact-load-stack -- three loose blocks on a slab on a post: the base carries them all\n  {source}");
+    let mut s = Structure::new();
+    let m = strong(&mut s, E_CONCRETE);
+    let col = Rect { b: 0.3, d: 0.3 };
+    let h = 2.0;
+    let (c, _) = column(&mut s, "post", 0.0, 0.0, h, 4, col, CONCRETE, m);
+    let base = fixed(&mut s, c[0], [0.0; 3], [0.0, -1.0, 0.0], X, col, m);
+    let slab_mass = 500.0;
+    let slab = s.chunk("slab", [0.0, h + 0.1, 0.0], [0.5, 0.1, 0.5], slab_mass);
+    s.rect_bond(c[3], slab, [0.0, h, 0.0], Y, X, col.d, Z, col.b, m);
+    let structure_weight: f64 = s.chunks.iter().map(|c| c.mass).sum::<f64>() * G;
+    let (block, half, n) = (500.0, 0.2, 3);
+    let mut world = stage::build(&s);
+    let top = 20.0 + h + 0.2;
+    for i in 0..n {
+        world
+            .add_dynamic_box(DynamicBoxDesc {
+                entity_id: 9300 + i as u32,
+                user_id: 9300 + i as u32,
+                pose: Pose { position: Vec3::new(0.0, (top + half + 0.001 + i as f64 * (2.0 * half + 0.001)) as f32, 0.0), rotation: Quat::IDENTITY },
+                half_extents: Vec3::new(half as f32, half as f32, half as f32),
+                mass: block as f32,
+                collision_group: GROUP_PLAIN,
+                collision_mask: ALL,
+            })
+            .unwrap();
+    }
+    let total = structure_weight + n as f64 * block * G;
+    let (mut awake_sum, mut awake_n, mut late) = (0.0, 0, f64::NAN);
+    let mut asleep_at_end = false;
+    let verbose = std::env::var_os("VERIFY_VERBOSE").is_some();
+    stage::run_ticks(&mut world, 240, |t, st, _, w| {
+        let axial = -stage::rows(w, s.bonds.len())[base].normal * col.area();
+        if verbose && [1, 2, 5, 10, 20, 40, 60, 120, 240].contains(&t) {
+            let blocks: Vec<String> = w.body_snapshots().map(|b| b.iter().filter(|b| (9300..9300 + n as u32).contains(&b.entity_id)).map(|b| format!("y {:.3} sleeping {}", b.pose.position.y, b.sleeping)).collect()).unwrap_or_default();
+            println!("    tick {t}: base {:.3} kN; normal contacts {} friction anchors {}; blocks {blocks:?}", axial * 1e-3, st.normal_contacts, st.friction_anchors);
+        }
+        // Settled (tick 10) and still awake: PhysX sleeps the stack near tick 30.
+        if (10..=20).contains(&t) {
+            awake_sum += axial;
+            awake_n += 1;
+        }
+        if t == 240 {
+            late = axial;
+            asleep_at_end = w.body_snapshots().map(|b| b.iter().filter(|b| (9300..9300 + n as u32).contains(&b.entity_id)).all(|b| b.sleeping)).unwrap_or(false);
+        }
+        false
+    });
+    let awake = awake_sum / awake_n.max(1) as f64;
+    println!("  base reaction: settled and awake (ticks 10-20 mean) {:.3} kN, at 4 s {:.3} kN (stack asleep: {asleep_at_end}); structure {:.3} kN + stack {:.3} kN = {:.3} kN", awake * 1e-3, late * 1e-3, structure_weight * 1e-3, n as f64 * block * G * 1e-3, total * 1e-3);
+    row(config, "contact-load-stack", "base carries structure + stack (settled, awake)", "W_structure + 3 W_block", source, "kN", total * 1e-3, total * 1e-3, awake * 1e-3, total * 1e-3, expected, out);
+    row(config, "contact-load-stack", "base carries structure + stack (at 4 s, the stack asleep)", "W_structure + 3 W_block", source, "kN", total * 1e-3, total * 1e-3, late * 1e-3, total * 1e-3, expected, out);
 }
 
 /// A free two-chunk bar (100 kg and 300 kg, 0.5 m cubes) whose joint is far

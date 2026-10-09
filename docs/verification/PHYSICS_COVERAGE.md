@@ -263,7 +263,7 @@ incidentally (see Scope).
 |---|---|---|---|
 | Self-weight is ρ g once | g = 20 reads 2.04x; one gravity source | | **covered**: gravity-single-source, gravity-self-weight |
 | A resting body loads what it rests on | a block on a beam adds its weight to the beam, awake or asleep | Newton III | **covered** as a known gap. rest-load-asleep is E3: once PhysX sleeps the block, the beam stops feeling it |
-| A stack's contact force | each block carries the weight above it | Newton III | **missing** |
+| A stack's contact force | three loose blocks on a slab on a post: the base carries the structure plus the stack | Newton III | **covered**: contact-load-stack. Settled and awake: 0.01% (contact loads reach the solve exactly). Asleep: E3, the base drops to the structure's own weight (as rest-load-asleep): settled rubble stops loading a floor |
 | Vehicle contact load | a parked car's wheel loads equal its weight | | **covered** as a known gap: vehicle-contact-load |
 
 ## J. Numerical meta-laws (catch whole classes of bug)
