@@ -8,6 +8,9 @@
 #   PHYSX_SRC=../PhysX/.claude/worktrees/x GARAGE_SDK_NAME=garage-x scripts/perf/rebuild-garage-sdk.sh
 #                                                 # a branch in its own worktree, built in its own
 #                                                 # tree and installed beside the default SDK
+#   CUMETAL_SRC=../cuda-metal/.claude/worktrees/y GARAGE_SDK_NAME=garage-y scripts/perf/rebuild-garage-sdk.sh
+#                                                 # the same against a CuMetal checkout other than
+#                                                 # ../cuda-metal (it must lie inside it)
 #
 # Steps (each needed): the gpu stage relinks libPhysXDestructionGpuRuntime;
 # the sdk stage packages and installs (the Metal pipeline warm gate runs here);
@@ -46,6 +49,7 @@ OPTS=(--preset macos-cumetal --generator 'Unix Makefiles' --jobs 8
   --cumetal-rigid-demo --cumetal-explicit-aggregate-root --cumetal-explicit-motion-root
   --cumetal-explicit-hierarchy-root --cumetal-pack-bond-stress-scalars --cumetal-block-voted-traps
   --cumetal-particle-inline-threshold 500 --cumetal-softbody-inline-threshold 500)
+[ -z "${CUMETAL_SRC:-}" ] || OPTS+=(--cumetal-root "$(cd "$CUMETAL_SRC" && pwd)")
 cd "$SRC"
 [ "${GARAGE_SDK_STAGE:-all}" = sdk ] || python3 -B tools/scripts/build-destruction-sdk.py "${OPTS[@]}" --stage gpu
 [ "${GARAGE_SDK_STAGE:-all}" = gpu ] && exit 0
