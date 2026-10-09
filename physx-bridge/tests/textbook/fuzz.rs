@@ -163,6 +163,19 @@ pub fn random_masonry(seed: u64) -> (Structure, String) {
     (s, desc)
 }
 
+/// `s` tilted by up to 30 degrees about both horizontal axes (from `seed`):
+/// gravity then acts partly across the structure, so its lateral load paths
+/// (shear, bending in both planes, twist) are exercised as well.
+pub fn tilted(mut s: Structure, seed: u64) -> (Structure, String) {
+    let mut r = Rng::new(seed ^ 0x7111_7ED0_0000_0001);
+    let (ax, az) = (r.range(-0.5236, 0.5236), r.range(-0.5236, 0.5236));
+    // q = q_z * q_x (unit quaternions, (x, y, z, w)).
+    let (sx, cx) = ((ax / 2.0).sin(), (ax / 2.0).cos());
+    let (sz, cz) = ((az / 2.0).sin(), (az / 2.0).cos());
+    s.rotation = [cz * sx, -sz * sx, sz * cx, cz * cx];
+    (s, format!("tilted {:.1} deg about x, {:.1} deg about z", ax.to_degrees(), az.to_degrees()))
+}
+
 pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Output) {
     let seeds: Vec<u64> = match std::env::var("VERIFY_FUZZ_SEED").ok().and_then(|v| v.parse().ok()) {
         Some(seed) => vec![seed],
@@ -173,11 +186,13 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
         return;
     }
     super::guard(config, name, expected, out, |out| {
-        println!("\n{name} -- {} seeds, each a random stacked wall and random running-bond masonry, stage against the exact model", seeds.len());
+        println!("\n{name} -- {} seeds, each a random stacked wall, the same wall tilted, and random running-bond masonry, stage against the exact model", seeds.len());
         let mut failing = Vec::new();
         let mut worst_all = 0.0f64;
         for &seed in &seeds {
-          for (s, desc) in [random_wall(seed), random_masonry(seed)] {
+          let (wall, wdesc) = random_wall(seed);
+          let (tilt, tdesc) = tilted(wall.clone(), seed);
+          for (s, desc) in [(wall, wdesc.clone()), random_masonry(seed), (tilt, format!("{wdesc}, {tdesc}"))] {
             let exact = model::model_graded(&s, cases::G, config);
             let stage_rows = stage::solve(&s, 600, |_| true).rows;
             // The model as the stage reads it: the stage leaves shear force
@@ -196,10 +211,26 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
             }
             if worst > TOL {
                 failing.push(seed);
+                if std::env::var_os("VERIFY_VERBOSE").is_some() {
+                    // The largest differences: bond, quantity, stage against model.
+                    let names = ["normal", "shear", "bend"];
+                    let mut diffs: Vec<(f64, usize, usize, f64, f64)> = Vec::new();
+                    for (b, (m, st)) in readable.iter().zip(&stage_rows).enumerate() {
+                        for (q, (mv, sv)) in [(m.normal, st.normal), (m.shear, st.shear), (m.bend, st.bend)].into_iter().enumerate() {
+                            diffs.push(((mv - sv).abs(), b, q, sv, mv));
+                        }
+                    }
+                    diffs.sort_by(|a, b| b.0.total_cmp(&a.0));
+                    for (d, b, q, sv, mv) in diffs.into_iter().take(5) {
+                        let bond = &s.bonds[b];
+                        println!("    bond {b} ({}-{}, normal {:?}) {}: stage {sv:.5e} model {mv:.5e} (diff {d:.3e})", bond.a, bond.b, bond.normal.map(|x| (x * 100.0).round() / 100.0), names[q]);
+                    }
+                }
             }
           }
         }
         println!("  worst over all seeds {worst_all:.2e}; seeds over 1%: {failing:?}");
-        row(config, name, "every random wall and masonry panel: stage = exact model", "max |stage - model| / scale <= 1% for every seed", "differential testing (the stage's own discrete model, f64)", "1=yes", 1.0, f64::NAN, if failing.is_empty() { 1.0 } else { 0.0 }, 1.0, expected, out);
+        let label = format!("every random wall, tilted wall and masonry panel: stage = exact model ({} seeds)", seeds.len());
+        row(config, name, &label, "max |stage - model| / scale <= 1% for every seed", "differential testing (the stage's own discrete model, f64)", "1=yes", 1.0, f64::NAN, if failing.is_empty() { 1.0 } else { 0.0 }, 1.0, expected, out);
     });
 }
