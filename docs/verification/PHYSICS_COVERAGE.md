@@ -201,7 +201,7 @@ utilisation, u = stress / capacity. Suppose the stage reads a stress
 
 | Law | Scenario and exact answer | Source | Status |
 |---|---|---|---|
-| Euler buckling | pin-ended column P_cr = π²EI/L² | Gere 11.3 | **out of scope, measurable**. Chunks are rigid and the solve is linear (no geometric stiffness), so a slender column fails only by crushing at A·f_c. When slenderness L/r exceeds π√(E/f_c) (about 86 for concrete with E 30 GPa and f_c 40 MPa, 76 for S355 steel) the stage overstates capacity by P_crush/P_cr: E3 (stands when it should buckle). Planned check: report that factor against λ. |
+| Euler buckling | a fixed-free steel strut P_cr = π²EI/(2L)² | Gere 11.3 | **measured**: break-slender-strut (full tier). The stage stands to crushing, 4.18x the Euler load (850 kN against 3.55 MN), then snaps at the right bond, in every configuration: E3 by design. **Out of scope as dynamics**: Chunks are rigid and the solve is linear (no geometric stiffness), so a slender column fails only by crushing at A·f_c. When slenderness L/r exceeds π√(E/f_c) (about 86 for concrete with E 30 GPa and f_c 40 MPa, 76 for S355 steel) the stage overstates capacity by P_crush/P_cr: E3 (stands when it should buckle). Planned check: report that factor against λ. |
 | Lateral-torsional buckling, P-Δ | slender beams; sway frames | Timoshenko & Gere | **out of scope**, the same reason |
 | Rigid-block overturning and sliding | a block on an incline tips at tan θ = b/h, slides at tan θ = μ | Hibbeler Statics 8.2 | **covered**: tip-or-slide (E2, 1.6% and 4.3%: PhysX contact patch) |
 | Overturning of a structure | a tall wall under lateral load tips about its toe when M_overturning > W b/2 | Hibbeler 8.2 | **missing** (a structure, not a block: the anchor joints decide) |
@@ -287,9 +287,7 @@ incidentally (see Scope).
 3. **Time-step independence** (J) and a **stack's contact force** (I).
 4. **Plastic collapse** (E), with ductile joints in the high profile.
 5. **Arch thrust** (F) and **wall overturning** (D/F).
-6. **Euler buckling** (D): a measuring check. It reports P_crush/P_cr
-   against slenderness and records the E3 region. It does not demand
-   buckling.
+6. Euler buckling (D): done, as a measuring check (break-slender-strut).
 7. **Fracture energy** (E): a measuring check, kinetic energy after a break
    against before minus G_f A.
 

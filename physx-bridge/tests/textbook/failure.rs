@@ -106,6 +106,25 @@ fn column_crush(load_mass: f64) -> Structure {
     s
 }
 
+/// A slender steel strut (0.1 m square, 2.2 m, fixed base, free top: Euler
+/// effective length 2L), yield 355 MPa. It buckles at pi^2 E I / (2L)^2 =
+/// 850 kN; crushing A f_y is 3.55 MN, 4.2x higher. The stage has rigid chunks
+/// and a linear solve (no geometric stiffness), so it cannot buckle: this
+/// measures how far past the buckling load it stands (a MODEL gap by design,
+/// PHYSICS_COVERAGE.md D).
+const STRUT: Rect = Rect { b: 0.1, d: 0.1 };
+fn slender_strut(load_mass: f64) -> Structure {
+    let mut s = Structure::new();
+    let strong_m = strong(&mut s, 200e9);
+    let steel = s.material(Material { modulus: 200e9, compression: 355e6, tension: 1e13, shear: 1e13 });
+    let h = 2.2;
+    let (c, _) = column(&mut s, "strut", 0.0, 0.0, h, 4, STRUT, 7850.0, steel);
+    fixed(&mut s, c[0], [0.0; 3], [0.0, -1.0, 0.0], X, STRUT, steel);
+    let block = s.chunk("load", [0.0, h + 0.1, 0.0], [0.15, 0.1, 0.15], load_mass);
+    s.rect_bond(c[3], block, [0.0, h, 0.0], Y, X, STRUT.d, Z, STRUT.b, strong_m);
+    s
+}
+
 /// Column with a load 0.1 m off its axis; tension limit 1 MPa.
 fn eccentric_crack(load_mass: f64) -> Structure {
     let mut s = Structure::new();
@@ -159,7 +178,21 @@ fn breaking_cases() -> Vec<Breaking> {
     // Simply supported: M at the bonds beside the load = (P/2)(x - e) = f_t S.
     let x = 6.0 / 2.0 - 6.0 / 9.0 / 2.0 - STRIP / 2.0;
     let ss = 10e6 * BEAM.modulus() / (x / 2.0) / G;
+    // Slender strut: Euler, pi^2 E I / (2 L)^2 (fixed-free).
+    let strut_i = STRUT.b * STRUT.d.powi(3) / 12.0;
+    let euler = std::f64::consts::PI.powi(2) * 200e9 * strut_i / (2.0 * 2.2f64).powi(2) / G;
     vec![
+        Breaking {
+            name: "break-slender-strut",
+            title: "Slender steel strut loaded until it fails: Euler buckling (the stage crushes instead)",
+            source: "[Gere] 11.3 / [Timoshenko & Gere, Elastic Stability] 2.1: P_cr = pi^2 E I / (K L)^2, K = 2 (fixed-free)",
+            make: slender_strut,
+            predicted: euler,
+            bonds: vec![3],
+            limit: 355e6,
+            pick: |g| g.compression,
+            formula: "pi^2 E I / (2L)^2",
+        },
         Breaking {
             name: "break-cantilever-root",
             title: "Cantilever tip load raised until it breaks: root bond in tension",
