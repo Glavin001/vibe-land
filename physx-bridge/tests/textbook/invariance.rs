@@ -148,6 +148,42 @@ pub fn vertical_equilibrium(s: &Structure, rows: &[Graded]) -> Option<(f64, f64)
     anchored.then_some((reaction, weight))
 }
 
+/// Rotational equilibrium (Newton's first law for rotation): the support
+/// reactions' moment about the vertical-plane axes equals the weight's,
+/// sum R_i x_i = sum m_i g x_i and the same in z. Joints at the anchors can
+/// carry a moment the stage does not read with its sign, so the check applies
+/// only where the exact model's reactions balance the weight's moment to a
+/// tenth of the tolerance (pins and rollers; not a fixed base). Returns ([reaction moment x, z],
+/// [weight moment x, z], scale = weight x the structure's horizontal extent).
+pub fn moment_equilibrium(s: &Structure, rows: &[Graded]) -> Option<([f64; 2], [f64; 2], f64)> {
+    let mut reaction = [0.0; 2];
+    let mut anchored = false;
+    for (bond, g) in s.bonds.iter().zip(rows) {
+        let (ma, mb) = (s.chunks[bond.a].mass, s.chunks[bond.b].mass);
+        if (ma == 0.0) == (mb == 0.0) {
+            continue;
+        }
+        anchored = true;
+        if bond.normal[1].abs() < 1.0 - 1e-9 || !g.axial_force.is_finite() {
+            return None;
+        }
+        let (anchor, member) = if ma == 0.0 { (bond.a, bond.b) } else { (bond.b, bond.a) };
+        let r = g.axial_force * (s.chunks[anchor].center[1] - s.chunks[member].center[1]).signum();
+        reaction[0] += r * bond.centroid[0];
+        reaction[1] += r * bond.centroid[2];
+    }
+    let weight = [
+        s.chunks.iter().map(|c| c.mass * cases::G * c.center[0]).sum::<f64>(),
+        s.chunks.iter().map(|c| c.mass * cases::G * c.center[2]).sum::<f64>(),
+    ];
+    let extent = |k: usize| {
+        let (lo, hi) = s.chunks.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), c| (lo.min(c.center[k] - c.half[k]), hi.max(c.center[k] + c.half[k])));
+        hi - lo
+    };
+    let scale = s.chunks.iter().map(|c| c.mass).sum::<f64>() * cases::G * extent(0).max(extent(2));
+    anchored.then_some((reaction, weight, scale))
+}
+
 fn quantities(g: &Graded) -> [f64; 6] {
     [g.axial_force, g.shear_force, g.twist, g.normal, g.shear, g.bend]
 }
@@ -234,6 +270,19 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
             if let (Some((stage_r, weight)), Some((model_r, _))) = (vertical_equilibrium(&case.structure, &base), vertical_equilibrium(&case.structure, &exact)) {
                 println!("  equilibrium: support reactions {stage_r:.6e} N (exact model {model_r:.6e}) against the weight {weight:.6e} N");
                 row(config, &name, "support reactions carry the whole weight", "sum R_y = sum m g", "[Hibbeler] 5.3 / Newton's first law: a body at rest", "kN", weight * 1e-3, model_r * 1e-3, stage_r * 1e-3, weight * 1e-3, expected, out);
+            }
+            if let (Some((stage_m, weight_m, scale)), Some((model_m, _, _))) = (moment_equilibrium(&case.structure, &base), moment_equilibrium(&case.structure, &exact)) {
+                let off = |m: [f64; 2]| (m[0] - weight_m[0]).abs().max((m[1] - weight_m[1]).abs()) / scale;
+                // The supports' own moment (unread) must sit a decade under
+                // the tolerance so it cannot decide the check: 2 cm pin strips
+                // carry ~1e-4 of W x extent, a fixed base ~0.2.
+                if off(model_m) <= TOL / 10.0 {
+                    println!("  moment equilibrium: reactions {:.6e}, {:.6e} N m (exact model {:.6e}, {:.6e}) against the weight's {:.6e}, {:.6e}", stage_m[0], stage_m[1], model_m[0], model_m[1], weight_m[0], weight_m[1]);
+                    row(config, &name, "support reactions balance the weight's moment", "sum R x = sum m g x (about both horizontal axes)", "[Hibbeler] 5.3 / Newton's first law for rotation", "1=yes", 1.0, f64::NAN, if answered && off(stage_m) <= TOL { 1.0 } else { 0.0 }, 1.0, expected, out);
+                    println!("    off by {:.2e} of W x extent", off(stage_m));
+                } else {
+                    println!("  moment equilibrium: not applicable (the anchors carry moment: the exact model's reactions miss by {:.2e})", off(model_m));
+                }
             }
             // Superposition: twice the load, twice every answer (scales: the
             // doubled structure's exact model).

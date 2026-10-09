@@ -13,6 +13,32 @@ Updated 2026-10-09 (garage-clean, CuMetal 8943f10). Status words:
 - **missing**: no check yet (in the build plan at the end);
 - **out of scope**: deliberately not modelled; the consequence is stated.
 
+## Scope: the destruction stress solver
+
+The subject is the PhysX fork's GPU destruction stage: Blast's stress solve
+(`blast/source/sdk/extensions/stressgpu`) and the native stage around it
+(`physx/source/gpudestruction`). Loads go in (gravity, the contact impulses
+PhysX reports, the bodies' states); bond stresses, verdicts and the new
+chunk-to-body hierarchy come out (AGENTS.md, "GPU destruction"). vibe-land
+uses it and trusts it, so this is where exhaustive, exact coverage matters.
+
+Rigid-body dynamics belong to PhysX. Open-source PhysX (this fork is based
+on Release 104) ships 80 snippets and a PVD test, but no rigid-body test
+suite; NVIDIA's own tests are not public. On Metal, the dynamics are checked
+by:
+- CuMetal's PhysX conformance tests: `conformance_physx_grb`, `_box`,
+  `_friction`, `_multibody`, `_stacked`, `_trimesh` and `_pbd_recreations`,
+  which compare GPU runs on Metal with references; all pass since the
+  2026-10-09 merge;
+- this suite's dynamics cases (G, H), which exercise PhysX on Metal
+  incidentally.
+
+Section G keeps only what the destruction stage itself does to bodies:
+- building a compound body out of chunks (its mass, centre of mass and
+  inertia);
+- splitting one at a fracture (momentum carried over);
+- the load inputs it reads from PhysX (section I).
+
 ## How a check is read: three numbers and a class
 
 Every check prints three numbers:
@@ -56,7 +82,7 @@ utilisation, u = stress / capacity. Suppose the stage reads a stress
 | Law | Scenario and exact answer | Source | Status |
 |---|---|---|---|
 | Newton I, vertical: ΣR_y = W | any structure on horizontal anchor joints: reactions = Σ m g | Hibbeler 5.3 | **covered**: invariance/* equilibrium, 12 cases; stage within 0.19% (E1); n37 E3 (zero forces, being fixed) |
-| Newton I, rotation: ΣM = 0 | reactions' moment about any point equals the weight's: Σ R_i x_i = Σ m_i g x_i (load position) | Hibbeler 5.3 | **missing** (same machinery as ΣR_y) |
+| Newton I, rotation: ΣM = 0 | reactions' moment about both horizontal axes equals the weight's: Σ R_i x_i = Σ m_i g x_i | Hibbeler 5.3 | **covered**: invariance/* moment equilibrium, where the supports' own moment is under a tenth of the tolerance (pins, rollers; not a fixed base). Worst 0.18% (E1); n37 E3 |
 | Method of sections | each bond's force equals the load beyond it | Gere 4 | **covered** implicitly: every beam case's shear and moment checks |
 | Method of joints (trusses) | member forces of a determinate truss | Hibbeler 6.2 | **covered**: pratt-truss, rafter-tie-truss (runtime: gaps E2/E3, high: pass) |
 | Biaxial loading (3D) | a column under eccentricity in both axes: σ = −P/A ± P e_x/S_y ± P e_y/S_x | Gere 11.5 | **missing** |
@@ -122,8 +148,8 @@ utilisation, u = stress / capacity. Suppose the stage reads a stress
 
 ## G. Rigid-body dynamics
 
-PhysX does the dynamics. The checks verify what we feed it and what we take
-from it.
+PhysX does the dynamics. The rows marked **stage** are the destruction stage's own work and the priority; the rest are PhysX on Metal, checked here
+incidentally (see Scope).
 
 | Law | Scenario and exact answer | Source | Status |
 |---|---|---|---|
@@ -132,10 +158,10 @@ from it.
 | Energy bounds | no energy gained in an impact | | **covered**: impact-energy-* |
 | Restitution | rebound at e v | Hibbeler 15.4 | **covered**: impact-restitution (E3: breaks through instead) |
 | Friction | a block holds at tan θ < μ and slides above; glancing impulse ≤ μ J_n | Coulomb; Goldsmith | **covered**: surface-materials, impact-glancing (E2: dv_t overshoots rolling) |
-| Compound body | mass Σm; centre of mass Σ m x / Σ m; inertia Σ(I_i + m_i(d²1 − d dᵀ)) (parallel-axis theorem) for a body of many chunks | Hibbeler 17.1 | **partial**: roof-com-* check the centre of mass; inertia untested |
-| Rotation of a compound body | a chunked bar toppling about its foot: α = 3g/(2L) cos θ; torque-free spin keeps L = Iω | Hibbeler 17.4 | **missing** |
-| Momentum at a split | the fragments of a body that breaks mid-motion carry exactly its linear and angular momentum, and each moves with the rigid field v + ω × r at the split | Newton III; Hibbeler 19 | **missing**: the destruction-specific invariant (no kick, no lost spin at fracture) |
-| No energy from fracture | kinetic energy after a split ≤ before (the corrected pass must not inject) | | **partial**: impact-explicit-energy (impact machinery) |
+| **stage**: Compound body | mass Σm; centre of mass Σ m x / Σ m; inertia Σ(I_i + m_i(d²1 − d dᵀ)) (parallel-axis theorem) for a body of many chunks | Hibbeler 17.1 | **partial**: roof-com-* check the centre of mass; inertia untested |
+| **stage**: Rotation of a compound body | a chunked bar toppling about its foot: α = 3g/(2L) cos θ; torque-free spin keeps L = Iω | Hibbeler 17.4 | **missing** |
+| **stage**: Momentum at a split | the fragments of a body that breaks mid-motion carry exactly its linear and angular momentum, and each moves with the rigid field v + ω × r at the split | Newton III; Hibbeler 19 | **missing**: the destruction-specific invariant (no kick, no lost spin at fracture) |
+| **stage**: No energy from fracture | kinetic energy after a split ≤ before (the corrected pass must not inject) | | **partial**: impact-explicit-energy (impact machinery) |
 
 ## H. Impact loading
 
@@ -170,9 +196,9 @@ from it.
 
 ## Build plan, in order of value per effort
 
-1. **Rotational equilibrium** (A), **stiffness share** (C), **biaxial bending**
-   (A/B), **non-rectangular sections** (B). The existing machinery covers all
-   four; each is an exact closed form.
+1. **Stiffness share** (C), **biaxial bending** (A/B), **non-rectangular
+   sections** (B). The existing machinery covers all three; each is an exact
+   closed form. (Rotational equilibrium, A: done.)
 2. **Momentum at a split** and the **compound-body inertia tensor** (G): the
    destruction-specific invariants, which no other suite checks.
 3. **Time-step independence** (J) and a **stack's contact force** (I).
