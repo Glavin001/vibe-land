@@ -396,10 +396,13 @@ pub fn fibres(normal: f64, bend: f64) -> (f64, f64) {
 }
 
 /// The stage's translational bond stiffness (append_bonds, non-vehicle).
-pub fn bond_stiffness(s: &Structure, b: &Bond, true_stiffness: bool) -> f64 {
+/// Under section rotation the spring length is the centres' separation along
+/// the bond normal, not their distance (native_destruction.cc append_bonds:
+/// the material a bond strains lies across its interface).
+pub fn bond_stiffness(s: &Structure, b: &Bond, true_stiffness: bool, along_normal: bool) -> f64 {
     let ca = s.chunks[b.a].center;
     let cb = s.chunks[b.b].center;
-    let distance = norm(sub(ca, cb));
+    let distance = if along_normal { dot(normalize(b.normal), sub(cb, ca)).abs() } else { norm(sub(ca, cb)) };
     let e = s.materials[b.material].modulus;
     let area = section(b).area;
     if true_stiffness {
@@ -482,7 +485,7 @@ pub fn solve_model(s: &Structure, g: f64, rotation: Rotation, true_stiffness: bo
         .bonds
         .iter()
         .map(|b| {
-            let k = bond_stiffness(s, b, true_stiffness);
+            let k = bond_stiffness(s, b, true_stiffness, matches!(rotation, Rotation::Section));
             let both = s.chunks[b.a].mass > 0.0 && s.chunks[b.b].mass > 0.0;
             let mut rot = [[0.0; 3]; 3];
             let point = match rotation {

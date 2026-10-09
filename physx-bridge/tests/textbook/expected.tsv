@@ -348,3 +348,12 @@ high-fidelity	invariance/simply-supported-point/n37	support reactions carry the 
 runtime	invariance/simply-supported-point/n37	support reactions carry the whole weight	1.0000	STAGE: the stage returns zero bond forces on this case (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks), so no reaction carries the weight
 section-bending	invariance/simply-supported-point/n37	support reactions carry the whole weight	1.0000	STAGE: the stage returns zero bond forces on this case (chunk masses span 1e8: 10 t load, 1e-4 kg support blocks), so no reaction carries the weight
 high-fidelity	invariance/simply-supported-point/n37	support reactions balance the weight's moment	1.0000	STAGE: the stage returns zero bond forces on this case (chunk masses span 1e8), so no reaction balances anything
+# biaxial bending and stiffness share (2026-10-09, garage-clean / garage-roof)
+runtime	biaxial-column	base corner compression fibre	0.7151	MODEL: the default grade M/A x min(6/sqrt(A),3) on the resultant moment: the corner of a section bent about both axes reads 3.10 MPa against P/A + P e_x/S + P e_z/S = 10.9 (section-bending and high: exact)
+runtime	biaxial-column	base corner tension fibre	1.0000	MODEL: as above; the corner reads no tension at all against 6.54 MPa
+runtime	stiffness-share	middle post base force	0.2160	MODEL: a bond's spring length is its chunks' centre-to-centre distance, so the outer posts' joints to the wide slab read 1.06 m long against the middle's 0.35 m and the stiffer middle post takes 73% of the load instead of 60% (high, along the bond normal: exact)
+runtime	stiffness-share	outer post base force	0.3240	MODEL: as above (the outer posts carry 20% each instead of 30%)
+runtime	stiffness-share	other outer post base force	0.3240	MODEL: as above
+section-bending	stiffness-share	middle post base force	0.2160	MODEL: spring length centre to centre, as runtime
+section-bending	stiffness-share	outer post base force	0.3240	MODEL: spring length centre to centre, as runtime
+section-bending	stiffness-share	other outer post base force	0.3240	MODEL: spring length centre to centre, as runtime

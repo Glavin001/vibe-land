@@ -85,7 +85,7 @@ utilisation, u = stress / capacity. Suppose the stage reads a stress
 | Newton I, rotation: ΣM = 0 | reactions' moment about both horizontal axes equals the weight's: Σ R_i x_i = Σ m_i g x_i | Hibbeler 5.3 | **covered**: invariance/* moment equilibrium, where the supports' own moment is under a tenth of the tolerance (pins, rollers; not a fixed base). Worst 0.18% (E1); n37 E3 |
 | Method of sections | each bond's force equals the load beyond it | Gere 4 | **covered** implicitly: every beam case's shear and moment checks |
 | Method of joints (trusses) | member forces of a determinate truss | Hibbeler 6.2 | **covered**: pratt-truss, rafter-tie-truss (runtime: gaps E2/E3, high: pass) |
-| Biaxial loading (3D) | a column under eccentricity in both axes: σ = −P/A ± P e_x/S_y ± P e_y/S_x | Gere 11.5 | **missing** |
+| Biaxial loading (3D) | a column under eccentricity in both axes: the corner fibre σ = −P/A ± P e_x/S ± P e_z/S | Gere 11.5 | **covered**: biaxial-column. High and section-bending: exact. Runtime: E3 (the capped grade on the resultant moment reads the corner at 3.1 MPa against 10.9, no tension against 6.5) |
 
 ## B. Mechanics of materials (a member's internal stress)
 
@@ -109,7 +109,7 @@ utilisation, u = stress / capacity. Suppose the stage reads a stress
 | Fixed ends | fixed-fixed M_end = wL²/12 | Gere 10 | **covered** (known gaps both profiles) |
 | Continuous beams | two-span R_B = 10wL/8 | Hibbeler 10 | **covered** |
 | Frames | portal frame under lateral load; three-hinged frame | Hibbeler 11 | **covered** |
-| Stiffness share | two parallel posts of different EA/L carry a load in proportion to their stiffness | Gere 2.4 | **missing**: the purest test that stiffness, not just geometry, decides the load path |
+| Stiffness share | three posts under a rigid slab, the middle one 3x stiffer: it carries P k_m / (k_m + 2 k_o) = 60% | Gere 2.4 | **covered**: stiffness-share. High: exact. Runtime and section-bending: E3: a bond's spring length is the chunks' centre-to-centre distance, so joints far from a big chunk's centre read soft and the load path moves (73% / 20% / 20%). The reference model had the same stale formula for high; corrected 2026-10-09 |
 | Redundancy, alternate path | a lost support: an indeterminate beam redistributes; a determinate one falls; a two-span beam bridges 2L or collapses | Hibbeler 2.4; GSA 2016 | **covered**: redundancy-*, alternate-path-* (high: pass; runtime: E3, never collapses) |
 | Refinement convergence | answers converge to the closed form as chunks shrink | (FE practice) | **covered**: n19/n37/n24/n48/n41/n81 cases (n37: E3, the zero-force bug) |
 
@@ -196,9 +196,9 @@ incidentally (see Scope).
 
 ## Build plan, in order of value per effort
 
-1. **Stiffness share** (C), **biaxial bending** (A/B), **non-rectangular
-   sections** (B). The existing machinery covers all three; each is an exact
-   closed form. (Rotational equilibrium, A: done.)
+1. **Non-rectangular sections** (B): an asymmetric (triangular) section, whose
+   two extreme fibres differ 2x. (Rotational equilibrium, stiffness share and
+   biaxial bending: done.)
 2. **Momentum at a split** and the **compound-body inertia tensor** (G): the
    destruction-specific invariants, which no other suite checks.
 3. **Time-step independence** (J) and a **stack's contact force** (I).

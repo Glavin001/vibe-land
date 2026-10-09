@@ -398,6 +398,76 @@ pub fn eccentric_column(n: usize) -> Statics {
     }
 }
 
+/// A column loaded off its axis in both directions (e_x = e_z = e): the
+/// corner fibre carries both bending stresses at once.
+pub fn biaxial_column(n: usize) -> Statics {
+    let mut s = Structure::new();
+    let m = strong(&mut s, E_CONCRETE);
+    let h = 2.0;
+    let (c, _) = column(&mut s, "col", 0.0, 0.0, h, n, COL, LIGHT, m);
+    let base = fixed(&mut s, c[0], [0.0, 0.0, 0.0], [0.0, -1.0, 0.0], X, COL, m);
+    let e = 0.1;
+    let load_mass = 20_000.0;
+    // The block covers the column's top face and reaches 0.2 m past it in +x
+    // and +z: its centre is e off the axis in each.
+    let block = s.chunk("load", [e, h + 0.1, e], [COL.d / 2.0 + e, 0.1, COL.b / 2.0 + e], load_mass);
+    s.rect_bond(c[n - 1], block, [0.0, h, 0.0], Y, X, COL.d, Z, COL.b, m);
+    let p = load_mass * G;
+    let a = COL.area();
+    let sm = COL.modulus(); // square: the same about both axes
+    Statics {
+        name: "biaxial-column".into(),
+        title: "Column, eccentric in both axes (e_x = e_z = 0.1 m)",
+        source: "[Gere] 11.5 / [Hib-MoM] 8.4: sigma = -P/A -/+ P e_x / S_z -/+ P e_z / S_x (the corner takes both)",
+        tier: Tier::Quick,
+        checks: vec![
+            check("base corner compression fibre", base, Q::Compression, p / a + 2.0 * p * e / sm, "P/A + P e_x / S + P e_z / S"),
+            check("base corner tension fibre", base, Q::Tension, 2.0 * p * e / sm - p / a, "P e_x / S + P e_z / S - P/A"),
+            check("base axial force", base, Q::Axial, -p, "N = -P"),
+        ],
+        structure: s,
+    }
+}
+
+/// Three posts under a rigid slab, the middle one stiffer (E 3x): the slab
+/// sinks without turning (symmetry), every post shortens the same, so each
+/// carries the load in proportion to its stiffness k = E A / L.
+pub fn stiffness_share(n: usize) -> Statics {
+    let mut s = Structure::new();
+    let outer = strong(&mut s, E_CONCRETE);
+    let middle = strong(&mut s, 3.0 * E_CONCRETE);
+    let h = 2.0;
+    let a = 1.0; // outer posts at x = -a, +a
+    let mut bases = Vec::new();
+    let mut tops = Vec::new();
+    for (i, (x, m)) in [(-a, outer), (0.0, middle), (a, outer)].into_iter().enumerate() {
+        let (c, _) = column(&mut s, &format!("post{i}_"), x, 0.0, h, n, COL, LIGHT, m);
+        let base = fixed(&mut s, c[0], [x, 0.0, 0.0], [0.0, -1.0, 0.0], X, COL, m);
+        bases.push(base);
+        tops.push((c[n - 1], x, m));
+    }
+    let slab_mass = 30_000.0;
+    let slab = s.chunk("slab", [0.0, h + 0.1, 0.0], [a + COL.d / 2.0, 0.1, COL.b / 2.0], slab_mass);
+    for (top, x, m) in tops {
+        s.rect_bond(top, slab, [x, h, 0.0], Y, X, COL.d, Z, COL.b, m);
+    }
+    let p = slab_mass * G;
+    let post = LIGHT * h * COL.area() * G; // a post's own weight, carried at its base
+    let (km, ko) = (3.0, 1.0);
+    Statics {
+        name: "stiffness-share".into(),
+        title: "Three posts under a rigid slab, the middle one 3x stiffer (indeterminate, compatibility)",
+        source: "[Gere] 2.4 statically indeterminate axial members: equal shortening, F_i = P k_i / sum k",
+        tier: Tier::Quick,
+        checks: vec![
+            check("middle post base force", bases[1], Q::Axial, -(p * km / (km + 2.0 * ko) + post), "-(P k_m / (k_m + 2 k_o) + w_post)"),
+            check("outer post base force", bases[0], Q::Axial, -(p * ko / (km + 2.0 * ko) + post), "-(P k_o / (k_m + 2 k_o) + w_post)"),
+            check("other outer post base force", bases[2], Q::Axial, -(p * ko / (km + 2.0 * ko) + post), "-(P k_o / (k_m + 2 k_o) + w_post)"),
+        ],
+        structure: s,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Frames
 
@@ -530,6 +600,8 @@ pub fn registry() -> Vec<Statics> {
         two_span(21),
         axial_column(6),
         eccentric_column(4),
+        biaxial_column(4),
+        stiffness_share(4),
         portal_lateral(6, 12),
         three_hinged(6, 6),
         pratt_truss(),
