@@ -40,6 +40,10 @@ fn friction() -> f64 {
     WorldConfig::default().dynamic_friction as f64
 }
 
+pub fn launch_ball(world: &mut World, id: u32, at: V3, radius: f64, mass: f64, velocity: V3) {
+    ball(world, id, at, radius, mass, velocity)
+}
+
 fn ball(world: &mut World, id: u32, at: V3, radius: f64, mass: f64, velocity: V3) {
     world
         .launch_dynamic_ball(LaunchedBallDesc {

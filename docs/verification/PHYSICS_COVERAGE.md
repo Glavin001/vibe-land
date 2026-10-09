@@ -273,7 +273,7 @@ incidentally (see Scope).
 | Frame invariance | mirrored, turned, bonds reversed: the same answers | **covered**: invariance/* (exact, or 0.49% for a quarter turn) |
 | Superposition | 2x the load gives 2x every answer | **covered**: invariance/* (≤ 3.4e-4) |
 | Dimensional scaling | see B | **covered** |
-| Determinism | the same run gives bit-identical answers | **covered**: answer-drift (233 answers) |
+| Determinism | the same solve, and the same impact, twice in fresh worlds: bit-identical | **covered**: determinism/*. Walls up to 60 x 60 (3,660 chunks) and a ball breaking 111 bonds of a wall into 43 bodies are bit-identical, breaks and poses; answer-drift holds 267 answers. A 101 x 101 wall (past 8,192 nodes, the cooperative kernel) differs in 99% of its values' last bits (3.6e-6): known gap, the likely source of macro divergence |
 | Time-step independence | a static answer does not depend on dt | **missing** |
 | Iteration independence | a converged answer does not change with more iterations (diagnostic only; the product stays at 64) | **missing** |
 | Mass-contrast robustness | a 1e8 mass span must solve or say it did not | **open bug** (n37): being diagnosed |
