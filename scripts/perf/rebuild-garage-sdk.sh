@@ -66,6 +66,12 @@ fi
 # compiles, so the script runs unwrapped (call it directly, not under gpu-run).
 VIBE_GPU_SHARED=1 "$ROOT/scripts/perf/gpu-run.sh" "sdk-${NAME}-install" python3 -B tools/scripts/build-destruction-sdk.py "${OPTS[@]}" --stage sdk --install
 cp out/sdk-artifacts.json "$VERSIONED/sdk-artifacts.json"
+# The CuMetal the GPU code was compiled with (the SDK bundles its libcumetal):
+# revision, whether compiler/ or runtime/ had uncommitted changes, checkout.
+# scripts/fidelity/provenance.sh refuses a high SDK whose CuMetal is stale.
+CM=$(cd "${CUMETAL_SRC:-$SRC/../cuda-metal}" && pwd -P)
+printf '%s %s %s\n' "$(git -C "$CM" rev-parse HEAD)" \
+  "$(git -C "$CM" status --porcelain -- compiler runtime | grep -q . && echo dirty || echo clean)" "$CM" > "$VERSIONED/cumetal-revision"
 # Repoint $LINK in one rename (a relative link, so the tree can move).
 ln -sfn "$(basename "$VERSIONED")" "$LINK.next" && python3 -c 'import os,sys;os.replace(sys.argv[1],sys.argv[2])' "$LINK.next" "$LINK"
 [ "$SRC" = "$PHYSX" ] || ln -sfn "$LINK" "$PHYSX/out/install/$NAME"

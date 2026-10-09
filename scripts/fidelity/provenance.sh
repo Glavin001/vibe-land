@@ -28,6 +28,20 @@ if [ -f "$art" ]; then
     fi
   fi
   echo "[provenance] SDK $(basename "$PHYSX_ROOT"): ${rev:0:9}, dirty=$dirty"
+  # Its CuMetal (scripts/perf/rebuild-garage-sdk.sh records it): the compiler
+  # that produced the GPU code must be clean and current with its checkout's
+  # compiler/ and runtime/, or a fix made there is missing from the run.
+  if [ -f "$PHYSX_ROOT/cumetal-revision" ]; then
+    read -r cm_rev cm_state cm_root < "$PHYSX_ROOT/cumetal-revision"
+    [ "$cm_state" = clean ] || problems+=("SDK's CuMetal built from a dirty compiler/runtime ($cm_root)")
+    cm_head=$(git -C "$cm_root" rev-parse HEAD 2>/dev/null)
+    if [ -n "$cm_head" ] && [ "$cm_head" != "$cm_rev" ] && ! git -C "$cm_root" diff --quiet "$cm_rev" "$cm_head" -- compiler runtime 2>/dev/null; then
+      problems+=("SDK's CuMetal is ${cm_rev:0:9}, its checkout ($cm_root) is at ${cm_head:0:9} with compiler/runtime changes since")
+    fi
+    echo "[provenance] CuMetal ${cm_rev:0:9} ($cm_state, $cm_root)"
+  else
+    echo "[provenance] note: no cumetal-revision in $PHYSX_ROOT (installed before it was recorded)"
+  fi
 else
   problems+=("no sdk-artifacts.json in $PHYSX_ROOT")
 fi
