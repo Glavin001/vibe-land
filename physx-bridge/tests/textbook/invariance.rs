@@ -120,6 +120,34 @@ fn doubled(rows: &[Graded]) -> Vec<Graded> {
     }).collect()
 }
 
+/// Global equilibrium (Newton's first law): a structure at rest is held up by
+/// its supports with exactly its weight. The vertical reaction on the
+/// structure through an anchor bond is its axial force (tension +) times the
+/// unit normal pointing from the structure's chunk to the anchor, vertical
+/// part: tension pulls the structure toward its anchor, compression pushes it
+/// away. Shear's direction is not read, so only structures whose every anchor
+/// bond is horizontal (vertical normal) are checked. Returns (sum of the
+/// vertical reactions, total weight), or None when not applicable.
+pub fn vertical_equilibrium(s: &Structure, rows: &[Graded]) -> Option<(f64, f64)> {
+    let mut reaction = 0.0;
+    let mut anchored = false;
+    for (bond, g) in s.bonds.iter().zip(rows) {
+        let (ma, mb) = (s.chunks[bond.a].mass, s.chunks[bond.b].mass);
+        if (ma == 0.0) == (mb == 0.0) {
+            continue; // both dynamic (internal) or both anchors
+        }
+        anchored = true;
+        if bond.normal[1].abs() < 1.0 - 1e-9 || !g.axial_force.is_finite() {
+            return None;
+        }
+        let (anchor, member) = if ma == 0.0 { (bond.a, bond.b) } else { (bond.b, bond.a) };
+        let toward = s.chunks[anchor].center[1] - s.chunks[member].center[1];
+        reaction += g.axial_force * toward.signum();
+    }
+    let weight = s.chunks.iter().map(|c| c.mass).sum::<f64>() * cases::G;
+    anchored.then_some((reaction, weight))
+}
+
 fn quantities(g: &Graded) -> [f64; 6] {
     [g.axial_force, g.shear_force, g.twist, g.normal, g.shear, g.bend]
 }
@@ -202,6 +230,10 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
                     }
                 }
                 row(config, &name, &format!("same bond answers, {label}"), "max |difference| / scale <= 1%", "invariance under reflection, rotation and relabelling", "1=yes", 1.0, f64::NAN, if answered && worst <= TOL { 1.0 } else { 0.0 }, 1.0, expected, out);
+            }
+            if let (Some((stage_r, weight)), Some((model_r, _))) = (vertical_equilibrium(&case.structure, &base), vertical_equilibrium(&case.structure, &exact)) {
+                println!("  equilibrium: support reactions {stage_r:.6e} N (exact model {model_r:.6e}) against the weight {weight:.6e} N");
+                row(config, &name, "support reactions carry the whole weight", "sum R_y = sum m g", "[Hibbeler] 5.3 / Newton's first law: a body at rest", "kN", weight * 1e-3, model_r * 1e-3, stage_r * 1e-3, weight * 1e-3, expected, out);
             }
             // Superposition: twice the load, twice every answer (scales: the
             // doubled structure's exact model).
