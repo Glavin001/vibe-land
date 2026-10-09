@@ -18,7 +18,13 @@
   - unconverged solves carried to the next tick (already the product setting);
   - no permanent compute in flight.
 
-## Fixed: the app no longer runs a GPU keep-alive
+## Fixed (root cause): no GPU code that waits on another threadgroup
+
+- **Cause.** The keep-alive below was not it: with both keep-alive switches off, Vibe Town still hung WindowServer in the owner's runs. CuMetal's resident cooperative grids (Blast's stress hierarchy construction and cycle) lower `grid.sync()` to a device-atomic spin barrier. Metal does not promise that a grid's threadgroups are resident together; with WindowServer and the app's rendering holding GPU cores, a peer never starts, the others spin, and the GPU deadlocks. Killing the app cannot stop work already on the GPU (cuda-metal `docs/known-gaps/runtime.md`).
+- **The fix.** `CUMETAL_COOPERATIVE_RESIDENT_GRID=0` in `sim-native` `apply_app_defaults`: each cooperative launch is one threadgroup, which waits only on itself. `scripts/verify/lint-harness.sh` requires it. No watchdog or kill switch in the app.
+- **Confirmed (2026-10-09).** `scripts/verify/native-soak.sh` (Vibe Town, high profile, garage-clean on CuMetal 8943f10): 121 s, WindowServer worst 77.7 ms, GPU memory 11 GB in 2,278 allocations after a 20 s load ramp, flat to the end.
+
+## Superseded: the app no longer runs a GPU keep-alive (kept off, but not the root cause)
 
 - **Cause.** CuMetal's GPU keep-alive, which the bridge turns on for the headless server (`physx_bridge.cc`): a 250 µs heartbeat (`CUMETAL_GPU_KEEPALIVE_US`) and a busy threadgroup (`CUMETAL_GPU_KEEPALIVE_BUSY`). It keeps the GPU from idling between ticks. In a desktop app that shares the GPU with WindowServer, it hung WindowServer 52–68 s after launch, at rest.
 - **What the measurements showed:**
