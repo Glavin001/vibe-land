@@ -1,5 +1,6 @@
 //! Invariance: the stage's answer cannot depend on how a structure is placed
-//! or described. A statics case solved as authored, mirrored (x -> -x), turned
+//! or described, and below capacity it is linear in the load (every mass
+//! doubled doubles every answer: superposition). A statics case solved as authored, mirrored (x -> -x), turned
 //! a quarter about the vertical ((x, y, z) -> (z, y, -x)), and with every
 //! bond's two chunks listed the other way round (its normal reversed) must
 //! grade every bond the same: axial and shear force, twist, and the graded
@@ -62,6 +63,29 @@ pub fn bonds_reversed(s: &Structure) -> Structure {
         b.normal = [-b.normal[0], -b.normal[1], -b.normal[2]];
     }
     t
+}
+
+/// Every chunk twice as heavy: under a linear elastic solve below capacity,
+/// every force and stress doubles (superposition).
+pub fn masses_doubled(s: &Structure) -> Structure {
+    let mut t = s.clone();
+    for c in &mut t.chunks {
+        c.mass *= 2.0;
+    }
+    t
+}
+
+fn doubled(rows: &[Graded]) -> Vec<Graded> {
+    rows.iter().map(|g| Graded {
+        normal: 2.0 * g.normal,
+        shear: 2.0 * g.shear,
+        bend: 2.0 * g.bend,
+        tension: 2.0 * g.tension,
+        compression: 2.0 * g.compression,
+        axial_force: 2.0 * g.axial_force,
+        shear_force: 2.0 * g.shear_force,
+        twist: 2.0 * g.twist,
+    }).collect()
 }
 
 fn quantities(g: &Graded) -> [f64; 6] {
@@ -140,6 +164,13 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
                 }
                 row(config, &name, &format!("same bond answers, {label}"), "max |difference| / scale <= 1%", "invariance under reflection, rotation and relabelling", "1=yes", 1.0, f64::NAN, if worst <= TOL { 1.0 } else { 0.0 }, 1.0, expected, out);
             }
+            // Superposition: twice the load, twice every answer (scales: the
+            // doubled structure's exact model).
+            let heavier = masses_doubled(&case.structure);
+            let exact2 = super::model::model_graded(&heavier, cases::G, config);
+            let worst = worst_difference(&heavier, &exact2, &doubled(&base), &solve(&heavier));
+            println!("  every mass doubled: worst difference from twice the answers {worst:.2e}");
+            row(config, &name, "every mass doubled: every answer doubled", "max |difference| / scale <= 1%", "[Gere] 1.8 / [Hibbeler] 4.3: superposition (linear elastic, below capacity)", "1=yes", 1.0, f64::NAN, if worst <= TOL { 1.0 } else { 0.0 }, 1.0, expected, out);
         });
     }
 }
