@@ -26,6 +26,7 @@ mod build;
 mod cases;
 mod dynamics;
 mod failure;
+mod invariance;
 mod model;
 mod stage;
 
@@ -287,6 +288,7 @@ fn textbook_suite() {
     run_statics(config, want, &expected, &mut out);
     failure::run(config, want, &expected, &mut out);
     dynamics::run(config, want, &expected, &mut out);
+    invariance::run(config, want, &expected, &mut out);
     let bad: Vec<&Row> = out.rows.iter().filter(|r| r.status == "FAIL" || r.status == "GAP-WORSE").collect();
     let fixed: Vec<&Row> = out.rows.iter().filter(|r| r.status == "FIXED").collect();
     println!(
