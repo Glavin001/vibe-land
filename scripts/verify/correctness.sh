@@ -53,6 +53,9 @@ export PHYSX_BUILD=${VERIFY_PHYSX_BUILD:-/Users/glavin/Development/PhysX/.claude
 # The PhysX destruction ctest gate's package tree: the clean branch's tests,
 # built against garage-clean's libraries (cmake -S destruction, BUILD_TESTING=ON).
 export DESTRUCTION_CTEST_TREE=${VERIFY_DESTRUCTION_CTEST_TREE:-/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/build/clean-package}
+# CuMetal's own build tree (the compiler every SDK's GPU code came from), for
+# the CuMetal fixes' tests; it builds incrementally before they run.
+export CUMETAL_CTEST_TREE=${VERIFY_CUMETAL_CTEST_TREE:-/Users/glavin/Development/cuda-metal/out/build/macos-cumetal/release}
 export IMPACT_BUILD=${VERIFY_IMPACT_BUILD:-/Users/glavin/Development/PhysX/.claude/worktrees/impact-e/out/build/impact-e-tests}
 t_start=$(date +%s)
 failed=0
