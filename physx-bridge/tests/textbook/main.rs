@@ -27,6 +27,7 @@ mod cases;
 mod determinism;
 mod dynamics;
 mod failure;
+mod fuzz;
 mod invariance;
 mod model;
 mod stage;
@@ -291,6 +292,7 @@ fn textbook_suite() {
     dynamics::run(config, want, &expected, &mut out);
     invariance::run(config, want, &expected, &mut out);
     determinism::run(config, want, &expected, &mut out);
+    fuzz::run(config, want, &expected, &mut out);
     let bad: Vec<&Row> = out.rows.iter().filter(|r| r.status == "FAIL" || r.status == "GAP-WORSE").collect();
     let fixed: Vec<&Row> = out.rows.iter().filter(|r| r.status == "FIXED").collect();
     println!(

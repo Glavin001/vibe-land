@@ -276,6 +276,7 @@ incidentally (see Scope).
 | Determinism | the same solve, and the same impact, twice in fresh worlds: bit-identical | **covered**: determinism/*. Walls up to 60 x 60 (3,660 chunks) and a ball breaking 111 bonds of a wall into 43 bodies are bit-identical, breaks and poses; answer-drift holds 267 answers. A 101 x 101 wall (past 8,192 nodes, the cooperative kernel) differs in 99% of its values' last bits (3.6e-6): known gap, the likely source of macro divergence |
 | Time-step independence | a static answer does not depend on dt | **missing** |
 | Iteration independence | a converged answer does not change with more iterations (diagnostic only; the product stays at 64) | **missing** |
+| Differential fuzzing | random structures, stage against the exact model: stacked walls with holes and running-bond masonry (chunk centres off the bond normals), moduli spanning 200:1, heavy blocks | **covered**: fuzz/random-walls, 20 seeds (40 structures) quick, 200 (400) full. Worst: high 7.5e-3, runtime 1.2e-4, section-bending 3.0e-4. Mutation check: the stale spring-length formula fails all 20 quick seeds (15.5%) through the masonry; stacked walls alone cannot see it. A failing seed reruns alone with VERIFY_FUZZ_SEED |
 | Mass-contrast robustness | a 1e8 mass span must solve or say it did not | **open bug** (n37): being diagnosed |
 
 ## Build plan, in order of value per effort
