@@ -39,6 +39,90 @@ Section G keeps only what the destruction stage itself does to bodies:
 - splitting one at a fracture (momentum carried over);
 - the load inputs it reads from PhysX (section I).
 
+## What we are, and what we are not
+
+**We are** a quasi-static rigid-body-spring network (RBSN) stress analysis on
+a pre-fractured chunk graph, coupled to a rigid-body engine that owns all
+motion. Each tick:
+1. loads come in (gravity, PhysX's contact impulses, the bodies' states);
+2. the solve finds linear-elastic equilibrium of the springs, one spring set
+   per bond (FP32, iterative, at most 64 iterations);
+3. each bond's section stress is graded against capacity laws (tension
+   cutoff, crushing, Mohr–Coulomb, ductility, re-bearing);
+4. broken bonds make a new chunk-to-body hierarchy, and PhysX re-simulates
+   the step.
+
+In the literature this is the Rigid-Body-Spring Model (Kawai 1978),
+Voronoi-based rigid-body-spring networks (Bolander & Saito 1998), and the
+Applied Element Method (Meguro & Tagel-Din 2000), the method of demolition
+and progressive-collapse software. One difference: those integrate the
+springs' dynamics; we solve statics each tick and PhysX does the dynamics
+between bodies.
+
+**We are not**, by choice:
+
+| Not | Consequence |
+|---|---|
+| continuum FEM | no stress field inside a chunk; an intact structure never visibly deflects |
+| crack-propagation fracture (XFEM, phase-field, cohesive zones, peridynamics) | cracks run only along chunk faces; chunk size sets the crack-path resolution |
+| geometrically nonlinear, or soft bodies | no buckling or bending: a slender member snaps. A code buckling resistance (EN 1993-1-1 6.3.1, chi A f_y) can serve as its compression capacity, so it snaps at the right load |
+| structural dynamics inside an intact body | no inertia within a structure (see Impacts) |
+| particle or mesh-free (MPM, SPH, sphere DEM) | rubble is rigid chunks |
+| a rigid-body engine | contacts, friction and integration are PhysX's |
+
+## Choosing oracles
+
+An oracle qualifies if:
+- it shares our idealisation or contains it as a limit (otherwise a
+  disagreement cannot tell a bug from a modelling difference);
+- its outputs are comparable (interface forces and verdicts);
+- it is open, scriptable, deterministic and verified.
+
+| Class | Question it answers | Candidates |
+|---|---|---|
+| formulation-matched | does the code implement our model, including on Metal? | `model.rs`; Blast's CPU stress solver and `oracle.py`'s FP32 replay (the bit-exact target); LMGC90 (rigid blocks with cohesive and frictional interfaces); 3DEC (commercial) |
+| physics truth | what does the idealisation cost? | OpenSees (frames: buckling, plasticity, dynamics; `openseespymac` on arm64); PyNite; Code_Aster or CalculiX (continuum); FEniCSx phase-field |
+| experiments | does it match reality? | published masonry, frame-collapse and impact tests; demolition data used to validate AEM |
+
+## Impacts and explosions: what is essential
+
+The quasi-static solve is right for standing structures. For impacts it
+differs in two measurable ways:
+- it spreads a hit's force through the whole structure to the anchors,
+  where a real structure resists it locally with its own mass;
+- a rigid contact gives F = J/dt, so the peak follows the tick, not the
+  stiffness (impact-drop misses by 16-41%).
+
+In priority order:
+1. The right load reaches the right chunk: contact impulses attributed to
+   the chunk struck, awake or asleep (interface contracts; rest-load-asleep
+   and vehicle-contact-load are open).
+2. Inertia over the impact's duration, in the solve (the pending owner
+   decision). Impulsive loads (load duration much shorter than the
+   structure's period: cannonballs, blasts) are governed by impulse and
+   energy, not peak force; quasi-static loads by the static solve with a
+   dynamic amplification of up to 2 (Biggs; UFC 3-340-02 P-I diagrams).
+3. Momentum and energy at fracture. Fragments carry the parent's momentum
+   (split-momentum: covered). Broken bonds absorb fracture energy G_f A
+   (open).
+4. Explosion loads from standard charts: peak overpressure and impulse from
+   the scaled distance Z = R/W^(1/3) (Kingery–Bulmash; UFC 3-340-02),
+   applied to chunk faces.
+5. Ductile joints absorb a car's energy (no soft bodies: crumpling becomes
+   ductile slip).
+6. Continuous collision detection on fast projectiles.
+
+Second order: strain-rate strength (fib MC2010).
+
+The tool that makes impacts precise is an **exact dynamic oracle**: the
+same chunk network with its mass and stiffness matrices, integrated exactly
+in f64 (Newmark average acceleration, or modal superposition). It is checked
+itself against closed forms:
+- a single degree of freedom under an impulse: peak force I ω;
+- energy balance at failure;
+- the P-I diagram's asymptotes;
+- Recht–Ipson residual speed.
+
 ## How a check is read: three numbers and a class
 
 Every check prints three numbers:
@@ -160,7 +244,7 @@ incidentally (see Scope).
 | Friction | a block holds at tan θ < μ and slides above; glancing impulse ≤ μ J_n | Coulomb; Goldsmith | **covered**: surface-materials, impact-glancing (E2: dv_t overshoots rolling) |
 | **stage**: Compound body | mass Σm; centre of mass Σ m x / Σ m; inertia Σ(I_i + m_i(d²1 − d dᵀ)) (parallel-axis theorem) for a body of many chunks | Hibbeler 17.1 | **partial**: roof-com-* check the centre of mass; inertia untested |
 | **stage**: Rotation of a compound body | a chunked bar toppling about its foot: α = 3g/(2L) cos θ; torque-free spin keeps L = Iω | Hibbeler 17.4 | **missing** |
-| **stage**: Momentum at a split | the fragments of a body that breaks mid-motion carry exactly its linear and angular momentum, and each moves with the rigid field v + ω × r at the split | Newton III; Hibbeler 19 | **missing**: the destruction-specific invariant (no kick, no lost spin at fracture) |
+| **stage**: Momentum at a split | a free 100 + 300 kg bar struck off-centre spins and splits: horizontal momentum and angular momentum about the centre of mass (I ω + m r × v, parallel-axis theorem) are unchanged through the hit and the split | Hibbeler 15.2, 19.3, 17.1 | **covered**: split-momentum. 200.0000 N s exact; L -52.3810 to -52.3818 N m s (1.5e-5), both profiles |
 | **stage**: No energy from fracture | kinetic energy after a split ≤ before (the corrected pass must not inject) | | **partial**: impact-explicit-energy (impact machinery) |
 
 ## H. Impact loading
