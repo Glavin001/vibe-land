@@ -182,7 +182,7 @@ utilisation, u = stress / capacity. Suppose the stage reads a stress
 | Torsion, circular | τ = T r / J | Gere 3.3 | **covered**: torsion-round-shaft |
 | Torsion, non-circular | τ = T / (0.208 a³) (square) | Roark 10.1 | **covered**: torsion-square-shaft (known gap in both profiles) |
 | Combined axial and bending, kern | e > d/6 puts the base in tension | Gere 11.5 | **covered**: eccentric-column, break-eccentric-tension |
-| Section shape | an I-section or hollow patch has S = I/c far from a rectangle of equal area | Gere 5.6 | **missing**: patches are any polygon (poly_bond); no check uses a non-rectangular section |
+| Section shape, asymmetric | a cantilever of triangular section (apex up): fibres at 2h/3 and h/3 from the centroid carry stresses 2:1 (I = b h³/36) | Gere 5.5, App. D | **covered**: triangle-cantilever (prism chunks: the stage takes a section from the chunks' own geometry, not the authored patch). High and section-bending: the far fibre exact; the near fibre reads it too (one bending stress per section), 2x, conservative: E2. Runtime: E3 (capped grade). Circular: torsion-round-shaft |
 | Dimensional consistency | twice the size: forces 8x, stresses 2x, twist 16x | Buckingham Π | **covered**: invariance/*. High: pass. Runtime: E2/E3 (grade not dimensionally consistent). Section-bending: E2 |
 
 ## C. Indeterminate structures (compatibility)
@@ -280,9 +280,8 @@ incidentally (see Scope).
 
 ## Build plan, in order of value per effort
 
-1. **Non-rectangular sections** (B): an asymmetric (triangular) section, whose
-   two extreme fibres differ 2x. (Rotational equilibrium, stiffness share and
-   biaxial bending: done.)
+1. Done: rotational equilibrium, stiffness share, biaxial bending, an
+   asymmetric section, the stack's contact force, determinism.
 2. **Momentum at a split** and the **compound-body inertia tensor** (G): the
    destruction-specific invariants, which no other suite checks.
 3. **Time-step independence** (J) and a **stack's contact force** (I).
