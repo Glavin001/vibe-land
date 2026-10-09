@@ -293,3 +293,8 @@ section-bending	rafter-tie-truss	ridge lap: twist (a pin)	0.0715	MODEL: uniform 
 runtime	redundancy-propped-sliver	root bending stress, redistributed	0.8000	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain)
 section-bending	redundancy-propped-sliver	root bending stress, redistributed	0.8000	MODEL: uniform rotational stiffness (as the joint version)
 high-fidelity	redundancy-simple-sliver	beam falls after losing a support	1.0000	STAGE (impact solve): light 2 cm support chunks between stiff joints (k dt^2/m ~4e5, structure_lint stiff-light-chunk) leave the solve without a verdict; the beam stays up. The joint version passes
+# alternate load path (a two-span beam loses its middle roller; GSA 2016 / UFC 4-023-03), 2026-10-09
+runtime	alternate-path-bridges	midspan bending stress over 2L	0.8553	MODEL: default bending/torsion grading M/A x min(6/sqrt(A),3), not M/S (the capped area gain; the model reads 0.633 MPa, the stage 0.631, against 4.36)
+runtime	alternate-path-collapses	beam collapses over the lost support	1.0000	MODEL: the same grading reads the 2L midspan moment at 1/7 of M/S, so a beam at half its bending capacity never breaks (high-fidelity: collapses, 86% of the chunks down)
+section-bending	alternate-path-bridges	beam bridges the lost support	1.0000	MODEL: uniform rotational stiffness: the 2 cm concrete support strips take the beam's end rotation as moment and break first (bonds 10-13), so the beam falls (high-fidelity, per-bond section stiffness: holds, 0.64% on the midspan stress)
+section-bending	alternate-path-bridges	midspan bending stress over 2L	1.0000	MODEL: as above (no rows once the beam has fallen)

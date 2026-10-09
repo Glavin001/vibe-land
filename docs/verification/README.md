@@ -441,6 +441,8 @@ with a fresh world for each trial.
 | break-simply-supported | breaking load; the bonds beside the load break first | P = 2 f_t S / x |
 | redundancy-propped | the hanger fails; the beam holds as a cantilever; root moment redistributes to wL^2/2 | indeterminate: alternative path |
 | redundancy-simple | the hanger fails; the beam falls (> 1 m in 1.5 s) | determinate: mechanism |
+| alternate-path-bridges | a two-span beam loses its middle roller; at 2.5x the static demand of the 2L span it holds, midspan stress w x (2L - x) / 2S | alternate load path, GSA 2016 3.2 / UFC 4-023-03 3-2 (holds even with the dynamic increase factor 2) |
+| alternate-path-collapses | the same at 0.5x (twice the two-span demand, so it stood before): over half its chunks end > 1 m down in 2 s | progressive collapse: no alternate path |
 | gravity-free-fall | a broken-off fragment accelerates at g (not 2g, not 0) | dv/dt = g |
 | rest-near-capacity (full) | a tower at 95% of crushing capacity and a cantilever at 95% of tension capacity stand 10 s, with no break and no stress creep | statics |
 
