@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 
 import { useOverlaySize } from './NativeOverlay';
+import { createTimestampSampler, type TimestampSampler } from './timestampSampler';
 
 import { getMatchStats } from '../app/connectPhase';
 
@@ -92,25 +93,19 @@ export function NativeFpsCounter() {
   const counter = useRef({ frames: 0, since: performance.now(), worstMs: 0, last: performance.now() });
   // The frame's work: from before its callbacks to after its render.
   const work = useRef({ started: 0, waitMs: 0, totalMs: 0, worstMs: 0, frames: 0 });
-  // The GPU time of the latest frame read back (null before the first, or without timestamp queries).
-  // At most one readback in flight: three maps one result buffer, and resolving again while it is
-  // still mapped (a slow frame) is a WebGPU validation error and a rejected submit, every frame after.
-  const gpu = useRef<{ countdown: number; ms: number | null; pending: boolean }>({ countdown: TIMESTAMP_EVERY, ms: null, pending: false });
+  // The GPU time of the latest frame read back (null before the first, or without timestamp
+  // queries), one readback in flight at most (timestampSampler.ts).
+  const gpu = useRef<TimestampSampler | null>(null);
   const gl = useThree((state) => state.gl);
   useEffect(() => {
     const restore = timeDisplayWaits(gl, (ms) => { work.current.waitMs += ms; });
     const resolveTimestamps = (gl as { resolveTimestampsAsync?: (type?: string) => Promise<number | undefined> }).resolveTimestampsAsync?.bind(gl);
     const tracking = (gl as { backend?: { trackTimestamp?: boolean } }).backend?.trackTimestamp === true;
+    gpu.current = tracking && resolveTimestamps
+      ? createTimestampSampler(() => resolveTimestamps('render'), TIMESTAMP_EVERY) : null;
     const before = addEffect(() => {
       // Before this frame's work: the GPU timestamps of the frames before it.
-      const g = gpu.current;
-      if (tracking && resolveTimestamps && !g.pending && --g.countdown <= 0) {
-        g.countdown = TIMESTAMP_EVERY;
-        g.pending = true;
-        void resolveTimestamps('render').then((ms) => {
-          if (typeof ms === 'number' && ms > 0) g.ms = ms;
-        }).catch(() => {}).finally(() => { g.pending = false; });
-      }
+      gpu.current?.tick();
       work.current.started = performance.now();
       work.current.waitMs = 0;
     });
@@ -202,7 +197,7 @@ export function NativeFpsCounter() {
     c.last = now;
     if (now - c.since >= UPDATE_MS) {
       const w = work.current;
-      draw((c.frames * 1000) / (now - c.since), w.totalMs / Math.max(1, w.frames), w.worstMs, gpu.current.ms);
+      draw((c.frames * 1000) / (now - c.since), w.totalMs / Math.max(1, w.frames), w.worstMs, gpu.current?.ms ?? null);
       w.totalMs = 0;
       w.worstMs = 0;
       w.frames = 0;
