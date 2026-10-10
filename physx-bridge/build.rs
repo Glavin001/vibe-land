@@ -376,6 +376,9 @@ fn add_native_destruction(
         ("correctionBlockers", "VIBE_PHYSX_HAS_CORRECTION_BLOCKERS"),
         ("fragmentMaxDepenetrationVelocity", "VIBE_PHYSX_HAS_FRAGMENT_DEPENETRATION"),
         ("fragmentGravity", "VIBE_PHYSX_HAS_FRAGMENT_GRAVITY"),
+        // PxDestructionStressDesc::fragmentWake: free split bodies start awake
+        // (opt-in, VIBE_NATIVE_FRAGMENT_WAKE=1).
+        ("fragmentWake", "VIBE_PHYSX_HAS_FRAGMENT_WAKE"),
         ("getStressSolveReport", "VIBE_PHYSX_HAS_STRESS_SOLVE_REPORT"),
         ("forceTolerance", "VIBE_PHYSX_HAS_FORCE_TOLERANCE"),
         // Chunk loads (destructible vehicles) re-apportioned on every corrected

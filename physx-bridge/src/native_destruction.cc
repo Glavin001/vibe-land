@@ -1451,6 +1451,18 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
   desc.reservedContactPairs = config.reserved_contact_pairs;
 #endif
   desc.gpuIslandRepair = config.gpu_island_repair;
+#if defined(VIBE_PHYSX_HAS_FRAGMENT_WAKE)
+  // A fragment copies its source's wake counter, 0 for a sleeping or
+  // supported (kinematic) source, so it went straight back to sleep: a plug
+  // punched out of an anchored plate hung in the air. With this, free split
+  // bodies start awake like any body PhysX creates (wakeCounterResetValue).
+  // Opt-in (VIBE_NATIVE_FRAGMENT_WAKE=1); the runtime profile is unchanged.
+  desc.fragmentWake = native_env_f32("VIBE_NATIVE_FRAGMENT_WAKE", 0.0f) != 0.0f;
+#else
+  native_require(native_env_f32("VIBE_NATIVE_FRAGMENT_WAKE", 0.0f) == 0.0f,
+                 "VIBE_NATIVE_FRAGMENT_WAKE=1 needs a PhysX SDK with "
+                 "PxDestructionStressDesc::fragmentWake (PhysX branch fix/fragment-wake)");
+#endif
 #if defined(VIBE_PHYSX_HAS_FRAGMENT_GRAVITY)
   // Vehicle2 carriers are weightless (Vehicle2 integrates their gravity) and
   // fragments inherit their source's settings on the GPU, so without this a
