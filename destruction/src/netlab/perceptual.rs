@@ -212,6 +212,11 @@ pub struct PerceptualReport {
     pub g4_worst_cm: f64,
 }
 
+/// V8's grouping: a cell of the truth, metres, and the fewest chunks that
+/// make a group.
+const GROUP_CELL_M: f32 = 4.0;
+const GROUP_MIN: u32 = 5;
+
 /// The static world's lookup grid, metres.
 const STATIC_CELL: f32 = 4.0;
 
@@ -552,6 +557,7 @@ impl PerceptualEval {
         self.commit_accelerations(t_s, items);
         self.resurrections(items);
         self.solid_geometry(items);
+        self.group_error(&projector, second, items);
     }
 
     /// V3/V4/V5 samples wait `CONTACT_WINDOW_S` before they count, and are
@@ -596,6 +602,38 @@ impl PerceptualEval {
                 self.sample(ArtifactClass::EnergyGain, e.max(0.0));
                 self.per_second(ArtifactClass::EnergyGain, a.body, a.second, e, a.vis);
             }
+        }
+    }
+
+    /// V8: a pile of debris drawn shifted as a whole. Visible loose chunks
+    /// are grouped by the `GROUP_CELL_M` cell of their true position; a
+    /// group of at least `GROUP_MIN` has the mean of its members' on-screen
+    /// displacement (drawn minus true centre). Independent errors cancel in
+    /// the mean; a shared shift does not, and an ensemble's motion is seen
+    /// more accurately than any member's (Whitney & Yamanashi Leib 2018).
+    /// Per group per second, the mean magnitude.
+    fn group_error(&mut self, projector: &Projector, second: i64, items: &[ItemSample]) {
+        let mut groups: BTreeMap<(i32, i32, i32), (glam::Vec2, u32, f32)> = BTreeMap::new();
+        for item in items {
+            if item.visibility <= 0.0 || item.displayed_standing || item.truth_standing {
+                continue;
+            }
+            let (Some((dp, _)), Some((tp, _))) = (item.displayed, item.truth) else { continue };
+            let (Some((d, _)), Some((t, _))) = (projector.project(dp), projector.project(tp)) else { continue };
+            let cell = (tp / GROUP_CELL_M).floor();
+            let g = groups.entry((cell.x as i32, cell.y as i32, cell.z as i32)).or_insert((glam::Vec2::ZERO, 0, 0.0));
+            g.0 += d - t;
+            g.1 += 1;
+            g.2 = g.2.max(item.visibility);
+        }
+        for ((x, y, z), (sum, n, vis)) in groups {
+            if n < GROUP_MIN {
+                continue;
+            }
+            let shift = f64::from((sum / n as f32).length());
+            let id = (x as u32).wrapping_mul(73_856_093) ^ (y as u32).wrapping_mul(19_349_663) ^ (z as u32).wrapping_mul(83_492_791);
+            self.sample(ArtifactClass::GroupError, shift);
+            self.per_second(ArtifactClass::GroupError, id, second, shift, vis);
         }
     }
 
@@ -922,7 +960,6 @@ impl PerceptualEval {
         report.g4_worst_cm = self.g4_worst_cm;
         report.q = self.model.quality(total);
         report.not_measured = vec![
-            "V8 group error".into(),
             "V9 video score (ColorVideoVDP)".into(),
             "V12 audio sync (the lab replays no audio)".into(),
         ];
@@ -1191,6 +1228,45 @@ mod tests {
             eval.frame(t, camera(400.0), &make(t));
         }
         eval.report()
+    }
+
+    #[test]
+    fn a_pile_shifted_together_is_group_error_but_scattered_errors_are_not() {
+        // Ten pieces in one 4 m cell, drawn 3 m off at 100 m (about 16 px):
+        // all the same way, or alternating so the mean is zero.
+        let pile = |t: f64, shared: bool| -> Vec<ItemSample> {
+            (0..10u32)
+                .map(|i| {
+                    let truth = Vec3::new(0.3 * i as f32, 1.0 + (t as f32) * 0.0, 0.0);
+                    let sign = if shared || i % 2 == 0 { 1.0 } else { -1.0 };
+                    ItemSample {
+                        id: i,
+                        body: i,
+                        half_extents: Vec3::splat(0.1),
+                        mass: 1.0,
+                        displayed: Some((truth + Vec3::X * 3.0 * sign, Quat::IDENTITY)),
+                        truth: Some((truth, Quat::IDENTITY)),
+                        visibility: 1.0,
+                        displayed_body: i,
+                        displayed_standing: false,
+                        truth_standing: false,
+                        truth_settled: false,
+                    }
+                })
+                .collect()
+        };
+        let run = |shared: bool| {
+            let mut eval = PerceptualEval::new(PerceptualModel::literature(), G);
+            for i in 0..120 {
+                eval.frame(i as f64 * DT, camera(100.0), &pile(i as f64 * DT, shared));
+            }
+            eval.report()
+        };
+        let shifted = run(true);
+        let group = &shifted.classes["group_error"];
+        assert!(group.events >= 2 && group.max > 10.0, "{group:?}");
+        let scattered = run(false);
+        assert!(scattered.classes.get("group_error").map_or(true, |g| g.max < 0.5), "{:?}", scattered.classes.get("group_error"));
     }
 
     #[test]

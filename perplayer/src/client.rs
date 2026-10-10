@@ -266,12 +266,12 @@ pub type ParentState = (Vec3, Quat, Vec3, Vec3, Vec3);
 
 /// Every dynamic body's drawn state at `tick`, before a fracture changes the
 /// structure: what the new bodies spawn from.
-pub fn parent_states(
+pub fn parent_states<S: std::hash::BuildHasher>(
     def: &StructureDef,
     state: &StructureState,
     structure: u32,
     tick: u32,
-    tracks: &HashMap<BodyKey, BodyTrack>,
+    tracks: &HashMap<BodyKey, BodyTrack, S>,
     physics: Physics,
 ) -> HashMap<u32, ParentState> {
     let mut parents = HashMap::new();
@@ -290,14 +290,14 @@ pub fn parent_states(
 /// from its parent's drawn state (`v + w x r` for a moving parent, the
 /// authored pose for a standing one). The client and the server's model of
 /// each client both call this, so they spawn alike.
-pub fn apply_spawns(
+pub fn apply_spawns<S: std::hash::BuildHasher>(
     def: &StructureDef,
     state: &StructureState,
     structure: u32,
     tick: u32,
     change: &crate::structure::FractureChange,
     parents: &HashMap<u32, ParentState>,
-    tracks: &mut HashMap<BodyKey, BodyTrack>,
+    tracks: &mut HashMap<BodyKey, BodyTrack, S>,
 ) {
     for id in &change.retired_bodies {
         tracks.remove(&BodyKey { structure, body: *id });

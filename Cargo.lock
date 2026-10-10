@@ -3076,6 +3076,7 @@ dependencies = [
  "blast-stress-solver",
  "glam 0.27.0",
  "rapier3d",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha2",

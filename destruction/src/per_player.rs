@@ -27,6 +27,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
+use rustc_hash::{FxHashMap, FxHashSet};
+
 use glam::{Quat, Vec3};
 
 use vibe_land_perplayer::client::{apply_spawns, parent_states, BodyTrack, BASELINE_MAX_TICKS};
@@ -137,6 +139,9 @@ pub struct PerPlayerConfig {
     /// Rank a record by the pop its correction will make (V2) as well as
     /// the screen error it removes.
     pub correction_cost: bool,
+    /// At most about this many bodies evaluated per client per send (0: no
+    /// cap). Past it, a rotating slice plus the bodies that cannot wait.
+    pub eval_cap: usize,
 }
 
 impl PerPlayerConfig {
@@ -158,6 +163,7 @@ impl PerPlayerConfig {
             send_threads: 1,
             contacts: false,
             correction_cost: true,
+            eval_cap: 4096,
         }
     }
 }
@@ -173,6 +179,10 @@ struct Truth {
     contact_tick: u32,
 }
 
+/// The smallest a keyframe record can be on the wire (a resting delta):
+/// bounds how many never-sent bodies one send could carry.
+const MIN_RECORD_BYTES: usize = 8;
+
 /// Bytes of a keyframes datagram before its records (kind, tick, ordinal,
 /// count).
 const DATAGRAM_HEADER: usize = 13;
@@ -184,20 +194,25 @@ const CONTACT_DV: f32 = 1.0;
 #[derive(Default)]
 struct ClientState {
     ordinal: u32,
-    believed: HashMap<BodyKey, BodyTrack>,
+    believed: FxHashMap<BodyKey, BodyTrack>,
     /// Ordinal -> the keyframes it carried (as decoded) and how many acks
     /// have not named it, until acked or known lost.
     sent: VecDeque<(u32, Vec<(BodyKey, Keyframe)>, u8)>,
     /// Per body, the newest keyframe this client acked: the baseline delta
     /// records are coded against.
-    acked: HashMap<BodyKey, Keyframe>,
+    acked: FxHashMap<BodyKey, Keyframe>,
     /// Bodies this client has never been sent.
-    unsent: HashSet<BodyKey>,
+    unsent: FxHashSet<BodyKey>,
     sends_since_datagram: u32,
     rtt_ms: f32,
     /// Events packets still to be copied onto this client's datagram lane,
     /// and how many copies each has left (decision D6).
     event_copies: VecDeque<(Vec<u8>, u32)>,
+    /// Sends so far (the evaluation slice rotates on it).
+    sends: u64,
+    /// Bodies that were over tolerance last send and lost the ranking:
+    /// evaluated again whatever the slice (`PerPlayerConfig::eval_cap`).
+    hot: FxHashSet<BodyKey>,
 }
 
 /// Counters for reports.
@@ -216,6 +231,12 @@ pub struct PerPlayerStats {
     pub by_mode: [u64; 4],
     /// Keyframe bytes by mode.
     pub bytes_by_mode: [u64; 4],
+    /// Bodies evaluated across every client send, and of those, how many
+    /// were there for a recent contact, last send's ranking, or never sent.
+    pub evaluated: u64,
+    pub evaluated_contacts: u64,
+    pub evaluated_hot: u64,
+    pub evaluated_unsent: u64,
 }
 
 impl PerPlayerStats {
@@ -224,6 +245,10 @@ impl PerPlayerStats {
         self.keyframes_sent += other.keyframes_sent;
         self.heartbeats += other.heartbeats;
         self.delta_records += other.delta_records;
+        self.evaluated += other.evaluated;
+        self.evaluated_contacts += other.evaluated_contacts;
+        self.evaluated_hot += other.evaluated_hot;
+        self.evaluated_unsent += other.evaluated_unsent;
         for m in 0..4 {
             self.by_mode[m] += other.by_mode[m];
             self.bytes_by_mode[m] += other.bytes_by_mode[m];
@@ -232,6 +257,11 @@ impl PerPlayerStats {
 }
 
 pub struct PerPlayer {
+    /// Past the evaluation cap: the order sends slice the bodies in, its
+    /// membership, and the bodies with a recent contact (`begin_send`).
+    order: Vec<BodyKey>,
+    in_order: FxHashSet<BodyKey>,
+    recent_contacts: Vec<BodyKey>,
     config: PerPlayerConfig,
     model: PerceptualModel,
     physics: Physics,
@@ -240,10 +270,10 @@ pub struct PerPlayer {
     chunk_radius: BTreeMap<u32, Vec<f32>>,
     ledger: CityLedger,
     serial_body: HashMap<(u32, u32), u32>,
-    truth: HashMap<BodyKey, Truth>,
+    truth: FxHashMap<BodyKey, Truth>,
     /// Each awake body's last `BACKTEST_TICKS` + 1 truth states, for the
     /// mode backtest.
-    history: HashMap<BodyKey, VecDeque<Keyframe>>,
+    history: FxHashMap<BodyKey, VecDeque<Keyframe>>,
     event_seq: u32,
     clients: BTreeMap<u64, ClientState>,
     tick: u32,
@@ -285,8 +315,11 @@ impl PerPlayer {
             chunk_radius,
             ledger,
             serial_body: HashMap::new(),
-            truth: HashMap::new(),
-            history: HashMap::new(),
+            truth: FxHashMap::default(),
+            order: Vec::new(),
+            in_order: FxHashSet::default(),
+            recent_contacts: Vec::new(),
+            history: FxHashMap::default(),
             event_seq: 0,
             clients: BTreeMap::new(),
             tick: 0,
@@ -637,18 +670,75 @@ impl ReplicationStrategy for PerPlayer {
             self.states.insert(structure, state);
             self.refresh_serials(structure);
         }
+        // Each awake body's keyframe, mode, floor and contact: a pure
+        // function of its snapshot and its history so far, so it runs on
+        // `send_threads` workers (byte-identical to one); the history and
+        // truth are then updated in order.
+        let work: Vec<(BodyKey, &BodySnapshotInput)> = active
+            .iter()
+            .filter_map(|snapshot| {
+                let (structure, serial) = ids::body_entity_parts(snapshot.body_entity);
+                let &body = self.serial_body.get(&(structure, serial))?;
+                Some((BodyKey { structure, body }, snapshot))
+            })
+            .collect();
+        let classify = |&(key, snapshot): &(BodyKey, &BodySnapshotInput)| -> (BodyKey, Truth, bool) {
+            let previous = self.truth.get(&key).copied();
+            let radius = previous.map_or(0.5, |p| p.radius);
+            let mut keyframe = Keyframe {
+                tick,
+                position: Vec3::from_array(snapshot.position),
+                rotation: Quat::from_array(snapshot.rotation).normalize(),
+                linear_velocity: Vec3::from_array(snapshot.linear_velocity),
+                angular_velocity: Vec3::from_array(snapshot.angular_velocity),
+                mode: Mode::Ballistic,
+                decel: 0.0, floor_drop: None,
+            };
+            // Only this incarnation's continuous past counts.
+            let history = self.history.get(&key).filter(|h| h.back().map_or(true, |k| k.tick + 1 == tick));
+            let continuous = history.is_some();
+            // A contact this tick: the velocity changed by more than gravity
+            // explains.
+            let gravity_step = Vec3::new(0.0, self.config.gravity_y, 0.0) / self.config.sim_hz.max(1) as f32;
+            let contact = history
+                .and_then(|h| h.back())
+                .is_some_and(|p| (keyframe.linear_velocity - p.linear_velocity - gravity_step).length() > CONTACT_DV);
+            let contact_tick = if contact { tick } else { previous.map_or(0, |p| p.contact_tick) };
+            let (mode, decel) = self.mode_of(history, &keyframe, radius);
+            keyframe.mode = mode;
+            keyframe.decel = decel;
+            if let (Some(state), Some(def)) = (self.states.get(&key.structure), self.defs.get(&key.structure)) {
+                keyframe.floor_drop = state.floor_drop(def, key.body, keyframe.position, keyframe.rotation);
+            }
+            (key, Truth { keyframe, radius, settled: false, contact_tick }, continuous)
+        };
+        let threads = (self.config.send_threads.max(1) as usize).min(work.len().max(1));
+        let classified: Vec<(BodyKey, Truth, bool)> = if threads <= 1 || work.len() < 256 {
+            work.iter().map(classify).collect()
+        } else {
+            let per = work.len().div_ceil(threads);
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = work.chunks(per).map(|part| scope.spawn(|| part.iter().map(classify).collect::<Vec<_>>())).collect();
+                handles.into_iter().flat_map(|h| h.join().expect("per-player ingest worker")).collect()
+            })
+        };
+        for (key, truth, continuous) in classified {
+            let history = self.history.entry(key).or_default();
+            if !continuous {
+                history.clear();
+            }
+            history.push_back(truth.keyframe);
+            while history.len() > BACKTEST_TICKS as usize + 1 {
+                history.pop_front();
+            }
+            self.truth.insert(key, truth);
+        }
         // A body the physics put to sleep has no snapshot: it lies where it
         // was last seen. (Without this its last awake velocity carried on,
-        // and the server kept sending a falling body that lay still.)
-        let mut seen: HashSet<BodyKey> = HashSet::with_capacity(active.len());
-        for snapshot in active {
-            let (structure, serial) = ids::body_entity_parts(snapshot.body_entity);
-            if let Some(&body) = self.serial_body.get(&(structure, serial)) {
-                seen.insert(BodyKey { structure, body });
-            }
-        }
-        for (key, truth) in self.truth.iter_mut() {
-            if !truth.settled && !seen.contains(key) && truth.keyframe.tick < tick {
+        // and the server kept sending a falling body that lay still.) Every
+        // body updated above has this tick, so the rest are the sleepers.
+        for truth in self.truth.values_mut() {
+            if !truth.settled && truth.keyframe.tick < tick {
                 truth.keyframe = Keyframe {
                     tick,
                     linear_velocity: Vec3::ZERO,
@@ -657,48 +747,6 @@ impl ReplicationStrategy for PerPlayer {
                     ..truth.keyframe
                 };
             }
-        }
-        for snapshot in active {
-            let (structure, serial) = ids::body_entity_parts(snapshot.body_entity);
-            let Some(&body) = self.serial_body.get(&(structure, serial)) else { continue };
-            let key = BodyKey { structure, body };
-            let velocity = Vec3::from_array(snapshot.linear_velocity);
-            let spin = Vec3::from_array(snapshot.angular_velocity);
-            let previous = self.truth.get(&key).copied();
-            let radius = previous.map_or(0.5, |p| p.radius);
-            let mut keyframe = Keyframe {
-                tick,
-                position: Vec3::from_array(snapshot.position),
-                rotation: Quat::from_array(snapshot.rotation).normalize(),
-                linear_velocity: velocity,
-                angular_velocity: spin,
-                mode: Mode::Ballistic,
-                decel: 0.0, floor_drop: None,
-            };
-            let history = self.history.entry(key).or_default();
-            // Only this incarnation's continuous past counts.
-            if history.back().is_some_and(|k| k.tick + 1 != tick) {
-                history.clear();
-            }
-            // A contact this tick: the velocity changed by more than gravity
-            // explains.
-            let gravity_step = Vec3::new(0.0, self.config.gravity_y, 0.0) / self.config.sim_hz.max(1) as f32;
-            let contact = history
-                .back()
-                .is_some_and(|p| (keyframe.linear_velocity - p.linear_velocity - gravity_step).length() > CONTACT_DV);
-            let contact_tick = if contact { tick } else { previous.map_or(0, |p| p.contact_tick) };
-            let (mode, decel) = self.mode_of(self.history.get(&key), &keyframe, radius);
-            keyframe.mode = mode;
-            keyframe.decel = decel;
-            if let (Some(state), Some(def)) = (self.states.get(&structure), self.defs.get(&structure)) {
-                keyframe.floor_drop = state.floor_drop(def, body, keyframe.position, keyframe.rotation);
-            }
-            let history = self.history.get_mut(&key).unwrap();
-            history.push_back(keyframe);
-            while history.len() > BACKTEST_TICKS as usize + 1 {
-                history.pop_front();
-            }
-            self.truth.insert(key, Truth { keyframe, radius, settled: false, contact_tick });
         }
         for settle in &output.settled {
             self.ledger.apply_settle(settle);
@@ -750,7 +798,37 @@ impl ReplicationStrategy for PerPlayer {
         vec![Outgoing::reliable(packet)]
     }
 
-    fn begin_send(&mut self, _tick: u32) {}
+    fn begin_send(&mut self, tick: u32) {
+        // The body order sends slice (insertion order, new bodies sorted
+        // in), and the bodies with a contact recent enough that a slice may
+        // not have reached them yet. Only needed past the evaluation cap.
+        if self.config.eval_cap == 0 || self.truth.len() <= self.config.eval_cap {
+            return;
+        }
+        let window = (self.truth.len().div_ceil(self.config.eval_cap) as u32 * self.config.send_interval_ticks.max(1)).max(1);
+        let mut fresh: Vec<BodyKey> = Vec::new();
+        self.recent_contacts.clear();
+        for (key, truth) in &self.truth {
+            if !self.in_order.contains(key) {
+                fresh.push(*key);
+            }
+            if truth.contact_tick > 0 && truth.contact_tick + window >= tick {
+                self.recent_contacts.push(*key);
+            }
+        }
+        fresh.sort_unstable();
+        // Freshest first: sends take them in this order, up to a share of
+        // the evaluation cap.
+        let truth = &self.truth;
+        self.recent_contacts.sort_unstable_by(|a, b| truth[b].contact_tick.cmp(&truth[a].contact_tick).then(a.cmp(b)));
+        self.in_order.extend(fresh.iter().copied());
+        self.order.extend(fresh);
+        if self.order.len() > self.truth.len() + self.truth.len() / 4 {
+            let truth = &self.truth;
+            self.order.retain(|k| truth.contains_key(k));
+            self.in_order = self.order.iter().copied().collect();
+        }
+    }
 
     fn has_pending(&self, _client: u64) -> bool {
         true
@@ -768,7 +846,7 @@ impl ReplicationStrategy for PerPlayer {
 
     fn client_send(&mut self, client: u64, view: &ClientView, tick: u32, budget: Option<SendBudget>) -> ClientSend {
         let Some(cs) = self.clients.get_mut(&client) else { return ClientSend::default() };
-        send_for(self.config, self.physics, &self.truth, &self.model, cs, view, tick, budget, &mut self.stats)
+        send_for(self.config, self.physics, &self.truth, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
     }
 
     fn client_sends(&mut self, requests: &[SendRequest]) -> Vec<ClientSend> {
@@ -782,6 +860,7 @@ impl ReplicationStrategy for PerPlayer {
             self.clients.iter_mut().filter_map(|(id, cs)| index.get(id).map(|&i| (i, cs))).collect();
         jobs.sort_by_key(|j| j.0);
         let (config, physics, truth, model) = (self.config, self.physics, &self.truth, &self.model);
+        let (order, recent) = (&self.order[..], &self.recent_contacts[..]);
         let per = jobs.len().div_ceil(threads).max(1);
         let parts: Vec<(Vec<(usize, ClientSend)>, PerPlayerStats)> = std::thread::scope(|scope| {
             let handles: Vec<_> = jobs
@@ -793,7 +872,7 @@ impl ReplicationStrategy for PerPlayer {
                             .iter_mut()
                             .map(|(i, cs)| {
                                 let r = &requests[*i];
-                                (*i, send_for(config, physics, truth, model, cs, &r.view, r.tick, r.budget, &mut stats))
+                                (*i, send_for(config, physics, truth, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats))
                             })
                             .collect();
                         (sends, stats)
@@ -864,7 +943,9 @@ impl ReplicationStrategy for PerPlayer {
 fn send_for(
     config: PerPlayerConfig,
     physics: Physics,
-    truths: &HashMap<BodyKey, Truth>,
+    truths: &FxHashMap<BodyKey, Truth>,
+    order: &[BodyKey],
+    recent_contacts: &[BodyKey],
     model: &PerceptualModel,
     cs: &mut ClientState,
     view: &ClientView,
@@ -885,13 +966,110 @@ fn send_for(
         key: BodyKey,
         bytes: usize,
         priority: f32,
+        /// Among never-sent bodies when there are more than fit: the
+        /// biggest on screen first (0 otherwise).
+        rank: u32,
         record: KeyframeRecord,
     }
+    let allowance = match budget {
+        Some(SendBudget::Skip) => 0,
+        Some(b) => b
+            .allowance()
+            .unwrap_or(config.ceiling_bytes * b.ceiling_sends() as usize)
+            .min(config.ceiling_bytes * b.ceiling_sends() as usize),
+        None => config.ceiling_bytes,
+    };
+
     let mut candidates: Vec<Candidate> = Vec::new();
-    for (key, truth) in truths {
-        if truth.settled {
-            continue;
+    // Evaluation is bounded: with more awake bodies than `eval_cap`, each
+    // send looks at a rotating 1/k slice, plus every body it must not
+    // wait on (never sent, a contact not yet sent, over tolerance last
+    // send). Below the cap (k = 1) every body is looked at every send.
+    let slices = if config.eval_cap == 0 { 1 } else { truths.len().div_ceil(config.eval_cap).max(1) as u64 };
+    let turn = cs.sends;
+    cs.sends += 1;
+    // Never-sent bodies (a joining client, a fresh collapse) can outnumber
+    // what one send can carry many times over: rank them by size on
+    // screen and evaluate only as many as could fit.
+    let mut waiting: Vec<(f32, BodyKey)> = Vec::new();
+    let mut evaluate: Vec<BodyKey> = Vec::new();
+    let size_of = |truth: &Truth| {
+        let rel = truth.keyframe.position - camera.eye;
+        let depth = rel.dot(forward);
+        if depth > 0.5 { truth.radius * focal / depth } else { 0.5 * truth.radius * focal / rel.length().max(0.5) }
+    };
+    if slices <= 1 {
+        for (key, truth) in truths {
+            if truth.settled {
+                continue;
+            }
+            if cs.unsent.contains(key) {
+                waiting.push((size_of(truth), *key));
+            } else {
+                evaluate.push(*key);
+            }
         }
+    } else {
+        // This send's slice of the body order, what lost the ranking last
+        // send, fresh contacts, and (while few) every never-sent body;
+        // never a pass over every body.
+        let mut seen: FxHashSet<BodyKey> = FxHashSet::default();
+        let mut visit = |key: &BodyKey, contact_only: bool| -> u64 {
+            let Some(truth) = truths.get(key).filter(|t| !t.settled) else { return 0 };
+            if contact_only && cs.believed.get(key).and_then(|t| t.newest()).is_some_and(|n| n.tick >= truth.contact_tick) {
+                return 0;
+            }
+            if !seen.insert(*key) {
+                return 0;
+            }
+            if cs.unsent.contains(key) {
+                waiting.push((size_of(truth), *key));
+            } else {
+                evaluate.push(*key);
+            }
+            1
+        };
+        for key in order.iter().skip((turn % slices) as usize).step_by(slices as usize) {
+            visit(key, false);
+        }
+        let mut hot: Vec<BodyKey> = cs.hot.iter().copied().collect();
+        hot.sort_unstable();
+        let mut counts = [0u64; 3];
+        for key in &hot {
+            counts[1] += visit(key, false);
+        }
+        // Freshest contacts first (begin_send's order), at most half the
+        // cap: piles in constant contact would otherwise be every body.
+        for key in recent_contacts {
+            if counts[0] as usize >= config.eval_cap / 2 {
+                break;
+            }
+            counts[0] += visit(key, true);
+        }
+        if cs.unsent.len() <= config.eval_cap {
+            let mut unsent: Vec<BodyKey> = cs.unsent.iter().copied().collect();
+            unsent.sort_unstable();
+            for key in &unsent {
+                counts[2] += visit(key, false);
+            }
+        }
+        stats.evaluated_contacts += counts[0];
+        stats.evaluated_hot += counts[1];
+        stats.evaluated_unsent += counts[2];
+    }
+    let fits = allowance / MIN_RECORD_BYTES + 1;
+    let mut rank_of: FxHashMap<BodyKey, u32> = FxHashMap::default();
+    if waiting.len() > fits {
+        let by_size = |a: &(f32, BodyKey), b: &(f32, BodyKey)| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
+        waiting.select_nth_unstable_by(fits, by_size);
+        waiting.truncate(fits);
+        waiting.sort_by(by_size);
+        rank_of = waiting.iter().enumerate().map(|(i, &(_, k))| (k, i as u32)).collect();
+    }
+    evaluate.extend(waiting.iter().map(|&(_, k)| k));
+    stats.evaluated += evaluate.len() as u64;
+    for key in &evaluate {
+        let truth = &truths[key];
         let required = cs.unsent.contains(key);
         let rel = truth.keyframe.position - camera.eye;
         let depth = rel.dot(forward);
@@ -990,17 +1168,10 @@ fn send_for(
             f32::MAX
         };
         let priority = if required { f32::MAX } else { gain.max(1e-9) / bytes as f32 };
-        candidates.push(Candidate { key: *key, bytes, priority, record });
+        candidates.push(Candidate { key: *key, bytes, priority, rank: rank_of.get(key).copied().unwrap_or(0), record });
     }
-    candidates.sort_by(|a, b| b.priority.total_cmp(&a.priority).then(a.key.cmp(&b.key)));
-    let allowance = match budget {
-        Some(SendBudget::Skip) => 0,
-        Some(b) => b
-            .allowance()
-            .unwrap_or(config.ceiling_bytes * b.ceiling_sends() as usize)
-            .min(config.ceiling_bytes * b.ceiling_sends() as usize),
-        None => config.ceiling_bytes,
-    };
+    candidates.sort_by(|a, b| b.priority.total_cmp(&a.priority).then(a.rank.cmp(&b.rank)).then(a.key.cmp(&b.key)));
+    let candidate_keys: Vec<BodyKey> = candidates.iter().map(|c| c.key).collect();
     // Event copies go first, out of the same allowance (they are what the
     // poses mean).
     let mut out = ClientSend::default();
@@ -1044,6 +1215,13 @@ fn send_for(
         stats.by_mode[c.record.keyframe.mode as usize] += 1;
         stats.bytes_by_mode[c.record.keyframe.mode as usize] += c.bytes as u64;
         chosen.push(c.record);
+    }
+    // What lost the ranking is looked at again next send (the best of it,
+    // up to half the cap).
+    cs.hot.clear();
+    if slices > 1 {
+        let sent: HashSet<BodyKey> = chosen.iter().map(|r| r.key).collect();
+        cs.hot.extend(candidate_keys.iter().filter(|k| !sent.contains(k)).take(config.eval_cap / 2));
     }
     cs.sends_since_datagram += 1;
     if chosen.is_empty() {
