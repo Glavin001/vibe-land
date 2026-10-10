@@ -1,14 +1,14 @@
 {
   "per-player": {
-    "tape_sha256": "8e99c832d8b28ae70dcbecf826c56993261bf2add95cff700570c87a56958df8",
-    "kbit_s": 140.54,
-    "penalty": 146.91883114098317,
-    "gates": false,
+    "tape_sha256": "ed9f7c56d1b74598327505a1e839392f91a668f9126a5a3c2bb677bbd10c57ec",
+    "kbit_s": 141.09,
+    "penalty": 124.2503482842392,
+    "gates": true,
     "gate_counts": {
       "g1_hash_mismatches": 0,
       "g2_events_early": 0,
       "g3_clients_over": 0,
-      "g4_solid_frames": 3,
+      "g4_solid_frames": 0,
       "g5_resurrection_frames": 0
     }
   },
