@@ -464,6 +464,7 @@ Sources:
 | impact-momentum | a ball strikes a free stage body: momentum, and the block's speed | m v = m v' + M V; V = m v (1+e)/(m+M) | [Hibbeler Dyn] 15.2-15.4 |
 | impact-plate-punch | a ball punches a plug out of a framed plate: the joints break; the exit speed stays within the joints' capacity impulse (no bounce, not free) | v' = v (m - e m_p)/(m+m_p) - at most F dt/(m+m_p) | [Hibbeler Dyn] 15.4 |
 | impact-restitution | the rebound off an unbreakable slab; a slab hung on weak joints stands until the hit, then is broken through, not bounced off | e = v_out/v_in | [Hibbeler Dyn] 15.4 |
+| large/wall-NxN-equilibrium | 30 x 30, 60 x 60 and 101 x 101 walls (930 to 10,302 chunks; the last past 8,192, the cooperative kernel) carry their weight at the base | sum R = sum m g | Newton's first law |
 | pair-reuse | keeping unchanged contact pairs across a corrected pass gives the reference path's answer: plate punch, hung slab, 12 x 12 wall | the same breaks, the same ball velocity | `preserveUnchangedContactPairs` (an optimisation) |
 | impact-glancing | 45 degree impact: the friction bound, the rolling limit, and the friction impulse reaching the slab's bond | \|J_t\| <= mu J_n; dv_t = min(mu (1+e) v_n, 2 v_t/7); bond shear = m dv_t/dt | [Goldsmith] ch. 3 |
 | impact-sudden-load, impact-drop | a 1 t block released, or dropped 0.1 and 0.4 m, onto a cantilever: peak root stress over static | DAF = 1 + sqrt(1 + 2h/delta_st) (2 for h = 0) | [Gere] 2.8 |

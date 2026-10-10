@@ -50,7 +50,39 @@ fn bits(rows: &[Graded]) -> Vec<u64> {
     rows.iter().flat_map(|g| [g.normal, g.shear, g.bend]).map(f64::to_bits).collect()
 }
 
+/// Global equilibrium of a large structure, where the exact model (a dense
+/// solve) cannot go: an n x n wall fixed along its base carries its whole
+/// weight through its base bonds, sum R = sum m g (Newton's first law). The
+/// solve's own tolerance bounds the imbalance: ||r|| <= tol ||b|| gives
+/// |sum R - W| <= tol W (Cauchy-Schwarz over the m^-1/2 row weights; PhysX
+/// resident_zero_iteration_test.cuh). Up to 8,192 chunks a component is
+/// solved by one threadgroup; past it (101 x 101, 10,302 chunks) by the
+/// cooperative large-component kernel, which must answer as well.
+fn large_equilibrium(config: Config, n: usize, ticks: u32, expected: &[Expectation], out: &mut Output) {
+    let name = format!("large/wall-{n}x{n}-equilibrium");
+    super::guard(config, &name, expected, out, |out| {
+        let s = wall(n);
+        let source = "Newton's first law: the base reactions carry the weight; |sum R - W| <= tol W";
+        println!("\n{name} -- {} chunks: the base carries the wall's weight\n  {source}", s.chunks.len());
+        let solved = stage::solve(&s, ticks, |_| false);
+        match super::invariance::vertical_equilibrium(&s, &solved.rows) {
+            Some((reaction, weight)) => {
+                println!("  {} ticks, converged {} (first at tick {}); base reaction {reaction:.6e} N against the weight {weight:.6e} N ({:.3e} of it)",
+                    solved.ticks, solved.converged, solved.converged_at, (reaction - weight).abs() / weight);
+                row(config, &name, "base reaction = weight", "sum R = sum m g", source, "N", weight, weight, reaction, weight, expected, out);
+                row(config, &name, "the solve converges within the run", "converged", source, "1=yes", 1.0, f64::NAN, if solved.converged { 1.0 } else { 0.0 }, 1.0, expected, out);
+            }
+            None => println!("  no vertical base bonds to read"),
+        }
+    });
+}
+
 pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Output) {
+    for (n, tier) in [(30usize, Tier::Quick), (60, Tier::Full), (101, Tier::Full)] {
+        if super::wanted(&format!("large/wall-{n}x{n}-equilibrium"), tier, want) {
+            large_equilibrium(config, n, 600, expected, out);
+        }
+    }
     if super::wanted("determinism/impact", Tier::Quick, want) {
         impact_twice(config, expected, out);
     }
