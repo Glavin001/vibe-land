@@ -515,6 +515,25 @@ bool contact_persists_enabled() {
 }
 
 
+/// Opt-in gameplay (`VIBE_CITY_DEBRIS_DAMAGE=1`, read once; the server reads
+/// the same variable): loose destruction debris that strikes a player hurts
+/// them. The server needs the contact for that, and under native destruction
+/// chunk pairs report nothing (see simulation_filter), so with this on the
+/// one pair kind it needs -- a non-kinematic chunk body against a player's
+/// capsule -- keeps the ordinary contact report. Off, nothing changes.
+bool debris_damage_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_DEBRIS_DAMAGE");
+    return value != nullptr && value[0] != '\0' && std::string(value) != "0";
+  }();
+  return enabled;
+}
+
+/// word3 bit the bridge sets on a player's capsule shape when debris damage
+/// is on, so the filter shader can recognise a player without knowing the
+/// server's collision-group numbering. kNativeChunkFilterBit is bit 31.
+constexpr std::uint32_t kPlayerFilterBit = 1u << 30;
+
 PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
                                 PxFilterData filter0,
                                 PxFilterObjectAttributes attributes1,
@@ -551,8 +570,27 @@ PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
   // feed nothing. Ordinary actors -- players, vehicles, props -- keep theirs,
   // which is why this tests the shape bit rather than a global switch.
   if (((filter0.word3 | filter1.word3) & kNativeChunkFilterBit) != 0) {
-    pair_flags = PxPairFlag::eCONTACT_DEFAULT;
-    return PxFilterFlag::eDEFAULT;
+    // Except, with debris damage on, a LOOSE chunk body against a player.
+    // "Loose" is the body's own state: an anchored component is a kinematic
+    // body (native_destruction.cc), so standing structure never reports, and
+    // kinematic-kinematic pairs (a wall against the player's kinematic
+    // capsule) generate no contacts anyway. PhysX re-runs this filter when a
+    // shape moves to a new actor (a split) or a body switches kinematic.
+    const auto loose_chunk_on_player = [](PxFilterObjectAttributes chunk_attributes,
+                                          const PxFilterData &chunk,
+                                          const PxFilterData &other) {
+      return (chunk.word3 & kNativeChunkFilterBit) != 0 &&
+             (other.word3 & kPlayerFilterBit) != 0 &&
+             !PxFilterObjectIsKinematic(chunk_attributes);
+    };
+    const bool debris_strike =
+        debris_damage_enabled() &&
+        (loose_chunk_on_player(attributes0, filter0, filter1) ||
+         loose_chunk_on_player(attributes1, filter1, filter0));
+    if (!debris_strike) {
+      pair_flags = PxPairFlag::eCONTACT_DEFAULT;
+      return PxFilterFlag::eDEFAULT;
+    }
   }
 #endif
   pair_flags = PxPairFlag::eCONTACT_DEFAULT |
@@ -2494,6 +2532,11 @@ public:
     require(shape != nullptr, "capsule controller has no shape");
     configure_shape(*shape, desc.entity_id, desc.collision_group,
                     desc.collision_mask);
+    if (debris_damage_enabled()) {
+      PxFilterData filter = shape->getSimulationFilterData();
+      filter.word3 |= kPlayerFilterBit;
+      shape->setSimulationFilterData(filter);
+    }
     Record player{desc.entity_id, desc.user_id, desc.collision_group,
                   desc.collision_mask, RecordKind::Player, actor, controller};
     player.player_step_offset = desc.step_offset;

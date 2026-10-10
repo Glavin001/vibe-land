@@ -159,6 +159,18 @@ fn server_wall_clock_us() -> u32 {
     (origin.elapsed().as_micros() % (1u128 << 32)) as u32
 }
 
+/// Opt-in gameplay (plan milestone 10): loose debris that strikes a player
+/// damages them (`VIBE_CITY_DEBRIS_DAMAGE=1`), server-authoritative, by the
+/// vehicle-strike impulse model. Off by default.
+fn debris_damage() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("VIBE_CITY_DEBRIS_DAMAGE")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    })
+}
+
 /// Opt-in gameplay (plan milestone 10): destruction chunks block hitscan
 /// shots (`VIBE_CITY_CHUNKS_BLOCK_SHOTS=1`). Off by default.
 fn chunks_block_shots() -> bool {
@@ -4944,6 +4956,11 @@ impl MatchState {
         }
         for player_id in self.arena.apply_vehicle_player_collisions() {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
+        }
+        if debris_damage() {
+            for player_id in self.arena.apply_debris_player_collisions() {
+                self.kill_player_with_cause(player_id, server_time_ms, DeathCause::HpDamage);
+            }
         }
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);

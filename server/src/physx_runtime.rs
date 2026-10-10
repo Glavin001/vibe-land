@@ -1523,6 +1523,100 @@ impl PhysxPhysicsArena {
         killed
     }
 
+    /// Opt-in (`VIBE_CITY_DEBRIS_DAMAGE=1`): loose destruction debris that
+    /// strikes a player hurts them, by the same impulse model a vehicle
+    /// strike uses (the impulse PhysX reports on an 80 kg player, read as a
+    /// speed change against the vehicle thresholds). Returns the players
+    /// killed.
+    ///
+    /// Which contacts are debris is decided where the body's state is known:
+    /// the bridge's filter shader reports a chunk/player pair only when the
+    /// chunk's body is non-kinematic (`physx_bridge.cc` simulation_filter).
+    /// Standing structure is a kinematic, world-anchored body, and the
+    /// player's capsule is kinematic too, so a wall the player walks into
+    /// produces no contact at all, let alone a strike. The player's side is
+    /// kinematic, so the reported impulse is the debris's own momentum change
+    /// -- the same quantity, in the same units (N s), the vehicle path reads.
+    pub fn apply_debris_player_collisions(&mut self) -> Vec<u32> {
+        const PLAYER_IMPACT_MASS_KG: f32 = 80.0;
+        let minimum_impulse = VEHICLE_DAMAGE_MIN_SPEED_M_S * PLAYER_IMPACT_MASS_KG;
+        let lethal_impulse = VEHICLE_LETHAL_SPEED_M_S * PLAYER_IMPACT_MASS_KG;
+        let is_chunk = vibe_land_destruction::ids::is_chunk_entity;
+        // Per player: the strongest strike this tick and what delivered it.
+        let mut strike_by_player: HashMap<u32, (u8, f32, u32, f32, f32)> = HashMap::new();
+        for event in &self.contact_events {
+            let (chunk_entity, player_entity) =
+                if is_chunk(event.entity_a) && event.entity_b & 0xf000_0000 == NS_PLAYER {
+                    (event.entity_a, event.entity_b)
+                } else if is_chunk(event.entity_b) && event.entity_a & 0xf000_0000 == NS_PLAYER {
+                    (event.entity_b, event.entity_a)
+                } else {
+                    continue;
+                };
+            let player_id = player_entity & ID_MASK;
+            let impulse = (event.impulse.x * event.impulse.x
+                + event.impulse.y * event.impulse.y
+                + event.impulse.z * event.impulse.z)
+                .sqrt();
+            tracing::debug!(
+                target: "debris_damage",
+                player_id,
+                chunk_entity = format_args!("{chunk_entity:#010x}"),
+                impulse_ns = impulse,
+                normal_speed_m_s = event.normal_speed,
+                debris_mass_kg = event.effective_mass,
+                "debris contact"
+            );
+            if self.vehicle_of_player.contains_key(&player_id)
+                || self
+                    .players
+                    .get(&player_id)
+                    .is_none_or(|player| player.dead || player.hp == 0)
+            {
+                continue;
+            }
+            if impulse < minimum_impulse {
+                continue;
+            }
+            let damage = ((impulse / lethal_impulse).clamp(0.0, 1.0) * 100.0)
+                .round()
+                .clamp(1.0, 100.0) as u8;
+            let strike = (damage, impulse, chunk_entity, event.normal_speed, event.effective_mass);
+            strike_by_player
+                .entry(player_id)
+                .and_modify(|existing| {
+                    if strike.1 > existing.1 {
+                        *existing = strike;
+                    }
+                })
+                .or_insert(strike);
+        }
+
+        let mut killed = Vec::new();
+        for (player_id, (damage, impulse, chunk_entity, normal_speed, mass)) in strike_by_player {
+            let hp_before = self.players.get(&player_id).map_or(0, |player| player.hp);
+            let outcome = self.apply_player_damage(player_id, damage);
+            let hp_after = self.players.get(&player_id).map_or(0, |player| player.hp);
+            tracing::info!(
+                target: "debris_damage",
+                player_id,
+                chunk_entity = format_args!("{chunk_entity:#010x}"),
+                impulse_ns = impulse,
+                normal_speed_m_s = normal_speed,
+                debris_mass_kg = mass,
+                damage,
+                hp_before,
+                hp_after,
+                ?outcome,
+                "debris strike"
+            );
+            if matches!(outcome, PlayerDamageOutcome::Killed) {
+                killed.push(player_id);
+            }
+        }
+        killed
+    }
+
     pub fn snapshot_dynamic_bodies(
         &self,
     ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {

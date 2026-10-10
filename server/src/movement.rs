@@ -715,6 +715,16 @@ impl PhysicsArena {
         }
     }
 
+    /// Opt-in debris strikes on players (`VIBE_CITY_DEBRIS_DAMAGE`); none
+    /// on Rapier, which has no destruction.
+    pub fn apply_debris_player_collisions(&mut self) -> Vec<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.apply_debris_player_collisions(),
+        }
+    }
+
     pub fn apply_vehicle_player_collisions(&mut self) -> Vec<u32> {
         match &mut self.backend {
             PhysicsBackend::Rapier(arena) => arena.apply_vehicle_player_collisions(),
