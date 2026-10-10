@@ -387,9 +387,9 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                 }
             }
         }
-        let started = std::time::Instant::now();
+        let started = thread_cpu();
         let broadcast = strategy.ingest_tick(tick, &entry.snapshots, &entry.output);
-        ingest_ms.push(started.elapsed().as_secs_f32() * 1000.0);
+        ingest_ms.push((thread_cpu() - started).as_secs_f32() * 1000.0);
         for client in clients.values_mut() {
             for packet in &broadcast {
                 client.queue(t, packet.lane, packet.bytes.clone());
@@ -397,9 +397,9 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         }
         if tick % interval == 0 {
             let mut send_cpu = std::time::Duration::ZERO;
-            let shared_started = std::time::Instant::now();
+            let shared_started = thread_cpu();
             strategy.begin_send(tick);
-            send_cpu += shared_started.elapsed();
+            send_cpu += thread_cpu() - shared_started;
             let has_records = strategy.has_records();
             for (id, client) in clients.iter_mut() {
                 let seconds = (tick - first) as f32 / hz as f32;
@@ -424,9 +424,9 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                 } else {
                     None
                 };
-                let client_started = std::time::Instant::now();
+                let client_started = thread_cpu();
                 let send = strategy.client_send(*id, &ClientView { camera }, tick, budget);
-                let spent = client_started.elapsed();
+                let spent = thread_cpu() - client_started;
                 send_cpu += spent;
                 client_us_total += spent.as_secs_f64() * 1e6;
                 client_sends += 1;
@@ -646,7 +646,17 @@ pub struct Gates {
     pub pass: bool,
 }
 
-/// C2: what the strategy cost the server, per send and per client.
+/// This thread's CPU time: what the strategy costs, unaffected by whatever
+/// else the machine runs (wall time on a shared machine is not).
+fn thread_cpu() -> std::time::Duration {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: clock_gettime writes the timespec it is given.
+    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+    std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}
+
+/// C2: what the strategy cost the server, per send and per client, in
+/// thread CPU time.
 #[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ServerCost {
