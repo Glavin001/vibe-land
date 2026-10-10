@@ -65,11 +65,11 @@ th { color: var(--muted); font-weight: 600; }
 
   <section class="intro" id="intro">
     <h2>What you will do</h2>
-    <p>Each trial plays two 3-second clips of the same moment of a collapse, from a player's own camera, one after the other: <b>A</b>, then <b>B</b>. One of them is the full simulation. The other is what that player's netcode drew from the data it received. Sometimes the two are identical. Nothing is marked: watch the whole scene as you would in a match.</p>
+    <p>Each trial plays two 5-second clips of the same moment of a collapse, from a player's own camera, one after the other: <b>A</b>, then <b>B</b>. One of them is the full simulation. The other is what that player's netcode drew from the data it received. Sometimes the two are identical. Nothing is marked: watch the whole scene as you would in a match.</p>
     <ul>
-      <li>Pick the clip that looked wrong. If you can't tell, guess. Guesses are part of the measurement: they are how "can't tell" is measured.</li>
+      <li>Pick the clip that looked wrong. If you saw no difference, press <b>Can't tell</b>. If you have a hunch, pick it: a hunch is often right more than half the time.</li>
       <li>Then rate how much it would bother you in a match, from 0 (not at all) to 4 (ruins it).</li>
-      <li>Keys: <kbd>A</kbd> / <kbd>B</kbd> to pick, <kbd>0</kbd> to <kbd>4</kbd> to rate, <kbd>R</kbd> to replay both.</li>
+      <li>Keys: <kbd>A</kbd> / <kbd>B</kbd> to pick, <kbd>C</kbd> for can't tell, <kbd>0</kbd> to <kbd>4</kbd> to rate, <kbd>R</kbd> to replay both.</li>
       <li>View the page large, ideally full screen. The page records the size you watched at.</li>
     </ul>
     <p class="hint" id="introNote">Loading the trial list…</p>
@@ -88,6 +88,7 @@ th { color: var(--muted); font-weight: 600; }
         <span class="prompt">Which looked wrong?</span>
         <button class="pick" id="pickA" disabled>Clip A<kbd>A</kbd></button>
         <button class="pick" id="pickB" disabled>Clip B<kbd>B</kbd></button>
+        <button class="pick" id="pickN" disabled>Can't tell<kbd>C</kbd></button>
         <button id="replay" disabled>Replay both<kbd>R</kbd></button>
       </div>
       <div class="row" id="rateRow" hidden>
@@ -191,7 +192,7 @@ th { color: var(--muted); font-weight: 600; }
   async function playPair() {
     const t = state.trials[state.index];
     const [vA, vB, card, tag] = [$("vA"), $("vB"), $("card"), $("tag")];
-    ["pickA", "pickB", "replay"].forEach((id) => ($(id).disabled = true));
+    ["pickA", "pickB", "pickN", "replay"].forEach((id) => ($(id).disabled = true));
     state.phase = "playing";
     for (const [video, other, name] of [[vA, vB, "A"], [vB, vA, "B"]]) {
       other.hidden = true; video.hidden = true;
@@ -204,7 +205,7 @@ th { color: var(--muted); font-weight: 600; }
     state.plays += 1;
     state.phase = "answer";
     if (state.pick === null) state.t0 = performance.now();
-    ["pickA", "pickB", "replay"].forEach((id) => ($(id).disabled = false));
+    ["pickA", "pickB", "pickN", "replay"].forEach((id) => ($(id).disabled = false));
     $("pickA").focus();
   }
 
@@ -224,7 +225,9 @@ th { color: var(--muted); font-weight: 600; }
   function pick(choice) {
     if (state.phase !== "answer" || state.pick !== null) return;
     state.pick = { choice, rt: Math.round(performance.now() - state.t0) };
-    ["pickA", "pickB"].forEach((id) => ($(id).disabled = true));
+    ["pickA", "pickB", "pickN"].forEach((id) => ($(id).disabled = true));
+    // Nothing seen, nothing to rate.
+    if (choice === "none") return rate(0);
     $("rateRow").hidden = false;
     document.querySelector('.rate[data-r="0"]').focus();
   }
@@ -234,7 +237,9 @@ th { color: var(--muted); font-weight: 600; }
     const t = state.trials[state.index];
     const video = $("vA").getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    const correct = (state.pick.choice === "A") === t.testIsA;
+    // "Can't tell" is neither right nor wrong (the analysis counts it as
+    // half, what a guess earns on average).
+    const correct = state.pick.choice === "none" ? null : (state.pick.choice === "A") === t.testIsA;
     const response = {
       key: t.key, round: state.round, window: t.window, class: t.cls, unit: t.unit, level: t.level, magnitude: t.magnitude,
       testIsA: t.testIsA, choice: state.pick.choice, correct, rating: r, rtMs: state.pick.rt, plays: state.plays,
@@ -286,6 +291,7 @@ th { color: var(--muted); font-weight: 600; }
   $("full").addEventListener("click", () => { document.documentElement.requestFullscreen?.().catch(() => {}); });
   $("pickA").addEventListener("click", () => pick("A"));
   $("pickB").addEventListener("click", () => pick("B"));
+  $("pickN").addEventListener("click", () => pick("none"));
   $("replay").addEventListener("click", () => { if (state.phase === "answer") playPair(); });
   document.querySelectorAll(".rate").forEach((b) => b.addEventListener("click", () => rate(+b.dataset.r)));
   document.addEventListener("keydown", (e) => {
@@ -293,6 +299,7 @@ th { color: var(--muted); font-weight: 600; }
     const k = e.key.toLowerCase();
     if (k === "a") pick("A");
     else if (k === "b") pick("B");
+    else if (k === "c") pick("none");
     else if (k === "r" && state.phase === "answer") playPair();
     else if (/^[0-4]$/.test(k)) rate(+k);
   });
@@ -304,7 +311,7 @@ th { color: var(--muted); font-weight: 600; }
       state.study = await (await fetch("study.json")).json();
       const n = state.study.windows.reduce((s, w) => s + w.tests.length, 0);
       const classes = new Set(state.study.windows.map((w) => w.class)).size;
-      $("introNote").textContent = `${n} trials in a round (both netcodes at the same moments, plus identical controls), about ${Math.round((n * 9) / 60)} minutes. Several rounds give the fit enough answers.`;
+      $("introNote").textContent = `${n} trials in a round (both netcodes at the same moments, plus identical controls), about ${Math.round((n * 14) / 60)} minutes. Several rounds give the fit enough answers.`;
       $("count").textContent = `0 / ${n}`;
       $("start").disabled = false;
     } catch (e) {

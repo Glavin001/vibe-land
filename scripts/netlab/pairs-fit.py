@@ -8,7 +8,8 @@ RESPONSES.json is the page's `responses` collection exported as a JSON list
 before the data:
 
 1. **Can you tell, per netcode.** The share of trials where the netcode's clip
-   was picked as the wrong one, with an exact (Clopper-Pearson) 95%
+   was picked as the wrong one ("can't tell" counts as half: what a guess
+   earns on average), with an exact (Clopper-Pearson) 95%
    interval. Chance is 50%. The plan's bar for "indistinguishable" is 60%:
    the netcode passes if the interval's upper end is at most 60%; it is
    distinguishable if the lower end is above 50%.
@@ -40,6 +41,11 @@ def load(path):
     for d in data:
         out.append(d.get("data", d))
     return out
+
+
+def score(r):
+    """1 right, 0 wrong, 0.5 for "can't tell"."""
+    return 0.5 if r["correct"] is None else (1.0 if r["correct"] else 0.0)
 
 
 def clopper_pearson(k, n, alpha=0.05):
@@ -106,27 +112,31 @@ def main():
     print(f"{len(rs)} answers\n")
 
     print("## Can you tell, per netcode (picked the netcode's clip)\n")
-    print("| netcode | trials | picked it | 95% interval | verdict (bar: 60%) |")
-    print("|---|---:|---:|---|---|")
+    print("| netcode | trials | picked it | 95% interval | verdict (bar: 60%) | can't tell |")
+    print("|---|---:|---:|---|---|---:|")
     by = defaultdict(list)
     for r in rs:
         by[r["class"]].append(r)
     for cls in sorted(c for c in by if c != "null"):
-        k = sum(1 for r in by[cls] if r["correct"])
         n = len(by[cls])
+        unsure = sum(1 for r in by[cls] if r["correct"] is None)
+        k = round(sum(1 for r in by[cls] if r["correct"]) + 0.5 * unsure)
         lo, hi = clopper_pearson(k, n)
         verdict = "indistinguishable" if hi <= 0.60 else ("distinguishable" if lo > 0.5 else "undecided: more trials")
-        print(f"| {cls} | {n} | {100 * k / n:.0f}% | {100 * lo:.0f}-{100 * hi:.0f}% | {verdict} |")
+        print(f"| {cls} | {n} | {100 * k / n:.0f}% | {100 * lo:.0f}-{100 * hi:.0f}% | {verdict} | {unsure} |")
 
     nulls = by.get("null", [])
     if nulls:
-        a = sum(1 for r in nulls if r["choice"] == "A")
-        lo, hi = clopper_pearson(a, len(nulls))
-        print(f"\nControls (identical clips): picked A {a} of {len(nulls)} ({100 * lo:.0f}-{100 * hi:.0f}%; 50% is no bias).")
+        unsure = sum(1 for r in nulls if r["choice"] == "none")
+        picked = [r for r in nulls if r["choice"] != "none"]
+        a = sum(1 for r in picked if r["choice"] == "A")
+        lo, hi = clopper_pearson(a, len(picked))
+        print(f"\nControls (identical clips): can't tell {unsure} of {len(nulls)}; of the rest, picked A {a} of {len(picked)} "
+              f"({100 * lo:.0f}-{100 * hi:.0f}%; 50% is no bias).")
 
     print("\n## Does the scorer's penalty predict it?\n")
     for cls in sorted(c for c in by if c != "null"):
-        pts = [(math.log10(max(r["magnitude"], 0.1)), 1 if r["correct"] else 0) for r in by[cls]]
+        pts = [(math.log10(max(r["magnitude"], 0.1)), score(r)) for r in by[cls]]
         fit = fit_2afc([p[0] for p in pts], [p[1] for p in pts])
         if fit is None:
             print(f"- {cls}: too few trials to fit")
@@ -134,7 +144,7 @@ def main():
             print(f"- {cls}: no rise with penalty (slope {fit[1]:.2f}): the penalty does not track what was seen")
         else:
             print(f"- {cls}: 75% correct at penalty {10 ** fit[0]:.1f} in the window (slope {fit[1]:.2f} per decade)")
-    pts = [(math.log10(max(r["magnitude"], 0.1)), 1 if r["correct"] else 0) for r in rs if r["class"] != "null"]
+    pts = [(math.log10(max(r["magnitude"], 0.1)), score(r)) for r in rs if r["class"] != "null"]
     fit = fit_2afc([p[0] for p in pts], [p[1] for p in pts])
     if fit and not math.isinf(fit[0]):
         print(f"- both netcodes: 75% correct at penalty {10 ** fit[0]:.1f} (slope {fit[1]:.2f} per decade)")
@@ -153,7 +163,7 @@ def main():
         label = labels.get(b, f"{10 ** (b - 1):g}-{10 ** b:g}")
         rows = bins[b]
         print(f"| {label} | {len(rows)} | {sum(r['rating'] for r in rows) / len(rows):.2f} | "
-              f"{100 * sum(1 for r in rows if r['correct']) / len(rows):.0f}% |")
+              f"{100 * sum(score(r) for r in rows) / len(rows):.0f}% |")
 
 
 if __name__ == "__main__":

@@ -125,7 +125,8 @@ def main():
     plans = defaultdict(list)
     lines = ["# Can-you-tell round: design", "",
              f"{len(chosen)} moments x 2 netcodes + {args.nulls} identical-truth controls "
-             f"= {2 * len(chosen) + args.nulls} trials, about {round((2 * len(chosen) + args.nulls) * 9 / 60)} minutes.", "",
+             f"= {2 * len(chosen) + args.nulls} trials, about {round((2 * len(chosen) + args.nulls) * (2 * window_s + 4) / 60)} minutes "
+             f"(two {window_s:g} s clips and about 4 s to answer each).", "",
              "| id | capture | condition | start s | v2 penalty (bin, class) | per-player penalty (bin, class) |",
              "|---|---|---|---:|---|---|"]
     for k, m in enumerate(chosen):
