@@ -186,6 +186,9 @@ struct Queued {
     lane: Lane,
     kind: u8,
     bytes: Vec<u8>,
+    /// Sent whatever the budget: the strategy's per-tick broadcast (for
+    /// per player, the reliable fracture events) and the join.
+    unbudgeted: bool,
 }
 
 /// Per-client stream totals for the card.
@@ -208,6 +211,10 @@ pub struct ClientStream {
     pub kbit_s_max_100ms: f64,
     /// The busiest trailing 1 s window after the join (G3's steady state).
     pub kbit_s_max_1s_steady: f64,
+    /// The same window over only the bytes the budget governs (everything
+    /// but the unbudgeted broadcast): what the netcode's own selection spent.
+    #[serde(default)]
+    pub kbit_s_max_1s_steady_budgeted: f64,
     /// Bytes queued at the join (the bootstrap), on their own.
     pub join_bytes: u64,
     pub datagram_latency_ms: Pct,
@@ -290,7 +297,7 @@ impl LabClient {
         self.events_through
     }
 
-    fn queue(&mut self, at_ms: f64, lane: replication::Lane, bytes: Vec<u8>) {
+    fn queue(&mut self, at_ms: f64, lane: replication::Lane, bytes: Vec<u8>, unbudgeted: bool) {
         let lane = match lane {
             replication::Lane::Reliable => Lane::Reliable,
             replication::Lane::Datagram => Lane::Datagram,
@@ -314,7 +321,7 @@ impl LabClient {
                 self.bootstraps.push((index, boot.next_event_seq));
             }
         }
-        self.queued.push(Queued { depart_ms: at_ms, lane, kind, bytes });
+        self.queued.push(Queued { depart_ms: at_ms, lane, kind, bytes, unbudgeted });
     }
 
     /// The link's plan for this send (`MatchState::city_datagrams_for`).
@@ -434,7 +441,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         if tick == first {
             for (id, client) in clients.iter_mut() {
                 for packet in strategy.join(*id, tick) {
-                    client.queue(t, packet.lane, packet.bytes);
+                    client.queue(t, packet.lane, packet.bytes, true);
                 }
             }
         }
@@ -443,7 +450,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         ingest_ms.push((thread_cpu() - started).as_secs_f32() * 1000.0);
         for client in clients.values_mut() {
             for packet in &broadcast {
-                client.queue(t, packet.lane, packet.bytes.clone());
+                client.queue(t, packet.lane, packet.bytes.clone(), true);
             }
         }
         if tick % interval == 0 {
@@ -512,7 +519,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                     }
                 }
                 for packet in send.packets {
-                    client.queue(t, packet.lane, packet.bytes);
+                    client.queue(t, packet.lane, packet.bytes, false);
                 }
             }
             send_ms.push(send_cpu.as_secs_f32() * 1000.0);
@@ -544,6 +551,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         let mut tape: Vec<(f64, usize, TapePacket)> = Vec::new();
         let (mut dgram_lat, mut rel_lat, mut rel_hol) = (Vec::new(), Vec::new(), Vec::new());
         let mut windows: Vec<(f64, usize)> = Vec::new();
+        let mut budgeted: Vec<(f64, usize)> = Vec::new();
         for (seq, (packet, delivery)) in queued.iter().zip(&deliveries).enumerate() {
             stats.packets += 1;
             stats.bytes += packet.bytes.len() as u64;
@@ -554,6 +562,9 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
             *stats.by_kind_bytes.entry(crate::kind_name(packet.kind)).or_default() += packet.bytes.len() as u64;
             *stats.by_fate.entry(format!("{:?}", delivery.fate).to_lowercase()).or_default() += 1;
             windows.push((packet.depart_ms, packet.bytes.len()));
+            if !packet.unbudgeted && packet.depart_ms >= ORIGIN_MS + JOIN_SETTLE_MS {
+                budgeted.push((packet.depart_ms, packet.bytes.len()));
+            }
             if let Some(arrive) = delivery.arrive_ms {
                 stats.delivered += 1;
                 stats.delivered_bytes += packet.bytes.len() as u64;
@@ -575,6 +586,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         stats.kbit_s_max_1s = max_window_kbit_s(&windows, 1000.0);
         let steady: Vec<(f64, usize)> = windows.iter().copied().filter(|(t, _)| *t >= ORIGIN_MS + JOIN_SETTLE_MS).collect();
         stats.kbit_s_max_1s_steady = max_window_kbit_s(&steady, 1000.0);
+        stats.kbit_s_max_1s_steady_budgeted = max_window_kbit_s(&budgeted, 1000.0);
         stats.join_bytes = windows.iter().filter(|(t, _)| *t <= ORIGIN_MS).map(|(_, b)| *b as u64).sum();
         stats.kbit_s_max_100ms = max_window_kbit_s(&windows, 100.0);
         tape.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -699,6 +711,10 @@ pub struct Gates {
     pub g3_cap: Option<f64>,
     pub g3_clients_over: u64,
     pub g3_worst_kbit_s: f64,
+    /// Of those, clients whose budgeted bytes alone exceeded the peak (the
+    /// selection overspent); the rest were pushed over by bytes sent
+    /// regardless of budget (per player's reliable fracture events).
+    pub g3_clients_over_budgeted: u64,
     /// G2: events applied before the drawing reached their tick (v2 applies
     /// on arrival by design, D6), and applied after it passed (late).
     pub g2_events_applied: u64,
@@ -817,6 +833,9 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
             // A 1 s window may hold the bucket's peak for at most 1 s.
             if stream.kbit_s_max_1s_steady > burst * 1.001 {
                 gates.g3_clients_over += 1;
+            }
+            if stream.kbit_s_max_1s_steady_budgeted > burst * 1.001 {
+                gates.g3_clients_over_budgeted += 1;
             }
         }
         if let Some(stats) = &card.client_stats {
@@ -952,8 +971,8 @@ fn card_markdown(card: &CityCard) -> String {
         g.g1_hash_mismatches,
         g.g1_hash_checks,
         g.g3_cap.map_or("no cap".into(), |cap| format!(
-            "{} clients over {cap} kbit/s (worst 1 s window {:.0})",
-            g.g3_clients_over, g.g3_worst_kbit_s
+            "{} clients over {cap} kbit/s (worst 1 s window {:.0}; {} over on budgeted bytes alone)",
+            g.g3_clients_over, g.g3_worst_kbit_s, g.g3_clients_over_budgeted
         )),
     );
     let _ = writeln!(
