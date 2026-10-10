@@ -29,12 +29,12 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use glam::{Quat, Vec3};
 
-use vibe_land_perplayer::client::{apply_spawns, parent_states, BodyTrack};
+use vibe_land_perplayer::client::{apply_spawns, parent_states, BodyTrack, BASELINE_MAX_TICKS};
 use vibe_land_perplayer::predict::{Keyframe, Mode, Physics};
 use vibe_land_perplayer::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use vibe_land_perplayer::wire::{
-    encode_bootstrap, encode_events, encode_keyframes, quantised, BodyKey, Bootstrap, BootstrapStructure, Event,
-    KeyframePacket, KeyframeRecord, POSITION_STEPS,
+    decoded, encode_bootstrap, encode_events, encode_keyframes, quantised, record_bytes, BodyKey, Bootstrap,
+    BootstrapStructure, Event, KeyframePacket, KeyframeRecord, POSITION_STEPS,
 };
 use vibe_netcode::destruction_backend::DestructionTickOutput;
 
@@ -44,6 +44,9 @@ use crate::manifest::DestructionManifest;
 use crate::perception::{ArtifactClass, PerceptualModel};
 use crate::replication::{ClientFeedback, ClientSend, ClientView, Outgoing, ReplicationStrategy, SendBudget};
 use crate::topology::CityLedger;
+
+/// Ticks of truth a keyframe's mode is backtested over (100 ms).
+const BACKTEST_TICKS: u32 = 6;
 
 /// The shared derivation's view of a manifest.
 pub fn structure_defs(manifest: &DestructionManifest) -> Vec<StructureDef> {
@@ -110,6 +113,9 @@ pub struct PerPlayerConfig {
     pub heartbeat_sends: u32,
     pub max_datagram: usize,
     pub gravity_y: f32,
+    /// Choose each keyframe's mode by backtest (false: free fall by
+    /// acceleration, else sliding).
+    pub backtest_modes: bool,
 }
 
 impl PerPlayerConfig {
@@ -126,6 +132,7 @@ impl PerPlayerConfig {
             heartbeat_sends: 6,
             max_datagram: 1_150,
             gravity_y: -(vibe_netcode::movement::GRAVITY as f32),
+            backtest_modes: true,
         }
     }
 }
@@ -141,9 +148,12 @@ struct Truth {
 struct ClientState {
     ordinal: u32,
     believed: HashMap<BodyKey, BodyTrack>,
-    /// Ordinal -> the keyframes it carried and how many acks have not
-    /// named it, until acked or known lost.
-    sent: VecDeque<(u32, Vec<(BodyKey, u32)>, u8)>,
+    /// Ordinal -> the keyframes it carried (as decoded) and how many acks
+    /// have not named it, until acked or known lost.
+    sent: VecDeque<(u32, Vec<(BodyKey, Keyframe)>, u8)>,
+    /// Per body, the newest keyframe this client acked: the baseline delta
+    /// records are coded against.
+    acked: HashMap<BodyKey, Keyframe>,
     /// Bodies this client has never been sent.
     unsent: HashSet<BodyKey>,
     sends_since_datagram: u32,
@@ -160,6 +170,12 @@ pub struct PerPlayerStats {
     pub keyframes_sent: u64,
     pub keyframes_lost: u64,
     pub heartbeats: u64,
+    /// Keyframes sent as residuals against an acked baseline.
+    pub delta_records: u64,
+    /// Keyframes by the mode they carry: ballistic, sliding, resting, friction.
+    pub by_mode: [u64; 4],
+    /// Keyframe bytes by mode.
+    pub bytes_by_mode: [u64; 4],
 }
 
 pub struct PerPlayer {
@@ -172,6 +188,9 @@ pub struct PerPlayer {
     ledger: CityLedger,
     serial_body: HashMap<(u32, u32), u32>,
     truth: HashMap<BodyKey, Truth>,
+    /// Each awake body's last `BACKTEST_TICKS` + 1 truth states, for the
+    /// mode backtest.
+    history: HashMap<BodyKey, VecDeque<Keyframe>>,
     event_seq: u32,
     clients: BTreeMap<u64, ClientState>,
     tick: u32,
@@ -207,6 +226,7 @@ impl PerPlayer {
             ledger,
             serial_body: HashMap::new(),
             truth: HashMap::new(),
+            history: HashMap::new(),
             event_seq: 0,
             clients: BTreeMap::new(),
             tick: 0,
@@ -233,7 +253,7 @@ impl PerPlayer {
                                 rotation: island.pose.rotation,
                                 linear_velocity: island.linear_velocity,
                                 angular_velocity: island.angular_velocity,
-                                mode: if island.settled { Mode::Resting } else { Mode::Ballistic },
+                                mode: if island.settled { Mode::Resting } else { Mode::Ballistic }, decel: 0.0,
                             },
                             radius,
                             settled: island.settled,
@@ -302,29 +322,51 @@ impl PerPlayer {
         }
     }
 
-    /// How the client should predict a body from its state now: ballistic
-    /// only in free flight (its acceleration since the last tick is g),
-    /// resting when still, and sliding (constant velocity, no gravity) in
-    /// any contact. A supported body predicted ballistic falls through what
-    /// holds it within a few ticks; one predicted sliding drifts slowly.
-    fn mode_of(&self, previous: Option<&Truth>, velocity: Vec3, spin: Vec3, tick: u32) -> Mode {
-        if velocity.length() < 0.05 && spin.length() < 0.05 {
-            return Mode::Resting;
-        }
-        match previous {
-            Some(prev) if prev.keyframe.tick + 1 == tick => {
-                let accel = (velocity - prev.keyframe.linear_velocity) * self.config.sim_hz as f32;
-                let g = self.physics.gravity;
-                if (accel - g).length() <= 0.15 * g.length() {
-                    Mode::Ballistic
-                } else {
-                    Mode::Sliding
-                }
+    /// How the client should predict a body from its state now: whichever
+    /// predictor would have best predicted its last `BACKTEST_TICKS` from the
+    /// truth already seen -- ballistic, sliding, sliding to a stop (with the
+    /// deceleration measured over that window) or resting. The spec's "best
+    /// predictor of the next few ticks", measured on the past few. Without
+    /// the history: ballistic for a body just freed (most likely falling).
+    fn mode_of(&self, history: Option<&VecDeque<Keyframe>>, now: &Keyframe, radius: f32) -> (Mode, f32) {
+        if !self.config.backtest_modes {
+            let prev = history.and_then(|h| h.back()).filter(|k| k.tick + 1 == now.tick);
+            if now.linear_velocity.length() < 0.05 && now.angular_velocity.length() < 0.05 {
+                return (Mode::Resting, 0.0);
             }
-            // No previous tick to tell: a body just freed or just woken is
-            // most likely falling.
-            _ => Mode::Ballistic,
+            return match prev {
+                Some(prev) => {
+                    let accel = (now.linear_velocity - prev.linear_velocity) / self.physics.dt;
+                    let g = self.physics.gravity;
+                    (if (accel - g).length() <= 0.15 * g.length() { Mode::Ballistic } else { Mode::Sliding }, 0.0)
+                }
+                None => (Mode::Ballistic, 0.0),
+            };
         }
+        let Some(history) = history.filter(|h| !h.is_empty()) else {
+            return (if now.linear_velocity.length() < 0.05 && now.angular_velocity.length() < 0.05 { Mode::Resting } else { Mode::Ballistic }, 0.0);
+        };
+        let past = *history.front().unwrap();
+        let ticks = now.tick.saturating_sub(past.tick) as f32;
+        if ticks < 1.0 {
+            return (Mode::Ballistic, 0.0);
+        }
+        let decel = ((past.linear_velocity.length() - now.linear_velocity.length()) / (ticks * self.physics.dt)).max(0.0);
+        let error = |mode: Mode| {
+            let kf = Keyframe { mode, decel, ..past };
+            let (p, q) = vibe_land_perplayer::predict::predict(&kf, ticks, self.physics);
+            let angle = 2.0 * q.dot(now.rotation).abs().min(1.0).acos();
+            (p - now.position).length() + radius * angle
+        };
+        // Cheapest first: a tie goes to the one with fewer bytes.
+        let mut best = (Mode::Resting, error(Mode::Resting));
+        for mode in [Mode::Ballistic, Mode::Sliding, Mode::Friction] {
+            let e = error(mode);
+            if e + 1e-3 < best.1 {
+                best = (mode, e);
+            }
+        }
+        (best.0, if best.0 == Mode::Friction { decel } else { 0.0 })
     }
 }
 
@@ -469,7 +511,7 @@ impl ReplicationStrategy for PerPlayer {
                             rotation: q,
                             linear_velocity: v,
                             angular_velocity: w,
-                            mode: if settled { Mode::Resting } else { Mode::Ballistic },
+                            mode: if settled { Mode::Resting } else { Mode::Ballistic }, decel: 0.0,
                         },
                         settled,
                     ),
@@ -494,7 +536,7 @@ impl ReplicationStrategy for PerPlayer {
                                 rotation: def.world_rotation,
                                 linear_velocity: Vec3::ZERO,
                                 angular_velocity: Vec3::ZERO,
-                                mode: Mode::Resting,
+                                mode: Mode::Resting, decel: 0.0,
                             },
                             false,
                         ),
@@ -541,23 +583,30 @@ impl ReplicationStrategy for PerPlayer {
             let velocity = Vec3::from_array(snapshot.linear_velocity);
             let spin = Vec3::from_array(snapshot.angular_velocity);
             let previous = self.truth.get(&key).copied();
-            let mode = self.mode_of(previous.as_ref(), velocity, spin, tick);
             let radius = previous.map_or(0.5, |p| p.radius);
-            self.truth.insert(
-                key,
-                Truth {
-                    keyframe: Keyframe {
-                        tick,
-                        position: Vec3::from_array(snapshot.position),
-                        rotation: Quat::from_array(snapshot.rotation).normalize(),
-                        linear_velocity: velocity,
-                        angular_velocity: spin,
-                        mode,
-                    },
-                    radius,
-                    settled: false,
-                },
-            );
+            let mut keyframe = Keyframe {
+                tick,
+                position: Vec3::from_array(snapshot.position),
+                rotation: Quat::from_array(snapshot.rotation).normalize(),
+                linear_velocity: velocity,
+                angular_velocity: spin,
+                mode: Mode::Ballistic,
+                decel: 0.0,
+            };
+            let history = self.history.entry(key).or_default();
+            // Only this incarnation's continuous past counts.
+            if history.back().is_some_and(|k| k.tick + 1 != tick) {
+                history.clear();
+            }
+            let (mode, decel) = self.mode_of(self.history.get(&key), &keyframe, radius);
+            keyframe.mode = mode;
+            keyframe.decel = decel;
+            let history = self.history.get_mut(&key).unwrap();
+            history.push_back(keyframe);
+            while history.len() > BACKTEST_TICKS as usize + 1 {
+                history.pop_front();
+            }
+            self.truth.insert(key, Truth { keyframe, radius, settled: false });
         }
         for settle in &output.settled {
             self.ledger.apply_settle(settle);
@@ -567,11 +616,11 @@ impl ReplicationStrategy for PerPlayer {
             let rotation = Quat::from_array(settle.rotation).normalize();
             if let Some(t) = self.truth.get_mut(&key) {
                 t.settled = true;
-                t.keyframe = Keyframe { tick, position, rotation, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting };
+                t.keyframe = Keyframe { tick, position, rotation, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, decel: 0.0 };
             }
             // Settles ride the reliable stream: every client holds the pose
             // from this tick (rounded as the wire carries it).
-            let q = quantised(&Keyframe { tick, position, rotation, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting }, 0);
+            let q = quantised(&Keyframe { tick, position, rotation, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, decel: 0.0 }, 0);
             for cs in self.clients.values_mut() {
                 cs.believed.entry(key).or_default().settle(tick, q.position, q.rotation);
             }
@@ -635,9 +684,9 @@ impl ReplicationStrategy for PerPlayer {
         let arrival_render = r - config.delay_ticks + latency_ticks;
         struct Candidate {
             key: BodyKey,
-            tier: u8,
             bytes: usize,
             priority: f32,
+            record: KeyframeRecord,
         }
         let mut candidates: Vec<Candidate> = Vec::new();
         for (key, truth) in &self.truth {
@@ -654,13 +703,21 @@ impl ReplicationStrategy for PerPlayer {
                 if depth > 0.5 { (focal / depth, 1.0f32) } else { (focal / distance, 0.5) };
             let error_px = match cs.believed.get(key) {
                 Some(track) if !track.keyframes().is_empty() => {
-                    let (p, q) = track.pose_at(r, physics);
-                    let (v, w) = track.velocity_at(r, physics);
-                    let angle = 2.0 * q.dot(truth.keyframe.rotation).abs().min(1.0).acos();
-                    let spin_gap = (w - truth.keyframe.angular_velocity).length() * horizon_s;
-                    let now = (p - truth.keyframe.position).length() + truth.radius * (angle + spin_gap).min(1.0);
-                    let ahead = now + (v - truth.keyframe.linear_velocity).length() * horizon_s;
-                    ahead * px_per_m
+                    // Now, and a horizon ahead: the client's drawing then
+                    // against the server's best prediction of the truth then
+                    // (the keyframe's own mode). Raw velocity gaps would count
+                    // contact noise as error nobody will see.
+                    let gap = |(p, q): (Vec3, Quat), (tp, tq): (Vec3, Quat)| {
+                        let angle = 2.0 * q.dot(tq).abs().min(1.0).acos();
+                        (p - tp).length() + truth.radius * angle.min(1.0)
+                    };
+                    let now = gap(track.pose_at(r, physics), (truth.keyframe.position, truth.keyframe.rotation));
+                    let ahead = gap(
+                        track.pose_at(r + config.horizon_ticks, physics),
+                        vibe_land_perplayer::predict::predict(&truth.keyframe, config.horizon_ticks, physics),
+                    );
+                    let _ = horizon_s;
+                    now.max(ahead) * px_per_m
                 }
                 _ => f32::INFINITY,
             };
@@ -675,15 +732,33 @@ impl ReplicationStrategy for PerPlayer {
                     break;
                 }
             }
-            let moving = truth.keyframe.mode != Mode::Resting;
-            let bytes = 3 + 9 - tier as usize + 4 + if moving { 12 } else { 0 };
+            // Against the newest keyframe this client acked (when it still
+            // keeps it), if that is smaller than absolute.
+            let keyframe = Keyframe { tick, ..truth.keyframe };
+            let incarnation = cs.believed.get(key).map_or(0, BodyTrack::incarnation);
+            let baseline = cs
+                .acked
+                .get(key)
+                .filter(|b| b.tick >= incarnation && b.tick <= tick && tick - b.tick <= BASELINE_MAX_TICKS)
+                .copied();
+            let absolute = KeyframeRecord::absolute(*key, tier, keyframe);
+            let mut record = absolute;
+            let mut bytes = record_bytes(&absolute, physics);
+            if baseline.is_some() {
+                let delta = KeyframeRecord { baseline, ..absolute };
+                let delta_bytes = record_bytes(&delta, physics);
+                if delta_bytes < bytes {
+                    record = delta;
+                    bytes = delta_bytes;
+                }
+            }
             let gain = if error_px.is_finite() {
                 self.model.penalty(ArtifactClass::ScreenError, f64::from(error_px), f64::from(weight)) as f32
             } else {
                 f32::MAX
             };
             let priority = if required { f32::MAX } else { gain.max(1e-9) / bytes as f32 };
-            candidates.push(Candidate { key: *key, tier, bytes, priority });
+            candidates.push(Candidate { key: *key, bytes, priority, record });
         }
         candidates.sort_by(|a, b| b.priority.total_cmp(&a.priority).then(a.key.cmp(&b.key)));
         let allowance = match budget {
@@ -704,8 +779,12 @@ impl ReplicationStrategy for PerPlayer {
                 break;
             }
             used += c.bytes;
-            let truth = &self.truth[&c.key];
-            chosen.push(KeyframeRecord { key: c.key, tier: c.tier, keyframe: Keyframe { tick, ..truth.keyframe } });
+            if c.record.baseline.is_some() {
+                self.stats.delta_records += 1;
+            }
+            self.stats.by_mode[c.record.keyframe.mode as usize] += 1;
+            self.stats.bytes_by_mode[c.record.keyframe.mode as usize] += c.bytes as u64;
+            chosen.push(c.record);
         }
         let mut out = ClientSend::default();
         cs.sends_since_datagram += 1;
@@ -720,22 +799,22 @@ impl ReplicationStrategy for PerPlayer {
         loop {
             let mut end = start;
             let mut bytes = 13;
-            while end < chosen.len() && bytes + 30 <= config.max_datagram {
-                bytes += 30;
+            while end < chosen.len() && bytes + record_bytes(&chosen[end], physics) <= config.max_datagram {
+                bytes += record_bytes(&chosen[end], physics);
                 end += 1;
             }
             let records = chosen[start..end].to_vec();
             let ordinal = cs.ordinal;
             cs.ordinal += 1;
-            let packet = encode_keyframes(&KeyframePacket { server_tick: tick, ordinal, records: records.clone() });
+            let packet = encode_keyframes(&KeyframePacket { server_tick: tick, ordinal, records: records.clone() }, physics);
             out.record_bytes += packet.len();
             out.packets.push(Outgoing::datagram(packet));
             let mut carried = Vec::with_capacity(records.len());
             for record in &records {
-                let decoded = quantised(&record.keyframe, record.tier);
+                let decoded = decoded(record, physics);
                 cs.believed.entry(record.key).or_default().add(decoded, arrival_render, physics);
                 cs.unsent.remove(&record.key);
-                carried.push((record.key, record.keyframe.tick));
+                carried.push((record.key, decoded));
                 self.stats.keyframes_sent += 1;
             }
             cs.sent.push_back((ordinal, carried, 0));
@@ -761,12 +840,14 @@ impl ReplicationStrategy for PerPlayer {
         // three acks in a row have not named it, or it fell out of the
         // window.
         const MISSES_TO_LOSE: u8 = 3;
-        let mut lost: Vec<(BodyKey, u32)> = Vec::new();
+        let mut lost: Vec<(BodyKey, Keyframe)> = Vec::new();
+        let mut arrived: Vec<(BodyKey, Keyframe)> = Vec::new();
         cs.sent.retain_mut(|(ordinal, carried, misses)| {
             if *ordinal > newest {
                 return true;
             }
             if acked(*ordinal) {
+                arrived.append(carried);
                 return false;
             }
             *misses += 1;
@@ -776,9 +857,15 @@ impl ReplicationStrategy for PerPlayer {
             }
             true
         });
-        for (key, tick) in lost {
+        for (key, kf) in arrived {
+            let incarnation = cs.believed.get(&key).map_or(0, BodyTrack::incarnation);
+            if kf.tick >= incarnation && cs.acked.get(&key).map_or(true, |a| a.tick < kf.tick) {
+                cs.acked.insert(key, kf);
+            }
+        }
+        for (key, kf) in lost {
             if let Some(track) = cs.believed.get_mut(&key) {
-                track.remove_keyframe(tick);
+                track.remove_keyframe(kf.tick);
             }
             self.stats.keyframes_lost += 1;
         }

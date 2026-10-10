@@ -155,6 +155,7 @@ pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>
             "pp.ceiling_bytes" => config.ceiling_bytes = f() as usize,
             "pp.send_hz" => config.send_interval_ticks = (config.sim_hz as f64 / f()).round().max(1.0) as u32,
             "pp.heartbeat_sends" => config.heartbeat_sends = f() as u32,
+            "pp.backtest" => config.backtest_modes = f() != 0.0,
             _ => {}
         }
     }

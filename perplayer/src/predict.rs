@@ -21,6 +21,9 @@ pub enum Mode {
     Sliding = 1,
     /// Momentarily still: the pose held.
     Resting = 2,
+    /// Sliding to a stop: slowing along its velocity at `decel` until it
+    /// stops, spin slowing with it; no gravity (it is supported).
+    Friction = 3,
 }
 
 impl Mode {
@@ -28,13 +31,14 @@ impl Mode {
         match value & 3 {
             1 => Mode::Sliding,
             2 => Mode::Resting,
+            3 => Mode::Friction,
             _ => Mode::Ballistic,
         }
     }
 }
 
 /// A body's state at a tick, as the stream carries it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct Keyframe {
     pub tick: u32,
     pub position: Vec3,
@@ -42,6 +46,8 @@ pub struct Keyframe {
     pub linear_velocity: Vec3,
     pub angular_velocity: Vec3,
     pub mode: Mode,
+    /// Friction mode: how fast the body slows along its velocity, m/s^2.
+    pub decel: f32,
 }
 
 /// The simulation's step and gravity.
@@ -65,6 +71,10 @@ pub fn predict(keyframe: &Keyframe, ticks: f32, physics: Physics) -> (Vec3, Quat
     match keyframe.mode {
         Mode::Resting => (keyframe.position, keyframe.rotation),
         Mode::Sliding => (keyframe.position + keyframe.linear_velocity * t, spin(keyframe, t)),
+        Mode::Friction => {
+            let (travel, spun) = friction(keyframe, t);
+            (keyframe.position + keyframe.linear_velocity.normalize_or_zero() * travel, spin(keyframe, spun))
+        }
         Mode::Ballistic => {
             let fall = physics.gravity * (physics.dt * physics.dt * n * (n + 1.0) * 0.5);
             (keyframe.position + keyframe.linear_velocity * t + fall, spin(keyframe, t))
@@ -77,8 +87,27 @@ pub fn predict_velocity(keyframe: &Keyframe, ticks: f32, physics: Physics) -> Ve
     match keyframe.mode {
         Mode::Resting => Vec3::ZERO,
         Mode::Sliding => keyframe.linear_velocity,
+        Mode::Friction => {
+            let speed = keyframe.linear_velocity.length();
+            let left = (speed - keyframe.decel.max(0.0) * ticks.max(0.0) * physics.dt).max(0.0);
+            keyframe.linear_velocity.normalize_or_zero() * left
+        }
         Mode::Ballistic => keyframe.linear_velocity + physics.gravity * (ticks.max(0.0) * physics.dt),
     }
+}
+
+/// Distance slid and the equivalent time at the initial spin after `t`
+/// seconds of slowing at `decel` (stopped once the speed is spent).
+fn friction(keyframe: &Keyframe, t: f32) -> (f32, f32) {
+    let speed = keyframe.linear_velocity.length();
+    let decel = keyframe.decel.max(1e-3);
+    let stop = speed / decel;
+    let t = t.min(stop);
+    let travel = speed * t - 0.5 * decel * t * t;
+    // Spin slows in proportion (rolling): the angle turned is the initial
+    // rate over the same "effective" time the distance implies.
+    let spun = if speed > 1e-4 { travel / speed } else { t.min(stop) };
+    (travel, spun)
 }
 
 fn spin(keyframe: &Keyframe, t: f32) -> Quat {
@@ -112,7 +141,7 @@ mod tests {
             rotation: Quat::IDENTITY,
             linear_velocity: Vec3::new(4.0, 6.0, 0.5),
             angular_velocity: Vec3::ZERO,
-            mode: Mode::Ballistic,
+            mode: Mode::Ballistic, decel: 0.0,
         };
         for n in [1u32, 8, 60, 240] {
             let stepped = step(kf.position, kf.linear_velocity, physics, n);
@@ -135,7 +164,7 @@ mod tests {
             rotation: Quat::IDENTITY,
             linear_velocity: Vec3::X,
             angular_velocity: Vec3::new(0.0, std::f32::consts::PI, 0.0),
-            mode: Mode::Sliding,
+            mode: Mode::Sliding, decel: 0.0,
         };
         let (p, q) = predict(&kf, 60.0, physics);
         assert!((p - Vec3::X).length() < 1e-5, "no gravity while sliding");

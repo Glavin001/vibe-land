@@ -117,6 +117,9 @@ pub fn evaluate_client(
                 displayed: drawn.map(|d| (d.position, d.rotation)),
                 truth: true_chunk.map(|t| (t.position, t.rotation)),
                 visibility: 0.0,
+                displayed_body: drawn.map_or(u32::MAX, |d| d.key),
+                displayed_standing: drawn.map_or(true, |d| standing(d.key)),
+                truth_standing: true_chunk.map_or(true, |t| standing(t.key)),
             });
         }
         let visible = buffer.visible_ids();

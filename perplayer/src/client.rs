@@ -28,7 +28,7 @@ use glam::{Quat, Vec3};
 use crate::predict::{predict, predict_velocity, Keyframe, Mode, Physics};
 use crate::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use crate::wire::{
-    decode_bootstrap, decode_events, decode_keyframes, BodyKey, Event, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS,
+    decode_bootstrap, decode_events, decode_keyframes_with, BodyKey, Event, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS,
     PKT_PP_KEYFRAMES,
 };
 
@@ -38,6 +38,12 @@ pub const SNAP_METRES: f32 = 5.0;
 pub const CORRECTION_TICKS: f32 = 9.0;
 /// Keyframes kept per body.
 const TRACK_LEN: usize = 6;
+/// Decoded keyframes kept per body as delta baselines: at most this many,
+/// and none older than `HISTORY_TICKS` behind the newest. The server only
+/// names baselines inside both (`BASELINE_MAX_TICKS`).
+pub const HISTORY_LEN: usize = 64;
+pub const HISTORY_TICKS: u32 = 300;
+pub const BASELINE_MAX_TICKS: u32 = 240;
 
 fn smoothstep(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
@@ -57,6 +63,9 @@ pub struct BodyTrack {
     keyframes: Vec<Keyframe>,
     settled: Option<(u32, Vec3, Quat)>,
     correction: Option<Correction>,
+    /// The tick this body (this id's current incarnation) began: keyframes
+    /// from before it describe another body and are refused.
+    incarnation: u32,
 }
 
 impl BodyTrack {
@@ -76,6 +85,7 @@ impl BodyTrack {
     /// A keyframe the server sent for that very tick describes the new body
     /// better than a derived spawn, so it is kept in the spawn's place.
     pub fn restart(&mut self, spawn: Keyframe) {
+        self.incarnation = spawn.tick;
         self.keyframes.retain(|k| k.tick >= spawn.tick);
         if self.keyframes.first().map_or(true, |k| k.tick != spawn.tick) {
             self.keyframes.insert(0, spawn);
@@ -98,7 +108,14 @@ impl BodyTrack {
     /// Add a keyframe, drawn from `render_tick` on. A keyframe for a tick the
     /// drawing has already passed switches the track under a decaying offset
     /// (or a snap over `SNAP_METRES`).
+    pub fn incarnation(&self) -> u32 {
+        self.incarnation
+    }
+
     pub fn add(&mut self, keyframe: Keyframe, render_tick: f32, physics: Physics) {
+        if keyframe.tick < self.incarnation {
+            return;
+        }
         // The server's keyframe for a tick replaces whatever is there (a
         // derived spawn, or an earlier copy).
         if let Some(existing) = self.keyframes.iter_mut().find(|k| k.tick == keyframe.tick) {
@@ -147,7 +164,7 @@ impl BodyTrack {
                 rotation: q,
                 linear_velocity: Vec3::ZERO,
                 angular_velocity: Vec3::ZERO,
-                mode: Mode::Resting,
+                mode: Mode::Resting, decel: 0.0,
             });
         }
     }
@@ -290,7 +307,7 @@ pub fn apply_spawns(
         let spawn = match parents.get(&parent) {
             Some(&(p, q, v, w, parent_com)) if parent != ANCHORED => {
                 let arm = q * (com - parent_com);
-                Keyframe { tick, position: p + arm, rotation: q, linear_velocity: v + w.cross(arm), angular_velocity: w, mode: Mode::Ballistic }
+                Keyframe { tick, position: p + arm, rotation: q, linear_velocity: v + w.cross(arm), angular_velocity: w, mode: Mode::Ballistic, decel: 0.0 }
             }
             _ => Keyframe {
                 tick,
@@ -298,7 +315,7 @@ pub fn apply_spawns(
                 rotation: def.world_rotation,
                 linear_velocity: Vec3::ZERO,
                 angular_velocity: Vec3::ZERO,
-                mode: Mode::Resting,
+                mode: Mode::Resting, decel: 0.0,
             },
         };
         tracks.entry(BodyKey { structure, body: id }).or_default().restart(spawn);
@@ -317,6 +334,8 @@ pub struct ClientStats {
     pub events_late: u64,
     pub decode_errors: u64,
     pub bootstraps: u64,
+    /// Delta records whose baseline this client no longer had.
+    pub missing_baselines: u64,
 }
 
 /// A structural change in body terms.
@@ -341,6 +360,9 @@ pub struct Client {
     pub physics: Physics,
     pub structures: BTreeMap<u32, ClientStructure>,
     bodies: HashMap<BodyKey, BodyTrack>,
+    /// Every body's recent decoded keyframes: the baselines delta records
+    /// name.
+    history: HashMap<BodyKey, std::collections::VecDeque<Keyframe>>,
     pending: BTreeMap<u32, Vec<Event>>,
     next_seq: u32,
     pub clock: RenderClock,
@@ -368,6 +390,7 @@ impl Client {
             physics,
             structures,
             bodies: HashMap::new(),
+            history: HashMap::new(),
             pending: BTreeMap::new(),
             next_seq: 0,
             clock: RenderClock::new(hz, delay_ticks),
@@ -387,8 +410,15 @@ impl Client {
     /// A packet, at its arrival time.
     pub fn ingest(&mut self, bytes: &[u8], arrival_ms: f64) {
         match bytes.first() {
-            Some(&PKT_PP_KEYFRAMES) => match decode_keyframes(bytes) {
-                Ok(packet) => {
+            Some(&PKT_PP_KEYFRAMES) => match {
+                let (history, bodies) = (&self.history, &self.bodies);
+                decode_keyframes_with(bytes, self.physics, &mut |key, tick| {
+                    let incarnation = bodies.get(&key).map_or(0, BodyTrack::incarnation);
+                    (tick >= incarnation).then(|| history.get(&key)?.iter().find(|k| k.tick == tick).copied()).flatten()
+                })
+            } {
+                Ok((packet, missing)) => {
+                    self.stats.missing_baselines += u64::from(missing);
                     self.clock.observe(packet.server_tick, arrival_ms);
                     self.received.push(packet.ordinal);
                     let render = self.render.max(self.clock.render_tick(arrival_ms).unwrap_or(f32::MIN));
@@ -398,6 +428,12 @@ impl Client {
                             self.stats.late_keyframes += 1;
                         }
                         self.bodies.entry(record.key).or_default().add(record.keyframe, render, self.physics);
+                        let history = self.history.entry(record.key).or_default();
+                        history.push_back(record.keyframe);
+                        let newest = record.keyframe.tick;
+                        while history.len() > HISTORY_LEN || history.front().is_some_and(|k| k.tick + HISTORY_TICKS < newest) {
+                            history.pop_front();
+                        }
                     }
                 }
                 Err(_) => self.stats.decode_errors += 1,
@@ -420,6 +456,7 @@ impl Client {
                         }
                     }
                     self.bodies.clear();
+                    self.history.clear();
                     for (key, p, q) in boot.settled {
                         let mut track = BodyTrack::default();
                         track.restart(Keyframe {
@@ -428,7 +465,7 @@ impl Client {
                             rotation: q,
                             linear_velocity: Vec3::ZERO,
                             angular_velocity: Vec3::ZERO,
-                            mode: Mode::Resting,
+                            mode: Mode::Resting, decel: 0.0,
                         });
                         track.settle(boot.tick, p, q);
                         self.bodies.insert(key, track);
@@ -608,7 +645,7 @@ mod tests {
     }
 
     fn ballistic(tick: u32, p: Vec3, v: Vec3) -> Keyframe {
-        Keyframe { tick, position: p, rotation: Quat::IDENTITY, linear_velocity: v, angular_velocity: Vec3::ZERO, mode: Mode::Ballistic }
+        Keyframe { tick, position: p, rotation: Quat::IDENTITY, linear_velocity: v, angular_velocity: Vec3::ZERO, mode: Mode::Ballistic, decel: 0.0 }
     }
 
     #[test]
@@ -670,7 +707,7 @@ mod tests {
         let key = BodyKey { structure: 3, body: 3 };
         let start = def.world_position + Vec3::new(0.0, 4.0, 0.0);
         let kf = ballistic(111, start, Vec3::new(0.0, 0.0, 2.0));
-        client.ingest(&encode_keyframes(&KeyframePacket { server_tick: 111, ordinal: 0, records: vec![KeyframeRecord { key, tier: 0, keyframe: kf }] }), 2.0);
+        client.ingest(&encode_keyframes(&KeyframePacket { server_tick: 111, ordinal: 0, records: vec![KeyframeRecord::absolute(key, 0, kf)] }, physics()), 2.0);
         // Before the render tick reaches 110 the column stands.
         let r = client.advance(2.0).unwrap();
         assert!(r < 110.0);

@@ -63,7 +63,7 @@ use crate::perception::{
 use crate::types::Camera;
 
 /// One item (a chunk) in one frame.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ItemSample {
     /// Stable identity across frames (the chunk slot).
     pub id: u32,
@@ -78,9 +78,15 @@ pub struct ItemSample {
     /// Visibility weight on the displayed frame: 0 off screen or fully
     /// occluded, 1 visible (free gaze).
     pub visibility: f32,
+    /// The body the screen drew it on (overlap pairs are across bodies).
+    pub displayed_body: u32,
+    /// Drawn on, and truly on, a standing structure (a break is the moment
+    /// this turns false).
+    pub displayed_standing: bool,
+    pub truth_standing: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct ItemState {
     /// The last frame's displayed and true screen positions (box centre).
     last_screen: Option<(Vec2, Vec2)>,
@@ -93,6 +99,44 @@ struct ItemState {
     swing: Option<(Vec2, f64)>,
     previous_swing: Option<(Vec2, f64)>,
     swing_counted: bool,
+    /// Contact detection (V6): the last two frames' positions and times,
+    /// displayed and true.
+    contact_last: Option<(f64, Vec3, Vec3)>,
+    contact_velocity: Option<(Vec3, Vec3)>,
+    /// V7: when the drawn and the true chunk left its standing structure,
+    /// where it was then, and when it first moved.
+    break_displayed: Option<(f64, Vec3, Option<f64>)>,
+    break_truth: Option<(f64, Vec3, Option<f64>)>,
+    break_scored: bool,
+    was_displayed_standing: bool,
+    was_truth_standing: bool,
+    truth_contacts: std::collections::VecDeque<f64>,
+    displayed_contacts: std::collections::VecDeque<f64>,
+    /// Acceleration samples waiting out the contact window, and recent true
+    /// contacts.
+    accel_pending: std::collections::VecDeque<AccelSample>,
+    truth_contact_times: std::collections::VecDeque<f64>,
+    /// Seen before: a chunk enters the scored set the frame it leaves its
+    /// standing structure (in the drawing or the truth), so on first sight
+    /// both are taken to have been standing.
+    seen: bool,
+}
+
+/// One frame's acceleration measurements for one item (V3/V4/V5).
+#[derive(Clone, Copy, Debug)]
+struct AccelSample {
+    t: f64,
+    second: i64,
+    body: u32,
+    vis: f32,
+    /// Free flight only: the vertical violation (fraction of g) and the
+    /// kinetic-energy change.
+    gravity: Option<f64>,
+    energy: Option<f64>,
+    /// The unexplained acceleration (horizontal only in free flight) and the
+    /// true velocity.
+    extra: Vec3,
+    velocity: Vec3,
 }
 
 /// Per-class event list and raw distribution.
@@ -165,8 +209,9 @@ pub struct PerceptualEval {
     frame_dt: f64,
     log_events: bool,
     event_log: Vec<(f64, ArtifactClass, u32, f64)>,
-    /// When each body last scored a rubber band.
+    /// When each body last scored a rubber band, a contact.
     body_band_s: HashMap<u32, f64>,
+    body_contact_s: HashMap<u32, f64>,
 }
 
 /// Frames either side of an acceleration stencil (9 at 60 Hz: a 300 ms
@@ -182,6 +227,10 @@ const ENERGY_FLOOR_MPS: f32 = 0.5;
 const POP_PX: f32 = 2.0;
 const POP_SIZE_SHARE: f32 = 0.10;
 const RUBBER_BAND_PX: f32 = 2.0;
+/// A contact: a frame-to-frame velocity change this far from gravity's, m/s.
+const CONTACT_DV: f32 = 1.0;
+/// How far apart a true and a displayed contact may be and still match.
+const CONTACT_WINDOW_S: f64 = 0.3;
 const RUBBER_BAND_S: f64 = 0.5;
 
 impl PerceptualEval {
@@ -202,6 +251,7 @@ impl PerceptualEval {
             log_events: false,
             event_log: Vec::new(),
             body_band_s: HashMap::new(),
+            body_contact_s: HashMap::new(),
         }
     }
 
@@ -302,7 +352,9 @@ impl PerceptualEval {
         self.frames += 1;
         let second = t_s.floor() as i64;
         if second != self.current_second {
-            self.flush_seconds(second);
+            // A second lag: acceleration samples arrive after the contact
+            // window.
+            self.flush_seconds(second - 1);
             self.current_second = second;
         }
         let projector = Projector::new(camera, self.model.pane);
@@ -330,7 +382,7 @@ impl PerceptualEval {
             };
             let last_screen = state.last_screen;
             state.last_screen = screen_now;
-            let state = *state;
+            let state = state.clone();
             if item.visibility <= 0.0 {
                 continue;
             }
@@ -404,24 +456,29 @@ impl PerceptualEval {
                 let (v_d, v_t) = (velocity(d0, d2), velocity(t0, t2));
                 let free_flight = (a_t - self.gravity).length() <= FREE_FLIGHT_TOLERANCE * g;
                 let extra = a_d - a_t;
-                if free_flight {
-                    let violation = f64::from(extra.y.abs() / g);
-                    self.sample(ArtifactClass::Gravity, violation);
-                    self.per_second(ArtifactClass::Gravity, item.body, second, violation, vis);
-                    let horizontal = Vec3::new(extra.x, 0.0, extra.z);
-                    self.sample(ArtifactClass::UnexplainedAccel, weighted_unexplained_accel(horizontal, v_t));
-                    self.per_second_vector(item.body, second, horizontal, v_t, vis);
+                let sample = if free_flight {
                     let floor = 0.5 * ENERGY_FLOOR_MPS * ENERGY_FLOOR_MPS;
                     let ke_d = 0.5 * v_d.length_squared();
                     let ke_t = 0.5 * v_t.length_squared();
-                    let change = f64::from((ke_d - ke_t) / ke_t.max(floor));
-                    self.sample(ArtifactClass::EnergyGain, change.max(0.0));
-                    self.per_second(ArtifactClass::EnergyGain, item.body, second, change, vis);
+                    Some(AccelSample {
+                        t: t_s,
+                        second,
+                        body: item.body,
+                        vis,
+                        gravity: Some(f64::from(extra.y.abs() / g)),
+                        extra: Vec3::new(extra.x, 0.0, extra.z),
+                        velocity: v_t,
+                        energy: Some(f64::from((ke_d - ke_t) / ke_t.max(floor))),
+                    })
                 } else if a_t.length() <= FREE_FLIGHT_TOLERANCE * g {
                     // Steady motion (resting, gliding): any displayed
                     // acceleration is unexplained.
-                    self.sample(ArtifactClass::UnexplainedAccel, weighted_unexplained_accel(extra, v_t));
-                    self.per_second_vector(item.body, second, extra, v_t, vis);
+                    Some(AccelSample { t: t_s, second, body: item.body, vis, gravity: None, extra, velocity: v_t, energy: None })
+                } else {
+                    None
+                };
+                if let Some(sample) = sample {
+                    self.items.get_mut(&item.id).unwrap().accel_pending.push_back(sample);
                 }
             }
         }
@@ -430,9 +487,240 @@ impl PerceptualEval {
         for (body, (m, vis)) in pops {
             self.event_for(ArtifactClass::Pop, m, vis, body);
         }
+        self.contacts_and_breaks(t_s, items);
+        self.overlaps(t_s, items);
+        self.commit_accelerations(t_s, items);
+    }
+
+    /// V3/V4/V5 samples wait `CONTACT_WINDOW_S` before they count, and are
+    /// dropped when a true contact falls within that window either side: a
+    /// mistimed contact is V6's artifact, and would otherwise read as a
+    /// gravity, energy and acceleration error too.
+    fn commit_accelerations(&mut self, t_s: f64, items: &[ItemSample]) {
+        let ids: Vec<u32> = items.iter().map(|i| i.id).collect();
+        self.commit_pending(t_s, &ids);
+    }
+
+    /// Commit the samples of `ids` older than the contact window (all of them
+    /// at `t_s = INFINITY`). A sample taken at `t` measured the motion of the
+    /// stencil before it, so a contact touches it from `t - span` on.
+    fn commit_pending(&mut self, t_s: f64, ids: &[u32]) {
+        let span = (2 * STENCIL + SMOOTH) as f64 * self.frame_dt;
+        let mut ready: Vec<AccelSample> = Vec::new();
+        for id in ids {
+            let Some(state) = self.items.get_mut(id) else { continue };
+            while state.accel_pending.front().is_some_and(|a| t_s - a.t > CONTACT_WINDOW_S) {
+                let a = state.accel_pending.pop_front().unwrap();
+                let near_contact = state
+                    .truth_contact_times
+                    .iter()
+                    .any(|&c| c >= a.t - span - CONTACT_WINDOW_S && c <= a.t + CONTACT_WINDOW_S);
+                if !near_contact {
+                    ready.push(a);
+                }
+            }
+            while state.truth_contact_times.front().is_some_and(|&c| t_s - c > 3.0 * CONTACT_WINDOW_S + span) {
+                state.truth_contact_times.pop_front();
+            }
+        }
+        for a in ready {
+            if let Some(v) = a.gravity {
+                self.sample(ArtifactClass::Gravity, v);
+                self.per_second(ArtifactClass::Gravity, a.body, a.second, v, a.vis);
+            }
+            self.sample(ArtifactClass::UnexplainedAccel, weighted_unexplained_accel(a.extra, a.velocity));
+            self.per_second_vector(a.body, a.second, a.extra, a.velocity, a.vis);
+            if let Some(e) = a.energy {
+                self.sample(ArtifactClass::EnergyGain, e.max(0.0));
+                self.per_second(ArtifactClass::EnergyGain, a.body, a.second, e, a.vis);
+            }
+        }
+    }
+
+    /// V6 contact timing and V7 cause to effect.
+    ///
+    /// A contact is an impulse: a frame-to-frame velocity change more than
+    /// `CONTACT_DV` away from gravity's, found the same way in the true and
+    /// the displayed motion. Each true contact is matched to the nearest
+    /// displayed one of the same chunk within `CONTACT_WINDOW_S`; the event is
+    /// the offset (ms), or the window when the display smoothed it away. One
+    /// event per body per contact.
+    ///
+    /// A break (V7) is the frame a chunk stops being drawn on its standing
+    /// structure; its fragments start to move when the drawn chunk has left
+    /// that spot by a centimetre. The event is how many frames later that
+    /// happens than it does in the truth.
+    fn contacts_and_breaks(&mut self, t_s: f64, items: &[ItemSample]) {
+        let g = self.gravity;
+        let dt_frame = self.frame_dt;
+        let mut contacts: Vec<(u32, f64, f32)> = Vec::new();
+        let mut breaks: Vec<(u32, f64, f32)> = Vec::new();
+        for item in items {
+            let Some(state) = self.items.get_mut(&item.id) else { continue };
+            if !state.seen {
+                state.seen = true;
+                state.was_displayed_standing = true;
+                state.was_truth_standing = true;
+            }
+            // V7
+            if state.was_displayed_standing && !item.displayed_standing {
+                if let Some((p, _)) = item.displayed {
+                    state.break_displayed = Some((t_s, p, None));
+                    state.break_scored = false;
+                }
+            }
+            if state.was_truth_standing && !item.truth_standing {
+                if let Some((p, _)) = item.truth {
+                    state.break_truth = Some((t_s, p, None));
+                    state.break_scored = false;
+                }
+            }
+            state.was_displayed_standing = item.displayed_standing;
+            state.was_truth_standing = item.truth_standing;
+            for (slot, now) in [(&mut state.break_displayed, item.displayed), (&mut state.break_truth, item.truth)] {
+                if let (Some((_, at, moved @ None)), Some((p, _))) = (slot.as_mut(), now) {
+                    if p.distance(*at) > 0.01 {
+                        *moved = Some(t_s);
+                    }
+                }
+            }
+            if !state.break_scored {
+                if let (Some((bd, _, Some(md))), Some((bt, _, Some(mt)))) = (state.break_displayed, state.break_truth) {
+                    state.break_scored = true;
+                    let late_frames = ((md - bd) - (mt - bt)) / dt_frame;
+                    breaks.push((item.body, late_frames.max(0.0), item.visibility));
+                }
+            }
+            // V6
+            let (Some((dp, _)), Some((tp, _))) = (item.displayed, item.truth) else {
+                state.contact_last = None;
+                state.contact_velocity = None;
+                continue;
+            };
+            if let Some((t0, dp0, tp0)) = state.contact_last {
+                let dt = (t_s - t0) as f32;
+                if dt > 1e-4 {
+                    let (dv, tv) = ((dp - dp0) / dt, (tp - tp0) / dt);
+                    // A fragment starting to move off its structure is an
+                    // impulse too, but it is V7's to score.
+                    let just_broke = [state.break_displayed, state.break_truth]
+                        .iter()
+                        .any(|b| b.is_some_and(|(t, _, _)| t_s - t <= CONTACT_WINDOW_S));
+                    if let (Some((dv0, tv0)), false) = (state.contact_velocity, just_broke) {
+                        let impulse = |v: Vec3, v0: Vec3| (v - v0 - g * dt).length() > CONTACT_DV;
+                        if impulse(tv, tv0) {
+                            state.truth_contacts.push_back(t_s);
+                            state.truth_contact_times.push_back(t_s);
+                        }
+                        if impulse(dv, dv0) {
+                            state.displayed_contacts.push_back(t_s);
+                        }
+                    }
+                    state.contact_velocity = Some((dv, tv));
+                }
+            }
+            state.contact_last = Some((t_s, dp, tp));
+            // Match: a true contact old enough to have seen the window.
+            while let Some(&tc) = state.truth_contacts.front() {
+                let near = state
+                    .displayed_contacts
+                    .iter()
+                    .copied()
+                    .filter(|d| (d - tc).abs() <= CONTACT_WINDOW_S)
+                    .min_by(|a, b| (a - tc).abs().total_cmp(&(b - tc).abs()));
+                if near.is_none() && t_s - tc < CONTACT_WINDOW_S {
+                    break;
+                }
+                state.truth_contacts.pop_front();
+                let offset_ms = near.map_or(CONTACT_WINDOW_S * 1000.0, |d| (d - tc).abs() * 1000.0);
+                if let Some(d) = near {
+                    state.displayed_contacts.retain(|&x| x != d);
+                }
+                contacts.push((item.body, offset_ms, item.visibility));
+            }
+            while state.displayed_contacts.front().is_some_and(|&d| t_s - d > 2.0 * CONTACT_WINDOW_S) {
+                state.displayed_contacts.pop_front();
+            }
+        }
+        for (body, m, vis) in contacts {
+            let last = self.body_contact_s.get(&body).copied().unwrap_or(f64::MIN);
+            if vis > 0.0 && t_s - last > 0.1 {
+                self.body_contact_s.insert(body, t_s);
+                self.sample(ArtifactClass::ContactTiming, m);
+                self.event_for(ArtifactClass::ContactTiming, m, vis, body);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (body, m, vis) in breaks {
+            if vis > 0.0 && seen.insert(body) {
+                self.sample(ArtifactClass::CauseEffect, m);
+                self.event_for(ArtifactClass::CauseEffect, m, vis, body);
+            }
+        }
+    }
+
+    /// V11: two visible dynamic chunks of different drawn bodies overlapping
+    /// more than they do in the truth, by their inscribed spheres (a lower
+    /// bound on the boxes' penetration, so a hit is a real overlap). Per pair
+    /// of bodies per second, at the worst depth (cm).
+    fn overlaps(&mut self, t_s: f64, items: &[ItemSample]) {
+        let second = t_s.floor() as i64;
+        let mut cells: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
+        let live: Vec<usize> = (0..items.len())
+            .filter(|&i| items[i].visibility > 0.0 && items[i].displayed.is_some() && items[i].truth.is_some() && !items[i].displayed_standing)
+            .collect();
+        for &i in &live {
+            let p = items[i].displayed.unwrap().0;
+            cells.entry(((p.x).floor() as i32, (p.y).floor() as i32, (p.z).floor() as i32)).or_default().push(i);
+        }
+        let mut worst: HashMap<(u32, u32), (f64, f32)> = HashMap::new();
+        for &i in &live {
+            let a = &items[i];
+            let (pa, ta) = (a.displayed.unwrap().0, a.truth.unwrap().0);
+            let ra = a.half_extents.min_element();
+            let c = ((pa.x).floor() as i32, (pa.y).floor() as i32, (pa.z).floor() as i32);
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        let Some(list) = cells.get(&(c.0 + dx, c.1 + dy, c.2 + dz)) else { continue };
+                        for &j in list {
+                            if j <= i {
+                                continue;
+                            }
+                            let b = &items[j];
+                            if b.displayed_body == a.displayed_body || b.body == a.body {
+                                continue;
+                            }
+                            let r = ra + b.half_extents.min_element();
+                            let shown = r - pa.distance(b.displayed.unwrap().0);
+                            let truly = r - ta.distance(b.truth.unwrap().0);
+                            let extra = f64::from(shown - truly.max(0.0)) * 100.0;
+                            if extra > 0.0 {
+                                let key = (a.body.min(b.body), a.body.max(b.body));
+                                let e = worst.entry(key).or_insert((0.0, 0.0));
+                                e.0 = e.0.max(extra);
+                                e.1 = e.1.max(a.visibility.min(b.visibility));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut worst: Vec<_> = worst.into_iter().collect();
+        worst.sort_unstable_by_key(|(k, _)| *k);
+        for ((a, b), (depth, vis)) in worst {
+            self.sample(ArtifactClass::Overlap, depth);
+            let agg = self.seconds.entry((ArtifactClass::Overlap, a ^ b.rotate_left(16), second)).or_default();
+            agg.sum = agg.sum.max(depth);
+            agg.n = 1;
+            agg.visibility = agg.visibility.max(vis);
+        }
     }
 
     pub fn report(&mut self) -> PerceptualReport {
+        let mut ids: Vec<u32> = self.items.keys().copied().collect();
+        ids.sort_unstable();
+        self.commit_pending(f64::INFINITY, &ids);
         self.flush_seconds(i64::MAX);
         let minutes = match self.first_t {
             Some(first) => ((self.last_t - first) + self.frame_dt) / 60.0,
@@ -469,12 +757,9 @@ impl PerceptualEval {
         report.penalty_per_minute = total;
         report.q = self.model.quality(total);
         report.not_measured = vec![
-            "V6 contact timing (needs truth contact ticks)".into(),
-            "V7 cause to effect".into(),
             "V8 group error".into(),
             "V9 video score (ColorVideoVDP)".into(),
-            "V11 overlap".into(),
-            "V12 audio sync".into(),
+            "V12 audio sync (the lab replays no audio)".into(),
         ];
         report
     }
@@ -618,6 +903,7 @@ mod tests {
                 displayed: Some((shown, Quat::IDENTITY)),
                 truth: Some((truth, Quat::IDENTITY)),
                 visibility: 1.0,
+                ..Default::default()
             };
             eval.frame(t, camera(distance), &[item]);
         }
@@ -721,6 +1007,7 @@ mod tests {
             displayed: Some((Vec3::new(5.0, 5.0, 0.0), Quat::IDENTITY)),
             truth: Some((Vec3::ZERO, Quat::IDENTITY)),
             visibility: 0.0,
+            ..Default::default()
         };
         for i in 0..120 {
             eval.frame(i as f64 * DT, camera(40.0), &[item]);
@@ -728,6 +1015,107 @@ mod tests {
         let report = eval.report();
         assert_eq!(report.visible_item_frames, 0);
         assert!(fired(&report).is_empty());
+    }
+
+    /// Frames of several items, each made by `make(t)`, through the
+    /// evaluator from 400 m away (screen errors stay under a pixel).
+    fn run_items(seconds: f64, make: impl Fn(f64) -> Vec<ItemSample>) -> PerceptualReport {
+        let mut eval = PerceptualEval::new(PerceptualModel::literature(), G);
+        for i in 0..(seconds / DT) as usize {
+            let t = i as f64 * DT;
+            eval.frame(t, camera(400.0), &make(t));
+        }
+        eval.report()
+    }
+
+    #[test]
+    fn a_bounce_shown_80_ms_late_is_contact_timing_and_nothing_else() {
+        // A drop from 10 m that bounces at t0 (restitution 0.5); the display
+        // keeps falling 80 ms past it, then bounces the same way.
+        let fall = |t: f64| 10.0 - 0.5 * 9.81 * t * t;
+        let t0 = 1.0;
+        let path = |t: f64, contact: f64| -> f64 {
+            if t < contact {
+                fall(t)
+            } else {
+                let (y0, v) = (fall(contact), 0.5 * 9.81 * contact);
+                let s = t - contact;
+                y0 + v * s - 0.5 * 9.81 * s * s
+            }
+        };
+        let report = run_items(2.5, |t| {
+            vec![ItemSample {
+                id: 1,
+                body: 1,
+                half_extents: Vec3::splat(0.3),
+                mass: 1.0,
+                displayed: Some((Vec3::new(0.0, path(t, t0 + 0.08) as f32, 0.0), Quat::IDENTITY)),
+                truth: Some((Vec3::new(0.0, path(t, t0) as f32, 0.0), Quat::IDENTITY)),
+                visibility: 1.0,
+                ..Default::default()
+            }]
+        });
+        let contact = &report.classes["contact_timing"];
+        assert_eq!(contact.events, 1, "{contact:?}");
+        // Detected at frame boundaries: 80 ms is 66.7-83.3 ms in frames.
+        assert!((60.0..=95.0).contains(&contact.max), "{contact:?}");
+        assert_eq!(fired(&report), vec!["contact_timing".to_string()]);
+        // On time: nothing.
+        let on_time = run_items(2.5, |t| {
+            let p = Vec3::new(0.0, path(t, t0) as f32, 0.0);
+            vec![ItemSample { id: 1, body: 1, half_extents: Vec3::splat(0.3), mass: 1.0, displayed: Some((p, Quat::IDENTITY)), truth: Some((p, Quat::IDENTITY)), visibility: 1.0, ..Default::default() }]
+        });
+        assert!(fired(&on_time).is_empty(), "{:?}", fired(&on_time));
+    }
+
+    #[test]
+    fn fragments_that_start_moving_six_frames_after_the_break_are_cause_to_effect_and_nothing_else() {
+        // The chunk breaks off at 1 s and slides away at 2 m/s; the display
+        // shows the break on time but holds it still for 6 frames first.
+        let report = run_items(2.5, |t| {
+            let truth = Vec3::new(2.0 * (t - 1.0).max(0.0) as f32, 1.0, 0.0);
+            let shown = Vec3::new(2.0 * (t - 1.1).max(0.0) as f32, 1.0, 0.0);
+            vec![ItemSample {
+                id: 1,
+                body: 1,
+                half_extents: Vec3::splat(0.3),
+                mass: 1.0,
+                displayed: Some((shown, Quat::IDENTITY)),
+                truth: Some((truth, Quat::IDENTITY)),
+                visibility: 1.0,
+                displayed_body: 1,
+                displayed_standing: t < 1.0,
+                truth_standing: t < 1.0,
+            }]
+        });
+        let cause = &report.classes["cause_effect"];
+        assert_eq!(cause.events, 1, "{cause:?}");
+        assert!((5.0..=7.0).contains(&cause.max), "{cause:?}");
+        assert_eq!(fired(&report), vec!["cause_effect".to_string()]);
+    }
+
+    #[test]
+    fn two_bodies_shown_10_cm_into_each_other_overlap_and_nothing_else() {
+        // Two crates at rest, touching in the truth; the display has one
+        // 10 cm into the other.
+        let report = run_items(2.0, |_| {
+            let crate_at = |id: u32, x: f32, shown_x: f32| ItemSample {
+                id,
+                body: id,
+                half_extents: Vec3::splat(0.5),
+                mass: 1.0,
+                displayed: Some((Vec3::new(shown_x, 0.5, 0.0), Quat::IDENTITY)),
+                truth: Some((Vec3::new(x, 0.5, 0.0), Quat::IDENTITY)),
+                visibility: 1.0,
+                displayed_body: id,
+                ..Default::default()
+            };
+            vec![crate_at(1, 0.0, 0.0), crate_at(2, 1.0, 0.9)]
+        });
+        let overlap = &report.classes["overlap"];
+        assert!(overlap.events >= 1, "{overlap:?}");
+        assert!((9.0..=11.0).contains(&overlap.max), "{overlap:?}");
+        assert_eq!(fired(&report), vec!["overlap".to_string()]);
     }
 
     #[test]
