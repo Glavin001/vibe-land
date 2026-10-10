@@ -124,6 +124,11 @@ pub struct PerPlayerConfig {
     /// in turn. Each client's selection is independent, so the result is
     /// the same either way.
     pub send_threads: u32,
+    /// Rank a contact the client has not been sent by its timing penalty
+    /// (V6), beside the screen error. Off by default: measured 1-7% lower
+    /// penalty on six runs, but it does not fix the cause (the drawing
+    /// smooths a sub-pixel change of direction; docs/netcode-shared-vs-per-player.md).
+    pub contacts: bool,
 }
 
 impl PerPlayerConfig {
@@ -143,6 +148,7 @@ impl PerPlayerConfig {
             backtest_modes: true,
             event_copies: 2,
             send_threads: 1,
+            contacts: false,
         }
     }
 }
@@ -152,7 +158,15 @@ struct Truth {
     keyframe: Keyframe,
     radius: f32,
     settled: bool,
+    /// The newest tick the truth had a contact (0: none): a velocity
+    /// change more than `CONTACT_DV` from gravity's, the scorer's own
+    /// definition (V6).
+    contact_tick: u32,
 }
+
+/// A contact, as the perceptual scorer finds one: a frame-to-frame velocity
+/// change this far from gravity's (m/s).
+const CONTACT_DV: f32 = 1.0;
 
 #[derive(Default)]
 struct ClientState {
@@ -290,6 +304,7 @@ impl PerPlayer {
                             },
                             radius,
                             settled: island.settled,
+                            contact_tick: 0,
                         },
                     );
                 }
@@ -575,7 +590,7 @@ impl ReplicationStrategy for PerPlayer {
                         ),
                     },
                 };
-                self.truth.insert(key, Truth { keyframe, radius, settled });
+                self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0 });
             }
             for (client, parents) in parents {
                 if let Some(cs) = self.clients.get_mut(&client) {
@@ -631,6 +646,13 @@ impl ReplicationStrategy for PerPlayer {
             if history.back().is_some_and(|k| k.tick + 1 != tick) {
                 history.clear();
             }
+            // A contact this tick: the velocity changed by more than gravity
+            // explains.
+            let gravity_step = Vec3::new(0.0, self.config.gravity_y, 0.0) / self.config.sim_hz.max(1) as f32;
+            let contact = history
+                .back()
+                .is_some_and(|p| (keyframe.linear_velocity - p.linear_velocity - gravity_step).length() > CONTACT_DV);
+            let contact_tick = if contact { tick } else { previous.map_or(0, |p| p.contact_tick) };
             let (mode, decel) = self.mode_of(self.history.get(&key), &keyframe, radius);
             keyframe.mode = mode;
             keyframe.decel = decel;
@@ -639,7 +661,7 @@ impl ReplicationStrategy for PerPlayer {
             while history.len() > BACKTEST_TICKS as usize + 1 {
                 history.pop_front();
             }
-            self.truth.insert(key, Truth { keyframe, radius, settled: false });
+            self.truth.insert(key, Truth { keyframe, radius, settled: false, contact_tick });
         }
         for settle in &output.settled {
             self.ledger.apply_settle(settle);
@@ -861,7 +883,19 @@ fn send_for(
             }
             _ => f32::INFINITY,
         };
-        if !required && error_px < config.tolerance_px {
+        // A contact the client has not been sent since: its timing is a
+        // class of its own (V6), scored in ms, not pixels -- a small or far
+        // piece's bounce moves it under the tolerance for frames, and is
+        // drawn late. Waiting one more send delays it to `late_ms`.
+        let contact_gain = match cs.believed.get(key).and_then(|t| t.newest()) {
+            Some(newest) if config.contacts && truth.contact_tick > newest.tick => {
+                let late_ms = (r - truth.contact_tick as f32 + config.send_interval_ticks as f32) * 1000.0 / config.sim_hz as f32
+                    + cs.rtt_ms * 0.5;
+                model.penalty(ArtifactClass::ContactTiming, f64::from(late_ms), f64::from(weight)) as f32
+            }
+            _ => 0.0,
+        };
+        if !required && error_px < config.tolerance_px && contact_gain <= 0.0 {
             continue;
         }
         // The coarsest grid whose step stays under half the tolerance.
@@ -893,7 +927,12 @@ fn send_for(
             }
         }
         let gain = if error_px.is_finite() {
-            model.penalty(ArtifactClass::ScreenError, f64::from(error_px), f64::from(weight)) as f32
+            let screen = if error_px >= config.tolerance_px {
+                model.penalty(ArtifactClass::ScreenError, f64::from(error_px), f64::from(weight)) as f32
+            } else {
+                0.0
+            };
+            screen + contact_gain
         } else {
             f32::MAX
         };

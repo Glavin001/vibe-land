@@ -161,6 +161,7 @@ pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>
             "pp.backtest" => config.backtest_modes = f() != 0.0,
             "pp.event_copies" => config.event_copies = f() as u32,
             "pp.send_threads" => config.send_threads = f() as u32,
+            "pp.contacts" => config.contacts = f() != 0.0,
             _ => {}
         }
     }
