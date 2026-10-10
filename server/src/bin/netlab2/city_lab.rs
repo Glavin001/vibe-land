@@ -54,13 +54,16 @@ use crate::vltape::{ClientTape, TapePacket, CHANNEL_WT_DATAGRAM, CHANNEL_WT_RELI
 use crate::{die, Args};
 
 /// Where the lab's tape clock starts: tick `first` is queued at this time.
-const ORIGIN_MS: f64 = 1000.0;
+pub const ORIGIN_MS: f64 = 1000.0;
 /// How often a client acknowledges datagrams (its input cadence), ms.
 const ACK_INTERVAL_MS: f64 = 1000.0 / 30.0;
 /// Datagram ordinals one ack covers: the newest and the 64 before it.
 const ACK_WINDOW: usize = 65;
 /// Bytes of one ack datagram on the wire (kind, newest, mask, header).
 const ACK_BYTES: usize = 16;
+/// G3 is judged on the steady state: windows from this long after the join
+/// (the bootstrap is one reliable burst, reported on its own).
+const JOIN_SETTLE_MS: f64 = 2000.0;
 /// The packet kind the uplink model tags acks with (never on a tape).
 const KIND_ACK: u8 = 0xA0;
 
@@ -156,6 +159,7 @@ pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>
             "pp.send_hz" => config.send_interval_ticks = (config.sim_hz as f64 / f()).round().max(1.0) as u32,
             "pp.heartbeat_sends" => config.heartbeat_sends = f() as u32,
             "pp.backtest" => config.backtest_modes = f() != 0.0,
+            "pp.event_copies" => config.event_copies = f() as u32,
             _ => {}
         }
     }
@@ -197,6 +201,10 @@ pub struct ClientStream {
     pub kbit_s_max_1s: f64,
     /// The busiest 100 ms window, as kbit/s.
     pub kbit_s_max_100ms: f64,
+    /// The busiest trailing 1 s window after the join (G3's steady state).
+    pub kbit_s_max_1s_steady: f64,
+    /// Bytes queued at the join (the bootstrap), on their own.
+    pub join_bytes: u64,
     pub datagram_latency_ms: Pct,
     pub reliable_latency_ms: Pct,
     pub reliable_hol_ms: Pct,
@@ -252,7 +260,9 @@ impl LabClient {
         };
         let kind = bytes.first().copied().unwrap_or(0);
         let index = self.down.admit(at_ms, lane, kind, bytes.len());
-        if lane == Lane::Datagram {
+        // Ack ordinals number the datagrams that carry one: every datagram
+        // but a per-player events copy (that carries an event sequence).
+        if lane == Lane::Datagram && kind != vibe_land_perplayer::wire::PKT_PP_EVENTS {
             self.datagram_index.push(index);
         }
         if let Some(bucket) = self.bucket.as_mut() {
@@ -329,6 +339,7 @@ pub struct CityRun {
     pub last_tick: u32,
     pub hz: u32,
     pub clients: Vec<(ClientSpec, ClientStream)>,
+    pub server_cost: ServerCost,
 }
 
 fn tick_ms(tick: u32, first: u32, hz: u32) -> f64 {
@@ -353,6 +364,8 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
     }
 
     let mut reader = TapeReader::open(&capture.tape_path())?;
+    let (mut ingest_ms, mut send_ms) = (Vec::new(), Vec::new());
+    let (mut client_us_total, mut client_sends) = (0.0f64, 0u64);
     let mut first_tick = None;
     let mut last_tick = 0;
     while let Some(entry) = reader.next_tick()? {
@@ -374,14 +387,19 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                 }
             }
         }
+        let started = std::time::Instant::now();
         let broadcast = strategy.ingest_tick(tick, &entry.snapshots, &entry.output);
+        ingest_ms.push(started.elapsed().as_secs_f32() * 1000.0);
         for client in clients.values_mut() {
             for packet in &broadcast {
                 client.queue(t, packet.lane, packet.bytes.clone());
             }
         }
         if tick % interval == 0 {
+            let mut send_cpu = std::time::Duration::ZERO;
+            let shared_started = std::time::Instant::now();
             strategy.begin_send(tick);
+            send_cpu += shared_started.elapsed();
             let has_records = strategy.has_records();
             for (id, client) in clients.iter_mut() {
                 let seconds = (tick - first) as f32 / hz as f32;
@@ -406,7 +424,12 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                 } else {
                     None
                 };
+                let client_started = std::time::Instant::now();
                 let send = strategy.client_send(*id, &ClientView { camera }, tick, budget);
+                let spent = client_started.elapsed();
+                send_cpu += spent;
+                client_us_total += spent.as_secs_f64() * 1e6;
+                client_sends += 1;
                 client.stats.sends += 1;
                 match budget {
                     Some(SendBudget::Skip) => client.stats.sends_skipped += 1,
@@ -426,6 +449,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                     client.queue(t, packet.lane, packet.bytes);
                 }
             }
+            send_ms.push(send_cpu.as_secs_f32() * 1000.0);
         }
         let next = tick_ms(tick + 1, first, hz);
         for client in clients.values_mut() {
@@ -434,6 +458,14 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
     }
     let first_tick = first_tick.ok_or_else(|| std::io::Error::other("the capture's tape has no ticks"))?;
     std::fs::write(out.join("strategy.txt"), strategy.report())?;
+    let server_cost = ServerCost {
+        sends: send_ms.len() as u64,
+        ticks: ingest_ms.len() as u64,
+        ingest_ms: Pct::of(ingest_ms),
+        send_ms: Pct::of(send_ms),
+        per_client_us: if client_sends > 0 { client_us_total / client_sends as f64 } else { 0.0 },
+    };
+    std::fs::write(out.join("server-cost.json"), serde_json::to_vec_pretty(&server_cost)?)?;
 
     // Each client's deliveries, tape and totals.
     let mut results = Vec::new();
@@ -474,6 +506,9 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         let duration_s = (f64::from(last_tick - first_tick) + 1.0) / f64::from(hz);
         stats.kbit_s_mean = stats.bytes as f64 * 8.0 / 1000.0 / duration_s.max(1e-9);
         stats.kbit_s_max_1s = max_window_kbit_s(&windows, 1000.0);
+        let steady: Vec<(f64, usize)> = windows.iter().copied().filter(|(t, _)| *t >= ORIGIN_MS + JOIN_SETTLE_MS).collect();
+        stats.kbit_s_max_1s_steady = max_window_kbit_s(&steady, 1000.0);
+        stats.join_bytes = windows.iter().filter(|(t, _)| *t <= ORIGIN_MS).map(|(_, b)| *b as u64).sum();
         stats.kbit_s_max_100ms = max_window_kbit_s(&windows, 100.0);
         tape.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         let packets: Vec<TapePacket> = tape.into_iter().map(|(_, _, p)| p).collect();
@@ -486,7 +521,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         std::fs::write(dir.join("stream.json"), serde_json::to_vec_pretty(&serde_json::json!({"client": client_spec, "stream": stats}))?)?;
         results.push((client_spec, stats));
     }
-    Ok(CityRun { spec: spec.clone(), first_tick, last_tick, hz, clients: results })
+    Ok(CityRun { spec: spec.clone(), first_tick, last_tick, hz, clients: results, server_cost })
 }
 
 fn spec_wire_version(strategy: &str) -> u8 {
@@ -582,6 +617,8 @@ pub struct ClientCard {
     pub perceptual: Option<vibe_land_destruction::netlab::perceptual::PerceptualReport>,
     pub client_cpu_ms: Option<f64>,
     pub notes: Vec<String>,
+    #[serde(skip)]
+    pub client_stats: Option<serde_json::Value>,
 }
 
 /// Integrity gates (the spec's G1-G6) as far as the lab measures them yet.
@@ -595,9 +632,30 @@ pub struct Gates {
     pub g3_cap: Option<f64>,
     pub g3_clients_over: u64,
     pub g3_worst_kbit_s: f64,
+    /// G2: events applied before the drawing reached their tick (v2 applies
+    /// on arrival by design, D6), and applied after it passed (late).
+    pub g2_events_applied: u64,
+    pub g2_events_early: u64,
+    pub g2_events_late: u64,
+    /// G5: visible body-frames where a body the truth has at rest moved.
+    pub g5_resurrection_frames: u64,
     /// Gates the lab does not measure yet, and why.
     pub pending: Vec<String>,
     pub pass: bool,
+}
+
+/// C2: what the strategy cost the server, per send and per client.
+#[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ServerCost {
+    pub sends: u64,
+    pub ticks: u64,
+    /// The truth ingest per tick (shared), ms.
+    pub ingest_ms: Pct,
+    /// Every client's packets for one send, ms.
+    pub send_ms: Pct,
+    /// One client's packets, us (mean).
+    pub per_client_us: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -607,6 +665,13 @@ pub struct CityCard {
     pub first_tick: u32,
     pub last_tick: u32,
     pub gates: Gates,
+    /// C2: what the strategy cost the server.
+    pub server_cost: ServerCost,
+    /// Origin egress, kbit/s: per player it is every client's stream; a
+    /// shared stream behind relays publishes somewhere between the busiest
+    /// client's and that (the union of what any client needed).
+    pub egress_total_kbit_s: f64,
+    pub egress_max_client_kbit_s: f64,
     /// The perceptual model the cards were scored with.
     pub model: vibe_land_destruction::perception::PerceptualModel,
     /// Mean over clients of Q and of the penalty per minute.
@@ -623,10 +688,8 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
     let model = vibe_land_destruction::perception::PerceptualModel::literature();
     let mut gates = Gates { pass: true, ..Default::default() };
     gates.pending = vec![
-        "G2 event ordering: needs the client's applied-event log (milestone 3)".into(),
-        "G4 solid geometry: needs the static occupancy grid (milestone 1, recorder)".into(),
-        "G5 resurrection: needs settle-aware chunk scoring (milestone 3)".into(),
-        "G6 server time: needs the strategy timing in the lab (milestone 8)".into(),
+        "G4 solid geometry: needs the static occupancy grid".into(),
+        "G6 server time: reported as C2 (server_cost); its budget is set at scale (milestone 8)".into(),
     ];
     let tick_end: HashMap<u32, f64> =
         (run.first_tick..=run.last_tick).map(|tick| (tick, tick_ms(tick, run.first_tick, run.hz))).collect();
@@ -651,14 +714,26 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
         }
         if let Some((_, burst, _)) = run.spec.bucket {
             gates.g3_cap = Some(burst);
-            gates.g3_worst_kbit_s = gates.g3_worst_kbit_s.max(stream.kbit_s_max_1s);
+            gates.g3_worst_kbit_s = gates.g3_worst_kbit_s.max(stream.kbit_s_max_1s_steady);
             // A 1 s window may hold the bucket's peak for at most 1 s.
-            if stream.kbit_s_max_1s > burst * 1.001 {
+            if stream.kbit_s_max_1s_steady > burst * 1.001 {
                 gates.g3_clients_over += 1;
             }
         }
+        if let Some(stats) = &card.client_stats {
+            let n = |k: &str| stats["city"][k].as_u64().unwrap_or(0);
+            gates.g2_events_applied += n("eventsApplied");
+            gates.g2_events_early += n("eventsAppliedEarly");
+            gates.g2_events_late += n("eventsLate");
+        }
+        if let Some(p) = &card.perceptual {
+            gates.g5_resurrection_frames += p.g5_resurrection_frames;
+        }
     }
-    gates.pass = gates.g1_hash_mismatches == 0 && gates.g3_clients_over == 0;
+    gates.pass = gates.g1_hash_mismatches == 0
+        && gates.g3_clients_over == 0
+        && gates.g2_events_early == 0
+        && gates.g5_resurrection_frames == 0;
     let n = cards.len().max(1) as f64;
     let qs: Vec<f64> = cards.iter().filter_map(|c| c.perceptual.as_ref().map(|p| p.q)).collect();
     let penalties: Vec<f64> = cards.iter().filter_map(|c| c.perceptual.as_ref().map(|p| p.penalty_per_minute)).collect();
@@ -668,6 +743,9 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
         first_tick: run.first_tick,
         last_tick: run.last_tick,
         gates,
+        server_cost: run.server_cost.clone(),
+        egress_total_kbit_s: cards.iter().map(|c| c.stream.kbit_s_mean).sum(),
+        egress_max_client_kbit_s: cards.iter().map(|c| c.stream.kbit_s_mean).fold(0.0, f64::max),
         model,
         q_mean: (!qs.is_empty()).then(|| qs.iter().sum::<f64>() / qs.len() as f64),
         q_min: qs.iter().copied().reduce(f64::min),
@@ -699,11 +777,13 @@ fn score_client(
         perceptual: None,
         client_cpu_ms: None,
         notes: Vec::new(),
+        client_stats: None,
     };
     if let Ok(bytes) = std::fs::read(dir.join("client-stats.json")) {
         if let Ok(stats) = serde_json::from_slice::<serde_json::Value>(&bytes) {
             card.city_sync = crate::score::CitySync::from_client_stats(&stats);
             card.client_cpu_ms = stats["clientCpuMs"].as_f64();
+            card.client_stats = Some(stats);
         }
     }
     let chunks = dir.join(crate::chunks::CHUNKS_FILE);
@@ -734,6 +814,7 @@ fn score_client(
         &capture.tracks,
         ORIGIN_MS,
         model,
+        None,
     ) {
         Ok(report) => card.perceptual = Some(report),
         Err(error) => card.notes.push(format!("perceptual not scored: {error}")),
@@ -767,6 +848,22 @@ fn card_markdown(card: &CityCard) -> String {
             "{} clients over {cap} kbit/s (worst 1 s window {:.0})",
             g.g3_clients_over, g.g3_worst_kbit_s
         )),
+    );
+    let _ = writeln!(
+        md,
+        "G2: {} events applied, {} before the drawing reached their tick, {} after it passed. G5: {} body-frames moved while at rest.",
+        g.g2_events_applied, g.g2_events_early, g.g2_events_late, g.g5_resurrection_frames
+    );
+    let c = &card.server_cost;
+    let _ = writeln!(
+        md,
+        "C2 server cost: ingest p50/p99 {:.3}/{:.3} ms per tick; every client's send p50/p99 {:.3}/{:.3} ms; {:.1} us per client send.",
+        c.ingest_ms.p50, c.ingest_ms.p99, c.send_ms.p50, c.send_ms.p99, c.per_client_us
+    );
+    let _ = writeln!(
+        md,
+        "Origin egress: {:.1} kbit/s for every client's stream (per-player's cost); a relayed shared stream publishes between {:.1} and that.",
+        card.egress_total_kbit_s, card.egress_max_client_kbit_s
     );
     for pending in &g.pending {
         let _ = writeln!(md, "- pending: {pending}");
@@ -900,7 +997,11 @@ fn read_run(capture: &CityCapture, spec: CitySpec, out: &Path) -> std::io::Resul
     }
     let first = capture.meta.first_tick.unwrap_or(0);
     let last = capture.meta.last_tick.unwrap_or(first);
-    Ok(CityRun { spec, first_tick: first, last_tick: last, hz: capture.meta.hz.max(1), clients })
+    let server_cost = std::fs::read(out.join("server-cost.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    Ok(CityRun { spec, first_tick: first, last_tick: last, hz: capture.meta.hz.max(1), clients, server_cost })
 }
 
 pub fn cmd_city(args: &Args) {

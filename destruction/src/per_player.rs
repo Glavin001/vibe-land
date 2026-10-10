@@ -116,6 +116,10 @@ pub struct PerPlayerConfig {
     /// Choose each keyframe's mode by backtest (false: free fall by
     /// acceleration, else sliding).
     pub backtest_modes: bool,
+    /// Copies of every events packet sent ahead on the datagram lane (the
+    /// reliable stream carries it too): HOL blocking on a lossy link delays
+    /// a fracture past the playout delay otherwise (gate G2). 0 disables.
+    pub event_copies: u32,
 }
 
 impl PerPlayerConfig {
@@ -133,6 +137,7 @@ impl PerPlayerConfig {
             max_datagram: 1_150,
             gravity_y: -(vibe_netcode::movement::GRAVITY as f32),
             backtest_modes: true,
+            event_copies: 2,
         }
     }
 }
@@ -158,6 +163,9 @@ struct ClientState {
     unsent: HashSet<BodyKey>,
     sends_since_datagram: u32,
     rtt_ms: f32,
+    /// Events packets still to be copied onto this client's datagram lane,
+    /// and how many copies each has left (decision D6).
+    event_copies: VecDeque<(Vec<u8>, u32)>,
 }
 
 /// Counters for reports.
@@ -650,6 +658,11 @@ impl ReplicationStrategy for PerPlayer {
         }
         let packet = encode_events(self.event_seq, &events);
         self.event_seq += 1;
+        if self.config.event_copies > 0 && packet.len() <= self.config.max_datagram {
+            for cs in self.clients.values_mut() {
+                cs.event_copies.push_back((packet.clone(), self.config.event_copies));
+            }
+        }
         vec![Outgoing::reliable(packet)]
     }
 
@@ -769,8 +782,20 @@ impl ReplicationStrategy for PerPlayer {
                 .min(config.ceiling_bytes * b.ceiling_sends() as usize),
             None => config.ceiling_bytes,
         };
-        let mut chosen: Vec<KeyframeRecord> = Vec::new();
+        // Event copies go first, out of the same allowance (they are what the
+        // poses mean).
+        let mut out = ClientSend::default();
         let mut used = 0usize;
+        if budget != Some(SendBudget::Skip) {
+            for (bytes, left) in cs.event_copies.iter_mut() {
+                used += bytes.len();
+                out.topology_bytes += bytes.len();
+                out.packets.push(Outgoing::datagram(bytes.clone()));
+                *left -= 1;
+            }
+            cs.event_copies.retain(|(_, left)| *left > 0);
+        }
+        let mut chosen: Vec<KeyframeRecord> = Vec::new();
         for c in &candidates {
             if used + c.bytes > allowance && c.priority < f32::MAX {
                 continue;
@@ -786,7 +811,6 @@ impl ReplicationStrategy for PerPlayer {
             self.stats.bytes_by_mode[c.record.keyframe.mode as usize] += c.bytes as u64;
             chosen.push(c.record);
         }
-        let mut out = ClientSend::default();
         cs.sends_since_datagram += 1;
         if chosen.is_empty() {
             if cs.sends_since_datagram < config.heartbeat_sends {

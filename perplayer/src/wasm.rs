@@ -158,8 +158,8 @@ impl PerPlayerClient {
     pub fn stats_json(&self) -> String {
         let s = &self.inner.stats;
         format!(
-            "{{\"keyframes\":{},\"lateKeyframes\":{},\"eventsApplied\":{},\"eventsLate\":{},\"hashChecks\":{},\"hashMismatches\":{},\"decodeErrors\":{},\"bootstraps\":{}}}",
-            s.keyframes, s.late_keyframes, s.events_applied, s.events_late, s.hash_checks, s.hash_mismatches, s.decode_errors, s.bootstraps
+            "{{\"keyframes\":{},\"lateKeyframes\":{},\"eventsApplied\":{},\"eventsLate\":{},\"hashChecks\":{},\"hashMismatches\":{},\"decodeErrors\":{},\"bootstraps\":{},\"missingBaselines\":{}}}",
+            s.keyframes, s.late_keyframes, s.events_applied, s.events_late, s.hash_checks, s.hash_mismatches, s.decode_errors, s.bootstraps, s.missing_baselines
         )
     }
 }

@@ -175,6 +175,10 @@ export interface CityClientStats {
   settlesSuperseded: number;
   /// Topology released by the wall-clock valve, ahead of the pose clock.
   valveApplies: number;
+  /** Gate G2: topology messages applied, and applied before the drawing reached their tick. */
+  eventsApplied: number;
+  eventsAppliedEarly: number;
+  eventsAppliedEarlyTicks: number;
   valveTicksAhead: number;
   /// Frames the presentation was held behind a promotion the pose stream had
   /// shown but the reliable stream had not delivered, the ticks of delay those
@@ -977,6 +981,10 @@ export class CityClient {
    * keeping up with the reliable channel.
    */
   topologyValveApplies = 0;
+  /** Topology messages applied, and those applied before the drawing reached their tick (gate G2). */
+  eventsApplied = 0;
+  eventsAppliedEarly = 0;
+  eventsAppliedEarlyTicks = 0;
   topologyValveTicksAhead = 0;
   /**
    * Bodies whose ledger pose changed without a streaming update to carry it
@@ -2057,6 +2065,15 @@ export class CityClient {
    * pose stream.
    */
   private applyTopologyMessage(message: TopologyMessage): void {
+    // Gate G2 (docs/netcode-lab.md): an event applied before the drawing has
+    // reached its tick shows the break ahead of the motion that caused it.
+    // Counted, not prevented: v2 applies on arrival by design (decision D6).
+    const presented = this.presentedTick();
+    if (Number.isFinite(presented) && message.simTick > presented + 1) {
+      this.eventsAppliedEarly += 1;
+      this.eventsAppliedEarlyTicks += message.simTick - presented;
+    }
+    this.eventsApplied += 1;
     // Read where the chunks about to be re-parented are drawn, before the
     // ledger moves them.
     this.captureDrawnPoses(message);
@@ -3439,6 +3456,9 @@ export class CityClient {
       settlesAfterSilence: this.topology.settlesAfterSilence,
       settlesSuperseded: this.topology.settlesSuperseded,
       valveApplies: this.topologyValveApplies,
+      eventsApplied: this.eventsApplied,
+      eventsAppliedEarly: this.eventsAppliedEarly,
+      eventsAppliedEarlyTicks: this.eventsAppliedEarlyTicks,
       valveTicksAhead: this.topologyValveTicksAhead,
       topologyHoldFrames: this.topologyHoldFrames,
       topologyHoldTicksAdded: this.topologyHoldTicksAdded,

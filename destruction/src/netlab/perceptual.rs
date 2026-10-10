@@ -84,6 +84,9 @@ pub struct ItemSample {
     /// this turns false).
     pub displayed_standing: bool,
     pub truth_standing: bool,
+    /// The truth body has settled (gate G5: nothing settled may move on
+    /// screen, unless it is woken -- then it is no longer settled).
+    pub truth_settled: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -192,6 +195,9 @@ pub struct PerceptualReport {
     /// Q (0-100), from the penalty (`PerceptualModel::quality`).
     pub q: f64,
     pub not_measured: Vec<String>,
+    /// Gate G5: visible frames in which a body the truth has at rest moved
+    /// more than 1 cm on screen, counted once per body per frame.
+    pub g5_resurrection_frames: u64,
 }
 
 pub struct PerceptualEval {
@@ -209,6 +215,7 @@ pub struct PerceptualEval {
     frame_dt: f64,
     log_events: bool,
     event_log: Vec<(f64, ArtifactClass, u32, f64)>,
+    g5_frames: u64,
     /// When each body last scored a rubber band, a contact.
     body_band_s: HashMap<u32, f64>,
     body_contact_s: HashMap<u32, f64>,
@@ -252,6 +259,7 @@ impl PerceptualEval {
             event_log: Vec::new(),
             body_band_s: HashMap::new(),
             body_contact_s: HashMap::new(),
+            g5_frames: 0,
         }
     }
 
@@ -490,6 +498,7 @@ impl PerceptualEval {
         self.contacts_and_breaks(t_s, items);
         self.overlaps(t_s, items);
         self.commit_accelerations(t_s, items);
+        self.resurrections(items);
     }
 
     /// V3/V4/V5 samples wait `CONTACT_WINDOW_S` before they count, and are
@@ -535,6 +544,25 @@ impl PerceptualEval {
                 self.per_second(ArtifactClass::EnergyGain, a.body, a.second, e, a.vis);
             }
         }
+    }
+
+    fn resurrections(&mut self, items: &[ItemSample]) {
+        let mut bodies = std::collections::HashSet::new();
+        for item in items {
+            if !item.truth_settled || item.visibility <= 0.0 {
+                continue;
+            }
+            let Some(state) = self.items.get(&item.id) else { continue };
+            if state.world_len < 2 {
+                continue;
+            }
+            let (d1, t1) = state.world[state.world_len - 1];
+            let (d0, t0) = state.world[state.world_len - 2];
+            if d1.distance(d0) > 0.01 && t1.distance(t0) < 0.001 {
+                bodies.insert(item.body);
+            }
+        }
+        self.g5_frames += bodies.len() as u64;
     }
 
     /// V6 contact timing and V7 cause to effect.
@@ -755,6 +783,7 @@ impl PerceptualEval {
             );
         }
         report.penalty_per_minute = total;
+        report.g5_resurrection_frames = self.g5_frames;
         report.q = self.model.quality(total);
         report.not_measured = vec![
             "V8 group error".into(),
@@ -1086,6 +1115,7 @@ mod tests {
                 displayed_body: 1,
                 displayed_standing: t < 1.0,
                 truth_standing: t < 1.0,
+                truth_settled: false,
             }]
         });
         let cause = &report.classes["cause_effect"];

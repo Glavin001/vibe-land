@@ -29,12 +29,12 @@ use crate::chunks::{ChunkReader, ChunkTruth, DrawnTables};
 const ID_WIDTH: usize = 240;
 const ID_HEIGHT: usize = 135;
 
-struct SlotInfo {
-    half_extents: Vec3,
-    mass: f32,
+pub(crate) struct SlotInfo {
+    pub half_extents: Vec3,
+    pub mass: f32,
 }
 
-fn slot_table(manifest: &DestructionManifest) -> Vec<SlotInfo> {
+pub(crate) fn slot_table(manifest: &DestructionManifest) -> Vec<SlotInfo> {
     let mut slots = Vec::new();
     for structure in &manifest.structures {
         let n = structure.chunks.iter().map(|c| c.node_index + 1).max().unwrap_or(0) as usize;
@@ -58,6 +58,7 @@ pub fn evaluate_client(
     tracks: &PlayerTracks,
     origin_ms: f64,
     model: PerceptualModel,
+    events_out: Option<&mut Vec<(f64, vibe_land_destruction::perception::ArtifactClass, u32, f64)>>,
 ) -> std::io::Result<PerceptualReport> {
     let mut reader = ChunkReader::open(chunks_path)?;
     let mut truth = ChunkTruth::open(tape_path, manifest, checkpoint)?;
@@ -71,7 +72,7 @@ pub fn evaluate_client(
     // NETLAB2_PERCEPTUAL_DUMP=<dir>: every event at or above threshold, one
     // JSON line each, per client (diagnosis; changes no score).
     let dump = std::env::var("NETLAB2_PERCEPTUAL_DUMP").ok().filter(|d| !d.is_empty());
-    eval.record_events(dump.is_some());
+    eval.record_events(dump.is_some() || events_out.is_some());
     let worst = std::env::var("NETLAB2_WORST_CHUNKS").ok().filter(|_| chunks_path.parent().is_some_and(|p| p.ends_with("c01")));
     let mut worst_map: std::collections::HashMap<u32, (f64, u64, f64, f64, u32)> = std::collections::HashMap::new();
     let trace_body: Option<u32> = std::env::var("NETLAB2_PERCEPTUAL_TRACE").ok().and_then(|v| v.parse().ok());
@@ -120,6 +121,7 @@ pub fn evaluate_client(
                 displayed_body: drawn.map_or(u32::MAX, |d| d.key),
                 displayed_standing: drawn.map_or(true, |d| standing(d.key)),
                 truth_standing: true_chunk.map_or(true, |t| standing(t.key)),
+                truth_settled: true_chunk.is_some_and(|t| t.settled && !standing(t.key)),
             });
         }
         let visible = buffer.visible_ids();
@@ -171,14 +173,18 @@ pub fn evaluate_client(
             eprintln!("WORST slot={slot} mean={mean:.3} frames={n} max={max:.3} at_render={at:.1} truth_body={body} serial={}", body & 0xfffff);
         }
     }
+    let events = eval.take_events();
     if let Some(dir) = dump {
         use std::io::Write;
         std::fs::create_dir_all(&dir)?;
         let name = chunks_path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let mut file = std::io::BufWriter::new(std::fs::File::create(Path::new(&dir).join(format!("{name}-events.jsonl")))?);
-        for (t, class, body, m) in eval.take_events() {
+        for &(t, class, body, m) in &events {
             writeln!(file, "{}", serde_json::json!({"t": t, "class": class.name(), "body": body, "m": m}))?;
         }
+    }
+    if let Some(out) = events_out {
+        *out = events;
     }
     Ok(eval.report())
 }
