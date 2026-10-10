@@ -297,6 +297,8 @@ city-100k; change against current defaults):
 | `age_priority` + `drawn_view` | 0.95-1.07 (geomean 0.995: a tie) | -12% to +0.4% | +4.6% | candidate default |
 | + `contacts` (on-screen, marginal, from landing) | 0.94-1.11 | -15% to +0.7% | +25% | knob |
 | `age_priority` with the correction as a cost, waiting when it costs more than it saves | 0.95-1.11 | 2-6x worse | 3.5x worse | reverted |
+| `age_priority` accruing only while the body is on screen, + `drawn_view` | **1.05-1.18 (per player wins all five)** | -14% to +3% | **-9.9%** | candidate default |
+| the same + `ground_gate` (sunk into the ground: sent first) | 1.05-1.18 | -15% to +8% | -5.4% | knob |
 
 **What these show.**
 - **The accumulator fixes the slider:** at most 6 pops per piece, against 86.
@@ -304,6 +306,20 @@ city-100k; change against current defaults):
   small budgets,** by 8-12%, and leaves the corner tied.
 - **It costs 4.6% on city-100k,** where it corrects many small, steady,
   distant errors, and each correction is itself a pop.
+- **Accruing only while a body is on screen** (the scorer charges V1 and V2
+  only for visible items) turned the city result from +4.6% to -9.9%. It
+  also made per player win all five corner seeds. Across 5 seeds of the
+  standard captures, with both knobs on (paired CI, v2 / per player):
+
+  | capture | ratio |
+  |---|---|
+  | wedge | 3.21x (2.86-3.53) |
+  | sustained | 3.01x (2.71-3.40) |
+  | meteor-volley | 6.71x (5.03-8.44); 5.74x with the defaults |
+
+  Its cost: debris inside geometry at 256 kbit/s meteor-volley rises from
+  1,518 to 3,730 frames. `ground_gate` brings that to 2,903; the rest is
+  inside standing structures.
 - **Making the correction a cost instead held back the pieces about to sink
   through the floor** (G4 in the thousands). The scorer charges those under
   classes the accumulator does not see. The next lever is to put those
