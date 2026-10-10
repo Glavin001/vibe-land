@@ -145,7 +145,7 @@ sessions. Send time per tick, for every client together:
 | meteor-volley | 16 | 0.55 / 2.2 | 3.4 / 12.7 |
 | meteor-volley | 64 | 2.1 / 8.9 | 15.5 / 54.7 |
 
-- **The CPU gap.** Per player costs 5-6x more per client: 59-243 us against
+- **The CPU gap.** Per player costs 5-6x more per client: 54-243 us against
   10-38 us. Each client's selection evaluates every awake body against that
   client's own model of what it is drawing.
 - **The fix.** `pp.send_threads` (eaee67f7) splits one send's clients across
@@ -207,7 +207,7 @@ sessions. Send time per tick, for every client together:
       mismatches in every run, live included);
     - events apply at their tick (G2 early: 0);
     - two datagram copies of each events packet cut late events by
-      35-96% for 2-4% more bytes.
+      35-96% for 1.5-4% more bytes.
   - **Dialable rate** with smooth degradation (58-525 kbit/s), and every
     gate passing across the curve.
 - **Weaknesses**
