@@ -169,6 +169,10 @@ struct Truth {
     contact_tick: u32,
 }
 
+/// Bytes of a keyframes datagram before its records (kind, tick, ordinal,
+/// count).
+const DATAGRAM_HEADER: usize = 13;
+
 /// A contact, as the perceptual scorer finds one: a frame-to-frame velocity
 /// change this far from gravity's (m/s).
 const CONTACT_DV: f32 = 1.0;
@@ -982,7 +986,14 @@ fn send_for(
     let mut out = ClientSend::default();
     let mut used = 0usize;
     if budget != Some(SendBudget::Skip) {
+        // Copies are an optimisation (the reliable stream carries every
+        // event): one that does not fit the allowance is skipped, and uses
+        // up that try, so they never queue up behind the original.
         for (bytes, left) in cs.event_copies.iter_mut() {
+            if used + bytes.len() > allowance {
+                *left -= 1;
+                continue;
+            }
             used += bytes.len();
             out.topology_bytes += bytes.len();
             out.packets.push(Outgoing::datagram(bytes.clone()));
@@ -991,14 +1002,22 @@ fn send_for(
         cs.event_copies.retain(|(_, left)| *left > 0);
     }
     let mut chosen: Vec<KeyframeRecord> = Vec::new();
+    // The datagrams' own headers count too: records are packed in this
+    // order, a new datagram starting whenever the next one does not fit.
+    let mut room = 0usize;
     for c in &candidates {
-        if used + c.bytes > allowance && c.priority < f32::MAX {
+        let header = if c.bytes > room { DATAGRAM_HEADER } else { 0 };
+        if used + header + c.bytes > allowance && c.priority < f32::MAX {
             continue;
         }
-        if used + c.bytes > allowance {
+        if used + header + c.bytes > allowance {
             break;
         }
-        used += c.bytes;
+        if header > 0 {
+            room = config.max_datagram - DATAGRAM_HEADER;
+        }
+        room -= c.bytes.min(room);
+        used += header + c.bytes;
         if c.record.baseline.is_some() {
             stats.delta_records += 1;
         }
@@ -1017,7 +1036,7 @@ fn send_for(
     let mut start = 0;
     loop {
         let mut end = start;
-        let mut bytes = 13;
+        let mut bytes = DATAGRAM_HEADER;
         while end < chosen.len() && bytes + record_bytes(&chosen[end], physics) <= config.max_datagram {
             bytes += record_bytes(&chosen[end], physics);
             end += 1;

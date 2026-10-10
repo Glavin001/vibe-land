@@ -386,7 +386,10 @@ impl TokenBucket {
             None => self.level = self.level.max(0.0),
         }
         self.last_s = Some(now_s);
-        while self.recent.front().is_some_and(|(t, _)| *t <= now_s - 1.0) {
+        // Conservative at the edge: a send a hair under a second old by
+        // float rounding is still in the window (a trailing-second measure
+        // of the same sends must never see more than the peak).
+        while self.recent.front().is_some_and(|(t, _)| *t < now_s - 1.0 - 1e-6) {
             let (_, bytes) = self.recent.pop_front().unwrap();
             self.recent_bytes -= bytes;
         }
