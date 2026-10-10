@@ -25,11 +25,13 @@ number to compare.
 
   | capture | shared v2 / per player | at bytes (v2 / per player) |
   |---|---|---|
-  | wedge | **3.07x** (2.69-3.53) | 1.05x |
-  | sustained | **2.91x** (2.67-3.22) | 0.97x |
-  | meteor-volley | **5.52x** (4.17-6.92) | 1.05x |
+  | wedge | **3.06x** (2.69-3.53) | 1.05x |
+  | sustained | **2.90x** (2.66-3.22) | 0.97x |
+  | meteor-volley | **5.56x** (4.20-6.97) | 1.05x |
 
   It also wins on cable (1.6-6.0x) and on poor-mobile (2.2-3.4x).
+  On the owner's 100k-chunk city recording it is 5.3x lower (727 against
+  3823 penalty per minute) at slightly fewer bytes.
 - **Integrity.**
   - **Per player** never applies an event early (G2), never resurrects
     settled debris on the standard runs (G5), and holds the budget (G3).
@@ -46,9 +48,17 @@ number to compare.
   - F3 (two players disagree about the line between them) is often lower
     for v2. Its players receive the same records, while per player tailors
     each stream to each camera.
-- **Cost: per player spends 5-6x more server CPU per client.** Parallel
-  sends (`pp.send_threads`, byte-identical) bring 64 clients on
-  meteor-volley from 16.2 to 3.7 ms per tick.
+- **Cost: per player spends more server CPU per client, and it shows at
+  scale.**
+  - On the standard captures it is 5-6x v2 per client. Parallel sends
+    (`pp.send_threads`, byte-identical) bring 64 clients on meteor-volley
+    from 16.2 to 3.7 ms per tick.
+  - On the owner's 113k-chunk aerial bombardment (about 97k awake bodies),
+    bounded evaluation, parallel ingest and FxHash bring 4 clients from
+    352 to about 18 ms per tick.
+  - At 64 clients there it is still about 4x v2: 82 ms against 21 ms
+    (p99, 16 threads). It sends a quarter of v2's bytes: 2.5 against
+    10.6 Mbit/s per client.
 - **Egress per client is about equal:** both send unicast today. Only v2's
   encode-once records could be fanned out by relays.
 - **Per player plays live** in `/city` (`citypp-*` match ids, or
@@ -96,12 +106,12 @@ fairness number per player still has to win.
 
 | capture | strategy | kbit/s | penalty/min | debris p99 m | pops/min | contacts late/min | G2 early | G2 late | G4 frames (worst cm) | G5 | F2 / F3 per pair-min | send us/client |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---:|
-| wedge | shared-v2 | 154.3 | 467 | 0.168 | 12.8 | 70.6 | 1020 / 1036 | 0 | 3 (5.4) | 0 | 1.60 / 0.00 | 5.5 |
-| wedge | per-player | 140.1 | **141** | 0.146 | 10.6 | 10.0 | 0 | 31 / 4340 | 3 (5.6) | 0 | 0.37 / 0.73 | 29.8 |
-| sustained | shared-v2 | 283.4 | 1336 | 0.209 | 48.4 | 226.8 | 2128 / 2140 | 0 | 227 (10.5) | 0 | 0.83 / 0.17 | 10.6 |
-| sustained | per-player | 284.6 | **432** | 0.128 | 35.6 | 41.6 | 0 | 158 / 7888 | 3 (41.0) | 0 | 1.07 / 1.65 | 66.8 |
-| meteor-volley | shared-v2 | 496.3 | 10525 | 15.95 | 1384 | 620 | 2939 / 2940 | 0 | 589 (140) | 23 | 4.29 / 2.69 | 52.1 |
-| meteor-volley | per-player | 467.7 | **1333** | 0.322 | 64.9 | 114 | 0 | 1309 / 16428 | 4 (26.7) | 0 | 0.36 / 1.70 | 217 |
+| wedge | shared-v2 | 154.3 | 468 | 0.168 | 12.8 | 70.6 | 1020 / 1036 | 0 | 3 (5.4) | 0 | 1.60 / 0.00 | 5.5 |
+| wedge | per-player | 140.1 | **142** | 0.146 | 10.6 | 10.0 | 0 | 31 / 4340 | 3 (5.6) | 0 | 0.37 / 0.73 | 26.2 |
+| sustained | shared-v2 | 283.4 | 1338 | 0.209 | 48.4 | 226.8 | 2128 / 2140 | 0 | 227 (10.5) | 0 | 0.83 / 0.17 | 10.6 |
+| sustained | per-player | 284.6 | **434** | 0.128 | 35.6 | 41.6 | 0 | 158 / 7888 | 3 (41.0) | 0 | 1.07 / 1.65 | 60.1 |
+| meteor-volley | shared-v2 | 496.3 | 10543 | 15.95 | 1384 | 620 | 2939 / 2940 | 0 | 589 (140) | 23 | 4.29 / 2.69 | 52.1 |
+| meteor-volley | per-player | 467.5 | **1316** | 0.323 | 64.3 | 111 | 0 | 1158 / 16428 | 4 (26.7) | 0 | 0.36 / 1.70 | 178 |
 
 Notes on reading it:
 - Per player sends bonds-only events, many and small, so its event counts
@@ -126,9 +136,9 @@ the other's rates (`scripts/netlab/rate-quality.py`):
 
 | capture | at kbit/s | shared-v2 penalty | per-player penalty | ratio |
 |---|---:|---:|---:|---:|
-| wedge | 151-164 | 413-471 | 122-132 | 3.1-3.6x |
-| sustained | 279-305 | 1247-1412 | 471-478 | 2.6-3.0x |
-| meteor-volley | 492-505 | 10525-11093 | 1333 | 7.9-8.3x |
+| wedge | 151-164 | 413-472 | 123-133 | 3.1-3.5x |
+| sustained | 279-305 | 1249-1415 | 472-480 | 2.6-2.9x |
+| meteor-volley | 492-505 | 10543-11111 | 1316 | 8.0-8.4x |
 
 - **Shared v2 is one operating point:** its error budget moves its bytes by
   2-9%. Its rate is set by policy, not by error.
@@ -144,7 +154,7 @@ the other's rates (`scripts/netlab/rate-quality.py`):
 | cable | meteor-volley | 496, 9779 | 331, 1640 | 6.0x |
 | lte | wedge | 154, 467 | 140, 141 | 3.3x |
 | lte | sustained | 283, 1336 | 285, 432 | 3.1x |
-| lte | meteor-volley | 496, 10525 | 468, 1333 | 7.9x |
+| lte | meteor-volley | 496, 10543 | 468, 1316 | 8.0x |
 | poor-mobile | wedge | 99, 532 | 88, 185 | 2.9x |
 | poor-mobile | sustained | 193, 1847 | 173, 832 | 2.2x |
 | poor-mobile | meteor-volley | 294, 15178 | 262, 4451 | 3.4x |
@@ -215,6 +225,48 @@ one thread):
   publish between its busiest client's rate and the total (reported in
   every scorecard).
 
+## At 100k chunks: the owner's recordings
+
+`twstate-to-capture` (destruction/src/bin) converts PhysX TWSTATE
+recordings into lab captures. It derives bonds, islands, fractures,
+crushes, settles and wakes from per-chunk poses. Each rule is documented
+in the binary, and derive-check passes: 0 split or merged.
+
+| capture | chunks | bonds broken | islands | peak awake bodies |
+|---|---:|---:|---:|---:|
+| city-100k (1,600 buildings, 32 s) | 102,400 | 19,753 | 7,529 | 2,631 |
+| aerial-113k (256 buildings, 30 s, PhysX sleep off) | 113,664 | 200,249 | 96,825 | about 97,000 |
+
+**Quality, city-100k** (4 clients, lte, 1024 kbit/s bucket):
+
+| strategy | kbit/s | penalty/min | debris p99 m | G3 over | G4 frames | G5 frames | F2 / F3 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| shared-v2 | 1107 | 3823 | 10.2 | 2 | 1118 | 323 | 2.8 / 5.6 |
+| per-player | 1014 | **727** | 2.4 | 0 | 145 | 1 | 0 / 0 |
+
+**Cost, aerial-113k** (about 97k bodies awake every tick), server ms per
+tick:
+
+| | 4 clients, ingest + send | 64 clients: ingest + send (p99) | kbit/s per client | origin egress at 64 |
+|---|---|---|---:|---:|
+| shared-v2 | 7 + 0.7 wall (13.7 CPU) | 8 + 13.4 (21) | 10,566 | 676 Mbit/s |
+| per-player, first run | 35 + 317 | about 39 + 865 | 2,494 | 160 Mbit/s |
+| per-player, now (8-16 threads) | **9.1 + 8.5** | 23 + 58.6 (84) | 2,486 | 159 Mbit/s |
+
+How per player got there (each change byte-identical below the cap):
+- **Never-sent bodies** are ranked by size on screen, and only as many as a
+  send can carry are evaluated.
+- **Evaluation is bounded** (`pp.eval_cap` 4096). The rest of the bodies
+  are covered by a rotating slice of a stable body order, plus last send's
+  losers and the freshest contacts. Contacts alone had been 93% of
+  evaluations: piles in constant contact.
+- **Ingest classifies bodies on worker threads.**
+- **The maps keyed by body use FxHash.**
+
+What is left: at 64 clients and about 97k awake bodies, per player is
+about 4x v2's CPU per tick. Its ingest also grows with clients, because
+each fracture updates every client's model.
+
 ## Strengths and weaknesses, and why
 
 ### Shared world (wire v2)
@@ -254,8 +306,11 @@ one thread):
     - datagram copies cut late events.
   - **Dialable rate,** with every gate passing along the 1024 kbit/s curve.
 - **Weaknesses**
-  - **Server CPU 5-6x per client.** It needs threads at scale, and spatial
-    binning is next.
+  - **Server CPU 5-6x per client.** With threads and bounded evaluation,
+    4 clients at about 97k awake bodies fit a tick (17.6 ms). 64 clients
+    there take about 4x v2's 21 ms. The next levers are fewer evaluations
+    per client (a coarser cap, spatial binning) and a per-fracture model
+    update that does not touch every client.
   - **Unicast only:** no relay fan-out.
   - **F3 asymmetry:** per-camera streams make players disagree about
     sightlines more often (0.7-2.5 per pair-minute against v2's 0-1.3 on
@@ -283,10 +338,11 @@ windows by the scorer's event log:
 
 - **Calibration.** Thresholds and severities are literature seeds. A
   simulated inspector needed about 80 trials per class to land within 10%.
-- **Unmeasured metrics:** V8 group error, V9 VDP, V12 audio, and fairness
+- **Unmeasured metrics:** V9 VDP, V12 audio, and fairness
   F1/F5/F6 (shots through debris, debris damage: opt-in gameplay changes).
-- **Scale.** Runs went to 64 players on 1,700 bodies. The converter for the
-  owner's 100k-piece recordings is in progress.
+- **Quality at full scale:** quality at about 97k awake bodies (aerial)
+  needs client stages that big. Cost is measured; quality was measured on
+  city-100k.
 
 ## How to reproduce
 

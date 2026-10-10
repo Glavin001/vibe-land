@@ -2,7 +2,7 @@
   "per-player": {
     "tape_sha256": "d1fdd48d9e01e464ee8f206a34ca1fc840d9bcf9a982b91a95a9dabd654609f8",
     "kbit_s": 140.1,
-    "penalty": 141.32185678489932,
+    "penalty": 142.13106133512147,
     "gates": false,
     "gate_counts": {
       "g1_hash_mismatches": 0,
