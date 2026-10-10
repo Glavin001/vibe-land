@@ -46,7 +46,10 @@ struct FfiChunkRayHit;
 /// The stage consumes PhysX's own solved contact impulses on the GPU, so the
 /// CPU contact callback has nothing to do for these pairs. The filter shader
 /// drops their notification flags, which removes the whole `onContact` cost for
-/// the city while players, vehicles and projectiles keep their reports.
+/// the city while players, vehicles and projectiles keep their reports. The one
+/// exception is opt-in: with `VIBE_CITY_DEBRIS_DAMAGE=1`, a moving (not
+/// kinematic) chunk body touching a player capsule keeps its report, so the
+/// server can apply debris strikes (physx_bridge.cc `simulation_filter`).
 inline constexpr std::uint32_t kNativeChunkFilterBit = 1u << 31;
 
 /// Drives PhysX's built-in GPU destruction stage for one `PxScene`.
