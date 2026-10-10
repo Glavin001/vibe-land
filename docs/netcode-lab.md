@@ -204,6 +204,46 @@ players), with shared-v2:
 | loopback | 2 recorded | link only | 211.5 | 1963 | 0.179 / 0.85–0.88 m | 0 / 314 |
 | lte | 2 recorded + 2 walkers | 512/1536 kbit/s bucket | 203.8 | 1536.9 | – | – |
 
+## Calibration: can you tell the netcode from the full data?
+
+The scorecard's perceptual model is a literature seed. The question it stands
+in for is whether a player can tell the netcode's drawing from the full
+simulation. These rounds ask that directly.
+
+1. `netlab2 city-pairs --list --capture C --runs R1,R2,... --out D` lists
+   every 3 s window of each run with the scorer's penalty in it, by class.
+   Runs cover both netcodes at several budgets and links.
+2. `scripts/netlab/pairs-plan.py D1 D2 ... --out P` designs a round for the
+   inspector's time:
+   - both netcodes at the same moments;
+   - spread over log penalty, thick in the middle, one or two at each end;
+   - varied dominant artifact classes;
+   - about 10% identical-truth controls.
+
+   Round 1 is 40 trials, about 6 minutes.
+3. `netlab2 city-pairs --plan P/<capture>/plan.json ...` renders those trials
+   as unlabeled pairs, the truth and the drawing, from the player's camera at
+   the run's render time:
+   - chunk colours are fixed whatever body a chunk is on;
+   - clip files get opaque names.
+4. `scripts/netlab/study-pairs/index.html` is the page. It plays A then B,
+   asks which looked wrong and how much it would bother in a match (0-4), and
+   shows no score between rounds.
+5. `scripts/netlab/pairs-fit.py responses.json` analyses the answers, with
+   the analysis fixed before the data:
+   - the share of trials where the netcode's clip was picked, with an exact
+     95% interval, against the plan's 60% bar;
+   - the guess rate on the controls;
+   - a 2AFC logistic of correct against log penalty, giving the threshold in
+     the scorer's units, or showing the penalty does not track what is seen;
+   - rating against penalty, the scale the quality score is fitted to.
+
+   On a simulated inspector it recovers the threshold (30 against 32).
+
+**Limitation:** the renderer is the scorer's boxes, not the game's. With no
+textures, dust or motion blur, these rounds are the stricter test. The game's
+renderer replaying the same pose logs is the next step.
+
 ## Limits
 
 - **City traffic only on the link.** The player snapshot stream (about
