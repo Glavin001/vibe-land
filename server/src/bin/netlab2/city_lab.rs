@@ -351,7 +351,8 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
             strategy.begin_send(tick);
             let has_records = strategy.has_records();
             for (id, client) in clients.iter_mut() {
-                let Some(camera) = client.spec.camera.camera_at(tick, hz, &capture.tracks) else {
+                let seconds = (tick - first) as f32 / hz as f32;
+                let Some(camera) = client.spec.camera.camera_in_run(tick, seconds, &capture.tracks) else {
                     continue;
                 };
                 if !has_records && !strategy.has_pending(*id) {
