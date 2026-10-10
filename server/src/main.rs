@@ -4227,10 +4227,19 @@ impl MatchState {
                     // client never had a ledger, so it never sees a sequence
                     // gap either -- it renders the intact manifest forever and
                     // reports nothing wrong. Enrol it for repair instead.
-                    let mut delivered =
-                        try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
-                    if let Some(lanes) = city.full_lane_map() {
-                        delivered = try_queue_packet(&conn.tx, lanes, &self.io) && delivered;
+                    let mut delivered = true;
+                    if city.is_per_player() {
+                        // Wire 4: the per-player bootstrap, and this client's
+                        // stream state started to match it.
+                        for packet in city.per_player_join(u64::from(conn.player_id), self.server_tick) {
+                            delivered = try_queue_packet(&conn.tx, packet, &self.io) && delivered;
+                        }
+                    } else {
+                        delivered =
+                            try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
+                        if let Some(lanes) = city.full_lane_map() {
+                            delivered = try_queue_packet(&conn.tx, lanes, &self.io) && delivered;
+                        }
                     }
                     // The manifest is NOT sent here, although the client
                     // cannot use anything above until it has one. It fetches it
@@ -4475,6 +4484,11 @@ impl MatchState {
                             city.restate_bodies(&bodies);
                         }
                     }
+                    ClientPacket::CityPerPlayerAck { newest, mask } => {
+                        if let Some(city) = self.city.as_mut() {
+                            city.per_player_ack(u64::from(player_id), newest, mask);
+                        }
+                    }
                     ClientPacket::CityManifestRequest => {
                         // 1.8 MB down the ordered reliable lane, so it is sent
                         // to the one client that could not get it any other way
@@ -4498,7 +4512,19 @@ impl MatchState {
                         last_topo_seq,
                         structures,
                     } => {
-                        if let Some(city) = self.city.as_mut() {
+                        if let Some(city) = self.city.as_mut().filter(|city| city.is_per_player()) {
+                            // Wire 4 has one repair: restart the client's
+                            // stream from a fresh bootstrap.
+                            info!(
+                                match_id = %self.id,
+                                player_id,
+                                last_topo_seq,
+                                "city per-player resync requested; sending bootstrap"
+                            );
+                            for packet in city.per_player_join(u64::from(player_id), self.server_tick) {
+                                let _ = try_queue_packet(&runtime.tx, packet, &self.io);
+                            }
+                        } else if let Some(city) = self.city.as_mut() {
                             if structures.is_empty() {
                                 info!(
                                     match_id = %self.id,
@@ -5112,14 +5138,23 @@ impl MatchState {
             let Some(city) = self.city.as_mut() else {
                 continue;
             };
-            let bootstrap = city.bootstrap(self.server_tick);
-            city.note_client_bootstrap(u64::from(player_id));
-            let lanes = city.full_lane_map();
-            // The datagram half: every lane restates absolutely over the
-            // coming spans, so poses match the freshly-bootstrapped ledger.
-            city.begin_join_restate();
-            let queued = try_queue_packet(&runtime.tx, bootstrap, &self.io)
-                && lanes.is_none_or(|lanes| try_queue_packet(&runtime.tx, lanes, &self.io));
+            let queued = if city.is_per_player() {
+                // Wire 4: a fresh bootstrap restarts the client's stream.
+                city.per_player_join(u64::from(player_id), self.server_tick)
+                    .into_iter()
+                    .fold(true, |queued, packet| {
+                        try_queue_packet(&runtime.tx, packet, &self.io) && queued
+                    })
+            } else {
+                let bootstrap = city.bootstrap(self.server_tick);
+                city.note_client_bootstrap(u64::from(player_id));
+                let lanes = city.full_lane_map();
+                // The datagram half: every lane restates absolutely over the
+                // coming spans, so poses match the freshly-bootstrapped ledger.
+                city.begin_join_restate();
+                try_queue_packet(&runtime.tx, bootstrap, &self.io)
+                    && lanes.is_none_or(|lanes| try_queue_packet(&runtime.tx, lanes, &self.io))
+            };
             if queued {
                 self.city_desync_repairs += 1;
                 info!(
@@ -5547,7 +5582,11 @@ impl MatchState {
                     );
                 }
             }
+            if send_due && city.is_per_player() {
+                self.city_per_player_sends(&mut city, cameras.clone(), staged_tick);
+            }
             let v2_pose_stream = v3_datagrams.is_empty()
+                && !city.is_per_player()
                 && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
             if send_due && v2_pose_stream {
                 let encode_started = std::time::Instant::now();
@@ -5655,6 +5694,61 @@ impl MatchState {
             }
         }
         (!packets.is_empty()).then_some(packets)
+    }
+
+    /// Wire 4: one send tick of the per-player stream -- the shared half,
+    /// then each client's keyframe datagrams under its link's rate plan (as
+    /// `city_datagrams_for` takes it for v2, against the strategy's own
+    /// ceiling). The order is `netlab2 city`'s `run_city_stream`. Returns the
+    /// datagrams the outbound queues dropped.
+    fn city_per_player_sends(
+        &mut self,
+        city: &mut city::CityRuntime,
+        cameras: Vec<(u32, vibe_land_destruction::types::Camera)>,
+        tick: u32,
+    ) -> u64 {
+        use vibe_land_destruction::replication::SendBudget;
+        city.per_player_begin_send(tick);
+        let send_interval_s = f64::from(city.send_interval_ticks().max(1)) / f64::from(SIM_HZ);
+        let ceiling = city.per_player_ceiling_bytes();
+        let mut drops = 0u64;
+        for (player_id, camera) in cameras {
+            let client = u64::from(player_id);
+            let plan = match self.players.get_mut(&player_id) {
+                Some(runtime) => match runtime.link.as_ref().and_then(|link| link.sample()) {
+                    Some(sample) => {
+                        city.note_link_rtt(client, sample.rtt_us as f32 / 1000.0);
+                        runtime.city_rate.plan(sample, send_interval_s, ceiling)
+                    }
+                    None => link_rate::SendPlan::Full,
+                },
+                None => continue,
+            };
+            let budget = match plan {
+                link_rate::SendPlan::Full => SendBudget::Full,
+                link_rate::SendPlan::Limited { allowance_bytes, sends } => {
+                    SendBudget::Limited { allowance_bytes, sends }
+                }
+                link_rate::SendPlan::Skip => SendBudget::Skip,
+            };
+            let send = city.per_player_send(client, camera, tick, budget);
+            let bytes: usize = send.packets.iter().map(|packet| packet.bytes.len()).sum();
+            let Some(runtime) = self.players.get_mut(&player_id) else {
+                continue;
+            };
+            if plan == link_rate::SendPlan::Skip {
+                runtime.city_rate.sent_topology(0);
+            } else {
+                runtime.city_rate.sent(bytes, plan);
+            }
+            for packet in send.packets {
+                let unreliable = packet.lane == vibe_land_destruction::replication::Lane::Datagram;
+                if !try_queue_packet_on_lane(&runtime.tx, packet.bytes, unreliable, &self.io) {
+                    drops += 1;
+                }
+            }
+        }
+        drops
     }
 
     fn tick_city(&mut self, dt: f32) {
@@ -5805,19 +5899,29 @@ impl MatchState {
                     // The client ledger still describes the demolished city and
                     // no incremental topology event can say "start over", so
                     // every client needs a fresh bootstrap.
-                    let bootstrap = city.bootstrap(self.server_tick);
-                    // Wire v3: the rebuilt encoder restarts lane ids and its
-                    // epoch, so a bootstrap alone leaves every client holding
-                    // a lane map for a world that no longer exists. Send the
-                    // new map beside it and restate every body, exactly as
-                    // join and resync do.
-                    let lanes = city.full_lane_map();
-                    city.begin_join_restate();
-                    for runtime in self.players.values() {
-                        let _ =
-                            try_queue_packet(&runtime.tx, bootstrap.clone(), &self.io);
-                        if let Some(lanes) = lanes.clone() {
-                            let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
+                    if city.is_per_player() {
+                        // Wire 4: the rebuilt stream knows no client yet;
+                        // each joins it afresh.
+                        for (player_id, runtime) in self.players.iter() {
+                            for packet in city.per_player_join(u64::from(*player_id), self.server_tick) {
+                                let _ = try_queue_packet(&runtime.tx, packet, &self.io);
+                            }
+                        }
+                    } else {
+                        let bootstrap = city.bootstrap(self.server_tick);
+                        // Wire v3: the rebuilt encoder restarts lane ids and its
+                        // epoch, so a bootstrap alone leaves every client holding
+                        // a lane map for a world that no longer exists. Send the
+                        // new map beside it and restate every body, exactly as
+                        // join and resync do.
+                        let lanes = city.full_lane_map();
+                        city.begin_join_restate();
+                        for runtime in self.players.values() {
+                            let _ =
+                                try_queue_packet(&runtime.tx, bootstrap.clone(), &self.io);
+                            if let Some(lanes) = lanes.clone() {
+                                let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
+                            }
                         }
                     }
                     tracing::info!(
@@ -5928,10 +6032,18 @@ impl MatchState {
         }
         // Chunk stream cadence (wire v2 only): shared encode once, per-client
         // interest + ceiling selection, own datagram sequence space per client.
+        let mut encode_ms_this_tick = 0.0_f32;
+        // Wire 4 (a staged tick sends at its flush, as v2 does).
+        if send_due && staged.is_none() && city.is_per_player() {
+            let encode_started = std::time::Instant::now();
+            outbound_drops += self.city_per_player_sends(&mut city, cameras.clone(), self.server_tick);
+            encode_ms_this_tick = encode_started.elapsed().as_secs_f32() * 1000.0;
+            city.record_encode_timings(0.0, encode_ms_this_tick);
+        }
         let v2_pose_stream = staged.is_none()
             && v3_datagrams.is_empty()
+            && !city.is_per_player()
             && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
-        let mut encode_ms_this_tick = 0.0_f32;
         if send_due && v2_pose_stream {
             // Timed because it was the single largest unmeasured cost: at 10k
             // bodies the tick was 44 ms while the city step and physx step
@@ -6034,6 +6146,19 @@ impl MatchState {
             bond_utilisation_max = stats.bond_utilisation_max,
             "city stream"
         );
+        if let Some(pp) = city.per_player_stats() {
+            info!(
+                match_id = %self.id,
+                fractures = pp.fractures,
+                removed_chunks = pp.removed_chunks,
+                derive_mismatches = pp.derive_mismatches,
+                keyframes_sent = pp.keyframes_sent,
+                keyframes_lost = pp.keyframes_lost,
+                delta_records = pp.delta_records,
+                heartbeats = pp.heartbeats,
+                "city per-player stream (wire 4)"
+            );
+        }
     }
 
     fn send_server_latency_pings(&mut self) {
@@ -7734,6 +7859,8 @@ fn wants_unreliable_delivery(kind: u8) -> bool {
         || kind == PKT_PING
         || kind == PKT_CITY_CHUNKS
         || kind == vibe_land_shared::constants::PKT_CITY_DEBRIS
+        // City wire 4's keyframes: loss is what the client's acks report.
+        || kind == vibe_land_perplayer::wire::PKT_PP_KEYFRAMES
         || kind == vibe_land_shared::constants::PKT_AUDIO_CONTACTS
         // Latest-wins telemetry: a lost frame is replaced a second later, and
         // it must never sit in front of topology on the ordered stream.
@@ -7757,6 +7884,9 @@ fn classify_outbound_delivery(
         return OutboundDelivery::Datagram;
     }
     if kind == vibe_land_shared::constants::PKT_AUDIO_CONTACTS
+        // City wire 4's datagram copies of its events: the reliable stream
+        // carries every one of them too.
+        || kind == vibe_land_perplayer::wire::PKT_PP_EVENTS
         || (is_snapshot_packet_kind(kind) && strict_snapshot_datagrams) {
         return OutboundDelivery::StrictDrop;
     }
@@ -7772,8 +7902,21 @@ fn try_queue_packet(
     telemetry: &MatchIoTelemetry,
 ) -> bool {
     let kind = packet.first().copied().unwrap_or_default();
+    try_queue_packet_on_lane(tx, packet, wants_unreliable_delivery(kind), telemetry)
+}
+
+/// `try_queue_packet` on the lane the sender chose rather than the one its
+/// kind implies: city wire 4 copies reliable events onto the datagram lane
+/// (`vibe_land_destruction::replication::Outgoing::lane`).
+fn try_queue_packet_on_lane(
+    tx: &outbound::Sender,
+    packet: Vec<u8>,
+    unreliable: bool,
+    telemetry: &MatchIoTelemetry,
+) -> bool {
+    let kind = packet.first().copied().unwrap_or_default();
     let is_snapshot = is_snapshot_packet_kind(kind);
-    match tx.enqueue(packet, wants_unreliable_delivery(kind)) {
+    match tx.enqueue(packet, unreliable) {
         outbound::Enqueue::Queued => true,
         outbound::Enqueue::DatagramDropped => {
             telemetry.observe_outbound_drop(is_snapshot);
@@ -8313,6 +8456,24 @@ mod tests {
         assert!(is_snapshot_packet_kind(PKT_SNAPSHOT));
         assert!(is_snapshot_packet_kind(PKT_SNAPSHOT_V2));
         assert!(!is_snapshot_packet_kind(PKT_PING));
+    }
+
+    /// City wire 4: keyframes ride datagrams (falling back to the stream when
+    /// one cannot go, as v2 chunks do); events are reliable by kind, and their
+    /// datagram copies are dropped rather than falling back, since the
+    /// reliable stream carries every one of them already.
+    #[test]
+    fn per_player_keyframes_ride_datagrams_and_event_copies_never_fall_back() {
+        use vibe_land_perplayer::wire::{PKT_PP_BOOTSTRAP, PKT_PP_EVENTS, PKT_PP_KEYFRAMES};
+        assert!(super::wants_unreliable_delivery(PKT_PP_KEYFRAMES));
+        assert_eq!(
+            classify_outbound_delivery(PKT_PP_KEYFRAMES, false, false),
+            OutboundDelivery::ReliableFallback
+        );
+        assert!(!super::wants_unreliable_delivery(PKT_PP_EVENTS));
+        assert!(!super::wants_unreliable_delivery(PKT_PP_BOOTSTRAP));
+        assert_eq!(classify_outbound_delivery(PKT_PP_EVENTS, false, false), OutboundDelivery::StrictDrop);
+        assert_eq!(classify_outbound_delivery(PKT_PP_EVENTS, false, true), OutboundDelivery::Datagram);
     }
 
     #[test]
