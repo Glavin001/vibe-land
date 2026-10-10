@@ -435,7 +435,12 @@ fn pair_reuse(config: Config, expected: &[Expectation], out: &mut Output) {
             ball(&mut world, 9500, at, radius, mass, v);
             let mut breaks: Vec<(u32, Vec<u32>)> = Vec::new();
             let mut velocity: Vec<V3> = Vec::new();
-            stage::run_ticks(&mut world, ticks, |t, _, broken, w| {
+            let verbose = std::env::var_os("VERIFY_VERBOSE").is_some();
+            stage::run_ticks(&mut world, ticks, |t, st, broken, w| {
+                if verbose && (5..=9).contains(&t) {
+                    println!("    [{}] tick {t}: contacts {} anchors {} broken {} ball {:?} bodies {}", if preserve { "kept" } else { "ref " },
+                        st.normal_contacts, st.friction_anchors, broken.len(), plain_velocity(w, 9500), native_bodies(w).len());
+                }
                 if !broken.is_empty() {
                     let mut b = broken.to_vec();
                     b.sort_unstable();
