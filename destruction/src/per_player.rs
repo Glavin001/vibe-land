@@ -232,10 +232,12 @@ impl PerPlayerConfig {
             contacts: false,
             correction_cost: true,
             motion_cost: false,
-            drawn_view: false,
-            age_priority: false,
+            // On by the scorecard (docs/netcode-shared-vs-per-player.md,
+            // "The turning-camera corner"): gates first, then penalty.
+            drawn_view: true,
+            age_priority: true,
             ground_gate: false,
-            solid_gate: false,
+            solid_gate: true,
             eval_cap: 4096,
             eval_budget: 65_536,
         }

@@ -20,6 +20,27 @@ number to compare.
 
 ## Bottom line
 
+**Per player's defaults** (since this revision): `age_priority`,
+`drawn_view` and `solid_gate` are on. The scorecard decides, gates first
+(G4: 707 frames against 1,518 on starved meteor-volley; 28 against 58 on
+city-100k), then penalty. Each is a `pp.*` knob, and `VIBE_CITY_PP_KNOBS`
+turns them off live. Their cost: +2% to +6% on some easy runs, and 0.88 ms
+per send on city-100k. With these defaults, every measured case (v2 /
+per player):
+
+| case | ratio |
+|---|---|
+| wedge, 5 seeds | 3.28x (95% CI 2.87-3.69) |
+| sustained, 5 seeds | 2.94x (2.69-3.29) |
+| meteor-volley, 5 seeds | 6.75x (5.09-8.43) |
+| the turning-camera corner, 5 seeds | 1.02-1.20, every seed |
+| cable and poor-mobile | 1.6-5.9x |
+| 256 kbit/s | 1.3-1.7x, G4 far below v2's |
+| city-100k | 5.0x |
+
+The sections below were measured before the flip, with the earlier
+defaults.
+
 - **Per player is better, with confidence.** Across 5 seeds the penalty
   ratio (paired bootstrap, 95% CI) is:
 
