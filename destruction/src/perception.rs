@@ -183,6 +183,11 @@ impl PerceptualModel {
         visibility.clamp(0.0, 1.0) * f.p_notice(m) * f.severity
     }
 
+    /// A model written as JSON (`scripts/netlab/fit-calibration.py`).
+    pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
+        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+    }
+
     /// Q (0-100) from a penalty per client-minute.
     pub fn quality(&self, penalty_per_minute: f64) -> f64 {
         100.0 * (-penalty_per_minute.max(0.0) / self.q_scale).exp()

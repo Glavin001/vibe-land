@@ -42,8 +42,8 @@ use crate::city_lab::{client_dir, CityCapture, ORIGIN_MS};
 use crate::city_perceptual::slot_table;
 use crate::{die, Args};
 
-const FFMPEG: &str = "/opt/homebrew/bin/ffmpeg";
-const FONT: &str = "/System/Library/Fonts/Supplemental/Arial.ttf";
+pub(crate) const FFMPEG: &str = "/opt/homebrew/bin/ffmpeg";
+pub(crate) const FONT: &str = "/System/Library/Fonts/Supplemental/Arial.ttf";
 /// Event-log bin width when ranking windows.
 const BIN_S: f64 = 0.25;
 
@@ -84,7 +84,10 @@ pub fn cmd_city_clips(args: &Args) {
     let zoom: Option<f32> = args.get("zoom").map(|c| c.parse().unwrap_or_else(|_| die("--zoom X")));
     let out = args.get("out").map_or_else(|| run_dirs[0].join("clips"), PathBuf::from);
     std::fs::create_dir_all(&out).unwrap_or_else(|e| die(&format!("{}: {e}", out.display())));
-    let model = PerceptualModel::literature();
+    let model = match args.get("model") {
+        Some(path) => PerceptualModel::load(Path::new(path)).unwrap_or_else(|e| die(&format!("--model {path}: {e}"))),
+        None => PerceptualModel::literature(),
+    };
 
     // The client's camera, as the first run recorded it (every run of one
     // comparison shares the client set).
@@ -502,7 +505,7 @@ fn write_index(out: &Path, runs: &[Run], windows: &[Window], client: usize, slow
     std::fs::write(out.join("clips.md"), md)
 }
 
-fn mix(a: [f32; 3], b: [f32; 3], k: f32) -> [f32; 3] {
+pub(crate) fn mix(a: [f32; 3], b: [f32; 3], k: f32) -> [f32; 3] {
     [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]
 }
 
@@ -514,7 +517,7 @@ fn hash(x: u32) -> u32 {
 }
 
 /// Standing: a muted tone per structure. Loose: a bright hue per chunk.
-fn chunk_colour(slot: u32, structure: u32, standing: bool) -> [f32; 3] {
+pub(crate) fn chunk_colour(slot: u32, structure: u32, standing: bool) -> [f32; 3] {
     if standing {
         let h = hash(structure);
         let v = 150.0 + (h & 31) as f32;
@@ -540,7 +543,7 @@ fn hsv(h: f32, s: f32, v: f32) -> [f32; 3] {
 }
 
 /// A colour and depth buffer for one pane.
-struct Canvas {
+pub(crate) struct Canvas {
     width: usize,
     height: usize,
     rgb: Vec<[u8; 3]>,
@@ -550,13 +553,13 @@ struct Canvas {
 const LIGHT: Vec3 = Vec3::new(0.35, 0.85, 0.4);
 
 impl Canvas {
-    fn new(width: usize, height: usize) -> Self {
+    pub(crate) fn new(width: usize, height: usize) -> Self {
         Self { width, height, rgb: vec![[0; 3]; width * height], depth: vec![f32::INFINITY; width * height] }
     }
 
     /// Sky above the horizon, a ground plane at y = 0 below it (fogged
     /// with distance, with a 10 m grid so camera motion reads).
-    fn clear(&mut self, camera: &Camera) {
+    pub(crate) fn clear(&mut self, camera: &Camera) {
         self.depth.fill(f32::INFINITY);
         let forward = camera.direction.normalize_or_zero();
         let reference_up = if forward.dot(Vec3::Y).abs() > 0.99 { Vec3::X } else { Vec3::Y };
@@ -586,7 +589,7 @@ impl Canvas {
         }
     }
 
-    fn draw_box(&mut self, projector: &Projector, camera: &Camera, position: Vec3, rotation: Quat, half: Vec3, colour: [f32; 3]) {
+    pub(crate) fn draw_box(&mut self, projector: &Projector, camera: &Camera, position: Vec3, rotation: Quat, half: Vec3, colour: [f32; 3]) {
         if !projector.sphere_on_screen(position, half.length()) {
             return;
         }
@@ -654,7 +657,7 @@ impl Canvas {
     }
 
     /// Copy into pane `index` of row `row` of a grid `panes` wide.
-    fn blit(&self, canvas: &mut [u8], panes: usize, row: usize, index: usize) {
+    pub(crate) fn blit(&self, canvas: &mut [u8], panes: usize, row: usize, index: usize) {
         let stride = panes * self.width * 3;
         for y in 0..self.height {
             let row = &mut canvas[(row * self.height + y) * stride + index * self.width * 3..][..self.width * 3];

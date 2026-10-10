@@ -135,7 +135,11 @@ def cmd_table(args):
             def order(name):
                 b, _, q = name[1:].partition("-q")
                 return (int(b), float(q) if q else -1.0)
-            for budget in sorted(os.listdir(os.path.join(cdir, strategy)), key=order):
+            sdir = os.path.join(cdir, strategy)
+            if not os.path.isdir(sdir):
+                continue
+            runs = [n for n in os.listdir(sdir) if os.path.isdir(os.path.join(sdir, n)) and n.startswith("b")]
+            for budget in sorted(runs, key=order):
                 path = os.path.join(cdir, strategy, budget, "scorecard.json")
                 if not os.path.exists(path):
                     continue

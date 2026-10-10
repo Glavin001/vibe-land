@@ -136,11 +136,11 @@ pub fn build_strategy(name: &str, capture: &CityCapture, knobs: &BTreeMap<String
                 .as_ref()
                 .map(|c| c.ledger().clone())
                 .unwrap_or_else(|| vibe_land_destruction::topology::CityLedger::from_manifest(&capture.manifest));
-            Box::new(vibe_land_destruction::per_player::PerPlayer::new(
-                &capture.manifest,
-                ledger,
-                per_player_config(capture, knobs),
-            ))
+            let strategy = vibe_land_destruction::per_player::PerPlayer::new(&capture.manifest, ledger, per_player_config(capture, knobs));
+            Box::new(match knobs.get("model") {
+                Some(_) => strategy.with_model(perceptual_model(knobs)),
+                None => strategy,
+            })
         }
         other => die(&format!("unknown --strategy {other}: shared-v2 | per-player")),
     }
@@ -168,7 +168,7 @@ pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>
 
 /// The encoder knobs `netlab2 run` understands, by the same names.
 fn apply_encoder_knobs(config: &mut EncoderConfig, knobs: &BTreeMap<String, String>) {
-    let knobs: BTreeMap<String, String> = knobs.iter().filter(|(k, _)| !k.starts_with("pp.")).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let knobs: BTreeMap<String, String> = knobs.iter().filter(|(k, _)| !k.starts_with("pp.") && *k != "model").map(|(k, v)| (k.clone(), v.clone())).collect();
     let stream = crate::stream_config(crate::stream::Pace::Ideal, &knobs);
     stream.city.apply(config);
 }
@@ -696,8 +696,18 @@ pub struct CityCard {
     pub kbit_s_max_1s: f64,
 }
 
+/// The perceptual model a run scores (and per-player ranks) with: `--model
+/// <json>` (a calibration fit), else the literature seeds.
+pub fn perceptual_model(knobs: &BTreeMap<String, String>) -> vibe_land_destruction::perception::PerceptualModel {
+    match knobs.get("model") {
+        Some(path) => vibe_land_destruction::perception::PerceptualModel::load(Path::new(path))
+            .unwrap_or_else(|e| die(&format!("--model {path}: {e}"))),
+        None => vibe_land_destruction::perception::PerceptualModel::literature(),
+    }
+}
+
 pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::Result<CityCard> {
-    let model = vibe_land_destruction::perception::PerceptualModel::literature();
+    let model = perceptual_model(&run.spec.knobs);
     let mut gates = Gates { pass: true, ..Default::default() };
     gates.pending = vec![
         "G4 solid geometry: needs the static occupancy grid".into(),
@@ -951,6 +961,10 @@ pub fn city_spec(args: &Args, capture: &CityCapture, capture_label: String) -> C
             let (k, v) = part.split_once('=').unwrap_or_else(|| die(&format!("--knob {part}: k=v")));
             knobs.insert(k.trim().to_string(), v.trim().to_string());
         }
+    }
+    // --model <json>: score (and, per player, rank) with a calibrated model.
+    if let Some(path) = args.get("model") {
+        knobs.insert("model".into(), path.to_string());
     }
     let cameras = args.all("camera");
     let clients: Vec<ClientSpec> = if cameras.is_empty() {

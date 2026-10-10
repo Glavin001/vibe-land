@@ -208,6 +208,13 @@ pub struct PerPlayer {
 impl PerPlayer {
     /// From the manifest and the ledger at the start (a capture's
     /// checkpoint, or the intact city).
+    /// Rank records by `model` (a calibrated fit) instead of the literature
+    /// seeds: the priority is the scorecard's own penalty.
+    pub fn with_model(mut self, model: PerceptualModel) -> Self {
+        self.model = model;
+        self
+    }
+
     pub fn new(manifest: &DestructionManifest, ledger: CityLedger, config: PerPlayerConfig) -> Self {
         let defs: BTreeMap<u32, StructureDef> = structure_defs(manifest).into_iter().map(|d| (d.id, d)).collect();
         let chunk_radius = manifest

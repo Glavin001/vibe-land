@@ -36,6 +36,7 @@ mod chunks;
 mod city_clips;
 mod city_lab;
 mod city_perceptual;
+mod city_study;
 mod city_pp_stage;
 #[cfg(test)]
 mod fixture_tests;
@@ -552,6 +553,7 @@ fn main() {
         "calibrate" => calibrate::cmd_calibrate(&args),
         "city" => city_lab::cmd_city(&args),
         "city-clips" => city_clips::cmd_city_clips(&args),
+        "city-study" => city_study::cmd_city_study(&args),
         "matrix" => report::cmd_matrix(&args),
         "compare" => report::cmd_compare(&args),
         "profiles" => {
