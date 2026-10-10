@@ -218,7 +218,7 @@ const GROUP_CELL_M: f32 = 4.0;
 const GROUP_MIN: u32 = 5;
 
 /// The static world's lookup grid, metres.
-const STATIC_CELL: f32 = 4.0;
+pub const STATIC_CELL: f32 = 4.0;
 
 /// G4's tolerance (the spec's 5 cm, as V11's threshold).
 pub const G4_TOLERANCE_M: f32 = 0.05;
@@ -234,7 +234,7 @@ pub struct StaticBox {
 
 impl StaticBox {
     /// How deep a sphere is inside the box (negative: outside by that much).
-    fn sphere_depth(&self, centre: Vec3, radius: f32) -> f32 {
+    pub fn sphere_depth(&self, centre: Vec3, radius: f32) -> f32 {
         let local = self.rotation.conjugate() * (centre - self.position);
         let outside = (local.abs() - self.half_extents).max(Vec3::ZERO);
         if outside.length_squared() > 0.0 {
@@ -1003,33 +1003,20 @@ impl IdBuffer {
             return;
         }
         let corners = crate::perception::box_corners(position, rotation, half_extents);
-        let mut projected = [None; 8];
-        for (i, corner) in corners.iter().enumerate() {
-            projected[i] = projector.project(*corner).map(|(p, d)| {
-                let half = projector.pane_half();
-                (Vec2::new((p.x + half.x) * self.scale.x, (half.y - p.y) * self.scale.y), d)
-            });
-        }
-        // Faces as corner quads (bit order x, y, z).
+        let half = projector.pane_half();
+        // Faces as corner quads (bit order x, y, z), each clipped at the near
+        // plane: a box reaching behind the eye covers what is in front of it.
         const FACES: [[usize; 4]; 6] =
             [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]];
         for face in FACES {
-            let quad: Vec<_> = face.iter().map(|&i| projected[i]).collect();
-            if quad.iter().any(Option::is_none) {
-                // A face crossing the near plane: cover its projected part
-                // conservatively with what is in front.
-                let front: Vec<_> = quad.iter().flatten().copied().collect();
-                if front.len() >= 3 {
-                    self.triangle(id, front[0], front[1], front[2]);
-                    if front.len() == 4 {
-                        self.triangle(id, front[0], front[2], front[3]);
-                    }
-                }
-                continue;
+            let poly: Vec<(Vec2, f32)> = projector
+                .project_polygon(&face.map(|i| corners[i]))
+                .into_iter()
+                .map(|(p, d)| (Vec2::new((p.x + half.x) * self.scale.x, (half.y - p.y) * self.scale.y), d))
+                .collect();
+            for k in 1..poly.len().saturating_sub(1) {
+                self.triangle(id, poly[0], poly[k], poly[k + 1]);
             }
-            let q: Vec<(Vec2, f32)> = quad.into_iter().flatten().collect();
-            self.triangle(id, q[0], q[1], q[2]);
-            self.triangle(id, q[0], q[2], q[3]);
         }
     }
 
@@ -1439,5 +1426,27 @@ mod tests {
         buffer.clear();
         buffer.draw_box(&projector, 1, Vec3::new(0.0, 5.0, 0.0), Quat::IDENTITY, Vec3::splat(0.5));
         assert!(buffer.visible_ids().contains(&1));
+    }
+
+    /// A beam passing beside the eye reaches behind it. Its side face crosses
+    /// the near plane and must be clipped there, not dropped: it hides the
+    /// box behind it. (Faces with corners behind the eye were drawn from
+    /// their remaining corners or not at all, so pieces near the camera
+    /// flickered and popped in clips and visibility.)
+    #[test]
+    fn a_box_reaching_behind_the_eye_still_covers_what_it_hides() {
+        let cam = camera(40.0);
+        let projector = Projector::new(cam, (1920, 1080));
+        let mut buffer = IdBuffer::new(240, 135, (1920, 1080));
+        buffer.draw_box(&projector, 1, Vec3::new(1.0, 5.0, 40.0), Quat::IDENTITY, Vec3::new(0.3, 0.3, 5.0));
+        buffer.draw_box(&projector, 2, Vec3::new(3.0, 5.0, 30.0), Quat::IDENTITY, Vec3::splat(0.5));
+        let visible = buffer.visible_ids();
+        assert!(visible.contains(&1));
+        assert!(!visible.contains(&2), "the beam's side face covers the box");
+        // The clipped face stays in front of the near plane.
+        let face = [Vec3::new(0.7, 4.7, 35.0), Vec3::new(0.7, 4.7, 45.0), Vec3::new(0.7, 5.3, 45.0), Vec3::new(0.7, 5.3, 35.0)];
+        let poly = projector.project_polygon(&face);
+        assert_eq!(poly.len(), 4);
+        assert!(poly.iter().all(|(_, d)| *d >= 0.1));
     }
 }

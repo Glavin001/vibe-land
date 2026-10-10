@@ -600,8 +600,6 @@ impl Canvas {
         }
         let corners = box_corners(position, rotation, half);
         let (hw, hh) = (self.width as f32 * 0.5, self.height as f32 * 0.5);
-        let projected: Vec<Option<(glam::Vec2, f32)>> =
-            corners.iter().map(|c| projector.project(*c).map(|(p, d)| (glam::Vec2::new(p.x + hw, hh - p.y), d))).collect();
         // Faces as corner quads (bit order x, y, z) and their normals.
         const FACES: [([usize; 4], Vec3); 6] = [
             ([0, 1, 3, 2], Vec3::NEG_Z),
@@ -619,12 +617,15 @@ impl Canvas {
             }
             let shade = 0.45 + 0.55 * n.dot(LIGHT.normalize()).max(0.0);
             let c = [(colour[0] * shade) as u8, (colour[1] * shade) as u8, (colour[2] * shade) as u8];
-            let quad: Vec<_> = face.iter().filter_map(|&i| projected[i]).collect();
-            if quad.len() >= 3 {
-                self.triangle(c, quad[0], quad[1], quad[2]);
-                if quad.len() == 4 {
-                    self.triangle(c, quad[0], quad[2], quad[3]);
-                }
+            // Clipped at the near plane, so a face reaching behind the eye
+            // is cut there (never dropped or misdrawn).
+            let poly: Vec<(glam::Vec2, f32)> = projector
+                .project_polygon(&face.map(|i| corners[i]))
+                .into_iter()
+                .map(|(p, d)| (glam::Vec2::new(p.x + hw, hh - p.y), d))
+                .collect();
+            for k in 1..poly.len().saturating_sub(1) {
+                self.triangle(c, poly[0], poly[k], poly[k + 1]);
             }
         }
     }

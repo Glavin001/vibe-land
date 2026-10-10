@@ -167,6 +167,7 @@ pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>
             "pp.drawn_view" => config.drawn_view = f() != 0.0,
             "pp.age_priority" => config.age_priority = f() != 0.0,
             "pp.ground_gate" => config.ground_gate = f() != 0.0,
+            "pp.solid_gate" => config.solid_gate = f() != 0.0,
             "pp.eval_cap" => config.eval_cap = f() as usize,
             "pp.eval_budget" => config.eval_budget = f() as usize,
             _ => {}

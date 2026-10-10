@@ -162,6 +162,9 @@ pub struct PerPlayerConfig {
     /// test: each chunk's inscribed sphere, `G4_TOLERANCE_M`) is sent
     /// before any perceptual priority.
     pub ground_gate: bool,
+    /// `ground_gate` against standing structures too: each chunk's sphere
+    /// against the standing chunk boxes near it (G4's own test and grid).
+    pub solid_gate: bool,
     /// At most about this many bodies evaluated per client per send (0: no
     /// cap). Past it, a rotating slice plus the bodies that cannot wait.
     pub eval_cap: usize,
@@ -194,6 +197,7 @@ impl PerPlayerConfig {
             drawn_view: false,
             age_priority: false,
             ground_gate: false,
+            solid_gate: false,
             eval_cap: 4096,
             eval_budget: 65_536,
         }
@@ -358,17 +362,42 @@ pub struct PerPlayer {
     /// each member's offset from the body's centre of mass and inscribed
     /// radius.
     shapes: FxHashMap<BodyKey, BodyShape>,
+    /// Standing chunk boxes by G4's grid cell (`PerPlayerConfig::solid_gate`),
+    /// rebuilt when a fracture changes what stands.
+    statics: FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>,
+    /// Each structure's cells in `statics`, and the structures whose standing
+    /// chunks changed since (rebuilt alone: a fracture changes one).
+    static_cells_of: FxHashMap<u32, Vec<(i32, i32, i32)>>,
+    statics_dirty: FxHashSet<u32>,
+    statics_built: bool,
+}
+
+use crate::netlab::perceptual::{StaticBox, STATIC_CELL};
+
+/// How deep a body's deepest chunk sphere is inside solid geometry at a
+/// pose: the ground (y = 0) and, given, the standing boxes (negative: clear).
+fn solid_depth(shape: &BodyShape, position: Vec3, rotation: Quat, statics: Option<&FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>>) -> f32 {
+    let mut deepest = f32::NEG_INFINITY;
+    for &(offset, r) in &shape.1 {
+        let c = position + rotation * offset;
+        let mut d = r - c.y;
+        if let Some(cells) = statics {
+            let cell = (c / STATIC_CELL).floor();
+            if let Some(list) = cells.get(&(cell.x as i32, cell.y as i32, cell.z as i32)) {
+                for (_, b) in list {
+                    d = d.max(b.sphere_depth(c, r));
+                }
+            }
+        }
+        deepest = deepest.max(d);
+    }
+    deepest
 }
 
 /// A body's chunks as G4 sees them: offset from the centre of mass, and the
 /// inscribed sphere's radius (the smallest half extent).
 type BodyShape = (usize, Vec<(Vec3, f32)>);
 
-/// How far below the ground (y = 0) a body's deepest chunk sphere reaches at
-/// a pose (negative: clear of it).
-fn sink_depth(shape: &BodyShape, position: Vec3, rotation: Quat) -> f32 {
-    shape.1.iter().map(|&(offset, r)| r - (position + rotation * offset).y).fold(f32::NEG_INFINITY, f32::max)
-}
 
 impl PerPlayer {
     /// From the manifest and the ledger at the start (a capture's
@@ -450,6 +479,10 @@ impl PerPlayer {
             tick: 0,
             stats: PerPlayerStats::default(),
             shapes: FxHashMap::default(),
+            statics: FxHashMap::default(),
+            static_cells_of: FxHashMap::default(),
+            statics_dirty: FxHashSet::default(),
+            statics_built: false,
         };
         // A capture that starts mid-match: derive the structure from the
         // ledger's bonds and islands, as a joining client would from bits.
@@ -721,6 +754,7 @@ impl ReplicationStrategy for PerPlayer {
                 continue;
             }
             self.stats.fractures += 1;
+            self.statics_dirty.insert(structure);
             self.stats.removed_chunks += removed.len() as u64;
             events.push(Event::Fracture { tick, structure, broken_bonds: broken, removed_chunks: removed });
             for id in &change.retired_bodies {
@@ -972,7 +1006,51 @@ impl ReplicationStrategy for PerPlayer {
     }
 
     fn begin_send(&mut self, tick: u32) {
-        if self.config.ground_gate {
+        if self.config.solid_gate && (!self.statics_built || !self.statics_dirty.is_empty()) {
+            let structures: Vec<u32> = if self.statics_built {
+                self.statics_dirty.iter().copied().collect()
+            } else {
+                self.defs.keys().copied().collect()
+            };
+            self.statics_built = true;
+            self.statics_dirty.clear();
+            for id in structures {
+                // Out with this structure's old boxes.
+                for cell in self.static_cells_of.remove(&id).unwrap_or_default() {
+                    if let Some(list) = self.statics.get_mut(&cell) {
+                        list.retain(|(s, _)| *s != id);
+                    }
+                }
+                let (Some(def), Some(state)) = (self.defs.get(&id), self.states.get(&id)) else { continue };
+                if def.half_extents.len() != def.rest.len() {
+                    continue;
+                }
+                let mut cells_of: FxHashSet<(i32, i32, i32)> = FxHashSet::default();
+                for n in 0..def.node_count() {
+                    if state.body_of(n) != ANCHORED {
+                        continue;
+                    }
+                    let b = StaticBox {
+                        position: def.world_position + def.world_rotation * def.rest[n as usize],
+                        rotation: def.world_rotation,
+                        half_extents: def.half_extents[n as usize],
+                    };
+                    let r = b.half_extents.length();
+                    let lo = ((b.position - Vec3::splat(r)) / STATIC_CELL).floor();
+                    let hi = ((b.position + Vec3::splat(r)) / STATIC_CELL).floor();
+                    for x in lo.x as i32..=hi.x as i32 {
+                        for y in lo.y as i32..=hi.y as i32 {
+                            for z in lo.z as i32..=hi.z as i32 {
+                                self.statics.entry((x, y, z)).or_default().push((id, b));
+                                cells_of.insert((x, y, z));
+                            }
+                        }
+                    }
+                }
+                self.static_cells_of.insert(id, cells_of.into_iter().collect());
+            }
+        }
+        if self.config.ground_gate || self.config.solid_gate {
             let (defs, states, truth) = (&self.defs, &self.states, &self.truth);
             self.shapes.retain(|k, _| truth.contains_key(k));
             for key in truth.keys() {
@@ -1035,7 +1113,7 @@ impl ReplicationStrategy for PerPlayer {
     fn client_send(&mut self, client: u64, view: &ClientView, tick: u32, budget: Option<SendBudget>) -> ClientSend {
         let config = self.effective_config();
         let Some(cs) = self.clients.get_mut(&client) else { return ClientSend::default() };
-        send_for(config, self.physics, &self.truth, &self.shapes, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
+        send_for(config, self.physics, &self.truth, &self.shapes, &self.statics, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
     }
 
     fn client_sends(&mut self, requests: &[SendRequest]) -> Vec<ClientSend> {
@@ -1049,7 +1127,7 @@ impl ReplicationStrategy for PerPlayer {
         let mut jobs: Vec<(usize, &mut ClientState)> =
             self.clients.iter_mut().filter_map(|(id, cs)| index.get(id).map(|&i| (i, cs))).collect();
         jobs.sort_by_key(|j| j.0);
-        let (physics, truth, model, shapes) = (self.physics, &self.truth, &self.model, &self.shapes);
+        let (physics, truth, model, shapes, statics) = (self.physics, &self.truth, &self.model, &self.shapes, &self.statics);
         let (order, recent) = (&self.order[..], &self.recent_contacts[..]);
         let per = jobs.len().div_ceil(threads).max(1);
         let parts: Vec<(Vec<(usize, ClientSend)>, PerPlayerStats)> = std::thread::scope(|scope| {
@@ -1062,7 +1140,7 @@ impl ReplicationStrategy for PerPlayer {
                             .iter_mut()
                             .map(|(i, cs)| {
                                 let r = &requests[*i];
-                                (*i, send_for(config, physics, truth, shapes, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats))
+                                (*i, send_for(config, physics, truth, shapes, statics, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats))
                             })
                             .collect();
                         (sends, stats)
@@ -1141,6 +1219,7 @@ fn send_for(
     physics: Physics,
     truths: &FxHashMap<BodyKey, Truth>,
     shapes: &FxHashMap<BodyKey, BodyShape>,
+    statics: &FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>,
     order: &[BodyKey],
     recent_contacts: &[BodyKey],
     model: &PerceptualModel,
@@ -1275,11 +1354,13 @@ fn send_for(
     stats.evaluated += evaluate.len() as u64;
     for key in &evaluate {
         let truth = &truths[key];
-        // Gate G4 first: drawn sunk into the ground deeper than the truth.
-        let sunk = config.ground_gate
+        // Gate G4 first: drawn sunk into the ground (and, with solid_gate,
+        // the standing structures) deeper than the truth.
+        let solids = config.solid_gate.then_some(statics);
+        let sunk = (config.ground_gate || config.solid_gate)
             && shapes.get(key).zip(cs.believed.get(key).filter(|t| !t.keyframes().is_empty())).is_some_and(|(shape, track)| {
                 let (p, q) = track.pose_at(r, physics);
-                sink_depth(shape, p, q) - sink_depth(shape, truth.keyframe.position, truth.keyframe.rotation).max(0.0)
+                solid_depth(shape, p, q, solids) - solid_depth(shape, truth.keyframe.position, truth.keyframe.rotation, solids).max(0.0)
                     > crate::netlab::perceptual::G4_TOLERANCE_M
             });
         let required = cs.unsent.contains(key) || sunk;
@@ -1636,6 +1717,7 @@ mod tests {
             physics,
             &truths,
             &FxHashMap::default(),
+            &FxHashMap::default(),
             &order,
             &[],
             &model,
@@ -1708,6 +1790,7 @@ mod drawn_near_tests {
             config,
             physics,
             &truths,
+            &FxHashMap::default(),
             &FxHashMap::default(),
             &[mid, near_drawn],
             &[],
@@ -1793,6 +1876,7 @@ mod age_tests {
                 config,
                 physics,
                 &truths,
+                &FxHashMap::default(),
                 &FxHashMap::default(),
                 &order,
                 &[],

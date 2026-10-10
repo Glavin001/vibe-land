@@ -253,6 +253,34 @@ impl Projector {
         Some((Vec2::new(rel.dot(self.right), rel.dot(self.up)) * (self.focal_px / depth), depth))
     }
 
+    /// A world-space polygon (a box face) clipped to the near plane
+    /// (Sutherland-Hodgman) and projected: pixel coordinates (origin at the
+    /// centre, y up) and depth, in order. A face crossing the near plane is
+    /// cut there, not dropped or misdrawn from its remaining corners.
+    pub fn project_polygon(&self, points: &[Vec3]) -> Vec<(Vec2, f32)> {
+        let near = self.near * 1.001;
+        let depth = |p: Vec3| (p - self.eye).dot(self.forward) - near;
+        let mut clipped: Vec<Vec3> = Vec::with_capacity(points.len() + 2);
+        for i in 0..points.len() {
+            let (a, b) = (points[i], points[(i + 1) % points.len()]);
+            let (da, db) = (depth(a), depth(b));
+            if da >= 0.0 {
+                clipped.push(a);
+            }
+            if (da >= 0.0) != (db >= 0.0) {
+                clipped.push(a + (b - a) * (da / (da - db)));
+            }
+        }
+        clipped
+            .into_iter()
+            .map(|p| {
+                let rel = p - self.eye;
+                let d = rel.dot(self.forward).max(near);
+                (Vec2::new(rel.dot(self.right), rel.dot(self.up)) * (self.focal_px / d), d)
+            })
+            .collect()
+    }
+
     /// Whether a sphere is at least partly on screen.
     pub fn sphere_on_screen(&self, centre: Vec3, radius: f32) -> bool {
         let rel = centre - self.eye;
