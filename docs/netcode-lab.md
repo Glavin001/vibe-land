@@ -240,6 +240,32 @@ simulation. These rounds ask that directly.
 
    On a simulated inspector it recovers the threshold (30 against 32).
 
+**Round 1 design, after the owner's review.** The first cut wasted the
+inspector's time: mostly empty views with a few seconds of distant
+destruction, and pairs that barely differed. The current design:
+- keeps windows with visible action in at least 80% of frames, from the
+  best of four player views;
+- spends the trials on the subtle middle of the penalty range;
+- keeps only pairs that visibly differ, after rendering and before
+  encoding. A pixel counts past the CIELAB just-noticeable difference
+  (Delta E*ab 2.3) with no match within 2 px. Raw pixel counts were mostly
+  one-step shading changes.
+
+**What the visible-pixel measure already shows** (60 rendered trials,
+paired moments):
+
+| netcode | trials | visibly differ from the full data | median visible px per frame |
+|---|---:|---:|---:|
+| shared v2 | 30 | 23 | 265 |
+| per player | 30 | 12 | 69 |
+
+- More than half of per player's clips are, to the eye, the full
+  simulation.
+- The scorer's penalty and the visible pixel difference agree only
+  moderately (Spearman 0.56). The round's answers can be fitted against
+  both, which tests the perceptual model against an objective measure that
+  does not depend on it.
+
 **Limitation:** the renderer is the scorer's boxes, not the game's. With no
 textures, dust or motion blur, these rounds are the stricter test. The game's
 renderer replaying the same pose logs is the next step.
