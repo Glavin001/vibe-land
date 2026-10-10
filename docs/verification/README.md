@@ -564,6 +564,20 @@ By cause:
        high-fidelity profile uses the reference
        (`VIBE_NATIVE_PRESERVE_CONTACT_PAIRS=0`); the game keeps pairs by
        default.
+     - Bisected with `PX_DESTRUCTION_PAIR_REUSE_PROBE` (PhysX
+       `fix/pair-reuse-wall`, diagnostic):
+       - Also refiltering the active bodies the stage does not own (the ball)
+         makes the ball bit-identical to the reference, but the broken set
+         still differs.
+       - Refiltering the stage's own active fragments as well matches the
+         reference on every check.
+       - Refiltering the fragments alone changes nothing.
+       - So kept pairs of active dynamic bodies carry state the reference
+         recreates: 6 friction anchors against 4 on the fracture tick. With
+         the full set refiltered the optimisation saves almost nothing, so the
+         fix is to find that state and reset it. Until then, keeping pairs
+         changes the answer, which AGENTS.md does not allow an optimisation
+         to do.
 
    This was the "wall that will not break" seen from the projectile's side.
 8. **Stage: a resting load disappears when its body sleeps.** A 1 t block on
