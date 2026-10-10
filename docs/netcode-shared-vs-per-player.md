@@ -25,18 +25,18 @@ number to compare.
 
   | capture | shared v2 / per player | at bytes (v2 / per player) |
   |---|---|---|
-  | wedge | **3.13x** (2.69-3.71) | 1.05x |
-  | sustained | **3.05x** (2.79-3.38) | 0.97x |
-  | meteor-volley | **5.62x** (4.22-7.08) | 1.05x |
+  | wedge | **3.31x** (2.91-3.71) | 1.05x |
+  | sustained | **2.99x** (2.71-3.39) | 0.97x |
+  | meteor-volley | **5.74x** (4.32-7.26) | 1.04x |
 
-  It also wins on cable (1.6-6.0x) and on poor-mobile (2.2-3.4x).
-  On the owner's 100k-chunk city recording it is 5.7x lower (668 against
-  3823 penalty per minute) at slightly fewer bytes.
+  It also wins on cable (1.5-6.0x) and on poor-mobile (2.3-3.6x).
+  On the owner's 100k-chunk city recording it is 5.1x lower (746 against
+  3823 penalty per minute) at 10% fewer bytes.
 - **Integrity.**
   - **Per player** never applies an event early (G2), never resurrects
     settled debris on the standard runs (G5), and holds the budget (G3).
-    It draws far less debris inside solid geometry (G4): 0-34 body-frames
-    per run against v2's 0-2,925.
+    It draws far less debris inside solid geometry (G4): 0-9 body-frames
+    per standard run against v2's 3-589.
   - **Shared v2** applies 99% of fractures before the drawing reaches
     their tick (G2, by design). It shows settled debris moving again under
     load (G5: 9-23 frames on meteor-volley).
@@ -108,11 +108,11 @@ fairness number per player still has to win.
 | capture | strategy | kbit/s | penalty/min | debris p99 m | pops/min | contacts late/min | G2 early | G2 late | G4 frames (worst cm) | G5 | F2 / F3 per pair-min | send us/client |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---|---:|---|---:|
 | wedge | shared-v2 | 154.3 | 468 | 0.168 | 12.8 | 70.6 | 1020 / 1036 | 0 | 3 (5.4) | 0 | 1.60 / 0.00 | 5.5 |
-| wedge | per-player | 140.5 | **147** | 0.146 | 10.6 | 11.2 | 0 | 8 / 4324 | 3 (5.6) | 0 | 0.49 / 0.49 | 25.6 |
+| wedge | per-player | 141.1 | **124** | 0.145 | 7.2 | 9.1 | 0 | 33 / 4324 | 0 | 0 | 0.37 / 0.74 | 25.5 |
 | sustained | shared-v2 | 283.4 | 1338 | 0.209 | 48.4 | 226.8 | 2128 / 2140 | 0 | 227 (10.5) | 0 | 0.83 / 0.17 | 10.6 |
-| sustained | per-player | 285.5 | **412** | 0.128 | 29.2 | 40.4 | 0 | 498 / 7888 | 3 (41.0) | 0 | 1.15 / 1.98 | 55.4 |
+| sustained | per-player | 285.9 | **418** | 0.129 | 30.9 | 42.0 | 0 | 27 / 7888 | 4 (39.8) | 0 | 1.56 / 2.96 | 56.6 |
 | meteor-volley | shared-v2 | 496.3 | 10543 | 15.95 | 1384 | 620 | 2939 / 2940 | 0 | 589 (140) | 23 | 4.29 / 2.69 | 52.1 |
-| meteor-volley | per-player | 466.7 | **1301** | 0.317 | 57.5 | 120 | 0 | 1276 / 16428 | 4 (26.7) | 0 | 0.24 / 1.70 | 158 |
+| meteor-volley | per-player | 467.4 | **1261** | 0.314 | 60.0 | 112 | 0 | 1559 / 16428 | 9 (29.5) | 0 | 0.24 / 1.70 | 171 |
 
 Notes on reading it:
 - Per player sends bonds-only events, many and small, so its event counts
@@ -126,9 +126,9 @@ Where the penalty comes from (per client-minute):
 
 | capture | shared-v2 | per-player |
 |---|---|---|
-| wedge | contact timing 279, screen error 83, pop 50 | contact timing 49, pop 46, screen error 24 |
-| sustained | contact timing 895, pop 191, cause-effect 98 | contact timing 168, pop 129, cause-effect 56 |
-| meteor-volley | pop 5141, contact timing 2428, cause-effect 808 | contact timing 488, pop 229, cause-effect 156 |
+| wedge | contact timing 279, screen error 83, pop 50 | contact timing 41, pop 26, screen error 23 |
+| sustained | contact timing 895, pop 190, cause-effect 98 | contact timing 174, pop 119, cause-effect 51 |
+| meteor-volley | pop 5141, contact timing 2428, cause-effect 808 | contact timing 485, pop 214, unexplained acceleration 136 |
 
 ## At equal bytes (rate-quality, seed 1)
 
@@ -137,13 +137,13 @@ the other's rates (`scripts/netlab/rate-quality.py`):
 
 | capture | at kbit/s | shared-v2 penalty | per-player penalty | ratio |
 |---|---:|---:|---:|---:|
-| wedge | 151-164 | 413-472 | 123-136 | 3.1-3.5x |
-| sustained | 279-305 | 1249-1415 | 441-461 | 2.8-3.1x |
-| meteor-volley | 492-505 | 10543-11111 | 1301 | 8.1-8.5x |
+| wedge | 151-164 | 413-472 | 117-121 | 3.4-3.9x |
+| sustained | 279-305 | 1249-1415 | 440-443 | 2.8-3.2x |
+| meteor-volley | 492-505 | 10543-11111 | 1261 | 8.4-8.8x |
 
 - **Shared v2 is one operating point:** its error budget moves its bytes by
   2-9%. Its rate is set by policy, not by error.
-- **Per player traces a curve** (about 58 to 525 kbit/s), so its rate can
+- **Per player traces a curve** (about 60 to 525 kbit/s), so its rate can
   be dialled to the link.
 
 ## Across links (seed 1)
@@ -153,12 +153,12 @@ the other's rates (`scripts/netlab/rate-quality.py`):
 | cable | wedge | 154, 425 | 71, 244 | 1.7x |
 | cable | sustained | 283, 1301 | 134, 840 | 1.5x |
 | cable | meteor-volley | 496, 9797 | 331, 1633 | 6.0x |
-| lte | wedge | 154, 468 | 141, 147 | 3.2x |
-| lte | sustained | 283, 1338 | 286, 412 | 3.2x |
-| lte | meteor-volley | 496, 10543 | 467, 1301 | 8.1x |
-| poor-mobile | wedge | 99, 533 | 88, 181 | 2.9x |
-| poor-mobile | sustained | 193, 1849 | 173, 810 | 2.3x |
-| poor-mobile | meteor-volley | 294, 15208 | 263, 4378 | 3.5x |
+| lte | wedge | 154, 468 | 141, 124 | 3.8x |
+| lte | sustained | 283, 1338 | 286, 418 | 3.2x |
+| lte | meteor-volley | 496, 10543 | 467, 1261 | 8.4x |
+| poor-mobile | wedge | 99, 533 | 88, 194 | 2.7x |
+| poor-mobile | sustained | 193, 1849 | 173, 806 | 2.3x |
+| poor-mobile | meteor-volley | 294, 15208 | 265, 4181 | 3.6x |
 
 On cable, per player sends half the bytes and still wins.
 
@@ -188,14 +188,50 @@ Round 2, after the fixes, found the worst cases all on meteor-volley at
 | h2-003 | 22,870 | 21,120 |
 | r014 | 21,572 | 18,596 |
 
-That is 8-16% worse than v2. At that budget:
-- Both strategies fail G3, because fracture events go first by design and
-  are not budget-limited.
-- Both fail G4.
-- Per player had one G5 frame (h2-003).
+That was 8-16% worse than v2. The cause, traced with new counters: per
+player spent only 7.6% of the allowance it was offered, and 68% of its
+sends ran out of candidates. Its model of each client assumed every
+fracture event applied on time. On a lossy link some arrived after the
+drawing had passed their tick, so the client was wrong while the model
+said it was right. **Fix: application-level event acks** (the spec's
+D6). The client's ack carries the first event sequence it has not
+received (an optional trailing u32; older acks still decode). The server
+re-sends the bodies a late event changed. The same three worst cases
+after the fix, at about 14% fewer bytes than v2:
 
-This is per player's measured weak corner: heavy collapse, a quarter of the
-budget, a lossy link.
+| run | per-player | shared-v2 |
+|---|---:|---:|
+| h2-000 | **32,034** | 34,760 |
+| h2-003 | **20,402** | 21,238 |
+| r014 | **18,245** | 18,773 |
+
+Round 3, after event acks (34 trials), found one corner where v2 still
+wins: meteor-volley at 256 kbit/s on lte, with one player watching from
+71 m and the other flicking 112 degrees. Five seeds of that
+configuration:
+
+| seed | per-player | shared-v2 | v2 / per-player |
+|---:|---:|---:|---:|
+| 131 | 21,407 | 19,987 | 0.93 |
+| 132 | 21,919 | 22,693 | 1.04 |
+| 133 | 20,623 | 20,215 | 0.98 |
+| 134 | 23,021 | 19,915 | 0.87 |
+| 135 | 20,854 | 20,289 | 0.97 |
+
+v2 is better in 4 of 5, by 4.5% on the geometric mean. That is per player's
+measured weak corner: a heavy collapse at a quarter of its usual rate,
+with a camera that turns onto bodies it had deprioritised. Per player
+spends its starved budget on what each camera sees, so after the flick the
+newly visible bodies are staler than v2's evenly spread ones (the flicking
+player: pops 1,801 against 648 per minute, contact timing 902 against 21).
+The far static player is a tie (38,906 against 38,510).
+
+In every round-3 trial both strategies failed G4. Every v2 trial also
+failed G2, because it applies events early by design. Per player's G3
+failures in this corner are its unbudgeted fracture events.
+`g3_clients_over_budgeted` separates the two causes. In the worst case
+per player's budgeted bytes peak at 756 kbit/s against the 768 cap; the
+reliable events push one second to 773. v2 peaks at 943.
 
 ## Cost
 
@@ -243,7 +279,11 @@ in the binary, and derive-check passes: 0 split or merged.
 | strategy | kbit/s | penalty/min | debris p99 m | G3 over | G4 frames | G5 frames | F2 / F3 |
 |---|---:|---:|---:|---:|---:|---:|---|
 | shared-v2 | 1107 | 3823 | 10.2 | 2 | 1118 | 323 | 2.8 / 5.6 |
-| per-player | 983 | **668** | 2.2 | 0 | 142 | 1 | 0 / 0 |
+| per-player | 999 | **746** | 2.1 | 0 | 58 | 0 | 0 / 0 |
+
+With event acks per player went from 668 to 746 here (G4 142 -> 58, G5
+1 -> 0): the re-sent bodies of late events take bytes from elsewhere on a
+link that rarely loses one.
 
 **Cost, aerial-113k** (about 97k bodies awake every tick), server ms per
 tick:
@@ -320,9 +360,11 @@ At 64 clients two more changes got it under v2:
     sightlines more often (0.7-2.5 per pair-minute against v2's 0-1.3 on
     wedge and sustained). A fairness term in the priority (the plan's
     milestone 9) is the lever.
-  - **Starved-budget heavy collapse on a lossy link:** 8-16% worse than v2
-    at 256 kbit/s on poor-mobile meteor-volley.
-  - **Late events on lossy links** show as snaps (4,042 on poor-mobile
+  - **Starved budget plus a camera flick:** at 256 kbit/s on meteor-volley
+    with a player flicking onto deprioritised bodies, v2 is 4.5% better
+    (4 of 5 seeds). Event acks closed the lossy-link corner it had before
+    (8-16% worse, now 3-8% better).
+  - **Late events on lossy links** show as snaps (1,559 of 16,428 on lte
     meteor-volley). Keyframes for a body whose fracture has not arrived are
     now held until it does (wire 4's incarnation tag). Before, they drew
     the new body with the old body's chunks, up to 1.1 m off.
