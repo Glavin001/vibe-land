@@ -1404,9 +1404,16 @@ fn send_for(
             if config.age_priority {
                 // The penalty this error costs per second, accrued since it
                 // went over tolerance and for the send interval to come.
-                let mut per_s = model.penalty(ArtifactClass::ScreenError, f64::from(error_px), f64::from(weight)) as f32;
-                if motion_px >= config.tolerance_px {
-                    per_s += model.penalty(ArtifactClass::Pop, f64::from(motion_px), f64::from(weight)) as f32 * FRAMES_PER_SECOND;
+                // The scorer charges these only while the body is on screen
+                // (V1, V2: visible items only); off screen or under a pixel
+                // it costs nothing yet.
+                let visible = on_screen(truth.keyframe.position) || drawn_now.is_some_and(|(p, _)| on_screen(p));
+                let mut per_s = 0.0;
+                if visible {
+                    per_s += model.penalty(ArtifactClass::ScreenError, f64::from(error_px), 1.0) as f32;
+                    if motion_px >= config.tolerance_px {
+                        per_s += model.penalty(ArtifactClass::Pop, f64::from(motion_px), 1.0) as f32 * FRAMES_PER_SECOND;
+                    }
                 }
                 let age_s = (tick - over_since.min(tick) + config.send_interval_ticks) as f32 / config.sim_hz as f32;
                 per_s * age_s + correction + contact_gain
