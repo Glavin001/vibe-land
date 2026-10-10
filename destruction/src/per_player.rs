@@ -249,6 +249,11 @@ pub struct PerPlayerStats {
     pub evaluated_contacts: u64,
     pub evaluated_hot: u64,
     pub evaluated_unsent: u64,
+    /// Bytes the budget offered across sends, and record bytes chosen; and
+    /// sends that ran out of candidates before the allowance did.
+    pub allowance_offered: u64,
+    pub allowance_used: u64,
+    pub sends_out_of_candidates: u64,
 }
 
 impl PerPlayerStats {
@@ -261,6 +266,9 @@ impl PerPlayerStats {
         self.evaluated_contacts += other.evaluated_contacts;
         self.evaluated_hot += other.evaluated_hot;
         self.evaluated_unsent += other.evaluated_unsent;
+        self.allowance_offered += other.allowance_offered;
+        self.allowance_used += other.allowance_used;
+        self.sends_out_of_candidates += other.sends_out_of_candidates;
         for m in 0..4 {
             self.by_mode[m] += other.by_mode[m];
             self.bytes_by_mode[m] += other.bytes_by_mode[m];
@@ -1285,6 +1293,11 @@ fn send_for(
     if slices > 1 {
         let sent: HashSet<BodyKey> = chosen.iter().map(|r| r.key).collect();
         cs.hot.extend(candidate_keys.iter().filter(|k| !sent.contains(k)).take(config.eval_cap / 4));
+    }
+    stats.allowance_offered += allowance as u64;
+    stats.allowance_used += used as u64;
+    if used + MIN_RECORD_BYTES + DATAGRAM_HEADER < allowance && chosen.len() == candidates.len() {
+        stats.sends_out_of_candidates += 1;
     }
     cs.sends_since_datagram += 1;
     if chosen.is_empty() {
