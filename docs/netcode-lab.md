@@ -85,11 +85,27 @@ A run directory holds `scorecard.json` / `scorecard.md`, and per client `cNN/`:
 | Gate | Status |
 |---|---|
 | G1 structure hash | Measured: the client's hash mismatches across every client, 0 to pass |
-| G2 event ordering | Pending: needs the client's applied-event log (milestone 3) |
-| G3 bandwidth cap | Measured with a bucket: no client's busiest trailing second over the peak |
+| G2 event ordering | Measured: events the client applied before the drawing reached their tick (early: fails) or after it passed (late: reported). v2 applies topology on arrival, so it fails by design |
+| G3 bandwidth cap | Measured with a bucket on the steady state (from 2 s after the join): no client's busiest trailing second over the peak |
 | G4 solid geometry | Pending: needs the static occupancy grid |
-| G5 resurrection | Pending: settle-aware chunk scoring. A body moving after its SETTLE without a later WAKE fails (D13) |
-| G6 server time | Pending: strategy timing in the lab (milestone 8) |
+| G5 resurrection | Measured: a body the truth has at rest, drawn moving more than 1 cm away from its rest pose. A step that converges on the rest pose is a landing, counted separately and scored as a pop |
+| G6 server time | Reported as C2 (`server_cost`: thread CPU per tick and per client, plus batched send wall time); its budget is set at scale |
+
+The head-to-head with these gates, rate-quality curves, links and scale is
+`docs/netcode-shared-vs-per-player.md`.
+
+## Tools
+
+- `netlab2 city-clips --capture <dir> --runs <run>,<run> [--zoom 4]`: each
+  run's worst windows, picked from the scorer's own event log, rendered as
+  the truth beside each run's drawing from the client's camera (mp4 + jpg +
+  `clips.md`).
+- `netlab2 city-study --capture <dir> --out <dir>`: calibration stimuli
+  (truth plus one injected artifact at known sizes); the study page is
+  `scripts/netlab/study/index.html`, the fit `scripts/netlab/fit-calibration.py`,
+  and `netlab2 city --model <json>` scores (and ranks, per player) with the
+  fitted model.
+- `pp.send_threads=N`: per-player sends run on N threads (byte-identical).
 
 ## Decisions (from the plan, with the owner)
 
@@ -180,7 +196,6 @@ players), with shared-v2:
 - **City traffic only on the link.** The player snapshot stream (about
   64 kbit/s idle) is not modelled beside it.
 - **One link profile per run**, seeded per client.
-- **Scoring is in world space.** Screen-space, visibility-aware, gravity,
-  energy, contact and fairness metrics are milestone 3.
+- **The perceptual model is uncalibrated** until the study runs.
 - **Resyncs a client asks for** are not yet served in the lab: a hash
   mismatch is counted, not repaired.
