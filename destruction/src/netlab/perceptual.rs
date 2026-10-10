@@ -196,8 +196,14 @@ pub struct PerceptualReport {
     pub q: f64,
     pub not_measured: Vec<String>,
     /// Gate G5: visible frames in which a body the truth has at rest moved
-    /// more than 1 cm on screen, counted once per body per frame.
+    /// more than 1 cm, counted once per body per frame -- except a step
+    /// that at least halves its distance to the resting truth, which is the
+    /// client landing on the settle pose (counted below; its size is scored
+    /// as a pop).
     pub g5_resurrection_frames: u64,
+    /// Steps onto the settle pose: frames a resting body was corrected onto
+    /// the truth (not motion away from it).
+    pub g5_settle_snap_frames: u64,
 }
 
 pub struct PerceptualEval {
@@ -216,6 +222,7 @@ pub struct PerceptualEval {
     log_events: bool,
     event_log: Vec<(f64, ArtifactClass, u32, f64)>,
     g5_frames: u64,
+    g5_snap_frames: u64,
     /// When each body last scored a rubber band, a contact.
     body_band_s: HashMap<u32, f64>,
     body_contact_s: HashMap<u32, f64>,
@@ -260,6 +267,7 @@ impl PerceptualEval {
             body_band_s: HashMap::new(),
             body_contact_s: HashMap::new(),
             g5_frames: 0,
+            g5_snap_frames: 0,
         }
     }
 
@@ -548,6 +556,7 @@ impl PerceptualEval {
 
     fn resurrections(&mut self, items: &[ItemSample]) {
         let mut bodies = std::collections::HashSet::new();
+        let mut snaps = std::collections::HashSet::new();
         for item in items {
             if !item.truth_settled || item.visibility <= 0.0 {
                 continue;
@@ -559,10 +568,29 @@ impl PerceptualEval {
             let (d1, t1) = state.world[state.world_len - 1];
             let (d0, t0) = state.world[state.world_len - 2];
             if d1.distance(d0) > 0.01 && t1.distance(t0) < 0.001 {
+                if d1.distance(t1) <= 0.5 * d0.distance(t0) {
+                    snaps.insert(item.body);
+                    continue;
+                }
+                if std::env::var_os("NETLAB2_G5_TRACE").is_some() {
+                    // Diagnosis: the step, and how far the drawn pose is
+                    // from the still truth before and after it.
+                    eprintln!(
+                        "G5 t={:.3} body={} slot={} step={:.4} off_before={:.4} off_after={:.4}",
+                        self.last_t,
+                        item.body,
+                        item.id,
+                        d1.distance(d0),
+                        d0.distance(t0),
+                        d1.distance(t1)
+                    );
+                }
                 bodies.insert(item.body);
             }
         }
+        snaps.retain(|b| !bodies.contains(b));
         self.g5_frames += bodies.len() as u64;
+        self.g5_snap_frames += snaps.len() as u64;
     }
 
     /// V6 contact timing and V7 cause to effect.
@@ -784,6 +812,7 @@ impl PerceptualEval {
         }
         report.penalty_per_minute = total;
         report.g5_resurrection_frames = self.g5_frames;
+        report.g5_settle_snap_frames = self.g5_snap_frames;
         report.q = self.model.quality(total);
         report.not_measured = vec![
             "V8 group error".into(),
@@ -1055,6 +1084,32 @@ mod tests {
             eval.frame(t, camera(400.0), &make(t));
         }
         eval.report()
+    }
+
+    #[test]
+    fn a_rest_snap_is_a_settle_correction_but_drifting_off_rest_is_a_resurrection() {
+        // The truth lies still from 1 s. Display A lies 3 cm off it and snaps
+        // onto it at 1.5 s; display B lies still and then slides away
+        // at 1 m/s from 1.5 s.
+        let still = Vec3::new(0.0, 0.3, 0.0);
+        let item = |id: u32, shown: Vec3, t: f64| ItemSample {
+            id,
+            body: id,
+            half_extents: Vec3::splat(0.3),
+            mass: 1.0,
+            displayed: Some((shown, Quat::IDENTITY)),
+            truth: Some((still, Quat::IDENTITY)),
+            visibility: 1.0,
+            displayed_body: id,
+            displayed_standing: false,
+            truth_standing: false,
+            truth_settled: t >= 1.0,
+        };
+        let snap = run_items(2.0, |t| vec![item(1, if t < 1.5 { still + Vec3::X * 0.03 } else { still }, t)]);
+        assert_eq!((snap.g5_resurrection_frames, snap.g5_settle_snap_frames), (0, 1), "{snap:?}");
+        let drift = run_items(2.0, |t| vec![item(2, still + Vec3::X * (t - 1.5).max(0.0) as f32, t)]);
+        assert!(drift.g5_resurrection_frames >= 25, "{}", drift.g5_resurrection_frames);
+        assert_eq!(drift.g5_settle_snap_frames, 0);
     }
 
     #[test]

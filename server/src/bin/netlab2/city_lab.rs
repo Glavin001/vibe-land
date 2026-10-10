@@ -639,6 +639,8 @@ pub struct Gates {
     pub g2_events_late: u64,
     /// G5: visible body-frames where a body the truth has at rest moved.
     pub g5_resurrection_frames: u64,
+    /// Corrections onto the settle pose (not a G5 failure; scored as pops).
+    pub g5_settle_snap_frames: u64,
     /// Gates the lab does not measure yet, and why.
     pub pending: Vec<String>,
     pub pass: bool,
@@ -728,6 +730,7 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
         }
         if let Some(p) = &card.perceptual {
             gates.g5_resurrection_frames += p.g5_resurrection_frames;
+            gates.g5_settle_snap_frames += p.g5_settle_snap_frames;
         }
     }
     gates.pass = gates.g1_hash_mismatches == 0
@@ -851,8 +854,8 @@ fn card_markdown(card: &CityCard) -> String {
     );
     let _ = writeln!(
         md,
-        "G2: {} events applied, {} before the drawing reached their tick, {} after it passed. G5: {} body-frames moved while at rest.",
-        g.g2_events_applied, g.g2_events_early, g.g2_events_late, g.g5_resurrection_frames
+        "G2: {} events applied, {} before the drawing reached their tick, {} after it passed. G5: {} body-frames moved while at rest ({} more were corrections onto the rest pose).",
+        g.g2_events_applied, g.g2_events_early, g.g2_events_late, g.g5_resurrection_frames, g.g5_settle_snap_frames
     );
     let c = &card.server_cost;
     let _ = writeln!(
