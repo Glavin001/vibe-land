@@ -157,6 +157,11 @@ pub struct PerPlayerConfig {
     /// worth of saturated penalty, under which a body left wrong never
     /// outranks fresh errors.
     pub age_priority: bool,
+    /// Gates before penalties, as the scorecard orders them: a body drawn
+    /// sunk into the ground deeper than the truth has it (gate G4's own
+    /// test: each chunk's inscribed sphere, `G4_TOLERANCE_M`) is sent
+    /// before any perceptual priority.
+    pub ground_gate: bool,
     /// At most about this many bodies evaluated per client per send (0: no
     /// cap). Past it, a rotating slice plus the bodies that cannot wait.
     pub eval_cap: usize,
@@ -188,6 +193,7 @@ impl PerPlayerConfig {
             motion_cost: false,
             drawn_view: false,
             age_priority: false,
+            ground_gate: false,
             eval_cap: 4096,
             eval_budget: 65_536,
         }
@@ -348,6 +354,20 @@ pub struct PerPlayer {
     clients: BTreeMap<u64, ClientState>,
     tick: u32,
     pub stats: PerPlayerStats,
+    /// Per awake body (`PerPlayerConfig::ground_gate`): its member count and
+    /// each member's offset from the body's centre of mass and inscribed
+    /// radius.
+    shapes: FxHashMap<BodyKey, BodyShape>,
+}
+
+/// A body's chunks as G4 sees them: offset from the centre of mass, and the
+/// inscribed sphere's radius (the smallest half extent).
+type BodyShape = (usize, Vec<(Vec3, f32)>);
+
+/// How far below the ground (y = 0) a body's deepest chunk sphere reaches at
+/// a pose (negative: clear of it).
+fn sink_depth(shape: &BodyShape, position: Vec3, rotation: Quat) -> f32 {
+    shape.1.iter().map(|&(offset, r)| r - (position + rotation * offset).y).fold(f32::NEG_INFINITY, f32::max)
 }
 
 impl PerPlayer {
@@ -429,6 +449,7 @@ impl PerPlayer {
             clients: BTreeMap::new(),
             tick: 0,
             stats: PerPlayerStats::default(),
+            shapes: FxHashMap::default(),
         };
         // A capture that starts mid-match: derive the structure from the
         // ledger's bonds and islands, as a joining client would from bits.
@@ -951,6 +972,20 @@ impl ReplicationStrategy for PerPlayer {
     }
 
     fn begin_send(&mut self, tick: u32) {
+        if self.config.ground_gate {
+            let (defs, states, truth) = (&self.defs, &self.states, &self.truth);
+            self.shapes.retain(|k, _| truth.contains_key(k));
+            for key in truth.keys() {
+                let (Some(def), Some(state)) = (defs.get(&key.structure), states.get(&key.structure)) else { continue };
+                let Some(members) = state.members(key.body) else { continue };
+                if self.shapes.get(key).is_some_and(|s| s.0 == members.len()) || def.half_extents.len() != def.rest.len() {
+                    continue;
+                }
+                let com = state.centre_of_mass(def, key.body);
+                let chunks = members.iter().map(|&n| (def.rest[n as usize] - com, def.half_extents[n as usize].min_element())).collect();
+                self.shapes.insert(*key, (members.len(), chunks));
+            }
+        }
         let cap = self.effective_config().eval_cap;
         // The body order sends slice (insertion order, new bodies sorted
         // in), and the bodies with a contact recent enough that a slice may
@@ -1000,7 +1035,7 @@ impl ReplicationStrategy for PerPlayer {
     fn client_send(&mut self, client: u64, view: &ClientView, tick: u32, budget: Option<SendBudget>) -> ClientSend {
         let config = self.effective_config();
         let Some(cs) = self.clients.get_mut(&client) else { return ClientSend::default() };
-        send_for(config, self.physics, &self.truth, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
+        send_for(config, self.physics, &self.truth, &self.shapes, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
     }
 
     fn client_sends(&mut self, requests: &[SendRequest]) -> Vec<ClientSend> {
@@ -1014,7 +1049,7 @@ impl ReplicationStrategy for PerPlayer {
         let mut jobs: Vec<(usize, &mut ClientState)> =
             self.clients.iter_mut().filter_map(|(id, cs)| index.get(id).map(|&i| (i, cs))).collect();
         jobs.sort_by_key(|j| j.0);
-        let (physics, truth, model) = (self.physics, &self.truth, &self.model);
+        let (physics, truth, model, shapes) = (self.physics, &self.truth, &self.model, &self.shapes);
         let (order, recent) = (&self.order[..], &self.recent_contacts[..]);
         let per = jobs.len().div_ceil(threads).max(1);
         let parts: Vec<(Vec<(usize, ClientSend)>, PerPlayerStats)> = std::thread::scope(|scope| {
@@ -1027,7 +1062,7 @@ impl ReplicationStrategy for PerPlayer {
                             .iter_mut()
                             .map(|(i, cs)| {
                                 let r = &requests[*i];
-                                (*i, send_for(config, physics, truth, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats))
+                                (*i, send_for(config, physics, truth, shapes, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats))
                             })
                             .collect();
                         (sends, stats)
@@ -1105,6 +1140,7 @@ fn send_for(
     config: PerPlayerConfig,
     physics: Physics,
     truths: &FxHashMap<BodyKey, Truth>,
+    shapes: &FxHashMap<BodyKey, BodyShape>,
     order: &[BodyKey],
     recent_contacts: &[BodyKey],
     model: &PerceptualModel,
@@ -1239,7 +1275,14 @@ fn send_for(
     stats.evaluated += evaluate.len() as u64;
     for key in &evaluate {
         let truth = &truths[key];
-        let required = cs.unsent.contains(key);
+        // Gate G4 first: drawn sunk into the ground deeper than the truth.
+        let sunk = config.ground_gate
+            && shapes.get(key).zip(cs.believed.get(key).filter(|t| !t.keyframes().is_empty())).is_some_and(|(shape, track)| {
+                let (p, q) = track.pose_at(r, physics);
+                sink_depth(shape, p, q) - sink_depth(shape, truth.keyframe.position, truth.keyframe.rotation).max(0.0)
+                    > crate::netlab::perceptual::G4_TOLERANCE_M
+            });
+        let required = cs.unsent.contains(key) || sunk;
         let distance = (truth.keyframe.position - camera.eye).length().max(0.5);
         // In view: pixels at its depth. Behind or beside: half weight at
         // its distance -- never culled. This scales the keyframe's grid: the
@@ -1592,6 +1635,7 @@ mod tests {
             config,
             physics,
             &truths,
+            &FxHashMap::default(),
             &order,
             &[],
             &model,
@@ -1664,6 +1708,7 @@ mod drawn_near_tests {
             config,
             physics,
             &truths,
+            &FxHashMap::default(),
             &[mid, near_drawn],
             &[],
             &model,
@@ -1748,6 +1793,7 @@ mod age_tests {
                 config,
                 physics,
                 &truths,
+                &FxHashMap::default(),
                 &order,
                 &[],
                 &model,
