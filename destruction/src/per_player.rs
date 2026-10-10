@@ -1331,10 +1331,13 @@ fn send_for(
                     && (on_screen(truth.keyframe.position) || drawn_now.is_some_and(|(p, _)| on_screen(p))) =>
             {
                 // What sending now saves: drawn this late, against one send
-                // later. A contact already long past gains nothing either way.
+                // later. A keyframe that lands before the drawing reaches the
+                // contact draws it on time; one long past gains nothing
+                // either way.
                 let ms_per_tick = 1000.0 / config.sim_hz as f32;
-                let late_now = (r - truth.contact_tick as f32) * ms_per_tick + cs.rtt_ms * 0.5;
-                let late_wait = late_now + config.send_interval_ticks as f32 * ms_per_tick;
+                let late = |lands: f32| (lands - truth.contact_tick as f32).max(0.0) * ms_per_tick;
+                let late_now = late(arrival_render);
+                let late_wait = late(arrival_render + config.send_interval_ticks as f32);
                 let p = |ms: f32| model.penalty(ArtifactClass::ContactTiming, f64::from(ms), 1.0) as f32;
                 p(late_wait) - p(late_now)
             }
