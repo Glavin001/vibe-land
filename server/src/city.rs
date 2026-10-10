@@ -671,10 +671,29 @@ struct PerPlayerLive {
     staged_reliable: Vec<Vec<u8>>,
 }
 
+/// The live per-player configuration: the defaults, plus
+/// `VIBE_CITY_PP_KNOBS` (comma-separated `name=value`, the lab's `pp.*`
+/// knob names, e.g. `age_priority=1,drawn_view=1,send_threads=8`). A bad
+/// list is logged and ignored: the defaults run.
+fn per_player_config(sim_hz: u32) -> PerPlayerConfig {
+    let mut config = PerPlayerConfig::validated(sim_hz);
+    if let Ok(list) = std::env::var("VIBE_CITY_PP_KNOBS") {
+        let mut tuned = config;
+        match tuned.apply_knobs(&list) {
+            Ok(()) => {
+                tracing::info!(knobs = %list, "per-player knobs");
+                config = tuned;
+            }
+            Err(e) => tracing::warn!(error = %e, knobs = %list, "VIBE_CITY_PP_KNOBS ignored"),
+        }
+    }
+    config
+}
+
 impl PerPlayerLive {
     fn new(manifest: &DestructionManifest, ledger: vibe_land_destruction::topology::CityLedger, sim_hz: u32) -> Self {
         Self {
-            strategy: PerPlayer::new(manifest, ledger, PerPlayerConfig::validated(sim_hz)),
+            strategy: PerPlayer::new(manifest, ledger, per_player_config(sim_hz)),
             staged_reliable: Vec::new(),
         }
     }

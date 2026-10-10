@@ -175,6 +175,44 @@ pub struct PerPlayerConfig {
 }
 
 impl PerPlayerConfig {
+    /// Set one knob by name (the lab's `--knob pp.<name>=<value>`, the live
+    /// server's `VIBE_CITY_PP_KNOBS`). Err names what was wrong.
+    pub fn apply_knob(&mut self, name: &str, value: &str) -> Result<(), String> {
+        let f: f64 = value.trim().parse().map_err(|_| format!("{name}={value}: not a number"))?;
+        let on = f != 0.0;
+        match name.trim().trim_start_matches("pp.") {
+            "tolerance_px" => self.tolerance_px = f as f32,
+            "horizon_ticks" => self.horizon_ticks = f as f32,
+            "delay_ticks" => self.delay_ticks = f as f32,
+            "ceiling_bytes" => self.ceiling_bytes = f as usize,
+            "send_hz" => self.send_interval_ticks = (self.sim_hz as f64 / f).round().max(1.0) as u32,
+            "heartbeat_sends" => self.heartbeat_sends = f as u32,
+            "backtest" => self.backtest_modes = on,
+            "event_copies" => self.event_copies = f as u32,
+            "send_threads" => self.send_threads = f as u32,
+            "contacts" => self.contacts = on,
+            "correction_cost" => self.correction_cost = on,
+            "motion_cost" => self.motion_cost = on,
+            "drawn_view" => self.drawn_view = on,
+            "age_priority" => self.age_priority = on,
+            "ground_gate" => self.ground_gate = on,
+            "solid_gate" => self.solid_gate = on,
+            "eval_cap" => self.eval_cap = f as usize,
+            "eval_budget" => self.eval_budget = f as usize,
+            other => return Err(format!("unknown per-player knob {other}")),
+        }
+        Ok(())
+    }
+
+    /// Knobs from a comma-separated `name=value` list.
+    pub fn apply_knobs(&mut self, list: &str) -> Result<(), String> {
+        for item in list.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+            let (name, value) = item.split_once('=').ok_or_else(|| format!("{item}: expected name=value"))?;
+            self.apply_knob(name, value)?;
+        }
+        Ok(())
+    }
+
     pub fn validated(sim_hz: u32) -> Self {
         Self {
             sim_hz,
@@ -1896,5 +1934,21 @@ mod age_tests {
         }
         let sent_at = sent_at.expect("the old error is never sent");
         assert!(sent_at < 6, "sent after {sent_at} sends");
+    }
+}
+
+#[cfg(test)]
+mod knob_tests {
+    use super::*;
+
+    #[test]
+    fn knobs_parse_by_the_labs_names_and_reject_unknown_ones() {
+        let mut c = PerPlayerConfig::validated(60);
+        c.apply_knobs("age_priority=1, pp.drawn_view=1,send_threads=8,tolerance_px=2").unwrap();
+        assert!(c.age_priority && c.drawn_view);
+        assert_eq!(c.send_threads, 8);
+        assert_eq!(c.tolerance_px, 2.0);
+        assert!(c.apply_knobs("no_such=1").is_err());
+        assert!(c.apply_knobs("age_priority").is_err());
     }
 }

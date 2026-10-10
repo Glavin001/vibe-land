@@ -149,29 +149,8 @@ pub fn build_strategy(name: &str, capture: &CityCapture, knobs: &BTreeMap<String
 /// The per-player stream's configuration, with `pp.*` knobs.
 pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>) -> vibe_land_destruction::per_player::PerPlayerConfig {
     let mut config = vibe_land_destruction::per_player::PerPlayerConfig::validated(capture.meta.hz.max(1));
-    for (key, value) in knobs {
-        let f = || value.parse::<f64>().unwrap_or_else(|_| die(&format!("knob {key}={value}: number")));
-        match key.as_str() {
-            "pp.tolerance_px" => config.tolerance_px = f() as f32,
-            "pp.horizon_ticks" => config.horizon_ticks = f() as f32,
-            "pp.delay_ticks" => config.delay_ticks = f() as f32,
-            "pp.ceiling_bytes" => config.ceiling_bytes = f() as usize,
-            "pp.send_hz" => config.send_interval_ticks = (config.sim_hz as f64 / f()).round().max(1.0) as u32,
-            "pp.heartbeat_sends" => config.heartbeat_sends = f() as u32,
-            "pp.backtest" => config.backtest_modes = f() != 0.0,
-            "pp.event_copies" => config.event_copies = f() as u32,
-            "pp.send_threads" => config.send_threads = f() as u32,
-            "pp.contacts" => config.contacts = f() != 0.0,
-            "pp.correction_cost" => config.correction_cost = f() != 0.0,
-            "pp.motion_cost" => config.motion_cost = f() != 0.0,
-            "pp.drawn_view" => config.drawn_view = f() != 0.0,
-            "pp.age_priority" => config.age_priority = f() != 0.0,
-            "pp.ground_gate" => config.ground_gate = f() != 0.0,
-            "pp.solid_gate" => config.solid_gate = f() != 0.0,
-            "pp.eval_cap" => config.eval_cap = f() as usize,
-            "pp.eval_budget" => config.eval_budget = f() as usize,
-            _ => {}
-        }
+    for (key, value) in knobs.iter().filter(|(k, _)| k.starts_with("pp.")) {
+        config.apply_knob(key, value).unwrap_or_else(|e| die(&format!("knob {e}")));
     }
     config
 }
