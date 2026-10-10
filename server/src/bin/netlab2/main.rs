@@ -34,6 +34,7 @@ mod bundle;
 mod calibrate;
 mod chunks;
 mod city_clips;
+mod city_pairs;
 mod city_fairness;
 mod city_lab;
 mod city_perceptual;
@@ -555,6 +556,7 @@ fn main() {
         "city" => city_lab::cmd_city(&args),
         "city-clips" => city_clips::cmd_city_clips(&args),
         "city-study" => city_study::cmd_city_study(&args),
+        "city-pairs" => city_pairs::cmd_city_pairs(&args),
         "matrix" => report::cmd_matrix(&args),
         "compare" => report::cmd_compare(&args),
         "profiles" => {
