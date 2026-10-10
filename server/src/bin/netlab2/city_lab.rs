@@ -921,7 +921,8 @@ pub fn cmd_city(args: &Args) {
         spec.strategy,
         spec.link
     );
-    if args.get("no-client").is_none() && spec.strategy == "per-player" {
+    let pp_client_ts = args.get("pp-client") == Some("ts");
+    if args.get("no-client").is_none() && spec.strategy == "per-player" && !pp_client_ts {
         // The shared client core, in-process (the browser runs it as WASM).
         let config = per_player_config(&capture, &spec.knobs);
         let timeline: Vec<(u32, f64)> = (run.first_tick..=run.last_tick).map(|t| (t, tick_ms(t, run.first_tick, run.hz))).collect();

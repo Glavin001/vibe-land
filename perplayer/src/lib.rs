@@ -11,3 +11,6 @@ pub mod client;
 pub mod predict;
 pub mod structure;
 pub mod wire;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;

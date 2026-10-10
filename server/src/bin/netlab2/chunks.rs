@@ -609,6 +609,24 @@ impl ChunkTruth {
         Island::at(&self.membership[slot as usize], tick).unwrap_or(GONE)
     }
 
+    /// Whether a drawn body key names the truth body `truth_key`. A
+    /// per-player key (bit 19 of the serial, `per_player::body_entity`)
+    /// names a body by its lowest chunk, so it is the truth island's when
+    /// that island's lowest member is that chunk; any other key must match.
+    pub fn same_body(&self, drawn_key: u32, truth_key: u32) -> bool {
+        let (structure, serial) = ids::body_entity_parts(drawn_key);
+        let bit = vibe_land_destruction::per_player::PER_PLAYER_SERIAL_BIT;
+        if serial & bit == 0 || ids::body_entity_parts(truth_key).0 != structure {
+            return drawn_key == truth_key;
+        }
+        let node = serial & !bit;
+        let Some(&base) = self.slot_base.get(&structure) else { return false };
+        self.islands
+            .get(&truth_key)
+            .and_then(|island| island.members.iter().min())
+            .is_some_and(|&slot| slot - base == node)
+    }
+
     /// Keys the chunk was on from `from` to `to` inclusive.
     pub fn keys_between(&self, slot: u32, from: u32, to: u32) -> Vec<u32> {
         let history = &self.membership[slot as usize];
@@ -744,7 +762,8 @@ fn measure(tables: &DrawnTables, truth: &ChunkTruth, slot: u32, render: f32, now
         (Some(d), Some(t)) => {
             let at_now = truth.chunk_at(slot, now as f32);
             let whole = render.floor().max(0.0) as u32;
-            let wrong_identity = d.key != t.key && !truth.keys_between(slot, whole, now.max(whole)).contains(&d.key);
+            let wrong_identity = !truth.same_body(d.key, t.key)
+                && !truth.keys_between(slot, whole, now.max(whole)).iter().any(|&k| truth.same_body(d.key, k));
             Measure {
                 class: Some(truth_class(&t)),
                 errors: Some(DrawErrors {

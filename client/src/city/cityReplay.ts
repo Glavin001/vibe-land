@@ -70,6 +70,7 @@ export interface ReplayPlayer {
 export async function loadReplayAssets(tape: CityTape, baseUrl = ''): Promise<{
   manifest: LoadedCityManifest;
   decoder: (() => Promise<{ decoder: import('./debrisWasm').DebrisDecoder } | undefined>);
+  perPlayerCore?: () => Promise<import('./perPlayerCityClient').PerPlayerCore>;
 }> {
   const manifest = await fetchCityManifest(baseUrl, tape.header.manifestHash);
   let dictionary: Uint8Array | null = null;
@@ -90,11 +91,24 @@ export async function createReplayPlayer(
   // The tape opens on the resync the recorder asked for; city packets before
   // that bootstrap describe a ledger this client never had.
   let first = tape.packets.findIndex(
-    (packet, index) => packet[0] === PKT_CITY_BOOTSTRAP && tape.channels[index] !== TAPE_CHANNEL_RTT,
+    (packet, index) => (packet[0] === PKT_CITY_BOOTSTRAP || packet[0] === 134) && tape.channels[index] !== TAPE_CHANNEL_RTT,
   );
   if (first < 0) first = 0;
   const origin = tape.times.length > 0 ? tape.times[first] : 0;
-  const client = new CityClient(assets.manifest, () => {}, await assets.decoder());
+  // City wire 4: the per-player client, its core in WASM.
+  const client = tape.header.wireVersion === 4
+    ? await (async () => {
+        const { PerPlayerCityClient } = await import('./perPlayerCityClient');
+        const core = assets.perPlayerCore
+          ? await assets.perPlayerCore()
+          : await (async () => {
+              const { initPerPlayerWasm, createPerPlayerCore } = await import('./perPlayerWasm');
+              await initPerPlayerWasm();
+              return createPerPlayerCore(assets.manifest, tape.header.simHz);
+            })();
+        return new PerPlayerCityClient(assets.manifest, () => {}, core);
+      })()
+    : new CityClient(assets.manifest, () => {}, await assets.decoder());
   // A v2 tape carries the transport channels; a v1 tape is the city alone.
   const hasGameStream = tape.channels.some((channel) => channel !== TAPE_CHANNEL_CITY);
   let cursor = 0;

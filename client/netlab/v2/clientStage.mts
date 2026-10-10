@@ -169,6 +169,17 @@ const assets = {
     if (header.wireVersion !== 3) return undefined;
     throw new Error('wire v3 tapes are not supported by the client stage yet (docs/netlab-v2.md)');
   },
+  // City wire 4 (per player): the client tree's own WASM core, loaded from
+  // its file (Node has no fetch of a relative URL).
+  perPlayerCore: async () => {
+    const pkg = join(clientRoot, 'src/wasm/perplayer-pkg');
+    if (!existsSync(join(pkg, 'vibe_land_perplayer_bg.wasm'))) {
+      throw new Error(`${pkg} is not built: run \`npm run build:wasm\` in ${clientRoot}`);
+    }
+    const loader = await import(from('src/city/perPlayerWasm.ts'));
+    await loader.initPerPlayerWasm(readFileSync(join(pkg, 'vibe_land_perplayer_bg.wasm')));
+    return loader.createPerPlayerCore(assets.manifest, header.simHz);
+  },
 };
 
 // Server tick timeline (tape clock) from the lab, for the city scorer's
@@ -194,7 +205,7 @@ function simTickAt(ms: number): number {
 
 // ── replay ────────────────────────────────────────────────────────────────
 fakeNowMs = times.length > 0 ? times[0] : originMs;
-const firstBootstrap = tape.packets.findIndex((p: Uint8Array) => p[0] === 122);
+const firstBootstrap = tape.packets.findIndex((p: Uint8Array) => p[0] === 122 || p[0] === 134);
 fakeNowMs = firstBootstrap >= 0 ? times[firstBootstrap] : fakeNowMs;
 const player = await createReplayPlayer(tape, assets);
 const world = player.world;

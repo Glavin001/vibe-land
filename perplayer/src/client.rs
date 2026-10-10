@@ -319,6 +319,17 @@ pub struct ClientStats {
     pub bootstraps: u64,
 }
 
+/// A structural change in body terms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BodyChange {
+    /// A fracture at `tick` in `structure`: these bonds broke, these chunks
+    /// were removed, these bodies ended, and these have new members (new
+    /// bodies among them).
+    Fracture { tick: u32, structure: u32, broken_bonds: Vec<u32>, removed_chunks: Vec<u32>, retired: Vec<u32>, changed: Vec<(u32, Vec<u32>)> },
+    /// The whole structural state was replaced (a bootstrap).
+    Reset,
+}
+
 /// One structure, client side.
 pub struct ClientStructure {
     pub def: StructureDef,
@@ -336,6 +347,9 @@ pub struct Client {
     received: Vec<u32>,
     /// (structure, node) whose body changed since the last drain.
     slot_changes: Vec<(u32, u32)>,
+    /// The same changes in body terms, for a ledger kept elsewhere (the
+    /// browser's): in application order.
+    body_changes: Vec<BodyChange>,
     pub stats: ClientStats,
     started: bool,
     render: f32,
@@ -359,6 +373,7 @@ impl Client {
             clock: RenderClock::new(hz, delay_ticks),
             received: Vec::new(),
             slot_changes: Vec::new(),
+            body_changes: Vec::new(),
             stats: ClientStats::default(),
             started: false,
             render: f32::MIN,
@@ -428,6 +443,7 @@ impl Client {
                             self.slot_changes.push((id, node));
                         }
                     }
+                    self.body_changes.push(BodyChange::Reset);
                     self.started = true;
                 }
                 Err(_) => self.stats.decode_errors += 1,
@@ -494,6 +510,18 @@ impl Client {
                     self.slot_changes.push((structure, node));
                 }
                 apply_spawns(&cs.def, &cs.state, structure, tick, &change, &parents, &mut self.bodies);
+                self.body_changes.push(BodyChange::Fracture {
+                    tick,
+                    structure,
+                    broken_bonds,
+                    removed_chunks,
+                    retired: change.retired_bodies.clone(),
+                    changed: change
+                        .changed_bodies
+                        .iter()
+                        .map(|&id| (id, cs.state.members(id).map(<[u32]>::to_vec).unwrap_or_default()))
+                        .collect(),
+                });
             }
             Event::Settle { tick, key, position, rotation } => {
                 self.bodies.entry(key).or_default().settle(tick, position, rotation);
@@ -558,6 +586,10 @@ impl Client {
 
     pub fn track(&self, key: BodyKey) -> Option<&BodyTrack> {
         self.bodies.get(&key)
+    }
+
+    pub fn drain_body_changes(&mut self) -> Vec<BodyChange> {
+        std::mem::take(&mut self.body_changes)
     }
 
     pub fn drain_slot_changes(&mut self) -> Vec<(u32, u32)> {
