@@ -1714,6 +1714,23 @@ impl PhysxPhysicsArena {
         hit.hit.then_some(hit.distance)
     }
 
+    /// The nearest destruction chunk on a ray (standing or debris): the
+    /// opt-in blocker for shots (`VIBE_CITY_CHUNKS_BLOCK_SHOTS`).
+    pub fn cast_chunk_ray(&self, origin: [f32; 3], direction: [f32; 3], max_distance: f32) -> Option<f32> {
+        let hit = self
+            .world
+            .raycast(bridge::RaycastRequest {
+                origin: array_vec3(origin),
+                direction: array_vec3(direction),
+                max_distance,
+                collision_mask: GROUP_CHUNK,
+                ignore_entity_id: 0,
+                has_ignore_entity: false,
+            })
+            .ok()?;
+        hit.hit.then_some(hit.distance)
+    }
+
     pub fn cast_dynamic_body_ray(
         &self,
         origin: [f32; 3],

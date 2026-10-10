@@ -759,6 +759,19 @@ impl PhysicsArena {
         }
     }
 
+    /// The nearest destruction chunk on a ray; None where the backend has
+    /// no destruction (Rapier).
+    pub fn cast_chunk_ray(&self, origin: [f32; 3], direction: [f32; 3], max_distance: f32) -> Option<f32> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => {
+                let _ = (origin, direction, max_distance);
+                None
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.cast_chunk_ray(origin, direction, max_distance),
+        }
+    }
+
     pub fn cast_dynamic_body_ray(
         &self,
         origin: [f32; 3],

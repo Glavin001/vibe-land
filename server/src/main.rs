@@ -159,6 +159,17 @@ fn server_wall_clock_us() -> u32 {
     (origin.elapsed().as_micros() % (1u128 << 32)) as u32
 }
 
+/// Opt-in gameplay (plan milestone 10): destruction chunks block hitscan
+/// shots (`VIBE_CITY_CHUNKS_BLOCK_SHOTS=1`). Off by default.
+fn chunks_block_shots() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("VIBE_CITY_CHUNKS_BLOCK_SHOTS")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    })
+}
+
 fn rifle_damage(zone: HitZone) -> u8 {
     match zone {
         HitZone::Body => RIFLE_BODY_DAMAGE,
@@ -7071,12 +7082,24 @@ impl MatchState {
                 continue;
             };
 
-            let world_toi = self.arena.cast_static_world_ray(
+            let static_toi = self.arena.cast_static_world_ray(
                 origin,
                 queued.cmd.dir,
                 HITSCAN_MAX_DISTANCE_M,
                 Some(queued.player_id),
             );
+            // Opt-in (VIBE_CITY_CHUNKS_BLOCK_SHOTS=1): destruction chunks,
+            // standing or flying, stop shots like the static world (plan
+            // milestone 10). Off, shots pass through them as before.
+            let chunk_toi = if chunks_block_shots() {
+                self.arena.cast_chunk_ray(origin, queued.cmd.dir, HITSCAN_MAX_DISTANCE_M)
+            } else {
+                None
+            };
+            let world_toi = match (static_toi, chunk_toi) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 queued.cmd.dir,
