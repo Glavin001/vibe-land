@@ -22,3 +22,8 @@ city = ["physx", "dep:web-fps-server", "web-fps-server/native-destruction"]
 [dependencies]
 vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
 web-fps-server = { path = "../server", optional = true }
+
+[[bin]]
+name = "city-headless"
+path = "src/bin/city-headless.rs"
+required-features = ["city"]

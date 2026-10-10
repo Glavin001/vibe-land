@@ -20,6 +20,7 @@
 #   scripts/native-mac.sh vehicle-lab [--build B] # the vehicle test bed in the app (structures/vehicle-lab)
 #   scripts/native-mac.sh runtime|sim|bundle
 #   scripts/native-mac.sh scene-env --scene S # the pack this profile and scene run (no launch)
+#   scripts/native-mac.sh headless [--scene S] [SECONDS] # physics only: the app's city, no renderer
 #
 # --scene NAME (any subcommand) picks the city:
 #   city            the default destructible city (high-rise-3f-local)
@@ -267,6 +268,20 @@ launch() {
 }
 
 run() { launch game.js "$@"; }
+
+# Physics only: sim-native's city-headless, the app's in-process city with the
+# app's defaults and PhysX build and no renderer or window, in the app's launch
+# environment. `headless [--scene S] [SECONDS]` (scripts/ops/hang-forensics.sh).
+headless() {
+  CARGO_TARGET_DIR="$SIM_TARGET" cargo build --release -p vibe-sim-native --features city \
+    --bin city-headless --manifest-path "$ROOT/Cargo.toml" || exit 1
+  cd "$ROOT"
+  exec "$ROOT/scripts/perf/gpu-run.sh" native-city env \
+    VIBE_PHYSICS_BACKEND=physx_gpu RUST_LOG="${RUST_LOG:-info}" \
+    CUMETAL_CACHE_DIR="$ROOT/target/cumetal-cache-vehicles" \
+    VIBE_DESTRUCTION_ASSET_DIR="$ROOT/destruction/assets/scenes" \
+    "$SIM_TARGET/release/city-headless" "$@"
+}
 
 iife() {
   "$ROOT/client/node_modules/.bin/esbuild" "$BUNDLE_DIR/game.js" --format=iife \
@@ -688,6 +703,7 @@ case "${1:-run}" in
   bundle) bundle ;;
   build) runtime; sim; bundle ;;
   run) shift || true; runtime; sim; bundle; run "$@" ;;
+  headless) shift || true; headless "$@" ;;
   debug) shift || true; debug "$@" ;;
   smoke) shift || true; runtime; sim; bundle; smoke "$@" ;;
   app) runtime; sim; app ;;

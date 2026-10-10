@@ -211,7 +211,7 @@ pub fn start_city(js: Js, args: &[Value]) -> Value {
 /// The settings the play server gets from its launch environment
 /// (scripts/perf/play-server.sh), for when the app is launched from Finder
 /// with none. Anything already set wins, so a terminal launch can override.
-fn apply_app_defaults() {
+pub fn apply_app_defaults() {
     if std::env::var_os("VIBE_PHYSICS_BACKEND").is_none() {
         std::env::set_var("VIBE_PHYSICS_BACKEND", "physx_gpu");
     }

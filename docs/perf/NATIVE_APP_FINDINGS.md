@@ -45,6 +45,30 @@
   - Results: destruction gate 116/116; quick tier 0 failing; answer drift 287 identical.
 - **Open.** The root cause is not found. A reproduction needs the owner's consent, because every hang so far has logged them out. Never relaunch after an unexplained quit; read `/Library/Logs/DiagnosticReports` first.
 
+### Capturing the next one: `scripts/ops/hang-forensics.sh`
+
+One more occurrence should name the cause. Steps:
+
+1. `scripts/ops/hang-forensics.sh run`, with any of these options:
+   - `--physics-only`: no renderer;
+   - `--cpu-load N`: load like the 2026-10-10 hangs;
+   - `--one-kernel-per-buffer`: for a second reproduction.
+2. If it logs you out, log back in and run `scripts/ops/hang-forensics.sh collect`.
+3. Read `summary.txt` in `~/Library/Logs/vibe-land/hang-forensics/latest/`.
+
+**What it records.** Every file is written as it happens and survives a logout. All timestamps are CLOCK_UPTIME_RAW seconds, so the sources interleave.
+
+| Source | Where | What it pins down |
+|---|---|---|
+| CuMetal `CUMETAL_SUBMIT` / `CUMETAL_COMMIT` (garage-diag on CuMetal `c5cce42`) | `app.log` | Each command buffer and its kernels, its GPU times, and its status and error. The one submitted and never completed is the stuck GPU work. A timeout or GPU restart names itself. |
+| `VIBE_HANG_TRACE` (`physx_bridge.cc`) | `trace.log` | Each PhysX step: simulate, simulated, fetch, fetched. Shows whether physics was waiting on the GPU. |
+| `VIBE_HANG_TRACE` (`client/src/native/renderTrace.ts`) | `trace.log` | Each render frame's WebGPU submit and completion. Shows whether rendering was stuck instead. |
+| `hang_sampler.py` | `samples.tsv`, `sample-*.txt` | Every 0.5 s: WindowServer's answer time, GPU utilisation and memory, GPU resets (`recoveryCount`), the app's CPU and memory, load, the busiest processes. When the desktop is slow, the app's thread stacks. |
+| `log stream`, then `log show` at collect | `unified-stream.log`, `unified.log` | Kernel GPU messages, WindowServer, Metal. |
+| `collect` | `reports/` | WindowServer and app DiagnosticReports since the start. |
+
+**Measured on 2026-10-10.** A small case (impact-plate-punch on garage-diag) gave 1,418 command buffers, all completed with status 4, interleaved with 31 PhysX steps. The analyzer read it as "no hang". The same day the sampler showed the machine at load 16.9 on 16 cores: another session's test binary at 870% CPU, OrbStack at 100%, and the GPU 15–39% busy before the app ran.
+
 ## Superseded: the app no longer runs a GPU keep-alive (kept off, but not the root cause)
 
 - **Cause.** CuMetal's GPU keep-alive, which the bridge turns on for the headless server (`physx_bridge.cc`): a 250 µs heartbeat (`CUMETAL_GPU_KEEPALIVE_US`) and a busy threadgroup (`CUMETAL_GPU_KEEPALIVE_BUSY`). It keeps the GPU from idling between ticks. In a desktop app that shares the GPU with WindowServer, it hung WindowServer 52–68 s after launch, at rest.

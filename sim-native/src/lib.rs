@@ -8,6 +8,8 @@
 //! Exports (API version 1 of the runtime's native module interface):
 //!   backend                 'physx' or 'cpu'
 //!   startCity(matchId)      (feature `city`) single-player /city, see city.rs
+//!   hangTraceEnabled        VIBE_HANG_TRACE is set (hang_trace.rs)
+//!   hangTrace(text)         appends `<seconds> js <text>` to it
 //!   createProbe(boxes)      starts the probe scene (see probe.rs) and returns
 //!                           { buffer, slotWords, headerWords, wordsPerBody,
 //!                             acquire(): slot index, stop(): error string | undefined }
@@ -15,6 +17,7 @@
 #[cfg(feature = "city")]
 pub mod city;
 pub mod frame;
+pub mod hang_trace;
 pub mod mystral;
 pub mod probe;
 
@@ -40,6 +43,14 @@ pub unsafe extern "C" fn mystral_module_init(api: *const Api, env: Env, exports:
 
     js.set(exports, "backend", js.string(BACKEND));
     js.set(exports, "createProbe", js.function("createProbe", create_probe));
+    // VIBE_HANG_TRACE (hang_trace.rs): whether it is on, and a line from JS.
+    js.set(exports, "hangTraceEnabled", js.boolean(hang_trace::enabled()));
+    js.set(exports, "hangTrace", js.function("hangTrace", |js, args| {
+        if let Some(text) = js.string_arg(args, 0) {
+            hang_trace::line("js", &text);
+        }
+        js.undefined()
+    }));
     #[cfg(feature = "city")]
     js.set(exports, "startCity", js.function("startCity", city::start_city));
     0

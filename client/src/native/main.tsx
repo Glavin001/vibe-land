@@ -19,6 +19,7 @@ import { sceneCanvasProps } from '../scene/RenderGovernor';
 import { setInProcessLink, type InProcessLink } from '../net/inProcessClient';
 import { installFilmApi } from './film';
 import { nativeHud } from './nativeHud';
+import { installRenderTrace, type TraceableQueue } from './renderTrace';
 import { NativeCity } from './NativeCity';
 
 declare const canvas: HTMLCanvasElement & { width: number; height: number };
@@ -27,6 +28,9 @@ declare const __VIBE_SIM_LIB__: string;
 declare function __mystralLoadNativeModule(path: string): {
   backend: string;
   startCity(matchId: string): InProcessLink;
+  /** VIBE_HANG_TRACE is set (sim-native hang_trace.rs); older modules lack it. */
+  hangTraceEnabled?: boolean;
+  hangTrace?(text: string): void;
 };
 
 const MATCH_ID = 'city-default';
@@ -54,6 +58,13 @@ async function main(): Promise<void> {
   const height = canvas.height || 720;
   const renderer = createWebGPURenderer(canvas, { antialias: true, trackTimestamp: true });
   await renderer.init();
+  // VIBE_HANG_TRACE: each render frame's GPU submission, beside the PhysX
+  // step phases and CuMetal's command buffers (renderTrace.ts).
+  if (sim.hangTraceEnabled && sim.hangTrace) {
+    const trace = sim.hangTrace.bind(sim);
+    const device = (renderer as unknown as { backend?: { device?: { queue?: TraceableQueue } } }).backend?.device;
+    if (!installRenderTrace(device?.queue, trace)) trace('render trace: no WebGPU queue');
+  }
   (globalThis as { __rendererBackend?: string }).__rendererBackend = 'webgpu';
 
   // R3F's <Canvas> registers three's classes for JSX (<mesh>, <group>, ...);

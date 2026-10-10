@@ -47,7 +47,49 @@
 #include <utility>
 #include <vector>
 
+#include <cstdarg>
+#include <fcntl.h>
+#include <time.h>
+#include <unistd.h>
+
 namespace {
+// VIBE_HANG_TRACE=<file> (diagnostic, off by default): one line per PhysX step
+// phase, so a step that never finishes is placed exactly (the last line is the
+// phase it is stuck in). Each line is appended with one write(2): never torn,
+// and in the file the moment it is written, so it survives the process being
+// killed (a macOS logout after a GPU hang). The clock is CLOCK_UPTIME_RAW
+// seconds, the mach_absolute_time base of CuMetal's CUMETAL_SUBMIT and
+// CUMETAL_COMMIT lines, so the two interleave (scripts/ops/hang_analyze.py).
+int hang_trace_fd() {
+  static const int fd = [] {
+    const char *path = std::getenv("VIBE_HANG_TRACE");
+    return path != nullptr && path[0] != '\0'
+               ? ::open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644)
+               : -1;
+  }();
+  return fd;
+}
+void hang_trace(const char *fmt, ...) {
+  const int fd = hang_trace_fd();
+  if (fd < 0) return;
+#if defined(__APPLE__)
+  const double now = static_cast<double>(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) * 1e-9;
+#else
+  timespec ts{};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  const double now = static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) * 1e-9;
+#endif
+  char line[256];
+  int n = std::snprintf(line, sizeof line, "%.6f physx ", now);
+  va_list args;
+  va_start(args, fmt);
+  if (n > 0 && n < static_cast<int>(sizeof line)) n += std::vsnprintf(line + n, sizeof line - n, fmt, args);
+  va_end(args);
+  if (n <= 0) return;
+  if (n > static_cast<int>(sizeof line) - 2) n = static_cast<int>(sizeof line) - 2;
+  line[n++] = '\n';
+  (void)!::write(fd, line, static_cast<size_t>(n));
+}
 // What a swept wheel may stand on: what-ifs, all off by default. A wheel
 // rolls onto the top of a step or over its edge while the edge is below its
 // axle: the sweep's hit normal then points up, by (r - h) / r at an edge of
@@ -2948,7 +2990,9 @@ public:
 #endif
     controller_manager_->computeInteractions(kFixedTimestep);
     const auto after_controllers = std::chrono::steady_clock::now();
+    hang_trace("simulate step=%llu world=%p", static_cast<unsigned long long>(completed_steps_), static_cast<const void *>(this));
     scene_->simulate(kFixedTimestep);
+    hang_trace("simulated step=%llu world=%p", static_cast<unsigned long long>(completed_steps_), static_cast<const void *>(this));
     const auto after_simulate = std::chrono::steady_clock::now();
     last_controller_ms_ =
         std::chrono::duration<float, std::milli>(after_controllers - step_start_)
@@ -2985,6 +3029,7 @@ public:
   /// FETCH=1` still forces every tick, for traces that want it.
   void end_step() {
     require(step_in_flight_, "end_step called without begin_step");
+    hang_trace("fetch step=%llu world=%p", static_cast<unsigned long long>(completed_steps_), static_cast<const void *>(this));
     contact_callback_cycles_ = 0;
     contact_callback_max_cycles_ = 0;
     const auto fetch_start = std::chrono::steady_clock::now();
@@ -3134,6 +3179,8 @@ public:
     }
     last_step_ms_ =
         std::chrono::duration<float, std::milli>(end - step_start_).count();
+    hang_trace("fetched step=%llu world=%p ms=%.3f", static_cast<unsigned long long>(completed_steps_),
+               static_cast<const void *>(this), static_cast<double>(last_step_ms_));
     step_in_flight_ = false;
     ++completed_steps_;
   }

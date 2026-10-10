@@ -20,7 +20,8 @@ import re
 import sys
 
 LINE = re.compile(r"CUMETAL_COMMIT seq=(\d+) kind=(\S+) stream=(\S+) dispatches=(\d+) commit_s=([\d.]+) "
-                  r"gpu_start_s=([\d.]+) gpu_end_s=([\d.]+) done_s=([\d.]+) steady_commit_ns=(-?\d+) waits=(\d+) kernels=(.*)$")
+                  r"gpu_start_s=([\d.]+) gpu_end_s=([\d.]+) done_s=([\d.]+) steady_commit_ns=(-?\d+) waits=(\d+)"
+                  r"(?: status=\d+ error=-?\d+ error_text=\"[^\"]*\")? kernels=(.*)$")
 
 
 def main():
