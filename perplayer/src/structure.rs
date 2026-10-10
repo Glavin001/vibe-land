@@ -320,6 +320,12 @@ impl StructureState {
     /// y = 0: the `Keyframe::floor_drop` both sides derive. None when the
     /// chunk boxes are unknown or the body has no members.
     pub fn floor_drop(&self, def: &StructureDef, body: u32, position: Vec3, rotation: Quat) -> Option<f32> {
+        self.lowest_point(def, body, position, rotation).map(|y| y.max(0.0))
+    }
+
+    /// The height of `body`'s lowest chunk corner at a pose (negative:
+    /// below the ground).
+    pub fn lowest_point(&self, def: &StructureDef, body: u32, position: Vec3, rotation: Quat) -> Option<f32> {
         let members = self.members.get(&body)?;
         if def.half_extents.len() != def.rest.len() || members.is_empty() {
             return None;
@@ -335,7 +341,7 @@ impl StructureState {
                 (position + rotation * (def.rest[n] - com)).y - row_y.dot(def.half_extents[n])
             })
             .fold(f32::INFINITY, f32::min);
-        Some(lowest.max(0.0))
+        Some(lowest)
     }
 
     pub fn alive_bits(&self) -> &[u64] {
