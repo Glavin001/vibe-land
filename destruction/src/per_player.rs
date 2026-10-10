@@ -258,7 +258,14 @@ pub struct PerPlayerStats {
     pub sends_out_of_candidates: u64,
     /// Bodies re-sent because the client received their event late.
     pub late_event_resends: u64,
+    /// Keyframes and record bytes by the body's distance from the client's
+    /// eye: under 10, 25, 50, 100 m, and beyond (the collapse-cost report).
+    pub keyframes_by_distance: [u64; 5],
+    pub bytes_by_distance: [u64; 5],
 }
+
+/// The distance bands of the cost report, m.
+pub const DISTANCE_BANDS_M: [f32; 4] = [10.0, 25.0, 50.0, 100.0];
 
 impl PerPlayerStats {
     /// Add what one send worker counted (the fields `send_for` touches).
@@ -273,6 +280,10 @@ impl PerPlayerStats {
         self.allowance_offered += other.allowance_offered;
         self.allowance_used += other.allowance_used;
         self.sends_out_of_candidates += other.sends_out_of_candidates;
+        for b in 0..5 {
+            self.keyframes_by_distance[b] += other.keyframes_by_distance[b];
+            self.bytes_by_distance[b] += other.bytes_by_distance[b];
+        }
         for m in 0..4 {
             self.by_mode[m] += other.by_mode[m];
             self.bytes_by_mode[m] += other.bytes_by_mode[m];
@@ -1007,7 +1018,7 @@ impl ReplicationStrategy for PerPlayer {
     }
 
     fn report(&self) -> String {
-        format!("{:?}", self.stats)
+        serde_json::to_string(&self.stats).unwrap_or_else(|_| format!("{:?}", self.stats))
     }
 
     fn on_feedback(&mut self, client: u64, feedback: ClientFeedback) {
@@ -1090,6 +1101,8 @@ fn send_for(
         /// Among never-sent bodies when there are more than fit: the
         /// biggest on screen first (0 otherwise).
         rank: u32,
+        /// Distance from the client's eye, m (for the cost report).
+        distance: f32,
         record: KeyframeRecord,
     }
     let allowance = match budget {
@@ -1298,7 +1311,7 @@ fn send_for(
             f32::MAX
         };
         let priority = if required { f32::MAX } else { gain.max(1e-9) / bytes as f32 };
-        candidates.push(Candidate { key: *key, bytes, priority, rank: rank_of.get(key).copied().unwrap_or(0), record });
+        candidates.push(Candidate { key: *key, bytes, priority, rank: rank_of.get(key).copied().unwrap_or(0), distance, record });
     }
     candidates.sort_by(|a, b| b.priority.total_cmp(&a.priority).then(a.rank.cmp(&b.rank)).then(a.key.cmp(&b.key)));
     let candidate_keys: Vec<BodyKey> = candidates.iter().map(|c| c.key).collect();
@@ -1344,6 +1357,9 @@ fn send_for(
         }
         stats.by_mode[c.record.keyframe.mode as usize] += 1;
         stats.bytes_by_mode[c.record.keyframe.mode as usize] += c.bytes as u64;
+        let band = DISTANCE_BANDS_M.iter().position(|&d| c.distance < d).unwrap_or(DISTANCE_BANDS_M.len());
+        stats.keyframes_by_distance[band] += 1;
+        stats.bytes_by_distance[band] += c.bytes as u64;
         chosen.push(c.record);
     }
     // What lost the ranking is looked at again next send (the best of it,
