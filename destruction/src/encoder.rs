@@ -761,6 +761,11 @@ pub struct EncoderCheckpoint {
 pub const ENCODER_CHECKPOINT_FORMAT: u32 = 1;
 
 impl EncoderCheckpoint {
+    /// The structural state at the checkpoint.
+    pub fn ledger(&self) -> &CityLedger {
+        &self.ledger
+    }
+
     /// Client ids the encoder was serving.
     pub fn clients(&self) -> Vec<u64> {
         let mut clients: Vec<u64> = self.clients.keys().copied().collect();

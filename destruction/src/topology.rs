@@ -381,6 +381,127 @@ impl CityLedger {
     }
 }
 
+/// How one structure's bodies compare with what a client could derive from
+/// the broken bonds alone (the per-player structural channel, decision D8):
+/// flood fill over intact bonds, a component touching a support chunk is the
+/// anchored structure, and every other component is one body named by its
+/// lowest chunk. The physics' own islands are the truth this is checked
+/// against.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StructureDerivation {
+    /// Dynamic components equal to exactly one physics island.
+    pub matched: u32,
+    /// Of those, islands whose serial differs from the derived id (expected:
+    /// the wire maps serial <-> lowest chunk).
+    pub renamed: u32,
+    /// Components touching a support: the anchored structure (no island).
+    pub anchored: u32,
+    /// Dynamic components with no physics island at all: chunks the physics
+    /// removed without breaking their bonds (crushed, retired at the floor).
+    /// A bonds-only stream needs an explicit event for these.
+    pub removed_components: u32,
+    pub removed_chunks: u32,
+    /// Components the physics splits into several islands, or merges with
+    /// others: membership a bonds-only client would get wrong.
+    pub split_or_merged: u32,
+    /// Physics islands holding chunks of an anchored component (a body the
+    /// client would draw as part of the standing structure).
+    pub island_in_anchored: u32,
+    /// Up to a few examples of the disagreements, for the report.
+    pub examples: Vec<String>,
+}
+
+impl StructureDerivation {
+    pub fn disagreements(&self) -> u32 {
+        self.removed_components + self.split_or_merged + self.island_in_anchored
+    }
+
+    pub fn add(&mut self, other: &StructureDerivation) {
+        self.matched += other.matched;
+        self.renamed += other.renamed;
+        self.anchored += other.anchored;
+        self.removed_components += other.removed_components;
+        self.removed_chunks += other.removed_chunks;
+        self.split_or_merged += other.split_or_merged;
+        self.island_in_anchored += other.island_in_anchored;
+        for example in &other.examples {
+            if self.examples.len() < 12 {
+                self.examples.push(example.clone());
+            }
+        }
+    }
+}
+
+impl CityLedger {
+    /// Derive `structure_id`'s bodies from its alive bonds and compare them
+    /// with the ledger's islands (see `StructureDerivation`). Nodes in no
+    /// ledger island and not anchored are "removed".
+    pub fn derive_check(&self, manifest: &DestructionManifest, structure_id: u32) -> StructureDerivation {
+        let mut out = StructureDerivation::default();
+        let (Some(structure), Some(authored)) =
+            (self.structures.get(&structure_id), manifest.structure(structure_id))
+        else {
+            return out;
+        };
+        let node_count = authored.chunks.iter().map(|c| c.node_index + 1).max().unwrap_or(0);
+        let mut uf = ChunkComponents::new(node_count);
+        for bond in &authored.bonds {
+            let alive = structure.alive_bonds[(bond.bond_index / 8) as usize] & (1 << (bond.bond_index % 8)) != 0;
+            if alive {
+                uf.union(bond.node0, bond.node1);
+            }
+        }
+        let support: std::collections::HashSet<u32> =
+            authored.chunks.iter().filter(|c| c.support).map(|c| c.node_index).collect();
+        // node -> ledger serial
+        let mut island_of: HashMap<u32, u32> = HashMap::new();
+        for (&serial, island) in &structure.islands {
+            for &node in &island.nodes {
+                island_of.insert(node, serial);
+            }
+        }
+        let mut components: Vec<(u32, Vec<u32>)> = uf.components().into_iter().collect();
+        components.sort_unstable_by_key(|(min, _)| *min);
+        let mut example = |out: &mut StructureDerivation, text: String| {
+            if out.examples.len() < 6 {
+                out.examples.push(text);
+            }
+        };
+        for (min, nodes) in components {
+            let serials: std::collections::BTreeSet<Option<u32>> =
+                nodes.iter().map(|node| island_of.get(node).copied()).collect();
+            if nodes.iter().any(|node| support.contains(node)) {
+                out.anchored += 1;
+                if serials.iter().any(Option::is_some) {
+                    out.island_in_anchored += 1;
+                    example(&mut out, format!("s{structure_id}: anchored component {min} ({} chunks) holds islands {serials:?}", nodes.len()));
+                }
+                continue;
+            }
+            match serials.iter().collect::<Vec<_>>().as_slice() {
+                [None] => {
+                    out.removed_components += 1;
+                    out.removed_chunks += nodes.len() as u32;
+                    if nodes.len() > 1 {
+                        example(&mut out, format!("s{structure_id}: {} chunks from {min} in no island", nodes.len()));
+                    }
+                }
+                [Some(serial)] if structure.islands[serial].nodes.len() == nodes.len() => {
+                    out.matched += 1;
+                    if *serial != min {
+                        out.renamed += 1;
+                    }
+                }
+                _ => {
+                    out.split_or_merged += 1;
+                    example(&mut out, format!("s{structure_id}: component {min} ({} chunks) is islands {serials:?}", nodes.len()));
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Union-find over one structure's chunks, used to derive connected components
 /// from an alive-bond bitset (tests + the synthetic backend; the C++ adapter
 /// does its own island analysis in production).

@@ -123,6 +123,32 @@ A run directory holds `scorecard.json` / `scorecard.md`, and per client `cNN/`:
   - spin is constant-ω (the server has no gyroscopic forces);
   - crushes, missed-frame rebuilds and floor retirements get explicit events.
 
+## Bodies from broken bonds alone (D8, measured)
+
+`derive-check --capture <dir>` (`destruction/src/bin/derive-check.rs`)
+replays a capture's structural truth from its checkpoint ledger. After every
+fracture batch it derives the structure's bodies the way a bonds-only client
+would:
+
+- flood fill over intact bonds;
+- a component holding a support chunk is the standing structure;
+- every other component is one body named by its lowest chunk.
+
+It then compares the result with the islands the physics made
+(`CityLedger::derive_check`).
+
+On the systematic-2c-d1342419 capture (native backend, 314 s, 397 batches,
+2,110 bodies at the end):
+
+- **Split or merged: 0. Islands inside a standing structure: 0.** Every
+  dynamic body PhysX made is exactly one connected component of the intact
+  bond graph (35,897 matched checks).
+- **Removed: 242 component-checks (22 components, 25 chunks at the end).**
+  These are chunks the physics took away (crushed, retired at the floor)
+  without breaking their bonds, so a bonds-only client would keep drawing
+  them. The per-player wire carries them as an explicit removed-chunks event,
+  as the plan's deviation 3 said.
+
 ## Truth and calibration
 
 - **Server stage.** Captures from before binary manifest format 2 (2026-10-07)
