@@ -14,7 +14,8 @@
  * each frame's body poses are written as presented poses.
  */
 import { CityClient } from './cityClient';
-import type { LoadedCityManifest } from './manifest';
+import { PKT_CITY_RESYNC_REQUEST } from '../net/sharedConstants';
+import { bondCountOf, type LoadedCityManifest } from './manifest';
 import type { CityTopology } from './topology';
 import type { FractureBatchMessage, TopologyMessage } from './wire';
 
@@ -76,12 +77,26 @@ export function perPlayerCoreArgs(manifest: LoadedCityManifest['manifest']): {
       );
     }
     nodes.push(...table);
+    // A JSON manifest (tapes) carries bond objects with their indices; the
+    // binary one the live server sends carries only endpoint arrays, indexed
+    // by position (manifestBinary.ts). Without them every chunk derives as
+    // its own body and no structure hash can match the server's.
     const bondList = s.bonds ?? [];
-    const b = bondList.reduce((m, bond) => Math.max(m, bond.bondIndex + 1), 0);
-    bondCounts[i] = b;
-    const pairs = new Uint32Array(b * 2);
-    for (const bond of bondList) pairs.set([bond.node0, bond.node1], bond.bondIndex * 2);
-    bonds.push(...pairs);
+    let pairs: Uint32Array;
+    if (bondList.length === 0 && s.bondNode0 && s.bondNode1) {
+      const b = bondCountOf(s);
+      pairs = new Uint32Array(b * 2);
+      for (let k = 0; k < b; k += 1) {
+        pairs[k * 2] = s.bondNode0[k];
+        pairs[k * 2 + 1] = s.bondNode1[k];
+      }
+    } else {
+      const b = bondList.reduce((m, bond) => Math.max(m, bond.bondIndex + 1), 0);
+      pairs = new Uint32Array(b * 2);
+      for (const bond of bondList) pairs.set([bond.node0, bond.node1], bond.bondIndex * 2);
+    }
+    bondCounts[i] = pairs.length / 2;
+    for (let k = 0; k < pairs.length; k += 1) bonds.push(pairs[k]);
   });
   return { ids, poses, nodeCounts, bondCounts, nodes: Float32Array.from(nodes), bonds: Uint32Array.from(bonds) };
 }
@@ -95,10 +110,36 @@ export class PerPlayerCityClient extends CityClient {
   private settled: Set<number> = new Set();
   private repaint: Set<number> = new Set();
   private repaintEverything = false;
+  /** Lets `requestResync` (and the core's own hash check) through; counts what it kept back. */
+  private readonly resyncGate: { open: boolean; gated: number };
+  private hashMismatchesSeen = 0;
+  private lastHashResyncMs = Number.NEGATIVE_INFINITY;
 
   constructor(manifest: LoadedCityManifest, sendUpstream: (bytes: Uint8Array) => void, core: PerPlayerCore) {
-    super(manifest, sendUpstream);
+    // CityClient's v2 checks (topology gaps, settle and migration faults)
+    // watch a ledger this class writes itself from the core's decisions, so
+    // what they ask for is noise here, and on wire 4 every resync restarts
+    // the stream from a bootstrap. Only an explicit request goes up.
+    const gate = { open: false, gated: 0 };
+    super(manifest, (bytes) => {
+      if (bytes[0] === PKT_CITY_RESYNC_REQUEST && !gate.open) {
+        gate.gated += 1;
+        return;
+      }
+      sendUpstream(bytes);
+    });
+    this.resyncGate = gate;
     this.core = core;
+  }
+
+  /** A fresh bootstrap from the server (wire 4: the stream restarts). */
+  override requestResync(): void {
+    this.resyncGate.open = true;
+    try {
+      super.requestResync();
+    } finally {
+      this.resyncGate.open = false;
+    }
   }
 
   override handlePacket(bytes: Uint8Array): void {
@@ -120,6 +161,14 @@ export class PerPlayerCityClient extends CityClient {
     const r = this.core.advance(nowMs);
     if (Number.isNaN(r) || !this.core.started()) return this.live;
     this.renderTick = r;
+    // The core's structure hash disagreed with the server's: ask for a fresh
+    // bootstrap, at most once per 3 s while it keeps disagreeing.
+    const mismatches = (JSON.parse(this.core.stats_json()) as { hashMismatches?: number }).hashMismatches ?? 0;
+    if (mismatches > this.hashMismatchesSeen && nowMs - this.lastHashResyncMs >= 3000) {
+      this.hashMismatchesSeen = mismatches;
+      this.lastHashResyncMs = nowMs;
+      this.requestResync();
+    }
     const poses = this.core.body_poses();
     const poseOf = new Map<number, number>();
     for (let i = 0; i < poses.length; i += 10) poseOf.set(perPlayerBodyKey(poses[i], poses[i + 1]), i);
@@ -200,7 +249,9 @@ export class PerPlayerCityClient extends CityClient {
   private rebuildLedger(poses: Float32Array, poseOf: Map<number, number>): void {
     const topology = this.topology as CityTopology;
     topology.reset();
-    this.topoSeq = 1;
+    // The ledger keeps its sequence across a reset: carry on from it, or a
+    // second bootstrap (resync, reset) would be dropped as a duplicate.
+    this.topoSeq += 1;
     const flat = this.core.structure_flat();
     const batches = new Map<number, FractureBatchMessage>();
     const batchOf = (s: number) => {
@@ -268,6 +319,17 @@ export class PerPlayerCityClient extends CityClient {
   override stats(): ReturnType<CityClient['stats']> {
     const base = super.stats();
     const core = JSON.parse(this.core.stats_json()) as Record<string, number>;
-    return { ...base, hashChecks: core.hashChecks, hashMismatches: core.hashMismatches, perPlayer: core } as ReturnType<CityClient['stats']>;
+    return {
+      ...base,
+      wireVersion: 4,
+      hashChecks: core.hashChecks,
+      hashMismatches: core.hashMismatches,
+      // The core applies every event at its tick: never early; late ones
+      // (arrived after the drawing passed their tick) are counted.
+      eventsApplied: core.eventsApplied,
+      eventsAppliedEarly: 0,
+      eventsAppliedLate: core.eventsLate,
+      perPlayer: { ...core, resyncsGated: this.resyncGate.gated },
+    } as ReturnType<CityClient['stats']>;
   }
 }

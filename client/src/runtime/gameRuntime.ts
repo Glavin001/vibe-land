@@ -46,6 +46,8 @@ import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
 import { fetchSessionConfig, type SessionConfigResponse } from '../net/webTransportClient';
 import { decodeMatchStatsPacket } from '../net/matchStatsFrame';
 import { CityClient } from '../city/cityClient';
+import { PerPlayerCityClient, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS } from '../city/perPlayerCityClient';
+import { encodePerPlayerAck } from '../city/perPlayerAck';
 import {
   PKT_CITY_BOOTSTRAP,
   PKT_CITY_MANIFEST,
@@ -1113,6 +1115,44 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     return decodeCityManifestPayload(this.pushedCityManifest, manifestHash);
   }
 
+  /** Wire 4: the upstream ack timer (see startPerPlayerAcks). */
+  private perPlayerAckTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Wire 4: acknowledge keyframe datagrams about 30 times a second, on the
+   * same upstream path as resyncs. The server presumes a keyframe received
+   * until three acks in a row leave it out, then resends what drifted.
+   * Layout (perplayer/src/wire.rs `encode_ack`): u8 135, u32 newest LE,
+   * u64 mask LE.
+   */
+  private startPerPlayerAcks(
+    client: NetcodeClient,
+    cityClient: PerPlayerCityClient,
+  ): void {
+    this.stopPerPlayerAcks();
+    let last = '';
+    this.perPlayerAckTimer = setInterval(() => {
+      if (this.client !== client || this.cityClient !== cityClient) {
+        this.stopPerPlayerAcks();
+        return;
+      }
+      const ack = cityClient.ack();
+      if (!ack) return;
+      const key = `${ack[0]}:${ack[1]}:${ack[2]}`;
+      // Nothing new since the last ack: the server already has it.
+      if (key === last) return;
+      last = key;
+      client.sendCityResync(encodePerPlayerAck(ack[0], ack[1], ack[2]));
+    }, 33);
+  }
+
+  private stopPerPlayerAcks(): void {
+    if (this.perPlayerAckTimer !== null) {
+      clearInterval(this.perPlayerAckTimer);
+      this.perPlayerAckTimer = null;
+    }
+  }
+
   private async initCityClient(client: NetcodeClient): Promise<void> {
     try {
       let { cityWorld, manifestHash, wireVersion } = client.citySessionConfig();
@@ -1151,11 +1191,25 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         v3 = { decoder: createDebrisDecoder(dictionary, 1 << 16, 60) };
         console.info('[city] wire v3: debris wasm decoder ready');
       }
-      const cityClient = new CityClient(manifest, (bytes) => client.sendCityResync(bytes), v3);
+      const sendUpstream = (bytes: Uint8Array) => client.sendCityResync(bytes);
+      let cityClient: CityClient;
+      if (wireVersion === 4) {
+        // City wire 4, the per-player stream: the shared Rust core (WASM)
+        // decides what is drawn; its acks tell the server which keyframe
+        // datagrams arrived. pendingCityPackets buffers everything meanwhile.
+        const { initPerPlayerWasm, createPerPlayerCore } = await import('../city/perPlayerWasm');
+        await initPerPlayerWasm();
+        const perPlayer = new PerPlayerCityClient(manifest, sendUpstream, createPerPlayerCore(manifest, 60));
+        this.startPerPlayerAcks(client, perPlayer);
+        cityClient = perPlayer;
+        console.info('[city] wire 4: per-player core ready');
+      } else {
+        cityClient = new CityClient(manifest, sendUpstream, v3);
+      }
       // In the native app's single-player the server is in this process: body
       // poses come from memory every tick instead of the budgeted stream.
       const link = inProcessLink();
-      if (link?.poses && !v3) {
+      if (link?.poses && !v3 && wireVersion !== 4) {
         cityClient.setPoseFeed(new CityPoseFeed({ poses: (since) => link.poses!(since) }));
         console.info('[city] body poses from the in-process pose feed');
       }
@@ -1394,8 +1448,13 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
               // wrong. Everything else here is a delta that the bootstrap or
               // the next resync supersedes anyway, so dropping the oldest
               // non-bootstrap packet costs nothing by comparison.
+              // Wire 4's bootstrap and events are kept too: its events are
+              // sequenced, and one evicted stalls every later one.
               const oldest = this.pendingCityPackets.findIndex(
-                (packet) => packet[0] !== PKT_CITY_BOOTSTRAP,
+                (packet) =>
+                  packet[0] !== PKT_CITY_BOOTSTRAP &&
+                  packet[0] !== PKT_PP_BOOTSTRAP &&
+                  packet[0] !== PKT_PP_EVENTS,
               );
               this.pendingCityPackets.splice(oldest < 0 ? 0 : oldest, 1);
             }
@@ -1472,6 +1531,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   disconnect(): void {
+    this.stopPerPlayerAcks();
     resetAudioContacts();
     hotspotWatch.disarm();
     cityTapeRecorder.describeSession(null);
