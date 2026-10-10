@@ -28,6 +28,7 @@ use glam::{Quat, Vec3};
 use crate::predict::{predict, predict_velocity, Keyframe, Mode, Physics};
 use crate::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use crate::wire::{
+    KeyframeRecord,
     decode_bootstrap, decode_events, decode_keyframes_with, BodyKey, Event, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS,
     PKT_PP_KEYFRAMES,
 };
@@ -328,6 +329,10 @@ pub fn apply_spawns<S: std::hash::BuildHasher>(
 pub struct ClientStats {
     pub keyframes: u64,
     pub late_keyframes: u64,
+    /// Keyframes held because the fracture that made their body had not
+    /// arrived, and those dropped after waiting too long.
+    pub held_keyframes: u64,
+    pub held_dropped: u64,
     pub events_applied: u64,
     pub hash_checks: u64,
     pub hash_mismatches: u64,
@@ -376,7 +381,15 @@ pub struct Client {
     pub stats: ClientStats,
     started: bool,
     render: f32,
+    /// Per structure, the newest fracture applied (or the bootstrap tick):
+    /// a body born after it is not yet this client's.
+    applied_tick: HashMap<u32, u32>,
+    /// Keyframes for bodies whose creating fracture had not arrived.
+    held: Vec<KeyframeRecord>,
 }
+
+/// How long a held keyframe waits for its fracture event, ticks.
+const HOLD_TICKS: f32 = 300.0;
 
 impl Client {
     pub fn new(defs: Vec<StructureDef>, physics: Physics, hz: u32, delay_ticks: f32) -> Self {
@@ -401,7 +414,48 @@ impl Client {
             stats: ClientStats::default(),
             started: false,
             render: f32::MIN,
+            applied_tick: HashMap::new(),
+            held: Vec::new(),
         }
+    }
+
+    /// Whether a record's body is a version this client has not seen made:
+    /// born after the newest fracture applied to its structure, and that
+    /// fracture not among the events received but not yet applied.
+    fn unborn(&self, record: &KeyframeRecord) -> bool {
+        let structure = record.key.structure;
+        let Some(born) = record.incarnation else {
+            // An id this client's structure has no body for yet: the
+            // fracture that makes it has not been applied.
+            return self.structures.get(&structure).is_some_and(|cs| cs.state.members(record.key.body).is_none())
+                && self.pending_fracture(structure).is_none();
+        };
+        if born <= self.applied_tick.get(&structure).copied().unwrap_or(0) {
+            return false;
+        }
+        !self.pending.values().flatten().any(|e| matches!(e, Event::Fracture { tick, structure: s, .. } if *tick == born && *s == structure))
+    }
+
+    /// The earliest fracture received for `structure` but not yet applied.
+    fn pending_fracture(&self, structure: u32) -> Option<u32> {
+        self.pending
+            .values()
+            .flatten()
+            .filter_map(|e| match e {
+                Event::Fracture { tick, structure: s, .. } if *s == structure => Some(*tick),
+                _ => None,
+            })
+            .min()
+    }
+
+    /// Draw a decoded keyframe: its floor from the body's chunks, then onto
+    /// its track from `render` on.
+    fn add_keyframe(&mut self, record: &KeyframeRecord, render: f32) {
+        let mut keyframe = record.keyframe;
+        if let Some(cs) = self.structures.get(&record.key.structure) {
+            keyframe.floor_drop = cs.state.floor_drop(&cs.def, record.key.body, keyframe.position, keyframe.rotation);
+        }
+        self.bodies.entry(record.key).or_default().add(keyframe, render, self.physics);
     }
 
     pub fn started(&self) -> bool {
@@ -428,11 +482,12 @@ impl Client {
                         if (record.keyframe.tick as f32) < render {
                             self.stats.late_keyframes += 1;
                         }
-                        let mut keyframe = record.keyframe;
-                        if let Some(cs) = self.structures.get(&record.key.structure) {
-                            keyframe.floor_drop = cs.state.floor_drop(&cs.def, record.key.body, keyframe.position, keyframe.rotation);
+                        if self.unborn(&record) {
+                            self.stats.held_keyframes += 1;
+                            self.held.push(record);
+                        } else {
+                            self.add_keyframe(&record, render);
                         }
-                        self.bodies.entry(record.key).or_default().add(keyframe, render, self.physics);
                         let history = self.history.entry(record.key).or_default();
                         history.push_back(record.keyframe);
                         let newest = record.keyframe.tick;
@@ -454,6 +509,11 @@ impl Client {
             Some(&PKT_PP_BOOTSTRAP) => match decode_bootstrap(bytes) {
                 Ok(boot) => {
                     self.stats.bootstraps += 1;
+                    // The bootstrap is every structure as of its tick.
+                    for &id in self.structures.keys() {
+                        self.applied_tick.insert(id, boot.tick);
+                    }
+                    self.held.retain(|r| r.incarnation.is_some_and(|b| b > boot.tick));
                     self.clock.observe(boot.tick, arrival_ms);
                     for s in &boot.structures {
                         if let Some(cs) = self.structures.get_mut(&s.structure) {
@@ -531,6 +591,21 @@ impl Client {
                 self.apply(event, r);
             }
         }
+        // Held keyframes whose body this client now knows.
+        if !self.held.is_empty() {
+            let held = std::mem::take(&mut self.held);
+            for record in held {
+                if self.unborn(&record) {
+                    if (record.keyframe.tick as f32) + HOLD_TICKS < r {
+                        self.stats.held_dropped += 1;
+                    } else {
+                        self.held.push(record);
+                    }
+                } else {
+                    self.add_keyframe(&record, r);
+                }
+            }
+        }
         Some(r)
     }
 
@@ -538,6 +613,8 @@ impl Client {
         self.stats.events_applied += 1;
         match event {
             Event::Fracture { tick, structure, broken_bonds, removed_chunks } => {
+                let applied = self.applied_tick.entry(structure).or_insert(0);
+                *applied = (*applied).max(tick);
                 let Some(cs) = self.structures.get_mut(&structure) else { return };
                 let parents = parent_states(&cs.def, &cs.state, structure, tick, &self.bodies, self.physics);
                 let change = cs.state.apply(&cs.def, &broken_bonds, &removed_chunks);

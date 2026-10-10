@@ -226,11 +226,17 @@ pub struct KeyframeRecord {
     /// that is predicted well costs a few bytes; a contact costs its velocity
     /// change.
     pub baseline: Option<Keyframe>,
+    /// The tick this version of the body was born (the fracture that last
+    /// changed its chunks), sent while that is recent: a client still
+    /// drawing an older body under this id holds the record until that
+    /// fracture's event arrives, rather than drawing the new body's pose
+    /// with the old body's chunks.
+    pub incarnation: Option<u32>,
 }
 
 impl KeyframeRecord {
     pub fn absolute(key: BodyKey, tier: u8, keyframe: Keyframe) -> Self {
-        Self { key, tier, keyframe, baseline: None }
+        Self { key, tier, keyframe, baseline: None, incarnation: None }
     }
 }
 
@@ -247,6 +253,7 @@ pub struct KeyframePacket {
 const ROTATION_STEP: f32 = 0.001;
 const FLAG_DELTA: u8 = 1 << 4;
 const FLAG_SPIN: u8 = 1 << 5;
+const FLAG_INCARNATION: u8 = 1 << 6;
 
 /// A record's numbers as the wire carries them.
 struct RecordInts {
@@ -259,6 +266,8 @@ struct RecordInts {
     angular: [i64; 3],
     /// Friction mode: the deceleration, 0.1 m/s^2 steps.
     decel: u8,
+    /// Ticks from the body's birth to this keyframe (FLAG_INCARNATION).
+    incarnation_ticks: u32,
 }
 
 const DECEL_STEP: f32 = 0.1;
@@ -278,7 +287,12 @@ fn ints_of(record: &KeyframeRecord, physics: Physics) -> RecordInts {
         linear: [0; 3],
         angular: [0; 3],
         decel: (kf.decel / DECEL_STEP).round().clamp(0.0, 255.0) as u8,
+        incarnation_ticks: 0,
     };
+    if let Some(born) = record.incarnation.filter(|&b| b <= kf.tick) {
+        flags |= FLAG_INCARNATION;
+        out.incarnation_ticks = kf.tick - born;
+    }
     match record.baseline.filter(|b| b.tick <= kf.tick) {
         Some(base) => {
             flags |= FLAG_DELTA;
@@ -409,6 +423,9 @@ fn write_record(w: &mut Writer, ints: &RecordInts, tick_delta: i64) {
     if Mode::from_u8(ints.flags) == Mode::Friction {
         w.u8(ints.decel);
     }
+    if ints.flags & FLAG_INCARNATION != 0 {
+        w.varint(u64::from(ints.incarnation_ticks));
+    }
 }
 
 pub fn encode_keyframes(packet: &KeyframePacket, physics: Physics) -> Vec<u8> {
@@ -459,7 +476,7 @@ pub fn decode_keyframes_with(
         let tick = (i64::from(server_tick) + r.svarint()?) as u32;
         let flags = r.u8()?;
         let moving = Mode::from_u8(flags) != Mode::Resting;
-        let mut ints = RecordInts { flags, baseline_ticks: 0, position: [0; 3], rotation_abs: 0, rotation: [0; 3], linear: [0; 3], angular: [0; 3], decel: 0 };
+        let mut ints = RecordInts { flags, baseline_ticks: 0, position: [0; 3], rotation_abs: 0, rotation: [0; 3], linear: [0; 3], angular: [0; 3], decel: 0, incarnation_ticks: 0 };
         if flags & FLAG_DELTA != 0 {
             ints.baseline_ticks = r.varint()? as u32;
             for v in &mut ints.position {
@@ -492,9 +509,10 @@ pub fn decode_keyframes_with(
         if Mode::from_u8(flags) == Mode::Friction {
             ints.decel = r.u8()?;
         }
+        let incarnation = if flags & FLAG_INCARNATION != 0 { Some(tick.wrapping_sub(r.varint()? as u32)) } else { None };
         let base = if flags & FLAG_DELTA != 0 { baseline(key, tick.wrapping_sub(ints.baseline_ticks)) } else { None };
         match from_ints(tick, &ints, base.as_ref(), physics) {
-            Some(keyframe) => records.push(KeyframeRecord { key, tier: (flags >> 2) & 3, keyframe, baseline: base }),
+            Some(keyframe) => records.push(KeyframeRecord { key, tier: (flags >> 2) & 3, keyframe, baseline: base, incarnation }),
             None => missing += 1,
         }
     }
@@ -833,7 +851,7 @@ mod tests {
             angular_velocity: base.angular_velocity,
             mode: Mode::Ballistic, decel: 0.0, floor_drop: None,
         };
-        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(base) };
+        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(base), incarnation: None };
         let bytes = encode_keyframes(&KeyframePacket { server_tick: 920, ordinal: 5, records: vec![record] }, ph);
         let (back, missing) = decode_keyframes_with(&bytes, ph, &mut |key, tick| (key.body == 2 && tick == 900).then_some(base)).unwrap();
         assert_eq!(missing, 0);
@@ -853,7 +871,7 @@ mod tests {
         let base = decoded(&KeyframeRecord::absolute(BodyKey { structure: 1, body: 2 }, 1, kf(900, Mode::Ballistic)), ph);
         let floored = Keyframe { floor_drop: Some(0.1), ..base };
         let truth = Keyframe { tick: 940, position: base.position + Vec3::new(1.0, -0.05, 0.0), ..base };
-        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(floored) };
+        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(floored), incarnation: None };
         let bytes = encode_keyframes(&KeyframePacket { server_tick: 940, ordinal: 1, records: vec![record] }, ph);
         let (back, _) = decode_keyframes_with(&bytes, ph, &mut |_, _| Some(base)).unwrap();
         assert!((back.records[0].keyframe.position - truth.position).length() < 0.004, "{:?}", back.records[0].keyframe.position);

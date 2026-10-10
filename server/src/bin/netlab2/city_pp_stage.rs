@@ -239,6 +239,8 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
                 "missingBaselines": s.missing_baselines,
                 "keyframes": s.keyframes,
                 "lateKeyframes": s.late_keyframes,
+                "heldKeyframes": s.held_keyframes,
+                "heldDropped": s.held_dropped,
                 "decodeErrors": s.decode_errors,
                 "bootstraps": s.bootstraps,
             }

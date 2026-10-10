@@ -182,7 +182,14 @@ struct Truth {
     /// change more than `CONTACT_DV` from gravity's, the scorer's own
     /// definition (V6).
     contact_tick: u32,
+    /// The fracture that made this version of a body whose id outlived it
+    /// (0: none to name; a new id needs none).
+    born: u32,
 }
+
+/// How long a body's records name the fracture that made it (ticks): long
+/// enough for its event to arrive through loss.
+const INCARNATION_WINDOW: u32 = 240;
 
 /// The smallest a keyframe record can be on the wire (a resting delta):
 /// bounds how many never-sent bodies one send could carry.
@@ -366,6 +373,7 @@ impl PerPlayer {
                             radius,
                             settled: island.settled,
                             contact_tick: 0,
+                            born: 0,
                         },
                     );
                 }
@@ -667,7 +675,11 @@ impl ReplicationStrategy for PerPlayer {
                         ),
                     },
                 };
-                self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0 });
+                // Only an id that outlives the split (the piece keeping the
+                // lowest chunk) needs its version named: a new id is one the
+                // client simply does not have yet.
+                let born = if id == parent { tick } else { 0 };
+                self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0, born });
             }
             // Each client's model spawns the new bodies from its own drawing
             // of their parents just before the split: only the parents this
@@ -749,7 +761,7 @@ impl ReplicationStrategy for PerPlayer {
             if let (Some(state), Some(def)) = (self.states.get(&key.structure), self.defs.get(&key.structure)) {
                 keyframe.floor_drop = state.floor_drop(def, key.body, keyframe.position, keyframe.rotation);
             }
-            (key, Truth { keyframe, radius, settled: false, contact_tick }, continuous)
+            (key, Truth { keyframe, radius, settled: false, contact_tick, born: previous.map_or(0, |p| p.born) }, continuous)
         };
         let threads = (self.config.send_threads.max(1) as usize).min(work.len().max(1));
         let classified: Vec<(BodyKey, Truth, bool)> = if threads <= 1 || work.len() < 256 {
@@ -1178,7 +1190,10 @@ fn send_for(
             .get(key)
             .filter(|b| b.tick >= incarnation && b.tick <= tick && tick - b.tick <= BASELINE_MAX_TICKS)
             .copied();
-        let absolute = KeyframeRecord::absolute(*key, tier, keyframe);
+        let mut absolute = KeyframeRecord::absolute(*key, tier, keyframe);
+        if truth.born > 0 && truth.born + INCARNATION_WINDOW >= tick {
+            absolute.incarnation = Some(truth.born);
+        }
         let mut record = absolute;
         let mut bytes = record_bytes(&absolute, physics);
         if baseline.is_some() {
