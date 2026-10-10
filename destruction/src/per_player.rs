@@ -42,7 +42,7 @@ use crate::encoder::BodySnapshotInput;
 use crate::ids;
 use crate::manifest::DestructionManifest;
 use crate::perception::{ArtifactClass, PerceptualModel};
-use crate::replication::{ClientFeedback, ClientSend, ClientView, Outgoing, ReplicationStrategy, SendBudget};
+use crate::replication::{ClientFeedback, ClientSend, ClientView, Outgoing, ReplicationStrategy, SendBudget, SendRequest};
 use crate::topology::CityLedger;
 
 /// Ticks of truth a keyframe's mode is backtested over (100 ms).
@@ -120,6 +120,10 @@ pub struct PerPlayerConfig {
     /// reliable stream carries it too): HOL blocking on a lossy link delays
     /// a fracture past the playout delay otherwise (gate G2). 0 disables.
     pub event_copies: u32,
+    /// Worker threads for one send's clients (`client_sends`); 1 runs them
+    /// in turn. Each client's selection is independent, so the result is
+    /// the same either way.
+    pub send_threads: u32,
 }
 
 impl PerPlayerConfig {
@@ -138,6 +142,7 @@ impl PerPlayerConfig {
             gravity_y: -(vibe_netcode::movement::GRAVITY as f32),
             backtest_modes: true,
             event_copies: 2,
+            send_threads: 1,
         }
     }
 }
@@ -184,6 +189,19 @@ pub struct PerPlayerStats {
     pub by_mode: [u64; 4],
     /// Keyframe bytes by mode.
     pub bytes_by_mode: [u64; 4],
+}
+
+impl PerPlayerStats {
+    /// Add what one send worker counted (the fields `send_for` touches).
+    fn absorb_sends(&mut self, other: &PerPlayerStats) {
+        self.keyframes_sent += other.keyframes_sent;
+        self.heartbeats += other.heartbeats;
+        self.delta_records += other.delta_records;
+        for m in 0..4 {
+            self.by_mode[m] += other.by_mode[m];
+            self.bytes_by_mode[m] += other.bytes_by_mode[m];
+        }
+    }
 }
 
 pub struct PerPlayer {
@@ -690,171 +708,48 @@ impl ReplicationStrategy for PerPlayer {
     }
 
     fn client_send(&mut self, client: u64, view: &ClientView, tick: u32, budget: Option<SendBudget>) -> ClientSend {
-        let config = self.config;
-        let physics = self.physics;
         let Some(cs) = self.clients.get_mut(&client) else { return ClientSend::default() };
-        let camera = view.camera;
-        let forward = camera.direction.normalize_or_zero();
-        let focal = config.pane.1 as f32 * 0.5 / (camera.fov_degrees.max(1.0).to_radians() * 0.5).tan();
-        let horizon_s = config.horizon_ticks / config.sim_hz as f32;
-        let r = tick as f32;
-        // When this keyframe lands, the client's drawing is at about
-        // `tick - delay + one-way latency`.
-        let latency_ticks = cs.rtt_ms * 0.5 / 1000.0 * config.sim_hz as f32;
-        let arrival_render = r - config.delay_ticks + latency_ticks;
-        struct Candidate {
-            key: BodyKey,
-            bytes: usize,
-            priority: f32,
-            record: KeyframeRecord,
+        send_for(self.config, self.physics, &self.truth, &self.model, cs, view, tick, budget, &mut self.stats)
+    }
+
+    fn client_sends(&mut self, requests: &[SendRequest]) -> Vec<ClientSend> {
+        let threads = self.config.send_threads.max(1) as usize;
+        if threads == 1 || requests.len() < 2 {
+            return requests.iter().map(|r| self.client_send(r.client, &r.view, r.tick, r.budget)).collect();
         }
-        let mut candidates: Vec<Candidate> = Vec::new();
-        for (key, truth) in &self.truth {
-            if truth.settled {
-                continue;
-            }
-            let required = cs.unsent.contains(key);
-            let rel = truth.keyframe.position - camera.eye;
-            let depth = rel.dot(forward);
-            let distance = rel.length().max(0.5);
-            // In view: pixels at its depth. Behind or beside: half weight at
-            // its distance -- never culled.
-            let (px_per_m, weight) =
-                if depth > 0.5 { (focal / depth, 1.0f32) } else { (focal / distance, 0.5) };
-            let error_px = match cs.believed.get(key) {
-                Some(track) if !track.keyframes().is_empty() => {
-                    // Now, and a horizon ahead: the client's drawing then
-                    // against the server's best prediction of the truth then
-                    // (the keyframe's own mode). Raw velocity gaps would count
-                    // contact noise as error nobody will see.
-                    let gap = |(p, q): (Vec3, Quat), (tp, tq): (Vec3, Quat)| {
-                        let angle = 2.0 * q.dot(tq).abs().min(1.0).acos();
-                        (p - tp).length() + truth.radius * angle.min(1.0)
-                    };
-                    let now = gap(track.pose_at(r, physics), (truth.keyframe.position, truth.keyframe.rotation));
-                    let ahead = gap(
-                        track.pose_at(r + config.horizon_ticks, physics),
-                        vibe_land_perplayer::predict::predict(&truth.keyframe, config.horizon_ticks, physics),
-                    );
-                    let _ = horizon_s;
-                    now.max(ahead) * px_per_m
-                }
-                _ => f32::INFINITY,
-            };
-            if !required && error_px < config.tolerance_px {
-                continue;
-            }
-            // The coarsest grid whose step stays under half the tolerance.
-            let mut tier = 0u8;
-            for t in (0..4u8).rev() {
-                if POSITION_STEPS[t as usize] * px_per_m <= 0.5 * config.tolerance_px {
-                    tier = t;
-                    break;
-                }
-            }
-            // Against the newest keyframe this client acked (when it still
-            // keeps it), if that is smaller than absolute.
-            let keyframe = Keyframe { tick, ..truth.keyframe };
-            let incarnation = cs.believed.get(key).map_or(0, BodyTrack::incarnation);
-            let baseline = cs
-                .acked
-                .get(key)
-                .filter(|b| b.tick >= incarnation && b.tick <= tick && tick - b.tick <= BASELINE_MAX_TICKS)
-                .copied();
-            let absolute = KeyframeRecord::absolute(*key, tier, keyframe);
-            let mut record = absolute;
-            let mut bytes = record_bytes(&absolute, physics);
-            if baseline.is_some() {
-                let delta = KeyframeRecord { baseline, ..absolute };
-                let delta_bytes = record_bytes(&delta, physics);
-                if delta_bytes < bytes {
-                    record = delta;
-                    bytes = delta_bytes;
-                }
-            }
-            let gain = if error_px.is_finite() {
-                self.model.penalty(ArtifactClass::ScreenError, f64::from(error_px), f64::from(weight)) as f32
-            } else {
-                f32::MAX
-            };
-            let priority = if required { f32::MAX } else { gain.max(1e-9) / bytes as f32 };
-            candidates.push(Candidate { key: *key, bytes, priority, record });
-        }
-        candidates.sort_by(|a, b| b.priority.total_cmp(&a.priority).then(a.key.cmp(&b.key)));
-        let allowance = match budget {
-            Some(SendBudget::Skip) => 0,
-            Some(b) => b
-                .allowance()
-                .unwrap_or(config.ceiling_bytes * b.ceiling_sends() as usize)
-                .min(config.ceiling_bytes * b.ceiling_sends() as usize),
-            None => config.ceiling_bytes,
-        };
-        // Event copies go first, out of the same allowance (they are what the
-        // poses mean).
-        let mut out = ClientSend::default();
-        let mut used = 0usize;
-        if budget != Some(SendBudget::Skip) {
-            for (bytes, left) in cs.event_copies.iter_mut() {
-                used += bytes.len();
-                out.topology_bytes += bytes.len();
-                out.packets.push(Outgoing::datagram(bytes.clone()));
-                *left -= 1;
-            }
-            cs.event_copies.retain(|(_, left)| *left > 0);
-        }
-        let mut chosen: Vec<KeyframeRecord> = Vec::new();
-        for c in &candidates {
-            if used + c.bytes > allowance && c.priority < f32::MAX {
-                continue;
-            }
-            if used + c.bytes > allowance {
-                break;
-            }
-            used += c.bytes;
-            if c.record.baseline.is_some() {
-                self.stats.delta_records += 1;
-            }
-            self.stats.by_mode[c.record.keyframe.mode as usize] += 1;
-            self.stats.bytes_by_mode[c.record.keyframe.mode as usize] += c.bytes as u64;
-            chosen.push(c.record);
-        }
-        cs.sends_since_datagram += 1;
-        if chosen.is_empty() {
-            if cs.sends_since_datagram < config.heartbeat_sends {
-                return out;
-            }
-            self.stats.heartbeats += 1;
-        }
-        // Pack into datagrams under the MTU.
-        let mut start = 0;
-        loop {
-            let mut end = start;
-            let mut bytes = 13;
-            while end < chosen.len() && bytes + record_bytes(&chosen[end], physics) <= config.max_datagram {
-                bytes += record_bytes(&chosen[end], physics);
-                end += 1;
-            }
-            let records = chosen[start..end].to_vec();
-            let ordinal = cs.ordinal;
-            cs.ordinal += 1;
-            let packet = encode_keyframes(&KeyframePacket { server_tick: tick, ordinal, records: records.clone() }, physics);
-            out.record_bytes += packet.len();
-            out.packets.push(Outgoing::datagram(packet));
-            let mut carried = Vec::with_capacity(records.len());
-            for record in &records {
-                let decoded = decoded(record, physics);
-                cs.believed.entry(record.key).or_default().add(decoded, arrival_render, physics);
-                cs.unsent.remove(&record.key);
-                carried.push((record.key, decoded));
-                self.stats.keyframes_sent += 1;
-            }
-            cs.sent.push_back((ordinal, carried, 0));
-            start = end;
-            if start >= chosen.len() {
-                break;
+        // Each client's state is its own: hand disjoint sets to workers.
+        let index: HashMap<u64, usize> = requests.iter().enumerate().map(|(i, r)| (r.client, i)).collect();
+        let mut jobs: Vec<(usize, &mut ClientState)> =
+            self.clients.iter_mut().filter_map(|(id, cs)| index.get(id).map(|&i| (i, cs))).collect();
+        jobs.sort_by_key(|j| j.0);
+        let (config, physics, truth, model) = (self.config, self.physics, &self.truth, &self.model);
+        let per = jobs.len().div_ceil(threads).max(1);
+        let parts: Vec<(Vec<(usize, ClientSend)>, PerPlayerStats)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = jobs
+                .chunks_mut(per)
+                .map(|part| {
+                    scope.spawn(move || {
+                        let mut stats = PerPlayerStats::default();
+                        let sends = part
+                            .iter_mut()
+                            .map(|(i, cs)| {
+                                let r = &requests[*i];
+                                (*i, send_for(config, physics, truth, model, cs, &r.view, r.tick, r.budget, &mut stats))
+                            })
+                            .collect();
+                        (sends, stats)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().expect("per-player send worker")).collect()
+        });
+        let mut out: Vec<ClientSend> = (0..requests.len()).map(|_| ClientSend::default()).collect();
+        for (sends, stats) in parts {
+            self.stats.absorb_sends(&stats);
+            for (i, send) in sends {
+                out[i] = send;
             }
         }
-        cs.sends_since_datagram = 0;
         out
     }
 
@@ -901,4 +796,184 @@ impl ReplicationStrategy for PerPlayer {
             self.stats.keyframes_lost += 1;
         }
     }
+}
+
+/// One client's packets this send (`ReplicationStrategy::client_send`): it
+/// reads only what every client shares (truth, config, model) and writes
+/// only that client's state and `stats`, so clients can run in parallel.
+#[allow(clippy::too_many_arguments)]
+fn send_for(
+    config: PerPlayerConfig,
+    physics: Physics,
+    truths: &HashMap<BodyKey, Truth>,
+    model: &PerceptualModel,
+    cs: &mut ClientState,
+    view: &ClientView,
+    tick: u32,
+    budget: Option<SendBudget>,
+    stats: &mut PerPlayerStats,
+) -> ClientSend {
+    let camera = view.camera;
+    let forward = camera.direction.normalize_or_zero();
+    let focal = config.pane.1 as f32 * 0.5 / (camera.fov_degrees.max(1.0).to_radians() * 0.5).tan();
+    let horizon_s = config.horizon_ticks / config.sim_hz as f32;
+    let r = tick as f32;
+    // When this keyframe lands, the client's drawing is at about
+    // `tick - delay + one-way latency`.
+    let latency_ticks = cs.rtt_ms * 0.5 / 1000.0 * config.sim_hz as f32;
+    let arrival_render = r - config.delay_ticks + latency_ticks;
+    struct Candidate {
+        key: BodyKey,
+        bytes: usize,
+        priority: f32,
+        record: KeyframeRecord,
+    }
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for (key, truth) in truths {
+        if truth.settled {
+            continue;
+        }
+        let required = cs.unsent.contains(key);
+        let rel = truth.keyframe.position - camera.eye;
+        let depth = rel.dot(forward);
+        let distance = rel.length().max(0.5);
+        // In view: pixels at its depth. Behind or beside: half weight at
+        // its distance -- never culled.
+        let (px_per_m, weight) =
+            if depth > 0.5 { (focal / depth, 1.0f32) } else { (focal / distance, 0.5) };
+        let error_px = match cs.believed.get(key) {
+            Some(track) if !track.keyframes().is_empty() => {
+                // Now, and a horizon ahead: the client's drawing then
+                // against the server's best prediction of the truth then
+                // (the keyframe's own mode). Raw velocity gaps would count
+                // contact noise as error nobody will see.
+                let gap = |(p, q): (Vec3, Quat), (tp, tq): (Vec3, Quat)| {
+                    let angle = 2.0 * q.dot(tq).abs().min(1.0).acos();
+                    (p - tp).length() + truth.radius * angle.min(1.0)
+                };
+                let now = gap(track.pose_at(r, physics), (truth.keyframe.position, truth.keyframe.rotation));
+                let ahead = gap(
+                    track.pose_at(r + config.horizon_ticks, physics),
+                    vibe_land_perplayer::predict::predict(&truth.keyframe, config.horizon_ticks, physics),
+                );
+                let _ = horizon_s;
+                now.max(ahead) * px_per_m
+            }
+            _ => f32::INFINITY,
+        };
+        if !required && error_px < config.tolerance_px {
+            continue;
+        }
+        // The coarsest grid whose step stays under half the tolerance.
+        let mut tier = 0u8;
+        for t in (0..4u8).rev() {
+            if POSITION_STEPS[t as usize] * px_per_m <= 0.5 * config.tolerance_px {
+                tier = t;
+                break;
+            }
+        }
+        // Against the newest keyframe this client acked (when it still
+        // keeps it), if that is smaller than absolute.
+        let keyframe = Keyframe { tick, ..truth.keyframe };
+        let incarnation = cs.believed.get(key).map_or(0, BodyTrack::incarnation);
+        let baseline = cs
+            .acked
+            .get(key)
+            .filter(|b| b.tick >= incarnation && b.tick <= tick && tick - b.tick <= BASELINE_MAX_TICKS)
+            .copied();
+        let absolute = KeyframeRecord::absolute(*key, tier, keyframe);
+        let mut record = absolute;
+        let mut bytes = record_bytes(&absolute, physics);
+        if baseline.is_some() {
+            let delta = KeyframeRecord { baseline, ..absolute };
+            let delta_bytes = record_bytes(&delta, physics);
+            if delta_bytes < bytes {
+                record = delta;
+                bytes = delta_bytes;
+            }
+        }
+        let gain = if error_px.is_finite() {
+            model.penalty(ArtifactClass::ScreenError, f64::from(error_px), f64::from(weight)) as f32
+        } else {
+            f32::MAX
+        };
+        let priority = if required { f32::MAX } else { gain.max(1e-9) / bytes as f32 };
+        candidates.push(Candidate { key: *key, bytes, priority, record });
+    }
+    candidates.sort_by(|a, b| b.priority.total_cmp(&a.priority).then(a.key.cmp(&b.key)));
+    let allowance = match budget {
+        Some(SendBudget::Skip) => 0,
+        Some(b) => b
+            .allowance()
+            .unwrap_or(config.ceiling_bytes * b.ceiling_sends() as usize)
+            .min(config.ceiling_bytes * b.ceiling_sends() as usize),
+        None => config.ceiling_bytes,
+    };
+    // Event copies go first, out of the same allowance (they are what the
+    // poses mean).
+    let mut out = ClientSend::default();
+    let mut used = 0usize;
+    if budget != Some(SendBudget::Skip) {
+        for (bytes, left) in cs.event_copies.iter_mut() {
+            used += bytes.len();
+            out.topology_bytes += bytes.len();
+            out.packets.push(Outgoing::datagram(bytes.clone()));
+            *left -= 1;
+        }
+        cs.event_copies.retain(|(_, left)| *left > 0);
+    }
+    let mut chosen: Vec<KeyframeRecord> = Vec::new();
+    for c in &candidates {
+        if used + c.bytes > allowance && c.priority < f32::MAX {
+            continue;
+        }
+        if used + c.bytes > allowance {
+            break;
+        }
+        used += c.bytes;
+        if c.record.baseline.is_some() {
+            stats.delta_records += 1;
+        }
+        stats.by_mode[c.record.keyframe.mode as usize] += 1;
+        stats.bytes_by_mode[c.record.keyframe.mode as usize] += c.bytes as u64;
+        chosen.push(c.record);
+    }
+    cs.sends_since_datagram += 1;
+    if chosen.is_empty() {
+        if cs.sends_since_datagram < config.heartbeat_sends {
+            return out;
+        }
+        stats.heartbeats += 1;
+    }
+    // Pack into datagrams under the MTU.
+    let mut start = 0;
+    loop {
+        let mut end = start;
+        let mut bytes = 13;
+        while end < chosen.len() && bytes + record_bytes(&chosen[end], physics) <= config.max_datagram {
+            bytes += record_bytes(&chosen[end], physics);
+            end += 1;
+        }
+        let records = chosen[start..end].to_vec();
+        let ordinal = cs.ordinal;
+        cs.ordinal += 1;
+        let packet = encode_keyframes(&KeyframePacket { server_tick: tick, ordinal, records: records.clone() }, physics);
+        out.record_bytes += packet.len();
+        out.packets.push(Outgoing::datagram(packet));
+        let mut carried = Vec::with_capacity(records.len());
+        for record in &records {
+            let decoded = decoded(record, physics);
+            cs.believed.entry(record.key).or_default().add(decoded, arrival_render, physics);
+            cs.unsent.remove(&record.key);
+            carried.push((record.key, decoded));
+            stats.keyframes_sent += 1;
+        }
+        cs.sent.push_back((ordinal, carried, 0));
+        start = end;
+        if start >= chosen.len() {
+            break;
+        }
+    }
+    cs.sends_since_datagram = 0;
+    out
 }

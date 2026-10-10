@@ -121,6 +121,15 @@ pub enum ClientFeedback {
     DatagramAcks { newest: u32, mask: u64 },
 }
 
+/// One client's turn in a batched send (`ReplicationStrategy::client_sends`).
+#[derive(Clone, Copy, Debug)]
+pub struct SendRequest {
+    pub client: u64,
+    pub view: ClientView,
+    pub tick: u32,
+    pub budget: Option<SendBudget>,
+}
+
 /// One client's packets for one send, plus what the selection decided.
 #[derive(Clone, Debug, Default)]
 pub struct ClientSend {
@@ -190,6 +199,13 @@ pub trait ReplicationStrategy {
         tick: u32,
         budget: Option<SendBudget>,
     ) -> ClientSend;
+
+    /// Every listed client's packets this send, in the order listed: the
+    /// same as `client_send` for each in turn. A strategy whose clients are
+    /// independent may run them at once.
+    fn client_sends(&mut self, requests: &[SendRequest]) -> Vec<ClientSend> {
+        requests.iter().map(|r| self.client_send(r.client, &r.view, r.tick, r.budget)).collect()
+    }
 
     /// Feedback from `client`, as it arrived at the server.
     fn on_feedback(&mut self, _client: u64, _feedback: ClientFeedback) {}

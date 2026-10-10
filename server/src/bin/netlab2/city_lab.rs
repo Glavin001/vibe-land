@@ -43,7 +43,7 @@ use vibe_land_destruction::netlab::cameras::{build_client_set, CameraSpec, Clien
 use vibe_land_destruction::netlab::capture::{self as city_capture, CaptureDir, CaptureMeta};
 use vibe_land_destruction::netlab::tape::TapeReader;
 use vibe_land_destruction::replication::{
-    self, ClientFeedback, ClientView, ReplicationStrategy, SendBudget, SharedV2, TokenBucket,
+    self, ClientFeedback, ClientView, ReplicationStrategy, SendBudget, SendRequest, SharedV2, TokenBucket,
 };
 
 use crate::link::{LinkSim, Profile};
@@ -160,6 +160,7 @@ pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>
             "pp.heartbeat_sends" => config.heartbeat_sends = f() as u32,
             "pp.backtest" => config.backtest_modes = f() != 0.0,
             "pp.event_copies" => config.event_copies = f() as u32,
+            "pp.send_threads" => config.send_threads = f() as u32,
             _ => {}
         }
     }
@@ -364,7 +365,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
     }
 
     let mut reader = TapeReader::open(&capture.tape_path())?;
-    let (mut ingest_ms, mut send_ms) = (Vec::new(), Vec::new());
+    let (mut ingest_ms, mut send_ms, mut send_wall_ms) = (Vec::new(), Vec::new(), Vec::new());
     let (mut client_us_total, mut client_sends) = (0.0f64, 0u64);
     let mut first_tick = None;
     let mut last_tick = 0;
@@ -401,6 +402,11 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
             strategy.begin_send(tick);
             send_cpu += thread_cpu() - shared_started;
             let has_records = strategy.has_records();
+            // Every client's plan first (each link is its own), then one
+            // batched send (a strategy may run its clients at once), then
+            // each result back onto its link.
+            let mut requests: Vec<SendRequest> = Vec::new();
+            let mut plans: Vec<Option<SendPlan>> = Vec::new();
             for (id, client) in clients.iter_mut() {
                 let seconds = (tick - first) as f32 / hz as f32;
                 let Some(camera) = client.spec.camera.camera_in_run(tick, seconds, &capture.tracks) else {
@@ -424,12 +430,22 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                 } else {
                     None
                 };
-                let client_started = thread_cpu();
-                let send = strategy.client_send(*id, &ClientView { camera }, tick, budget);
-                let spent = thread_cpu() - client_started;
-                send_cpu += spent;
+                requests.push(SendRequest { client: *id, view: ClientView { camera }, tick, budget });
+                plans.push(plan);
+            }
+            let batch_cpu = thread_cpu();
+            let batch_wall = std::time::Instant::now();
+            let sends = strategy.client_sends(&requests);
+            let spent = thread_cpu() - batch_cpu;
+            send_wall_ms.push(batch_wall.elapsed().as_secs_f32() * 1000.0);
+            send_cpu += spent;
+            if !requests.is_empty() {
                 client_us_total += spent.as_secs_f64() * 1e6;
-                client_sends += 1;
+                client_sends += requests.len() as u64;
+            }
+            for ((request, plan), send) in requests.iter().zip(plans).zip(sends) {
+                let client = clients.get_mut(&request.client).expect("requested client");
+                let budget = request.budget;
                 client.stats.sends += 1;
                 match budget {
                     Some(SendBudget::Skip) => client.stats.sends_skipped += 1,
@@ -463,6 +479,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         ticks: ingest_ms.len() as u64,
         ingest_ms: Pct::of(ingest_ms),
         send_ms: Pct::of(send_ms),
+        send_wall_ms: Pct::of(send_wall_ms),
         per_client_us: if client_sends > 0 { client_us_total / client_sends as f64 } else { 0.0 },
     };
     std::fs::write(out.join("server-cost.json"), serde_json::to_vec_pretty(&server_cost)?)?;
@@ -664,8 +681,11 @@ pub struct ServerCost {
     pub ticks: u64,
     /// The truth ingest per tick (shared), ms.
     pub ingest_ms: Pct,
-    /// Every client's packets for one send, ms.
+    /// Every client's packets for one send, ms (the calling thread's CPU:
+    /// with `pp.send_threads` > 1 the workers' time is not in it).
     pub send_ms: Pct,
+    /// The batched send's wall time, ms (what parallel sends shorten).
+    pub send_wall_ms: Pct,
     /// One client's packets, us (mean).
     pub per_client_us: f64,
 }
