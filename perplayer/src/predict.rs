@@ -1,0 +1,146 @@
+//! How a body moves between keyframes: the one predictor the server's error
+//! model and the client both run.
+//!
+//! It follows the physics the server runs, not a textbook: PhysX integrates
+//! velocity then position each step (semi-implicit Euler), so after `n` ticks
+//! of free flight a body is at `p + v t + g dt^2 n (n + 1) / 2`, not `+ g t^2
+//! / 2` (they differ by about a centimetre over 8 ticks). Spin is constant:
+//! the server runs without gyroscopic forces and with no damping, so angular
+//! velocity does not change in flight (docs/netcode-lab.md, deviation 2).
+
+use glam::{Quat, Vec3};
+
+/// How the client predicts a body from a keyframe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum Mode {
+    /// Free flight: gravity, constant spin.
+    #[default]
+    Ballistic = 0,
+    /// Sliding or rolling on a surface: constant velocity, no gravity.
+    Sliding = 1,
+    /// Momentarily still: the pose held.
+    Resting = 2,
+}
+
+impl Mode {
+    pub fn from_u8(value: u8) -> Self {
+        match value & 3 {
+            1 => Mode::Sliding,
+            2 => Mode::Resting,
+            _ => Mode::Ballistic,
+        }
+    }
+}
+
+/// A body's state at a tick, as the stream carries it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Keyframe {
+    pub tick: u32,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub linear_velocity: Vec3,
+    pub angular_velocity: Vec3,
+    pub mode: Mode,
+}
+
+/// The simulation's step and gravity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Physics {
+    pub dt: f32,
+    pub gravity: Vec3,
+}
+
+impl Physics {
+    pub fn at_hz(hz: u32, gravity_y: f32) -> Self {
+        Self { dt: 1.0 / hz.max(1) as f32, gravity: Vec3::new(0.0, gravity_y, 0.0) }
+    }
+}
+
+/// The pose `ticks` after the keyframe (fractional ticks interpolate the
+/// same polynomial, which passes through every whole tick exactly).
+pub fn predict(keyframe: &Keyframe, ticks: f32, physics: Physics) -> (Vec3, Quat) {
+    let n = ticks.max(0.0);
+    let t = n * physics.dt;
+    match keyframe.mode {
+        Mode::Resting => (keyframe.position, keyframe.rotation),
+        Mode::Sliding => (keyframe.position + keyframe.linear_velocity * t, spin(keyframe, t)),
+        Mode::Ballistic => {
+            let fall = physics.gravity * (physics.dt * physics.dt * n * (n + 1.0) * 0.5);
+            (keyframe.position + keyframe.linear_velocity * t + fall, spin(keyframe, t))
+        }
+    }
+}
+
+/// The velocity `ticks` after the keyframe.
+pub fn predict_velocity(keyframe: &Keyframe, ticks: f32, physics: Physics) -> Vec3 {
+    match keyframe.mode {
+        Mode::Resting => Vec3::ZERO,
+        Mode::Sliding => keyframe.linear_velocity,
+        Mode::Ballistic => keyframe.linear_velocity + physics.gravity * (ticks.max(0.0) * physics.dt),
+    }
+}
+
+fn spin(keyframe: &Keyframe, t: f32) -> Quat {
+    let w = keyframe.angular_velocity;
+    let angle = w.length() * t;
+    if angle < 1e-7 {
+        return keyframe.rotation;
+    }
+    (Quat::from_axis_angle(w.normalize(), angle) * keyframe.rotation).normalize()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// PhysX's step, literally: velocity first, then position.
+    fn step(mut p: Vec3, mut v: Vec3, physics: Physics, n: u32) -> Vec3 {
+        for _ in 0..n {
+            v += physics.gravity * physics.dt;
+            p += v * physics.dt;
+        }
+        p
+    }
+
+    #[test]
+    fn ballistic_prediction_lands_on_every_physics_step() {
+        let physics = Physics::at_hz(60, -9.81);
+        let kf = Keyframe {
+            tick: 100,
+            position: Vec3::new(1.0, 20.0, -3.0),
+            rotation: Quat::IDENTITY,
+            linear_velocity: Vec3::new(4.0, 6.0, 0.5),
+            angular_velocity: Vec3::ZERO,
+            mode: Mode::Ballistic,
+        };
+        for n in [1u32, 8, 60, 240] {
+            let stepped = step(kf.position, kf.linear_velocity, physics, n);
+            let predicted = predict(&kf, n as f32, physics).0;
+            assert!((stepped - predicted).length() < 1e-3, "n {n}: {stepped} vs {predicted}");
+        }
+        // The textbook parabola is off by g dt t / 2: about a centimetre at 8 ticks.
+        let t = 8.0 * physics.dt;
+        let textbook = kf.position + kf.linear_velocity * t + 0.5 * physics.gravity * t * t;
+        let off = (textbook - predict(&kf, 8.0, physics).0).length();
+        assert!((0.005..0.02).contains(&off), "{off}");
+    }
+
+    #[test]
+    fn spin_is_constant_and_resting_holds() {
+        let physics = Physics::at_hz(60, -9.81);
+        let mut kf = Keyframe {
+            tick: 0,
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            linear_velocity: Vec3::X,
+            angular_velocity: Vec3::new(0.0, std::f32::consts::PI, 0.0),
+            mode: Mode::Sliding,
+        };
+        let (p, q) = predict(&kf, 60.0, physics);
+        assert!((p - Vec3::X).length() < 1e-5, "no gravity while sliding");
+        assert!((q.dot(Quat::from_rotation_y(std::f32::consts::PI))).abs() > 0.9999);
+        kf.mode = Mode::Resting;
+        assert_eq!(predict(&kf, 60.0, physics), (Vec3::ZERO, Quat::IDENTITY));
+    }
+}

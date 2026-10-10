@@ -1,0 +1,21 @@
+[package]
+name = "vibe-land-perplayer"
+version = "0.1.0"
+edition = "2021"
+description = "The per-player destruction netcode's shared core: structure derivation, predictor, wire, client"
+publish = false
+
+[lib]
+name = "vibe_land_perplayer"
+path = "src/lib.rs"
+# rlib for the server and the lab, cdylib for the browser (wasm-pack): one
+# implementation of everything both ends must agree on.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Float math decides predicted poses on both ends: kept on the workspace's glam.
+glam = "0.27"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
