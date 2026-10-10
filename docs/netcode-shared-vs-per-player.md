@@ -299,6 +299,7 @@ city-100k; change against current defaults):
 | `age_priority` with the correction as a cost, waiting when it costs more than it saves | 0.95-1.11 | 2-6x worse | 3.5x worse | reverted |
 | `age_priority` accruing only while the body is on screen, + `drawn_view` | **1.05-1.18 (per player wins all five)** | -14% to +3% | **-9.9%** | candidate default |
 | the same + `ground_gate` (sunk into the ground: sent first) | 1.05-1.18 | -15% to +8% | -5.4% | knob |
+| the same + `solid_gate` (sunk into the ground or a standing structure: sent first) | 1.02-1.20 | -11% to +6% | +1.9% | knob: G4 at 256 kbit/s meteor-volley 1518 -> 707, city 58 -> 28; send 0.88 ms per tick on city-100k (pair 0.15) |
 
 **What these show.**
 - **The accumulator fixes the slider:** at most 6 pops per piece, against 86.
@@ -319,7 +320,13 @@ city-100k; change against current defaults):
 
   Its cost: debris inside geometry at 256 kbit/s meteor-volley rises from
   1,518 to 3,730 frames. `ground_gate` brings that to 2,903; the rest is
-  inside standing structures.
+  inside standing structures. `solid_gate` (G4's own test against standing
+  chunks, rebuilt per fractured structure) brings it to 707, below the
+  defaults. It costs some penalty on the easy runs (+2% to +6%) and server
+  time (0.88 ms per tick on city-100k against 0.15).
+- **These numbers are on the corrected scorer.** Box faces crossing the
+  camera's near plane are now clipped, not dropped or misdrawn. That moved
+  the baselines by under 2%.
 - **Making the correction a cost instead held back the pieces about to sink
   through the floor** (G4 in the thousands). The scorer charges those under
   classes the accumulator does not see. The next lever is to put those
