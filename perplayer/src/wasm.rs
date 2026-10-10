@@ -9,6 +9,9 @@ use crate::client::{BodyChange, Client};
 use crate::predict::Physics;
 use crate::structure::StructureDef;
 
+/// Floats per node in `PerPlayerClient::new`'s `nodes`.
+const NODE_STRIDE: usize = 11;
+
 #[wasm_bindgen]
 pub struct PerPlayerClient {
     inner: Client,
@@ -18,8 +21,8 @@ pub struct PerPlayerClient {
 impl PerPlayerClient {
     /// The structures, flattened: per structure its id, world position (3),
     /// world rotation (4), node count and bond count; per node (all
-    /// structures in order) rest (3), mass centre (3), mass and support
-    /// (0/1); per bond its two nodes.
+    /// structures in order) rest (3), mass centre (3), mass, support (0/1)
+    /// and the chunk box's half extents (3); per bond its two nodes.
     #[wasm_bindgen(constructor)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -38,13 +41,15 @@ impl PerPlayerClient {
         for (i, &id) in ids.iter().enumerate() {
             let p = &poses[i * 7..i * 7 + 7];
             let n = node_counts[i] as usize;
-            let (mut rest, mut mass_center, mut mass, mut support) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            let (mut rest, mut mass_center, mut mass, mut support, mut half) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
             for k in 0..n {
-                let v = &nodes[(n_at + k) * 8..(n_at + k) * 8 + 8];
+                let v = &nodes[(n_at + k) * NODE_STRIDE..(n_at + k) * NODE_STRIDE + NODE_STRIDE];
                 rest.push(Vec3::new(v[0], v[1], v[2]));
                 mass_center.push(Vec3::new(v[3], v[4], v[5]));
                 mass.push(v[6]);
                 support.push(v[7] != 0.0);
+                half.push(Vec3::new(v[8], v[9], v[10]));
             }
             n_at += n;
             let b = bond_counts[i] as usize;
@@ -59,7 +64,8 @@ impl PerPlayerClient {
                 mass,
                 support,
                 list,
-            ));
+            )
+            .with_half_extents(half));
         }
         PerPlayerClient { inner: Client::new(defs, Physics::at_hz(hz, gravity_y), hz, delay_ticks) }
     }

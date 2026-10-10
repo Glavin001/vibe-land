@@ -37,6 +37,9 @@ pub struct StructureDef {
     pub support: Vec<bool>,
     /// Per bond index: its two nodes.
     pub bonds: Vec<(u32, u32)>,
+    /// Per node: the chunk box's half extents, structure frame (empty when
+    /// unknown: then no ground floor is derived).
+    pub half_extents: Vec<Vec3>,
     /// Per node: (neighbour, bond index).
     adjacency: Vec<Vec<(u32, u32)>>,
 }
@@ -59,7 +62,13 @@ impl StructureDef {
                 adjacency[b as usize].push((a, index as u32));
             }
         }
-        Self { id, world_position, world_rotation, rest, mass_center, mass, support, bonds, adjacency }
+        Self { id, world_position, world_rotation, rest, mass_center, mass, support, bonds, half_extents: Vec::new(), adjacency }
+    }
+
+    /// With each node's box half extents (`ChunkDef::size` / 2).
+    pub fn with_half_extents(mut self, half_extents: Vec<Vec3>) -> Self {
+        self.half_extents = half_extents;
+        self
     }
 
     pub fn node_count(&self) -> u32 {
@@ -304,6 +313,29 @@ impl StructureState {
         } else {
             plain / members.len().max(1) as f32
         }
+    }
+
+    /// How far `body`'s centre can fall from `position` (rotation
+    /// `rotation`) before its lowest chunk corner reaches the ground at
+    /// y = 0: the `Keyframe::floor_drop` both sides derive. None when the
+    /// chunk boxes are unknown or the body has no members.
+    pub fn floor_drop(&self, def: &StructureDef, body: u32, position: Vec3, rotation: Quat) -> Option<f32> {
+        let members = self.members.get(&body)?;
+        if def.half_extents.len() != def.rest.len() || members.is_empty() {
+            return None;
+        }
+        let com = self.centre_of_mass(def, body);
+        // A box's lowest point below its centre: |R row y| . half.
+        let m = glam::Mat3::from_quat(rotation);
+        let row_y = Vec3::new(m.x_axis.y, m.y_axis.y, m.z_axis.y).abs();
+        let lowest = members
+            .iter()
+            .map(|&n| {
+                let n = n as usize;
+                (position + rotation * (def.rest[n] - com)).y - row_y.dot(def.half_extents[n])
+            })
+            .fold(f32::INFINITY, f32::min);
+        Some(lowest.max(0.0))
     }
 
     pub fn alive_bits(&self) -> &[u64] {

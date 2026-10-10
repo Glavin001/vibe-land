@@ -145,7 +145,7 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
     let mut live_keys: HashMap<u32, ()> = HashMap::new();
     let started = std::time::Instant::now();
     // NETLAB2_PP_TRACE=structure:node (diagnosis): that chunk's body and its
-    // keyframes every frame, for client c01.
+    // keyframes every frame, for client c01 (NETLAB2_PP_TRACE_CLIENT=cNN).
     let trace: Option<(u32, u32)> = std::env::var("NETLAB2_PP_TRACE").ok().and_then(|v| {
         let (a, b) = v.split_once(':')?;
         Some((a.parse().ok()?, b.parse().ok()?))
@@ -206,7 +206,7 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
             slot_entries.push((slot, index, [l.x, l.y, l.z, q.x, q.y, q.z, q.w]));
         }
         if let Some((ts, tn)) = trace {
-            if dir.ends_with("c01") {
+            if dir.ends_with(std::env::var("NETLAB2_PP_TRACE_CLIENT").unwrap_or_else(|_| "c01".into())) {
                 let body = client.chunk_body(ts, tn);
                 let track = body.and_then(|b| client.track(BodyKey { structure: ts, body: b }));
                 let pose = track.map(|t| t.pose_at(render, physics));

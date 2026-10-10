@@ -203,7 +203,7 @@ pub fn quantised(kf: &Keyframe, tier: u8) -> Keyframe {
             Vec3::ZERO
         },
         mode: kf.mode,
-        decel: kf.decel,
+        decel: kf.decel, floor_drop: None,
     }
 }
 
@@ -282,6 +282,9 @@ fn ints_of(record: &KeyframeRecord, physics: Physics) -> RecordInts {
     match record.baseline.filter(|b| b.tick <= kf.tick) {
         Some(base) => {
             flags |= FLAG_DELTA;
+            // The wire predicts without the ground floor: each side derives
+            // the floor itself, so it may differ, and the residual must not.
+            let base = Keyframe { floor_drop: None, ..base };
             let dt = (kf.tick - base.tick) as f32;
             let (pp, pq) = predict(&base, dt, physics);
             let pv = predict_velocity(&base, dt, physics);
@@ -322,10 +325,10 @@ fn from_ints(tick: u32, ints: &RecordInts, base: Option<&Keyframe>, physics: Phy
     let moving = mode != Mode::Resting;
     let v3 = |a: [i64; 3], s: f32| Vec3::new(a[0] as f32 * s, a[1] as f32 * s, a[2] as f32 * s);
     if ints.flags & FLAG_DELTA != 0 {
-        let base = base?;
+        let base = Keyframe { floor_drop: None, ..*base? };
         let dt = ints.baseline_ticks as f32;
-        let (pp, pq) = predict(base, dt, physics);
-        let pv = predict_velocity(base, dt, physics);
+        let (pp, pq) = predict(&base, dt, physics);
+        let pv = predict_velocity(&base, dt, physics);
         let turn = Quat::from_scaled_axis(v3(ints.rotation, ROTATION_STEP));
         Some(Keyframe {
             tick,
@@ -340,7 +343,7 @@ fn from_ints(tick: u32, ints: &RecordInts, base: Option<&Keyframe>, physics: Phy
                 base.angular_velocity
             },
             mode,
-            decel: f32::from(ints.decel) * DECEL_STEP,
+            decel: f32::from(ints.decel) * DECEL_STEP, floor_drop: None,
         })
     } else {
         Some(Keyframe {
@@ -350,7 +353,7 @@ fn from_ints(tick: u32, ints: &RecordInts, base: Option<&Keyframe>, physics: Phy
             linear_velocity: if moving { v3(ints.linear, LINEAR_STEP) } else { Vec3::ZERO },
             angular_velocity: if moving && ints.flags & FLAG_SPIN != 0 { v3(ints.angular, ANGULAR_STEP) } else { Vec3::ZERO },
             mode,
-            decel: f32::from(ints.decel) * DECEL_STEP,
+            decel: f32::from(ints.decel) * DECEL_STEP, floor_drop: None,
         })
     }
 }
@@ -777,7 +780,7 @@ mod tests {
             linear_velocity: Vec3::new(3.21, -9.87, 0.5),
             angular_velocity: Vec3::new(1.0, -2.5, 0.25),
             mode,
-            decel: 0.0,
+            decel: 0.0, floor_drop: None,
         }
     }
 
@@ -828,7 +831,7 @@ mod tests {
             rotation: (Quat::from_rotation_y(0.01) * q).normalize(),
             linear_velocity: Vec3::new(2.0, 3.5, 0.4),
             angular_velocity: base.angular_velocity,
-            mode: Mode::Ballistic, decel: 0.0,
+            mode: Mode::Ballistic, decel: 0.0, floor_drop: None,
         };
         let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(base) };
         let bytes = encode_keyframes(&KeyframePacket { server_tick: 920, ordinal: 5, records: vec![record] }, ph);
@@ -840,6 +843,21 @@ mod tests {
         // Without the baseline the record is skipped and counted.
         let (back, missing) = decode_keyframes_with(&bytes, ph, &mut |_, _| None).unwrap();
         assert_eq!((back.records.len(), missing), (0, 1));
+    }
+
+    #[test]
+    fn the_ground_floor_never_changes_what_a_delta_decodes_to() {
+        // The server's baseline knows the body's floor; the client's copy
+        // may not (or may derive another). The residual must not care.
+        let ph = physics();
+        let base = decoded(&KeyframeRecord::absolute(BodyKey { structure: 1, body: 2 }, 1, kf(900, Mode::Ballistic)), ph);
+        let floored = Keyframe { floor_drop: Some(0.1), ..base };
+        let truth = Keyframe { tick: 940, position: base.position + Vec3::new(1.0, -0.05, 0.0), ..base };
+        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(floored) };
+        let bytes = encode_keyframes(&KeyframePacket { server_tick: 940, ordinal: 1, records: vec![record] }, ph);
+        let (back, _) = decode_keyframes_with(&bytes, ph, &mut |_, _| Some(base)).unwrap();
+        assert!((back.records[0].keyframe.position - truth.position).length() < 0.004, "{:?}", back.records[0].keyframe.position);
+        assert_eq!(back.records[0].keyframe, decoded(&record, ph));
     }
 
     #[test]

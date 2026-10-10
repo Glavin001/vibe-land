@@ -48,6 +48,12 @@ pub struct Keyframe {
     pub mode: Mode,
     /// Friction mode: how fast the body slows along its velocity, m/s^2.
     pub decel: f32,
+    /// How far the body's centre can fall from `position` before its lowest
+    /// corner reaches the ground (y = 0); None when unknown. Not on the
+    /// wire: the client and the server's model of it each derive it from
+    /// the body's chunks at the keyframe's pose (`structure::floor_drop`),
+    /// so a late keyframe never draws a body through the ground.
+    pub floor_drop: Option<f32>,
 }
 
 /// The simulation's step and gravity.
@@ -66,6 +72,19 @@ impl Physics {
 /// The pose `ticks` after the keyframe (fractional ticks interpolate the
 /// same polynomial, which passes through every whole tick exactly).
 pub fn predict(keyframe: &Keyframe, ticks: f32, physics: Physics) -> (Vec3, Quat) {
+    let (mut p, q) = predict_free(keyframe, ticks, physics);
+    if let Some(floor) = floor_y(keyframe) {
+        p.y = p.y.max(floor);
+    }
+    (p, q)
+}
+
+/// The lowest the body's centre may be drawn: resting on the ground.
+fn floor_y(keyframe: &Keyframe) -> Option<f32> {
+    keyframe.floor_drop.map(|d| keyframe.position.y - d.max(0.0))
+}
+
+fn predict_free(keyframe: &Keyframe, ticks: f32, physics: Physics) -> (Vec3, Quat) {
     let n = ticks.max(0.0);
     let t = n * physics.dt;
     match keyframe.mode {
@@ -84,6 +103,17 @@ pub fn predict(keyframe: &Keyframe, ticks: f32, physics: Physics) -> (Vec3, Quat
 
 /// The velocity `ticks` after the keyframe.
 pub fn predict_velocity(keyframe: &Keyframe, ticks: f32, physics: Physics) -> Vec3 {
+    let mut v = predict_velocity_free(keyframe, ticks, physics);
+    // On the ground: no longer falling.
+    if let Some(floor) = floor_y(keyframe) {
+        if predict_free(keyframe, ticks, physics).0.y <= floor {
+            v.y = v.y.max(0.0);
+        }
+    }
+    v
+}
+
+fn predict_velocity_free(keyframe: &Keyframe, ticks: f32, physics: Physics) -> Vec3 {
     match keyframe.mode {
         Mode::Resting => Vec3::ZERO,
         Mode::Sliding => keyframe.linear_velocity,
@@ -141,7 +171,7 @@ mod tests {
             rotation: Quat::IDENTITY,
             linear_velocity: Vec3::new(4.0, 6.0, 0.5),
             angular_velocity: Vec3::ZERO,
-            mode: Mode::Ballistic, decel: 0.0,
+            mode: Mode::Ballistic, decel: 0.0, floor_drop: None,
         };
         for n in [1u32, 8, 60, 240] {
             let stepped = step(kf.position, kf.linear_velocity, physics, n);
@@ -156,6 +186,33 @@ mod tests {
     }
 
     #[test]
+    fn a_falling_body_stops_on_the_ground_and_stops_falling() {
+        let physics = Physics::at_hz(60, -9.81);
+        // Centre 2 m up, lowest corner 1.5 m up: it may fall 1.5 m.
+        let kf = Keyframe {
+            tick: 0,
+            position: Vec3::new(0.0, 2.0, 0.0),
+            rotation: Quat::IDENTITY,
+            linear_velocity: Vec3::new(3.0, -4.0, 0.0),
+            angular_velocity: Vec3::ZERO,
+            mode: Mode::Ballistic,
+            decel: 0.0,
+            floor_drop: Some(1.5),
+        };
+        for n in [0.0f32, 5.0, 20.0, 60.0, 240.0] {
+            let (p, _) = predict(&kf, n, physics);
+            assert!(p.y >= 0.5 - 1e-6, "tick {n}: {p}");
+        }
+        assert!((predict(&kf, 60.0, physics).0.y - 0.5).abs() < 1e-6);
+        // Horizontal motion carries on; the fall does not.
+        assert!(predict(&kf, 60.0, physics).0.x > 2.9);
+        assert_eq!(predict_velocity(&kf, 60.0, physics).y, 0.0);
+        // Unknown floor: free flight as before.
+        let free = Keyframe { floor_drop: None, ..kf };
+        assert!(predict(&free, 60.0, physics).0.y < -5.0);
+    }
+
+    #[test]
     fn spin_is_constant_and_resting_holds() {
         let physics = Physics::at_hz(60, -9.81);
         let mut kf = Keyframe {
@@ -164,7 +221,7 @@ mod tests {
             rotation: Quat::IDENTITY,
             linear_velocity: Vec3::X,
             angular_velocity: Vec3::new(0.0, std::f32::consts::PI, 0.0),
-            mode: Mode::Sliding, decel: 0.0,
+            mode: Mode::Sliding, decel: 0.0, floor_drop: None,
         };
         let (p, q) = predict(&kf, 60.0, physics);
         assert!((p - Vec3::X).length() < 1e-5, "no gravity while sliding");

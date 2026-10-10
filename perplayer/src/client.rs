@@ -164,7 +164,7 @@ impl BodyTrack {
                 rotation: q,
                 linear_velocity: Vec3::ZERO,
                 angular_velocity: Vec3::ZERO,
-                mode: Mode::Resting, decel: 0.0,
+                mode: Mode::Resting, decel: 0.0, floor_drop: None,
             });
         }
     }
@@ -307,7 +307,7 @@ pub fn apply_spawns(
         let spawn = match parents.get(&parent) {
             Some(&(p, q, v, w, parent_com)) if parent != ANCHORED => {
                 let arm = q * (com - parent_com);
-                Keyframe { tick, position: p + arm, rotation: q, linear_velocity: v + w.cross(arm), angular_velocity: w, mode: Mode::Ballistic, decel: 0.0 }
+                Keyframe { tick, position: p + arm, rotation: q, linear_velocity: v + w.cross(arm), angular_velocity: w, mode: Mode::Ballistic, decel: 0.0, floor_drop: None }
             }
             _ => Keyframe {
                 tick,
@@ -315,9 +315,10 @@ pub fn apply_spawns(
                 rotation: def.world_rotation,
                 linear_velocity: Vec3::ZERO,
                 angular_velocity: Vec3::ZERO,
-                mode: Mode::Resting, decel: 0.0,
+                mode: Mode::Resting, decel: 0.0, floor_drop: None,
             },
         };
+        let spawn = Keyframe { floor_drop: state.floor_drop(def, id, spawn.position, spawn.rotation), ..spawn };
         tracks.entry(BodyKey { structure, body: id }).or_default().restart(spawn);
     }
 }
@@ -427,7 +428,11 @@ impl Client {
                         if (record.keyframe.tick as f32) < render {
                             self.stats.late_keyframes += 1;
                         }
-                        self.bodies.entry(record.key).or_default().add(record.keyframe, render, self.physics);
+                        let mut keyframe = record.keyframe;
+                        if let Some(cs) = self.structures.get(&record.key.structure) {
+                            keyframe.floor_drop = cs.state.floor_drop(&cs.def, record.key.body, keyframe.position, keyframe.rotation);
+                        }
+                        self.bodies.entry(record.key).or_default().add(keyframe, render, self.physics);
                         let history = self.history.entry(record.key).or_default();
                         history.push_back(record.keyframe);
                         let newest = record.keyframe.tick;
@@ -465,12 +470,15 @@ impl Client {
                             rotation: q,
                             linear_velocity: Vec3::ZERO,
                             angular_velocity: Vec3::ZERO,
-                            mode: Mode::Resting, decel: 0.0,
+                            mode: Mode::Resting, decel: 0.0, floor_drop: None,
                         });
                         track.settle(boot.tick, p, q);
                         self.bodies.insert(key, track);
                     }
-                    for (key, kf) in boot.awake {
+                    for (key, mut kf) in boot.awake {
+                        if let Some(cs) = self.structures.get(&key.structure) {
+                            kf.floor_drop = cs.state.floor_drop(&cs.def, key.body, kf.position, kf.rotation);
+                        }
                         self.bodies.entry(key).or_default().add(kf, f32::MIN, self.physics);
                     }
                     self.pending.retain(|&seq, _| seq >= boot.next_event_seq);
@@ -645,7 +653,7 @@ mod tests {
     }
 
     fn ballistic(tick: u32, p: Vec3, v: Vec3) -> Keyframe {
-        Keyframe { tick, position: p, rotation: Quat::IDENTITY, linear_velocity: v, angular_velocity: Vec3::ZERO, mode: Mode::Ballistic, decel: 0.0 }
+        Keyframe { tick, position: p, rotation: Quat::IDENTITY, linear_velocity: v, angular_velocity: Vec3::ZERO, mode: Mode::Ballistic, decel: 0.0, floor_drop: None }
     }
 
     #[test]

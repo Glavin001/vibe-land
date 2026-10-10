@@ -641,6 +641,13 @@ impl PerceptualEval {
                 d
             };
             let extra = depth(dp) - depth(tp).max(0.0);
+            if extra > G4_TOLERANCE_M && std::env::var_os("NETLAB2_G4_TRACE").is_some() {
+                // Diagnosis: where, how deep, and into what.
+                eprintln!(
+                    "G4 t={:.3} body={} drawn_body={} slot={} r={:.3} shown={:?} truth={:?} ground_shown={:.3} ground_truth={:.3} depth_shown={:.3} depth_truth={:.3}",
+                    self.last_t, item.body, item.displayed_body, item.id, r, dp, tp, r - dp.y, r - tp.y, depth(dp), depth(tp)
+                );
+            }
             if extra > G4_TOLERANCE_M {
                 let e = bodies.entry(item.displayed_body).or_insert(0.0);
                 *e = e.max(extra);

@@ -68,6 +68,10 @@ pub fn structure_defs(manifest: &DestructionManifest) -> Vec<StructureDef> {
             for b in &s.bonds {
                 bonds[b.bond_index as usize] = (b.node0, b.node1);
             }
+            let mut half = vec![Vec3::ZERO; n];
+            for c in &s.chunks {
+                half[c.node_index as usize] = Vec3::from_array(c.size) * 0.5;
+            }
             StructureDef::new(
                 s.structure_id,
                 Vec3::from_array(s.world_position),
@@ -78,6 +82,7 @@ pub fn structure_defs(manifest: &DestructionManifest) -> Vec<StructureDef> {
                 support,
                 bonds,
             )
+            .with_half_extents(half)
         })
         .collect()
 }
@@ -300,7 +305,7 @@ impl PerPlayer {
                                 rotation: island.pose.rotation,
                                 linear_velocity: island.linear_velocity,
                                 angular_velocity: island.angular_velocity,
-                                mode: if island.settled { Mode::Resting } else { Mode::Ballistic }, decel: 0.0,
+                                mode: if island.settled { Mode::Resting } else { Mode::Ballistic }, decel: 0.0, floor_drop: None,
                             },
                             radius,
                             settled: island.settled,
@@ -406,9 +411,30 @@ impl PerPlayer {
             let angle = 2.0 * q.dot(now.rotation).abs().min(1.0).acos();
             (p - now.position).length() + radius * angle
         };
+        // Supported now: free flight accelerates at exactly g each step
+        // (PhysX integrates it), so a body whose last two steps fell short
+        // of g by more than half is on something. The backtest scores the
+        // past, which for a body that just landed is a fall; predicting a
+        // fall from here draws it sinking into what holds it up.
+        let g_y = self.physics.gravity.y;
+        let steps: Vec<&Keyframe> = history.iter().rev().take(2).collect();
+        let mut supported = steps.len() == 2;
+        let mut later = now;
+        for earlier in steps {
+            if later.tick != earlier.tick + 1 {
+                supported = false;
+                break;
+            }
+            let accel_y = (later.linear_velocity.y - earlier.linear_velocity.y) / self.physics.dt;
+            supported &= accel_y > 0.5 * g_y;
+            later = earlier;
+        }
         // Cheapest first: a tie goes to the one with fewer bytes.
         let mut best = (Mode::Resting, error(Mode::Resting));
         for mode in [Mode::Ballistic, Mode::Sliding, Mode::Friction] {
+            if supported && mode == Mode::Ballistic {
+                continue;
+            }
             let e = error(mode);
             if e + 1e-3 < best.1 {
                 best = (mode, e);
@@ -559,7 +585,7 @@ impl ReplicationStrategy for PerPlayer {
                             rotation: q,
                             linear_velocity: v,
                             angular_velocity: w,
-                            mode: if settled { Mode::Resting } else { Mode::Ballistic }, decel: 0.0,
+                            mode: if settled { Mode::Resting } else { Mode::Ballistic }, decel: 0.0, floor_drop: None,
                         },
                         settled,
                     ),
@@ -584,7 +610,7 @@ impl ReplicationStrategy for PerPlayer {
                                 rotation: def.world_rotation,
                                 linear_velocity: Vec3::ZERO,
                                 angular_velocity: Vec3::ZERO,
-                                mode: Mode::Resting, decel: 0.0,
+                                mode: Mode::Resting, decel: 0.0, floor_drop: None,
                             },
                             false,
                         ),
@@ -639,7 +665,7 @@ impl ReplicationStrategy for PerPlayer {
                 linear_velocity: velocity,
                 angular_velocity: spin,
                 mode: Mode::Ballistic,
-                decel: 0.0,
+                decel: 0.0, floor_drop: None,
             };
             let history = self.history.entry(key).or_default();
             // Only this incarnation's continuous past counts.
@@ -656,6 +682,9 @@ impl ReplicationStrategy for PerPlayer {
             let (mode, decel) = self.mode_of(self.history.get(&key), &keyframe, radius);
             keyframe.mode = mode;
             keyframe.decel = decel;
+            if let (Some(state), Some(def)) = (self.states.get(&structure), self.defs.get(&structure)) {
+                keyframe.floor_drop = state.floor_drop(def, body, keyframe.position, keyframe.rotation);
+            }
             let history = self.history.get_mut(&key).unwrap();
             history.push_back(keyframe);
             while history.len() > BACKTEST_TICKS as usize + 1 {
@@ -671,11 +700,11 @@ impl ReplicationStrategy for PerPlayer {
             let rotation = Quat::from_array(settle.rotation).normalize();
             if let Some(t) = self.truth.get_mut(&key) {
                 t.settled = true;
-                t.keyframe = Keyframe { tick, position, rotation, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, decel: 0.0 };
+                t.keyframe = Keyframe { tick, position, rotation, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, decel: 0.0, floor_drop: None };
             }
             // Settles ride the reliable stream: every client holds the pose
             // from this tick (rounded as the wire carries it).
-            let q = quantised(&Keyframe { tick, position, rotation, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, decel: 0.0 }, 0);
+            let q = quantised(&Keyframe { tick, position, rotation, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, decel: 0.0, floor_drop: None }, 0);
             for cs in self.clients.values_mut() {
                 cs.believed.entry(key).or_default().settle(tick, q.position, q.rotation);
             }
@@ -1001,7 +1030,9 @@ fn send_for(
         out.packets.push(Outgoing::datagram(packet));
         let mut carried = Vec::with_capacity(records.len());
         for record in &records {
-            let decoded = decoded(record, physics);
+            // The client derives the floor from the body at the decoded
+            // pose; the truth's is that to within the quantisation.
+            let decoded = Keyframe { floor_drop: record.keyframe.floor_drop, ..decoded(record, physics) };
             cs.believed.entry(record.key).or_default().add(decoded, arrival_render, physics);
             cs.unsent.remove(&record.key);
             carried.push((record.key, decoded));

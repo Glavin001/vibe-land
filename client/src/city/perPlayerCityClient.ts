@@ -46,6 +46,9 @@ export interface PerPlayerCore {
 }
 
 /** Flatten a manifest the way the core's constructor reads it. */
+/** Floats per node in the core's `nodes` argument. */
+const NODE_STRIDE = 11;
+
 export function perPlayerCoreArgs(manifest: LoadedCityManifest['manifest']): {
   ids: Uint32Array;
   poses: Float32Array;
@@ -66,14 +69,17 @@ export function perPlayerCoreArgs(manifest: LoadedCityManifest['manifest']): {
     poses.set([...s.worldPosition, ...s.worldRotation], i * 7);
     const n = s.chunks.reduce((m, c) => Math.max(m, c.nodeIndex + 1), 0);
     nodeCounts[i] = n;
-    const table = new Float32Array(n * 8);
+    // Per node: rest, mass centre, mass, support, box half extents
+    // (perplayer/src/wasm.rs NODE_STRIDE).
+    const table = new Float32Array(n * NODE_STRIDE);
     for (const c of s.chunks) {
       const offset = c.massOffset ?? [0, 0, 0];
       table.set(
         [c.centroid[0], c.centroid[1], c.centroid[2],
           c.centroid[0] + offset[0], c.centroid[1] + offset[1], c.centroid[2] + offset[2],
-          c.mass, c.support ? 1 : 0],
-        c.nodeIndex * 8,
+          c.mass, c.support ? 1 : 0,
+          (c.size?.[0] ?? 0) / 2, (c.size?.[1] ?? 0) / 2, (c.size?.[2] ?? 0) / 2],
+        c.nodeIndex * NODE_STRIDE,
       );
     }
     nodes.push(...table);
@@ -329,6 +335,8 @@ export class PerPlayerCityClient extends CityClient {
       eventsApplied: core.eventsApplied,
       eventsAppliedEarly: 0,
       eventsAppliedLate: core.eventsLate,
+      // The lab's gate G2 reads this name (as the Rust stage writes it).
+      eventsLate: core.eventsLate,
       perPlayer: { ...core, resyncsGated: this.resyncGate.gated },
     } as ReturnType<CityClient['stats']>;
   }
