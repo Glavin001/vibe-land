@@ -134,6 +134,9 @@ pub struct PerPlayerConfig {
     /// penalty on six runs, but it does not fix the cause (the drawing
     /// smooths a sub-pixel change of direction; docs/netcode-shared-vs-per-player.md).
     pub contacts: bool,
+    /// Rank a record by the pop its correction will make (V2) as well as
+    /// the screen error it removes.
+    pub correction_cost: bool,
 }
 
 impl PerPlayerConfig {
@@ -154,6 +157,7 @@ impl PerPlayerConfig {
             event_copies: 2,
             send_threads: 1,
             contacts: false,
+            correction_cost: true,
         }
     }
 }
@@ -965,7 +969,23 @@ fn send_for(
             } else {
                 0.0
             };
-            screen + contact_gain
+            // The correction this record will make is itself seen: the
+            // client blends an error away over CORRECTION_TICKS frames, or
+            // snaps it past SNAP_METRES. Its per-frame step is a pop
+            // (class V2), and sending sooner keeps it smaller. Screen error
+            // saturates (a body metres off scores like one a few pixels
+            // off); the pop it will become does not.
+            let correction = if config.correction_cost && error_px >= config.tolerance_px {
+                let step_px = if error_px / px_per_m > vibe_land_perplayer::client::SNAP_METRES {
+                    error_px
+                } else {
+                    error_px / vibe_land_perplayer::client::CORRECTION_TICKS
+                };
+                model.penalty(ArtifactClass::Pop, f64::from(step_px), f64::from(weight)) as f32
+            } else {
+                0.0
+            };
+            screen + correction + contact_gain
         } else {
             f32::MAX
         };
