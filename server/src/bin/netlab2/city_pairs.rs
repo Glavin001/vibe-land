@@ -66,6 +66,7 @@ fn colour_of(slot: u32, structure: u32) -> [f32; 3] {
 }
 
 struct Pair {
+    client: usize,
     id: String,
     class: String,
     level: f64,
@@ -95,6 +96,11 @@ pub fn cmd_city_pairs(args: &Args) {
         args.get("runs").unwrap_or_else(|| die("--runs <dir>[,<dir>...] is required")).split(',').map(PathBuf::from).collect();
     let num = |name: &str, default: f64| args.get(name).map_or(default, |v| v.parse().unwrap_or_else(|_| die(&format!("--{name} N"))));
     let client = num("client", 1.0) as usize;
+    // --list only: every listed client's view is a candidate.
+    let list_clients: Vec<usize> = args
+        .get("clients")
+        .map(|v| v.split(',').map(|c| c.parse().unwrap_or_else(|_| die("--clients 0,1,..."))).collect())
+        .unwrap_or_else(|| vec![client]);
     let worst = num("worst", 2.0) as usize;
     let random = num("random", 2.0) as usize;
     let nulls = num("nulls", 1.0) as usize;
@@ -151,21 +157,52 @@ pub fn cmd_city_pairs(args: &Args) {
             events.iter().filter(|e| e.0 >= a && e.0 < b).map(|e| model.penalty(e.1, e.3, 1.0)).sum()
         };
         if list {
-            let mut s = lo;
-            while s <= hi {
-                let mut by_class: std::collections::BTreeMap<&str, f64> = std::collections::BTreeMap::new();
-                for e in events.iter().filter(|e| e.0 >= s && e.0 < s + window_s) {
-                    *by_class.entry(e.1.name()).or_default() += model.penalty(e.1, e.3, 1.0);
+            for &view in &list_clients {
+                let (events, motion) = if view == client {
+                    (events.clone(), motion_series(&capture, run, view, &spec).unwrap_or_else(|e| die(&format!("{e}"))))
+                } else {
+                    let vspec = client_spec(run, view);
+                    let vdir = client_dir(run, view);
+                    let mut ev = Vec::new();
+                    crate::city_perceptual::evaluate_client(
+                        &vdir.join(crate::chunks::CHUNKS_FILE),
+                        &capture.tape_path(),
+                        &capture.manifest,
+                        capture.checkpoint.as_ref(),
+                        &vspec.camera,
+                        &capture.tracks,
+                        ORIGIN_MS,
+                        model.clone(),
+                        Some(&mut ev),
+                    )
+                    .unwrap_or_else(|e| die(&format!("{}: {e}", vdir.display())));
+                    (ev, motion_series(&capture, run, view, &vspec).unwrap_or_else(|e| die(&format!("{e}"))))
+                };
+                let mut s = lo;
+                while s <= hi {
+                    let mut by_class: std::collections::BTreeMap<&str, f64> = std::collections::BTreeMap::new();
+                    for e in events.iter().filter(|e| e.0 >= s && e.0 < s + window_s) {
+                        *by_class.entry(e.1.name()).or_default() += model.penalty(e.1, e.3, 1.0);
+                    }
+                    let frames: Vec<&(f64, f32, u32)> = motion.iter().filter(|m| m.0 >= s && m.0 < s + window_s).collect();
+                    let n = frames.len().max(1) as f32;
+                    let active = frames.iter().filter(|m| m.1 >= ACTION_AREA_PX2).count() as f32 / n;
+                    let mean_area = frames.iter().map(|m| m.1).sum::<f32>() / n;
+                    let mean_moving = frames.iter().map(|m| m.2 as f32).sum::<f32>() / n;
+                    candidates.push(serde_json::json!({
+                        "run": run.display().to_string(),
+                        "client": view,
+                        "strategy": strategy,
+                        "level": level,
+                        "start_s": s,
+                        "penalty": events.iter().filter(|e| e.0 >= s && e.0 < s + window_s).map(|e| model.penalty(e.1, e.3, 1.0)).sum::<f64>(),
+                        "by_class": by_class,
+                        "action_frames": active,
+                        "moving_area_px2": mean_area,
+                        "moving_chunks": mean_moving,
+                    }));
+                    s += step_s;
                 }
-                candidates.push(serde_json::json!({
-                    "run": run.display().to_string(),
-                    "strategy": strategy,
-                    "level": level,
-                    "start_s": s,
-                    "penalty": penalty_in(s, s + window_s),
-                    "by_class": by_class,
-                }));
-                s += step_s;
             }
             continue;
         }
@@ -173,7 +210,9 @@ pub fn cmd_city_pairs(args: &Args) {
             for t in plan.iter().filter(|t| t["run"].as_str() == Some(&run.display().to_string())) {
                 let s = t["start_s"].as_f64().unwrap_or_else(|| die("--plan: a trial without start_s"));
                 let null = t["null"].as_bool().unwrap_or(false);
+                let view = t["client"].as_u64().map_or(client, |c| c as usize);
                 pairs.push(Pair {
+                    client: view,
                     id: t["id"].as_str().unwrap_or_else(|| die("--plan: a trial without id")).to_string(),
                     class: if null { "null".into() } else { format!("netcode {strategy}") },
                     level: if null { 0.0 } else { level },
@@ -209,6 +248,7 @@ pub fn cmd_city_pairs(args: &Args) {
         let tag = format!("r{r:02}");
         for (k, (s, why)) in chosen.into_iter().enumerate() {
             pairs.push(Pair {
+                client,
                 id: format!("{tag}-{k}"),
                 class: format!("netcode {strategy}"),
                 level,
@@ -223,6 +263,7 @@ pub fn cmd_city_pairs(args: &Args) {
             for k in 0..nulls {
                 let s = lo + rng.unit() * (hi - lo);
                 pairs.push(Pair {
+                    client,
                     id: format!("null-{k}"),
                     class: "null".into(),
                     level: 0.0,
@@ -249,10 +290,10 @@ pub fn cmd_city_pairs(args: &Args) {
     let mut windows = Vec::new();
     for pair in &pairs {
         let run = pair.run.as_ref().expect("a run");
-        let spec = client_spec(run, client);
+        let spec = client_spec(run, pair.client);
         let truth_clip = format!("{}-truth.mp4", pair.id);
         let test_clip = format!("{}-test.mp4", pair.id);
-        render_pair(&capture, run, client, &spec, pair, width, &clips.join(&truth_clip), &clips.join(&test_clip))
+        let diff = render_pair(&capture, run, pair.client, &spec, pair, width, &clips.join(&truth_clip), &clips.join(&test_clip))
             .unwrap_or_else(|e| die(&format!("{}: {e}", pair.id)));
         eprintln!("{}: {} {:.2}..{:.2} s ({}), penalty {:.1}", pair.id, pair.class, pair.start_s, pair.end_s, pair.why, pair.magnitude);
         windows.push(serde_json::json!({
@@ -262,10 +303,11 @@ pub fn cmd_city_pairs(args: &Args) {
             "truth_clip": truth_clip,
             "tests": [{"clip": test_clip, "level": pair.level, "magnitude": pair.magnitude}],
             "run": run.display().to_string(),
-            "client": client,
+            "client": pair.client,
             "start_s": pair.start_s,
             "end_s": pair.end_s,
             "why": pair.why,
+            "pixel_diff": diff,
         }));
     }
     let study = serde_json::json!({
@@ -288,6 +330,64 @@ fn client_spec(run: &Path, client: usize) -> ClientSpec {
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
         .and_then(|v| serde_json::from_value(v["client"].clone()).ok())
         .unwrap_or_else(|| die(&format!("{}: no stream.json for client {client}", run.display())))
+}
+
+/// A frame "has action" when debris that moved since the last frame covers at
+/// least this much of the scorer's 1920x1080 pane (about a 45 px square):
+/// a study design choice, so a window is not mostly an empty view.
+const ACTION_AREA_PX2: f32 = 2000.0;
+
+/// Per drawn frame of a run's client: (time s, screen area of truth debris
+/// that moved more than a pixel since the last frame, px^2 on the scorer's
+/// pane, and how many such chunks). What the viewer can see happening.
+fn motion_series(capture: &CityCapture, run: &Path, client: usize, spec: &ClientSpec) -> std::io::Result<Vec<(f64, f32, u32)>> {
+    let slots = slot_table(&capture.manifest);
+    let mut drawn = DrawnRun::open(&client_dir(run, client).join(crate::chunks::CHUNKS_FILE))?;
+    let mut truth = ChunkTruth::open(&capture.tape_path(), &capture.manifest, capture.checkpoint.as_ref())?;
+    let mut last: Vec<Option<glam::Vec2>> = vec![None; slots.len()];
+    let mut out = Vec::new();
+    let mut t = ORIGIN_MS;
+    while !drawn.finished() {
+        let Some((sim_tick, render)) = drawn.advance(t)? else {
+            t += FRAME_MS;
+            continue;
+        };
+        truth.advance_to(sim_tick)?;
+        let seconds = ((t - ORIGIN_MS) / 1000.0) as f32;
+        if let Some(camera) = spec.camera.camera_in_run(sim_tick, seconds, &capture.tracks) {
+            let projector = Projector::new(camera, (1920, 1080));
+            let (mut area, mut moving) = (0.0f32, 0u32);
+            for slot in 0..slots.len() as u32 {
+                let Some(c) = truth.chunk_at(slot, render) else {
+                    last[slot as usize] = None;
+                    continue;
+                };
+                if vibe_land_destruction::ids::body_entity_parts(c.key).1 == 0 {
+                    last[slot as usize] = None;
+                    continue;
+                }
+                let Some((p, depth)) = projector.project(c.position) else {
+                    last[slot as usize] = None;
+                    continue;
+                };
+                let on = p.x.abs() <= 960.0 && p.y.abs() <= 540.0;
+                if on {
+                    if let Some(q) = last[slot as usize] {
+                        if p.distance(q) > 1.0 {
+                            let r = slots[slot as usize].half_extents.length() * projector.focal_px() / depth;
+                            area += std::f32::consts::PI * r * r;
+                            moving += 1;
+                        }
+                    }
+                }
+                last[slot as usize] = on.then_some(p);
+            }
+            out.push((t / 1000.0, area, moving));
+        }
+        truth.trim(render.floor().max(0.0) as u32);
+        t += FRAME_MS;
+    }
+    Ok(out)
 }
 
 /// The first and last drawn frame times, s on the lab's clock.
@@ -313,8 +413,10 @@ fn render_pair(
     width: usize,
     truth_path: &Path,
     test_path: &Path,
-) -> std::io::Result<()> {
+) -> std::io::Result<PixelDiff> {
     let height = width * 9 / 16;
+    let mut diff = PixelDiff::default();
+    let mut truth_frame = vec![0u8; width * height * 3];
     let slots = slot_table(&capture.manifest);
     let mut structure_of: Vec<u32> = Vec::with_capacity(slots.len());
     for structure in &capture.manifest.structures {
@@ -361,6 +463,7 @@ fn render_pair(
                 }
                 pane.blit(&mut frame, 1, 0, 0);
                 truth_in.write_all(&frame)?;
+                truth_frame.copy_from_slice(&frame);
                 if !null {
                     pane.clear(&camera);
                     for slot in 0..slots.len() as u32 {
@@ -371,6 +474,17 @@ fn render_pair(
                     pane.blit(&mut frame, 1, 0, 0);
                 }
                 test_in.write_all(&frame)?;
+                // The renderer is deterministic: any pixel that differs is the
+                // netcode's.
+                let px = frame.chunks_exact(3).zip(truth_frame.chunks_exact(3)).filter(|(a, b)| a != b).count();
+                let shifted = shifted_pixels(&frame, &truth_frame, width, height);
+                diff.frames += 1;
+                diff.frames_differing += u32::from(px > 0);
+                diff.pixels_total += px as u64;
+                diff.pixels_max = diff.pixels_max.max(px as u32);
+                diff.frames_shifted += u32::from(shifted > 0);
+                diff.shifted_total += shifted as u64;
+                diff.shifted_max = diff.shifted_max.max(shifted as u32);
                 written += 1;
             }
         }
@@ -387,5 +501,80 @@ fn render_pair(
     if written == 0 {
         return Err(std::io::Error::other("no frames in the window"));
     }
-    Ok(())
+    diff.pane = (width as u32, height as u32);
+    Ok(diff)
+}
+
+/// How the two clips of a pair differ, pixel for pixel, before encoding.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+struct PixelDiff {
+    frames: u32,
+    frames_differing: u32,
+    /// Differing pixels summed over the frames.
+    pixels_total: u64,
+    /// The most in one frame.
+    pixels_max: u32,
+    /// The same, counting only visible differences (`shifted_pixels`: past
+    /// a just-noticeable colour difference, and not a 1-2 px shift).
+    frames_shifted: u32,
+    shifted_total: u64,
+    shifted_max: u32,
+    pane: (u32, u32),
+}
+
+/// Edge tolerance for `shifted_pixels`, px: the common tolerance of image
+/// regression comparisons (a 5x5 neighbourhood).
+const EDGE_TOLERANCE_PX: i64 = 2;
+
+/// A colour difference smaller than this is not seen: the just-noticeable
+/// difference in CIELAB, Delta E*ab 2.3 (Sharma & Trussell, 1997). Shading a
+/// face by its angle to the light makes a slightly rotated piece one colour
+/// step lighter over its whole face, which no one can see.
+const JND_DELTA_E: f32 = 2.3;
+
+/// sRGB (8 bit) to CIELAB (D65).
+fn lab(rgb: &[u8]) -> [f32; 3] {
+    let lin = |c: u8| {
+        let c = c as f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    let (r, g, b) = (lin(rgb[0]), lin(rgb[1]), lin(rgb[2]));
+    let x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+    let f = |t: f32| if t > 0.008856 { t.cbrt() } else { 7.787 * t + 16.0 / 116.0 };
+    let (fx, fy, fz) = (f(x), f(y), f(z));
+    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+}
+
+/// Pixels that differ visibly between the frames: a colour difference over
+/// `JND_DELTA_E`, with no colour within it anywhere `EDGE_TOLERANCE_PX`
+/// around in the other frame (both directions, so a piece missing from
+/// either clip counts). A surface shifted by a pixel or two, or shaded a
+/// step differently, does not.
+fn shifted_pixels(a: &[u8], b: &[u8], width: usize, height: usize) -> usize {
+    let to_lab = |img: &[u8]| img.chunks_exact(3).map(lab).collect::<Vec<[f32; 3]>>();
+    let (la, lb) = (to_lab(a), to_lab(b));
+    let close = |p: [f32; 3], q: [f32; 3]| {
+        let (d0, d1, d2) = (p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+        d0 * d0 + d1 * d1 + d2 * d2 <= JND_DELTA_E * JND_DELTA_E
+    };
+    let idx = |x: i64, y: i64| y.clamp(0, height as i64 - 1) as usize * width + x.clamp(0, width as i64 - 1) as usize;
+    let found = |img: &[[f32; 3]], x: i64, y: i64, colour: [f32; 3]| {
+        (-EDGE_TOLERANCE_PX..=EDGE_TOLERANCE_PX)
+            .any(|dy| (-EDGE_TOLERANCE_PX..=EDGE_TOLERANCE_PX).any(|dx| close(img[idx(x + dx, y + dy)], colour)))
+    };
+    let mut n = 0;
+    for y in 0..height as i64 {
+        for x in 0..width as i64 {
+            let (pa, pb) = (la[idx(x, y)], lb[idx(x, y)]);
+            if close(pa, pb) {
+                continue;
+            }
+            if !found(&lb, x, y, pa) || !found(&la, x, y, pb) {
+                n += 1;
+            }
+        }
+    }
+    n
 }
