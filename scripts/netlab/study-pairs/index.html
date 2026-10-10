@@ -67,9 +67,9 @@ th { color: var(--muted); font-weight: 600; }
     <h2>What you will do</h2>
     <p>Each trial plays two 3-second clips of the same moment of a collapse, from a player's own camera, one after the other: <b>A</b>, then <b>B</b>. One of them is the full simulation. The other is what that player's netcode drew from the data it received. Sometimes the two are identical. Nothing is marked: watch the whole scene as you would in a match.</p>
     <ul>
-      <li>Pick the clip that looked wrong. If you can't tell, guess. Guesses are part of the measurement: they are how “can't tell” is measured.</li>
+      <li>Pick the clip that looked wrong. If you can't tell, guess. Guesses are part of the measurement: they are how "can't tell" is measured.</li>
       <li>Then rate how much it would bother you in a match, from 0 (not at all) to 4 (ruins it).</li>
-      <li>Keys: <kbd>A</kbd> / <kbd>B</kbd> to pick, <kbd>0</kbd>–<kbd>4</kbd> to rate, <kbd>R</kbd> to replay both.</li>
+      <li>Keys: <kbd>A</kbd> / <kbd>B</kbd> to pick, <kbd>0</kbd> to <kbd>4</kbd> to rate, <kbd>R</kbd> to replay both.</li>
       <li>View the page large, ideally full screen. The page records the size you watched at.</li>
     </ul>
     <p class="hint" id="introNote">Loading the trial list…</p>
@@ -100,7 +100,7 @@ th { color: var(--muted); font-weight: 600; }
 
   <section class="done" id="done" hidden>
     <h2>Round complete</h2>
-    <p>Your answers are saved. The fit runs from them; this table is the raw view: the share of trials where you picked the wrong clip, by artifact and size relative to its current guessed threshold.</p>
+    <p>Your answers are saved. No score is shown: knowing which clips you got right would teach you what to look for and change the next round's answers. The fit runs from the saved answers.</p>
     <div class="results" id="results"></div>
     <div class="row"><button id="again">Another round (clips in new order)</button></div>
   </section>
@@ -277,7 +277,8 @@ th { color: var(--muted); font-weight: 600; }
       body.appendChild(tr);
     }
     table.appendChild(body);
-    $("results").replaceChildren(table);
+    const n = list.reduce((s, e) => s + e.n, 0);
+    $("results").textContent = `${n} answers this session.`;
   }
 
   $("start").addEventListener("click", () => startRound(state.round));
