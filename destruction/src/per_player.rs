@@ -31,7 +31,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use glam::{Quat, Vec3};
 
-use vibe_land_perplayer::client::{apply_spawns, parent_states, BodyTrack, BASELINE_MAX_TICKS};
+use vibe_land_perplayer::client::{apply_spawns, BodyTrack, BASELINE_MAX_TICKS};
 use vibe_land_perplayer::predict::{Keyframe, Mode, Physics};
 use vibe_land_perplayer::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use vibe_land_perplayer::wire::{
@@ -142,6 +142,10 @@ pub struct PerPlayerConfig {
     /// At most about this many bodies evaluated per client per send (0: no
     /// cap). Past it, a rotating slice plus the bodies that cannot wait.
     pub eval_cap: usize,
+    /// Evaluations per send across every client (0: none): each client's
+    /// cap is the smaller of `eval_cap` and this shared among the clients,
+    /// so the server's work per send stops growing with players.
+    pub eval_budget: usize,
 }
 
 impl PerPlayerConfig {
@@ -164,6 +168,7 @@ impl PerPlayerConfig {
             contacts: false,
             correction_cost: true,
             eval_cap: 4096,
+            eval_budget: 65_536,
         }
     }
 }
@@ -283,6 +288,16 @@ pub struct PerPlayer {
 impl PerPlayer {
     /// From the manifest and the ledger at the start (a capture's
     /// checkpoint, or the intact city).
+    /// The config a send runs with: the evaluation cap shared out of the
+    /// per-send budget.
+    fn effective_config(&self) -> PerPlayerConfig {
+        let mut config = self.config;
+        if config.eval_cap > 0 && config.eval_budget > 0 {
+            config.eval_cap = config.eval_cap.min((config.eval_budget / self.clients.len().max(1)).max(256));
+        }
+        config
+    }
+
     /// Rank records by `model` (a calibrated fit) instead of the literature
     /// seeds: the priority is the scorecard's own penalty.
     pub fn with_model(mut self, model: PerceptualModel) -> Self {
@@ -563,11 +578,6 @@ impl ReplicationStrategy for PerPlayer {
             // Every client's drawn parents before the split (each client's
             // model spawns from its own drawing).
             let mut state = self.states.remove(&structure).unwrap();
-            let parents: Vec<(u64, HashMap<u32, vibe_land_perplayer::client::ParentState>)> = self
-                .clients
-                .iter()
-                .map(|(&c, cs)| (c, parent_states(def, &state, structure, tick, &cs.believed, self.physics)))
-                .collect();
             let truth_parents: HashMap<u32, Truth> =
                 state.bodies().keys().filter_map(|&b| self.truth.get(&BodyKey { structure, body: b }).map(|t| (b, *t))).collect();
             let parent_coms: HashMap<u32, Vec3> =
@@ -659,13 +669,42 @@ impl ReplicationStrategy for PerPlayer {
                 };
                 self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0 });
             }
-            for (client, parents) in parents {
-                if let Some(cs) = self.clients.get_mut(&client) {
-                    apply_spawns(def, &state, structure, tick, &change, &parents, &mut cs.believed);
-                    for &(id, _) in &change.parent_of {
-                        cs.unsent.insert(BodyKey { structure, body: id });
+            // Each client's model spawns the new bodies from its own drawing
+            // of their parents just before the split: only the parents this
+            // fracture split, and each client independently (on
+            // `send_threads` workers, byte-identical to one).
+            let mut needed: Vec<u32> = change.parent_of.iter().map(|&(_, p)| p).filter(|&p| p != ANCHORED).collect();
+            needed.sort_unstable();
+            needed.dedup();
+            let physics = self.physics;
+            let (state_ref, change_ref, coms) = (&state, &change, &parent_coms);
+            let update = |cs: &mut ClientState| {
+                let mut parents: HashMap<u32, vibe_land_perplayer::client::ParentState> = HashMap::new();
+                for &id in &needed {
+                    if let Some(track) = cs.believed.get(&BodyKey { structure, body: id }) {
+                        let track = track.before(tick);
+                        let (p, q) = track.pose_at(tick as f32, physics);
+                        let (v, w) = track.velocity_at(tick as f32, physics);
+                        parents.insert(id, (p, q, v, w, coms.get(&id).copied().unwrap_or(Vec3::ZERO)));
                     }
                 }
+                apply_spawns(def, state_ref, structure, tick, change_ref, &parents, &mut cs.believed);
+                for &(id, _) in &change_ref.parent_of {
+                    cs.unsent.insert(BodyKey { structure, body: id });
+                }
+            };
+            let mut models: Vec<&mut ClientState> = self.clients.values_mut().collect();
+            let threads = (self.config.send_threads.max(1) as usize).min(models.len().max(1));
+            if threads <= 1 {
+                models.into_iter().for_each(update);
+            } else {
+                let per = models.len().div_ceil(threads);
+                std::thread::scope(|scope| {
+                    for part in models.chunks_mut(per) {
+                        let update = &update;
+                        scope.spawn(move || part.iter_mut().for_each(|cs| update(cs)));
+                    }
+                });
             }
             self.states.insert(structure, state);
             self.refresh_serials(structure);
@@ -799,13 +838,14 @@ impl ReplicationStrategy for PerPlayer {
     }
 
     fn begin_send(&mut self, tick: u32) {
+        let cap = self.effective_config().eval_cap;
         // The body order sends slice (insertion order, new bodies sorted
         // in), and the bodies with a contact recent enough that a slice may
         // not have reached them yet. Only needed past the evaluation cap.
-        if self.config.eval_cap == 0 || self.truth.len() <= self.config.eval_cap {
+        if cap == 0 || self.truth.len() <= cap {
             return;
         }
-        let window = (self.truth.len().div_ceil(self.config.eval_cap) as u32 * self.config.send_interval_ticks.max(1)).max(1);
+        let window = (self.truth.len().div_ceil((cap / 2).max(1)) as u32 * self.config.send_interval_ticks.max(1)).max(1);
         let mut fresh: Vec<BodyKey> = Vec::new();
         self.recent_contacts.clear();
         for (key, truth) in &self.truth {
@@ -845,8 +885,9 @@ impl ReplicationStrategy for PerPlayer {
     }
 
     fn client_send(&mut self, client: u64, view: &ClientView, tick: u32, budget: Option<SendBudget>) -> ClientSend {
+        let config = self.effective_config();
         let Some(cs) = self.clients.get_mut(&client) else { return ClientSend::default() };
-        send_for(self.config, self.physics, &self.truth, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
+        send_for(config, self.physics, &self.truth, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
     }
 
     fn client_sends(&mut self, requests: &[SendRequest]) -> Vec<ClientSend> {
@@ -855,11 +896,12 @@ impl ReplicationStrategy for PerPlayer {
             return requests.iter().map(|r| self.client_send(r.client, &r.view, r.tick, r.budget)).collect();
         }
         // Each client's state is its own: hand disjoint sets to workers.
+        let config = self.effective_config();
         let index: HashMap<u64, usize> = requests.iter().enumerate().map(|(i, r)| (r.client, i)).collect();
         let mut jobs: Vec<(usize, &mut ClientState)> =
             self.clients.iter_mut().filter_map(|(id, cs)| index.get(id).map(|&i| (i, cs))).collect();
         jobs.sort_by_key(|j| j.0);
-        let (config, physics, truth, model) = (self.config, self.physics, &self.truth, &self.model);
+        let (physics, truth, model) = (self.physics, &self.truth, &self.model);
         let (order, recent) = (&self.order[..], &self.recent_contacts[..]);
         let per = jobs.len().div_ceil(threads).max(1);
         let parts: Vec<(Vec<(usize, ClientSend)>, PerPlayerStats)> = std::thread::scope(|scope| {
@@ -985,7 +1027,13 @@ fn send_for(
     // send looks at a rotating 1/k slice, plus every body it must not
     // wait on (never sent, a contact not yet sent, over tolerance last
     // send). Below the cap (k = 1) every body is looked at every send.
-    let slices = if config.eval_cap == 0 { 1 } else { truths.len().div_ceil(config.eval_cap).max(1) as u64 };
+    // Past the cap the evaluations total about the cap: half for the slice,
+    // a quarter each for last send's losers and fresh contacts.
+    let slices = if config.eval_cap == 0 || truths.len() <= config.eval_cap {
+        1
+    } else {
+        truths.len().div_ceil((config.eval_cap / 2).max(1)).max(2) as u64
+    };
     let turn = cs.sends;
     cs.sends += 1;
     // Never-sent bodies (a joining client, a fresh collapse) can outnumber
@@ -1041,7 +1089,7 @@ fn send_for(
         // Freshest contacts first (begin_send's order), at most half the
         // cap: piles in constant contact would otherwise be every body.
         for key in recent_contacts {
-            if counts[0] as usize >= config.eval_cap / 2 {
+            if counts[0] as usize >= config.eval_cap / 4 {
                 break;
             }
             counts[0] += visit(key, true);
@@ -1221,7 +1269,7 @@ fn send_for(
     cs.hot.clear();
     if slices > 1 {
         let sent: HashSet<BodyKey> = chosen.iter().map(|r| r.key).collect();
-        cs.hot.extend(candidate_keys.iter().filter(|k| !sent.contains(k)).take(config.eval_cap / 2));
+        cs.hot.extend(candidate_keys.iter().filter(|k| !sent.contains(k)).take(config.eval_cap / 4));
     }
     cs.sends_since_datagram += 1;
     if chosen.is_empty() {

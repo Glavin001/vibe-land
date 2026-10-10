@@ -164,6 +164,7 @@ pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>
             "pp.contacts" => config.contacts = f() != 0.0,
             "pp.correction_cost" => config.correction_cost = f() != 0.0,
             "pp.eval_cap" => config.eval_cap = f() as usize,
+            "pp.eval_budget" => config.eval_budget = f() as usize,
             _ => {}
         }
     }
