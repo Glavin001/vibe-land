@@ -1,0 +1,25 @@
+{
+  "name": "sustained",
+  "description": "Continuous load: three of the tallest footprints (spaced 2 x radius, as record-city-trace --demolish-buildings 3 picks them) demolished 15 s (900 ticks) apart, so the stream never gets an idle stretch to recover in. Mirrors scripts/netlab/scenarios.py 'sustained' (wedge 55 deg, jitter 0.35, radius 36 m, below-y 30 m, 2 rounds per tick, stagger 900 ticks) with a 50 s action window instead of 90 s. On the default city each 36 m wedge reaches into neighbouring buildings too.",
+  "match": "city-default",
+  "server_env": {
+    "VIBE_CITY_SCENE": "high-rise-3f-local.json",
+    "VIBE_CITY_GRID": "4"
+  },
+  "seed": 1,
+  "warmup_s": 3.0,
+  "duration_s": 50.0,
+  "settle_s": 15.0,
+  "bot": {"centre": [0.0, 0.0], "radius": 150.0, "seed": 1},
+  "events": [
+    {"t_s": 2.0, "kind": "demolish", "footprint": {"rank": 0, "count": 3, "spacing_m": 72.0},
+     "radius_m": 36.0, "below_y": 30.0, "wedge_deg": 55.0, "heading_deg": 0.0, "jitter": 0.35,
+     "per_tick": 2, "rounds": 100000},
+    {"t_s": 17.0, "kind": "demolish", "footprint": {"rank": 1, "count": 3, "spacing_m": 72.0},
+     "radius_m": 36.0, "below_y": 30.0, "wedge_deg": 55.0, "heading_deg": 0.0, "jitter": 0.35,
+     "per_tick": 2, "rounds": 100000},
+    {"t_s": 32.0, "kind": "demolish", "footprint": {"rank": 2, "count": 3, "spacing_m": 72.0},
+     "radius_m": 36.0, "below_y": 30.0, "wedge_deg": 55.0, "heading_deg": 0.0, "jitter": 0.35,
+     "per_tick": 2, "rounds": 100000}
+  ]
+}

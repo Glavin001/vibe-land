@@ -1,0 +1,28 @@
+{
+  "name": "wedge",
+  "description": "The reference collapse: the tallest footprint taken over sideways, progressively. Mirrors scripts/netlab/scenarios.py 'wedge' (DemolitionPlan: wedge 55 deg, heading 0, jitter 0.35, radius 40 m, below-y 30 m, 2 rounds per tick, every target fired) through the live /city-demolish with tallest: true. On the default city (16 three-storey buildings on a 28 m pitch) a 40 m radius reaches past the tallest building into its east neighbour, so the cut fells structure 0 and part of structure 1.",
+  "match": "city-default",
+  "server_env": {
+    "VIBE_CITY_SCENE": "high-rise-3f-local.json",
+    "VIBE_CITY_GRID": "4"
+  },
+  "seed": 1,
+  "warmup_s": 3.0,
+  "duration_s": 30.0,
+  "settle_s": 15.0,
+  "bot": {"centre": [0.0, 0.0], "radius": 150.0, "seed": 1},
+  "events": [
+    {
+      "t_s": 2.0,
+      "kind": "demolish",
+      "tallest": true,
+      "radius_m": 40.0,
+      "below_y": 30.0,
+      "wedge_deg": 55.0,
+      "heading_deg": 0.0,
+      "jitter": 0.35,
+      "per_tick": 2,
+      "rounds": 100000
+    }
+  ]
+}
