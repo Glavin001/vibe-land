@@ -87,9 +87,14 @@ A run directory holds `scorecard.json` / `scorecard.md`, and per client `cNN/`:
 | G1 structure hash | Measured: the client's hash mismatches across every client, 0 to pass |
 | G2 event ordering | Measured: events the client applied before the drawing reached their tick (early: fails) or after it passed (late: reported). v2 applies topology on arrival, so it fails by design |
 | G3 bandwidth cap | Measured with a bucket on the steady state (from 2 s after the join): no client's busiest trailing second over the peak |
-| G4 solid geometry | Pending: needs the static occupancy grid |
+| G4 solid geometry | Measured: a visible loose chunk drawn inside the ground (y = 0) or a standing chunk more than 5 cm deeper than the truth has it (inscribed spheres; the static world is the client's own standing chunks) |
 | G5 resurrection | Measured: a body the truth has at rest, drawn moving more than 1 cm away from its rest pose. A step that converges on the rest pose is a landing, counted separately and scored as a pop |
 | G6 server time | Reported as C2 (`server_cost`: thread CPU per tick and per client, plus batched send wall time); its budget is set at scale |
+
+Fairness, beside the gates: F2 (a player's drawn debris blocks the line to
+another player where the truth does not, or the reverse) and F3 (two
+players' drawn worlds disagree about the line between them), per pair of
+clients within 150 m, every frame (`city_fairness.rs`).
 
 The head-to-head with these gates, rate-quality curves, links and scale is
 `docs/netcode-shared-vs-per-player.md`.
@@ -106,6 +111,14 @@ The head-to-head with these gates, rate-quality curves, links and scale is
   and `netlab2 city --model <json>` scores (and ranks, per player) with the
   fitted model.
 - `pp.send_threads=N`: per-player sends run on N threads (byte-identical).
+- `scripts/netlab/seed-ci.py`: paired-bootstrap confidence intervals over
+  seeds (clients pair across strategies within a seed).
+- `scripts/netlab/adversarial.py`: random search plus hill climbing over
+  cameras, links, budgets and captures for per player's worst cases, the
+  worst then run with shared v2 too.
+- `scripts/netlab/ci-quick.py`: the quick merge gate (tests, wedge through
+  both strategies, tape hashes, gate counts and penalty against
+  `ci-baseline.json`).
 
 ## Decisions (from the plan, with the owner)
 
