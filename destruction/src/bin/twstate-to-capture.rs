@@ -84,8 +84,10 @@
 //! **R6 Removed chunks.** A chunk the recording parks at (0, -10000, 0)
 //! (`kRetiredVisualDepth`, mini_city_main.cpp: crushed to dust) is removed:
 //! its bonds break, it joins no island, and the island it left is retired and
-//! its remaining children re-promoted, so no node list keeps it. derive-check
-//! reports these as removed components.
+//! its remaining children re-promoted, so no node list keeps it. A crushed
+//! chunk still in its standing structure is promoted as a one-chunk island
+//! and retired in the same batch (production's crush), so the tape's
+//! membership drops it too. derive-check reports these as removed components.
 //!
 //! **R7 Velocities and the tick clock.** Velocities are central differences of
 //! the island pose over the neighbouring recorded frames (exact for the
@@ -1444,11 +1446,15 @@ fn emit_frame(
         }
         // Owners that lost a removed chunk.
         let mut lost_removed: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut crushed_standing: Vec<u32> = Vec::new();
         for &c in &removed_now {
             if chunks[c as usize].structure == sid {
                 let o = owner[c as usize];
                 lost_removed.insert(o);
                 owner[c as usize] = UNOWNED_REMOVED;
+                if o == UNOWNED_ANCHORED {
+                    crushed_standing.push(c);
+                }
                 if o != UNOWNED_ANCHORED && o != UNOWNED_REMOVED && !by_owner.contains_key(&o) {
                     by_owner.insert(o, Vec::new()); // island fully removed
                 }
@@ -1459,6 +1465,31 @@ fn emit_frame(
             broken_bond_ids: broken_here.iter().map(|&b| ids::bond_id(sid, bonds[b as usize].index)).collect(),
             ..FractureBatch::default()
         };
+        // A crushed chunk still in its standing structure leaves it the way
+        // production expresses a crush: promoted as a one-chunk island and
+        // retired in the same batch (the ledger applies promotions, then
+        // retires). Without it the tape keeps the chunk standing.
+        for &c in &crushed_standing {
+            let serial = next_serial[sid as usize];
+            next_serial[sid as usize] += 1;
+            assert!(serial < ids::MAX_ISLAND_SERIALS, "island serials exhausted");
+            let chunk = &chunks[c as usize];
+            batch.promoted_islands.push(IslandPromotion {
+                structure_id: sid,
+                island_id: serial,
+                chunks: vec![ids::chunk_id(sid, chunk.node)],
+                mass: chunk.mass as f32,
+                center_of_mass: chunk.rest.p,
+                inertia_diagonal: [0.0; 3],
+                position: chunk.rest.p,
+                rotation: chunk.rest.q,
+                linear_velocity: [0.0; 3],
+                angular_velocity: [0.0; 3],
+                split_impulse: [0.0; 3],
+            });
+            batch.retired_island_ids.push(serial);
+            report.retirements += 1;
+        }
         for (o, mut children) in by_owner {
             if o == UNOWNED_REMOVED {
                 continue;

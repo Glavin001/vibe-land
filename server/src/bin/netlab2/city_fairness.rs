@@ -60,6 +60,7 @@ pub struct Fairness {
 /// A chunk as a box, with its bounding radius for a quick cull.
 #[derive(Clone, Copy)]
 struct Solid {
+    slot: u32,
     position: Vec3,
     rotation: Quat,
     half: Vec3,
@@ -69,13 +70,18 @@ struct Solid {
 /// Whether the segment a..b (less `EYE_CLEAR_M` at each end) passes through
 /// any solid.
 fn blocked(solids: &[Solid], a: Vec3, b: Vec3) -> bool {
+    first_blocker(solids, a, b).is_some()
+}
+
+/// The first solid the segment passes through, by index.
+fn first_blocker(solids: &[Solid], a: Vec3, b: Vec3) -> Option<usize> {
     let len = a.distance(b);
     if len <= 2.0 * EYE_CLEAR_M {
-        return false;
+        return None;
     }
     let dir = (b - a) / len;
     let (t0, t1) = (EYE_CLEAR_M, len - EYE_CLEAR_M);
-    solids.iter().any(|s| {
+    solids.iter().position(|s| {
         // Cull: the sphere's distance from the segment.
         let along = (s.position - a).dot(dir).clamp(t0, t1);
         if (a + dir * along).distance(s.position) > s.radius {
@@ -166,10 +172,10 @@ pub fn evaluate(capture: &CityCapture, clients: &[ClientSpec], out: &Path) -> st
                     let half = slots[slot as usize].half_extents;
                     let radius = half.length();
                     if let Some(d) = run.tables.chunk(slot).filter(|d| d.drawn) {
-                        drawn[i].push(Solid { position: d.position, rotation: d.rotation, half, radius });
+                        drawn[i].push(Solid { slot, position: d.position, rotation: d.rotation, half, radius });
                     }
                     if let Some(c) = truth.chunk_at(slot, render) {
-                        truth_solids[i].push(Solid { position: c.position, rotation: c.rotation, half, radius });
+                        truth_solids[i].push(Solid { slot, position: c.position, rotation: c.rotation, half, radius });
                     }
                 }
             }
@@ -180,6 +186,19 @@ pub fn evaluate(capture: &CityCapture, clients: &[ClientSpec], out: &Path) -> st
                 let (ta, tb) = (blocked(&truth_solids[a], ea, eb), blocked(&truth_solids[b], eb, ea));
                 if da || db || ta || tb {
                     report.contested_pair_frames += 1;
+                }
+                if std::env::var_os("NETLAB2_F2_TRACE").is_some() && ta && !da {
+                    // Diagnosis: what blocks the truth, and how this client draws it.
+                    let i = first_blocker(&truth_solids[a], ea, eb).unwrap();
+                    let slot = truth_solids[a][i].slot;
+                    let c = truth.chunk_at(slot, frames[a].map_or(sim_tick as f32, |f| f.1));
+                    eprintln!(
+                        "F2 t={:.3} pair={a}-{b} slot={slot} truth={:?} key={:?} drawn={:?}",
+                        (t - ORIGIN_MS) / 1000.0,
+                        c.map(|c| c.position),
+                        c.map(|c| c.key),
+                        runs[a].tables.chunk(slot).map(|d| (d.position, d.key, d.drawn))
+                    );
                 }
                 for (d, tr) in [(da, ta), (db, tb)] {
                     match (d, tr) {
@@ -210,7 +229,7 @@ mod tests {
 
     #[test]
     fn a_box_on_the_line_blocks_and_one_beside_it_or_at_the_eye_does_not() {
-        let wall = |x: f32, z: f32| Solid { position: Vec3::new(x, 1.6, z), rotation: Quat::IDENTITY, half: Vec3::new(0.3, 1.0, 1.0), radius: 1.5 };
+        let wall = |x: f32, z: f32| Solid { slot: 0, position: Vec3::new(x, 1.6, z), rotation: Quat::IDENTITY, half: Vec3::new(0.3, 1.0, 1.0), radius: 1.5 };
         let (a, b) = (Vec3::new(0.0, 1.6, 0.0), Vec3::new(20.0, 1.6, 0.0));
         assert!(blocked(&[wall(10.0, 0.0)], a, b));
         assert!(!blocked(&[wall(10.0, 3.0)], a, b), "beside the line");
