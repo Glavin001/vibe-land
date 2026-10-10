@@ -127,13 +127,44 @@ pub fn build_strategy(name: &str, capture: &CityCapture, knobs: &BTreeMap<String
             }
             Box::new(SharedV2::new(encoder))
         }
-        other => die(&format!("unknown --strategy {other}: shared-v2")),
+        "per-player" => {
+            let ledger = capture
+                .checkpoint
+                .as_ref()
+                .map(|c| c.ledger().clone())
+                .unwrap_or_else(|| vibe_land_destruction::topology::CityLedger::from_manifest(&capture.manifest));
+            Box::new(vibe_land_destruction::per_player::PerPlayer::new(
+                &capture.manifest,
+                ledger,
+                per_player_config(capture, knobs),
+            ))
+        }
+        other => die(&format!("unknown --strategy {other}: shared-v2 | per-player")),
     }
+}
+
+/// The per-player stream's configuration, with `pp.*` knobs.
+pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>) -> vibe_land_destruction::per_player::PerPlayerConfig {
+    let mut config = vibe_land_destruction::per_player::PerPlayerConfig::validated(capture.meta.hz.max(1));
+    for (key, value) in knobs {
+        let f = || value.parse::<f64>().unwrap_or_else(|_| die(&format!("knob {key}={value}: number")));
+        match key.as_str() {
+            "pp.tolerance_px" => config.tolerance_px = f() as f32,
+            "pp.horizon_ticks" => config.horizon_ticks = f() as f32,
+            "pp.delay_ticks" => config.delay_ticks = f() as f32,
+            "pp.ceiling_bytes" => config.ceiling_bytes = f() as usize,
+            "pp.send_hz" => config.send_interval_ticks = (config.sim_hz as f64 / f()).round().max(1.0) as u32,
+            "pp.heartbeat_sends" => config.heartbeat_sends = f() as u32,
+            _ => {}
+        }
+    }
+    config
 }
 
 /// The encoder knobs `netlab2 run` understands, by the same names.
 fn apply_encoder_knobs(config: &mut EncoderConfig, knobs: &BTreeMap<String, String>) {
-    let stream = crate::stream_config(crate::stream::Pace::Ideal, knobs);
+    let knobs: BTreeMap<String, String> = knobs.iter().filter(|(k, _)| !k.starts_with("pp.")).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let stream = crate::stream_config(crate::stream::Pace::Ideal, &knobs);
     stream.city.apply(config);
 }
 
@@ -401,6 +432,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         }
     }
     let first_tick = first_tick.ok_or_else(|| std::io::Error::other("the capture's tape has no ticks"))?;
+    std::fs::write(out.join("strategy.txt"), strategy.report())?;
 
     // Each client's deliveries, tape and totals.
     let mut results = Vec::new();
@@ -456,6 +488,14 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
     Ok(CityRun { spec: spec.clone(), first_tick, last_tick, hz, clients: results })
 }
 
+fn spec_wire_version(strategy: &str) -> u8 {
+    if strategy == "per-player" {
+        4
+    } else {
+        2
+    }
+}
+
 pub fn client_dir(out: &Path, index: usize) -> PathBuf {
     out.join(format!("c{index:02}"))
 }
@@ -495,7 +535,7 @@ fn write_city_tape(
             "capturedAt": "netlab2 city",
             "matchId": "netlab-city",
             "manifestHash": capture.manifest.hash_hex(),
-            "wireVersion": 2,
+            "wireVersion": spec_wire_version(&spec.strategy),
             "simHz": hz,
             "userAgent": "netlab2 city",
             "durationMs": tick_ms(last_tick, first_tick, hz) + 1000.0 / f64::from(hz),
@@ -881,7 +921,19 @@ pub fn cmd_city(args: &Args) {
         spec.strategy,
         spec.link
     );
-    if args.get("no-client").is_none() {
+    if args.get("no-client").is_none() && spec.strategy == "per-player" {
+        // The shared client core, in-process (the browser runs it as WASM).
+        let config = per_player_config(&capture, &spec.knobs);
+        let timeline: Vec<(u32, f64)> = (run.first_tick..=run.last_tick).map(|t| (t, tick_ms(t, run.first_tick, run.hz))).collect();
+        std::thread::scope(|scope| {
+            for index in 0..run.clients.len() {
+                let (dir, timeline, manifest) = (client_dir(&out, index), &timeline, &capture.manifest);
+                scope.spawn(move || {
+                    crate::city_pp_stage::run(&dir, manifest, config, timeline).unwrap_or_else(|e| die(&format!("per-player client stage: {e}")))
+                });
+            }
+        });
+    } else if args.get("no-client").is_none() {
         let jobs: usize = args.get("jobs").map_or(4, |j| j.parse().unwrap_or_else(|_| die("--jobs N")));
         let client_root = crate::client_root(args);
         let manifest = capture.dir.join(city_capture::MANIFEST_FILE);

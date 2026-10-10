@@ -33,6 +33,7 @@ pub mod manifest_binary;
 pub mod membership;
 pub mod netlab;
 pub mod packet;
+pub mod per_player;
 pub mod perception;
 pub mod quant;
 pub mod replication;

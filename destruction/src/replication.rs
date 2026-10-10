@@ -138,6 +138,12 @@ pub trait ReplicationStrategy {
     /// Short stable name for reports (`shared-v2`, `per-player`).
     fn name(&self) -> &'static str;
 
+    /// The city wire version its packets are (a client picks its decoder by
+    /// it): 2 shared world, 4 per player.
+    fn wire_version(&self) -> u8 {
+        2
+    }
+
     /// Sim ticks per stream send.
     fn send_interval_ticks(&self) -> u32;
 
@@ -187,6 +193,11 @@ pub trait ReplicationStrategy {
 
     /// Feedback from `client`, as it arrived at the server.
     fn on_feedback(&mut self, _client: u64, _feedback: ClientFeedback) {}
+
+    /// The strategy's own counters, for reports.
+    fn report(&self) -> String {
+        String::new()
+    }
 }
 
 /// The production shared-world stream, wire v2: `ChunkStreamEncoder` driven

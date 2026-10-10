@@ -72,6 +72,8 @@ pub fn evaluate_client(
     // JSON line each, per client (diagnosis; changes no score).
     let dump = std::env::var("NETLAB2_PERCEPTUAL_DUMP").ok().filter(|d| !d.is_empty());
     eval.record_events(dump.is_some());
+    let worst = std::env::var("NETLAB2_WORST_CHUNKS").ok().filter(|_| chunks_path.parent().is_some_and(|p| p.ends_with("c01")));
+    let mut worst_map: std::collections::HashMap<u32, (f64, u64, f64, f64, u32)> = std::collections::HashMap::new();
     let trace_body: Option<u32> = std::env::var("NETLAB2_PERCEPTUAL_TRACE").ok().and_then(|v| v.parse().ok());
     let mut tables = DrawnTables::new(reader.chunk_count);
     let mut buffer = IdBuffer::new(ID_WIDTH, ID_HEIGHT, pane);
@@ -127,7 +129,8 @@ pub fn evaluate_client(
             if let Some(item) = items.iter().filter(|i| i.body == body).min_by_key(|i| i.id) {
                 let px = |p: Vec3| projector.project(p).map(|(s, d)| (s.x, s.y, d));
                 eprintln!(
-                    "TRACE t={:.4} sim={} render={:.2} slot={} vis={} drawn={:?} truth={:?} d_px={:?} t_px={:?}",
+                    "TRACE {} t={:.4} sim={} render={:.2} slot={} vis={} drawn={:?} truth={:?} d_px={:?} t_px={:?}",
+                    chunks_path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
                     frame.sample_ms / 1000.0,
                     frame.sim_tick,
                     render,
@@ -140,8 +143,30 @@ pub fn evaluate_client(
                 );
             }
         }
+        if worst.is_some() {
+            for item in &items {
+                if let (Some(d), Some(t)) = (item.displayed, item.truth) {
+                    let e = d.0.distance(t.0);
+                    let entry = worst_map.entry(item.id).or_insert((0.0, 0u64, 0.0, 0.0, item.body));
+                    entry.0 += f64::from(e);
+                    entry.1 += 1;
+                    if f64::from(e) > entry.2 {
+                        entry.2 = f64::from(e);
+                        entry.3 = f64::from(render);
+                        entry.4 = item.body;
+                    }
+                }
+            }
+        }
         eval.frame(frame.sample_ms / 1000.0, cam, &items);
         truth.trim(render.floor().max(0.0) as u32);
+    }
+    if worst.is_some() {
+        let mut rows: Vec<_> = worst_map.into_iter().map(|(slot, (sum, n, max, at, body))| (sum / n as f64, slot, n, max, at, body)).collect();
+        rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+        for (mean, slot, n, max, at, body) in rows.iter().take(25) {
+            eprintln!("WORST slot={slot} mean={mean:.3} frames={n} max={max:.3} at_render={at:.1} truth_body={body} serial={}", body & 0xfffff);
+        }
     }
     if let Some(dir) = dump {
         use std::io::Write;

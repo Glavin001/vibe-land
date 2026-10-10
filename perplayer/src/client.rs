@@ -72,19 +72,37 @@ impl BodyTrack {
         self.settled
     }
 
-    /// Forget everything before `tick` (a new incarnation of the id).
+    /// Forget everything before `spawn.tick` (a new incarnation of the id).
+    /// A keyframe the server sent for that very tick describes the new body
+    /// better than a derived spawn, so it is kept in the spawn's place.
     pub fn restart(&mut self, spawn: Keyframe) {
-        self.keyframes.retain(|k| k.tick > spawn.tick);
-        self.keyframes.insert(0, spawn);
+        self.keyframes.retain(|k| k.tick >= spawn.tick);
+        if self.keyframes.first().map_or(true, |k| k.tick != spawn.tick) {
+            self.keyframes.insert(0, spawn);
+        }
         self.settled = None;
         self.correction = None;
+    }
+
+    /// This track as it stood before `tick`: keyframes at or after it may
+    /// belong to the body the id names after a split there.
+    pub fn before(&self, tick: u32) -> BodyTrack {
+        let mut track = self.clone();
+        track.keyframes.retain(|k| k.tick < tick);
+        if track.keyframes.is_empty() {
+            track.keyframes = self.keyframes.first().copied().into_iter().collect();
+        }
+        track
     }
 
     /// Add a keyframe, drawn from `render_tick` on. A keyframe for a tick the
     /// drawing has already passed switches the track under a decaying offset
     /// (or a snap over `SNAP_METRES`).
     pub fn add(&mut self, keyframe: Keyframe, render_tick: f32, physics: Physics) {
-        if self.keyframes.iter().any(|k| k.tick == keyframe.tick) {
+        // The server's keyframe for a tick replaces whatever is there (a
+        // derived spawn, or an earlier copy).
+        if let Some(existing) = self.keyframes.iter_mut().find(|k| k.tick == keyframe.tick) {
+            *existing = keyframe;
             return;
         }
         let late = (keyframe.tick as f32) < render_tick && !self.keyframes.is_empty();
@@ -106,6 +124,13 @@ impl BodyTrack {
                 rotation: (q0 * q1.inverse()).normalize(),
                 from_tick: render_tick,
             });
+        }
+    }
+
+    /// Forget the keyframe for `tick` (the server learned it was lost).
+    pub fn remove_keyframe(&mut self, tick: u32) {
+        if self.keyframes.len() > 1 {
+            self.keyframes.retain(|k| k.tick != tick);
         }
     }
 
@@ -215,6 +240,68 @@ impl RenderClock {
 
     pub fn server_tick(&self, now_ms: f64) -> Option<f32> {
         Some(((now_ms + self.offset_ms?) / self.tick_ms) as f32)
+    }
+}
+
+/// A dynamic body's drawn state at a tick: pose, velocity, spin, and the
+/// centre of mass its pose is the frame of.
+pub type ParentState = (Vec3, Quat, Vec3, Vec3, Vec3);
+
+/// Every dynamic body's drawn state at `tick`, before a fracture changes the
+/// structure: what the new bodies spawn from.
+pub fn parent_states(
+    def: &StructureDef,
+    state: &StructureState,
+    structure: u32,
+    tick: u32,
+    tracks: &HashMap<BodyKey, BodyTrack>,
+    physics: Physics,
+) -> HashMap<u32, ParentState> {
+    let mut parents = HashMap::new();
+    for &id in state.bodies().keys() {
+        if let Some(track) = tracks.get(&BodyKey { structure, body: id }) {
+            let track = track.before(tick);
+            let (p, q) = track.pose_at(tick as f32, physics);
+            let (v, w) = track.velocity_at(tick as f32, physics);
+            parents.insert(id, (p, q, v, w, state.centre_of_mass(def, id)));
+        }
+    }
+    parents
+}
+
+/// After a fracture: retire the bodies it ended and start every changed body
+/// from its parent's drawn state (`v + w x r` for a moving parent, the
+/// authored pose for a standing one). The client and the server's model of
+/// each client both call this, so they spawn alike.
+pub fn apply_spawns(
+    def: &StructureDef,
+    state: &StructureState,
+    structure: u32,
+    tick: u32,
+    change: &crate::structure::FractureChange,
+    parents: &HashMap<u32, ParentState>,
+    tracks: &mut HashMap<BodyKey, BodyTrack>,
+) {
+    for id in &change.retired_bodies {
+        tracks.remove(&BodyKey { structure, body: *id });
+    }
+    for &(id, parent) in &change.parent_of {
+        let com = state.centre_of_mass(def, id);
+        let spawn = match parents.get(&parent) {
+            Some(&(p, q, v, w, parent_com)) if parent != ANCHORED => {
+                let arm = q * (com - parent_com);
+                Keyframe { tick, position: p + arm, rotation: q, linear_velocity: v + w.cross(arm), angular_velocity: w, mode: Mode::Ballistic }
+            }
+            _ => Keyframe {
+                tick,
+                position: def.world_position + def.world_rotation * com,
+                rotation: def.world_rotation,
+                linear_velocity: Vec3::ZERO,
+                angular_velocity: Vec3::ZERO,
+                mode: Mode::Resting,
+            },
+        };
+        tracks.entry(BodyKey { structure, body: id }).or_default().restart(spawn);
     }
 }
 
@@ -391,51 +478,22 @@ impl Client {
         match event {
             Event::Fracture { tick, structure, broken_bonds, removed_chunks } => {
                 let Some(cs) = self.structures.get_mut(&structure) else { return };
-                // Parents' drawn state before the split.
-                let mut parents: HashMap<u32, (Vec3, Quat, Vec3, Vec3, Vec3)> = HashMap::new();
-                for (&id, _) in cs.state.bodies() {
-                    let key = BodyKey { structure, body: id };
-                    if let Some(track) = self.bodies.get(&key) {
-                        let (p, q) = track.pose_at(tick as f32, self.physics);
-                        let (v, w) = track.velocity_at(tick as f32, self.physics);
-                        parents.insert(id, (p, q, v, w, cs.state.centre_of_mass(&cs.def, id)));
-                    }
-                }
+                let parents = parent_states(&cs.def, &cs.state, structure, tick, &self.bodies, self.physics);
                 let change = cs.state.apply(&cs.def, &broken_bonds, &removed_chunks);
                 for &node in &change.moved_chunks {
                     self.slot_changes.push((structure, node));
                 }
+                // A body that kept its id but changed members has a new centre
+                // of mass: every member's offset on it changed too.
+                for &id in &change.changed_bodies {
+                    for &node in cs.state.members(id).unwrap_or(&[]) {
+                        self.slot_changes.push((structure, node));
+                    }
+                }
                 for &node in &removed_chunks {
                     self.slot_changes.push((structure, node));
                 }
-                for id in &change.retired_bodies {
-                    self.bodies.remove(&BodyKey { structure, body: *id });
-                }
-                for &(id, parent) in &change.parent_of {
-                    let com = cs.state.centre_of_mass(&cs.def, id);
-                    let spawn = match parents.get(&parent) {
-                        Some(&(p, q, v, w, parent_com)) if parent != ANCHORED => {
-                            let arm = q * (com - parent_com);
-                            Keyframe {
-                                tick,
-                                position: p + arm,
-                                rotation: q,
-                                linear_velocity: v + w.cross(arm),
-                                angular_velocity: w,
-                                mode: Mode::Ballistic,
-                            }
-                        }
-                        _ => Keyframe {
-                            tick,
-                            position: cs.def.world_position + cs.def.world_rotation * com,
-                            rotation: cs.def.world_rotation,
-                            linear_velocity: Vec3::ZERO,
-                            angular_velocity: Vec3::ZERO,
-                            mode: Mode::Resting,
-                        },
-                    };
-                    self.bodies.entry(BodyKey { structure, body: id }).or_default().restart(spawn);
-                }
+                apply_spawns(&cs.def, &cs.state, structure, tick, &change, &parents, &mut self.bodies);
             }
             Event::Settle { tick, key, position, rotation } => {
                 self.bodies.entry(key).or_default().settle(tick, position, rotation);
@@ -594,5 +652,13 @@ mod tests {
         assert!((spawn.position - start).length() < 1e-5);
         assert!(client.drain_slot_changes().contains(&(3, 4)));
         assert_eq!(client.stats.events_late, 0);
+        // Body 3 loses chunk 5: it keeps its id, its centre of mass moves, and
+        // chunk 4 -- still on body 3 -- has a new offset to be redrawn with.
+        client.ingest(&encode_events(1, &[Event::Fracture { tick: 112, structure: 3, broken_bonds: vec![4], removed_chunks: vec![] }]), 3.0);
+        let before = client.chunk_local(3, 4);
+        client.advance(2.0 + 1000.0 / 60.0 * 10.0);
+        assert_eq!(client.chunk_body(3, 4), Some(3));
+        assert_ne!(client.chunk_local(3, 4), before);
+        assert!(client.drain_slot_changes().contains(&(3, 4)), "a re-offset member is reported");
     }
 }

@@ -247,6 +247,18 @@ impl CityLedger {
     /// island). Bodies arrive grouped by structure, so the outer one is the
     /// same answer for long runs; this resolves it once and lets the caller
     /// update each island directly.
+    /// Whether one of a structure's bonds is intact.
+    pub fn bond_alive(&self, structure_id: u32, bond_index: u32) -> bool {
+        self.structures.get(&structure_id).is_some_and(|s| {
+            bond_index < s.bond_count && s.alive_bonds[(bond_index / 8) as usize] & (1 << (bond_index % 8)) != 0
+        })
+    }
+
+    /// One structure's dynamic islands (serial -> island).
+    pub fn structure_islands(&self, structure_id: u32) -> Option<&HashMap<u32, LedgerIsland>> {
+        self.structures.get(&structure_id).map(|structure| &structure.islands)
+    }
+
     pub fn structure_islands_mut(
         &mut self,
         structure_id: u32,
