@@ -163,6 +163,9 @@ pub fn per_player_config(capture: &CityCapture, knobs: &BTreeMap<String, String>
             "pp.send_threads" => config.send_threads = f() as u32,
             "pp.contacts" => config.contacts = f() != 0.0,
             "pp.correction_cost" => config.correction_cost = f() != 0.0,
+            "pp.motion_cost" => config.motion_cost = f() != 0.0,
+            "pp.drawn_view" => config.drawn_view = f() != 0.0,
+            "pp.age_priority" => config.age_priority = f() != 0.0,
             "pp.eval_cap" => config.eval_cap = f() as usize,
             "pp.eval_budget" => config.eval_budget = f() as usize,
             _ => {}

@@ -146,6 +146,44 @@ the other's rates (`scripts/netlab/rate-quality.py`):
 - **Per player traces a curve** (about 60 to 525 kbit/s), so its rate can
   be dialled to the link.
 
+## Across the five budgets (decision D9, seed 1)
+
+Both strategies at 256 / 384 / 512 / 768 / 1024 kbit/s sustained (3x
+burst for 3 s), lte, quality knob 2 px for both
+(`scripts/netlab/rate-quality.py run --budgets 256,384,512,768,1024
+--qualities 2`). Cells: kbit/s sent, penalty per client-minute (gates
+failed).
+
+| capture | budget | shared v2 | per player | v2 / per player |
+|---|---:|---|---|---:|
+| wedge | 256 | 95, 628 (G2 G3 G4) | 83, 404 (G3 G4) | 1.6x |
+| wedge | 384 | 122, 443 (G2 G3 G4) | 105, 161 (pass) | 2.8x |
+| wedge | 512 | 140, 459 (G2 G3) | 121, 137 (pass) | 3.4x |
+| wedge | 768 | 154, 468 (G2 G4) | 140, 122 (pass) | 3.8x |
+| wedge | 1024 | 154, 468 (G2 G4) | 141, 124 (pass) | 3.8x |
+| sustained | 256 | 178, 2815 (G2 G3 G4) | 151, 2038 (G3 G4) | 1.4x |
+| sustained | 384 | 236, 1633 (G2 G3 G4) | 196, 703 (G4) | 2.3x |
+| sustained | 512 | 268, 1349 (G2 G4) | 227, 519 (G4) | 2.6x |
+| sustained | 768 | 283, 1338 (G2 G4) | 243, 448 (G4) | 3.0x |
+| sustained | 1024 | 283, 1338 (G2 G4) | 243, 448 (G4) | 3.0x |
+| meteor-volley | 256 | 163, 20838 (G2 G3 G4 G5) | 146, 13936 (G3 G4) | 1.5x |
+| meteor-volley | 384 | 224, 30182 (G2 G3 G4 G5) | 205, 8226 (G3 G4) | 3.7x |
+| meteor-volley | 512 | 280, 23985 (G2 G3 G4 G5) | 260, 5680 (G3 G4) | 4.2x |
+| meteor-volley | 768 | 390, 14055 (G2 G3 G4 G5) | 366, 2790 (G4) | 5.0x |
+| meteor-volley | 1024 | 496, 10543 (G2 G4 G5) | 467, 1261 (G4) | 8.4x |
+
+- **Per player wins at every budget on every capture, at 6-15% fewer
+  bytes.** The margin shrinks as the budget starves (1.4-1.6x at
+  256 kbit/s), where both are mostly stale.
+- **Every per-player G3 failure is its unbudgeted fracture events:**
+  `g3_clients_over_budgeted` is 0 in all 15 runs. The selection never
+  overspends.
+- **Per player never fails G2 or G5 here; v2 fails G2 in all 15 runs
+  and G5 in all five meteor-volley runs.**
+- **Budget for the bucket (D9):** per player stops improving at
+  768 kbit/s on wedge and sustained. Meteor-volley still gains to
+  1024 kbit/s. See also `docs/netcode-collapse-costs.md`.
+
 ## Across links (seed 1)
 
 | link | capture | v2 kbit/s, penalty | per-player kbit/s, penalty | better by |

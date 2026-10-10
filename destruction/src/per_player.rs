@@ -139,6 +139,24 @@ pub struct PerPlayerConfig {
     /// Rank a record by the pop its correction will make (V2) as well as
     /// the screen error it removes.
     pub correction_cost: bool,
+    /// Rank a body drawn moving wrongly by the pop its motion makes (V2):
+    /// each frame its drawn step differs from the truth's by more than the
+    /// tolerance, the scorer counts a pop, and waiting one more send keeps
+    /// that up for a send interval. Screen error saturates; this does not.
+    pub motion_cost: bool,
+    /// Judge a body's error where the client draws it as well as where it
+    /// is: in view if either pose is, scaled at the nearer (the scorer
+    /// projects both). Off: by the truth's pose alone.
+    pub drawn_view: bool,
+    /// Priority accumulator (Fiedler, "State Synchronization", 2015;
+    /// Frohnmayer & Gift, the Tribes network model, 2000; age-weighted
+    /// scheduling, Kadota et al., IEEE/ACM ToN 2018): a body's gain is the
+    /// penalty its error has been costing per second (V1 once per body per
+    /// second, V2 every frame its drawn motion is wrong) times how long it
+    /// has been over tolerance, plus the correction's pop. Off: one send's
+    /// worth of saturated penalty, under which a body left wrong never
+    /// outranks fresh errors.
+    pub age_priority: bool,
     /// At most about this many bodies evaluated per client per send (0: no
     /// cap). Past it, a rotating slice plus the bodies that cannot wait.
     pub eval_cap: usize,
@@ -167,6 +185,9 @@ impl PerPlayerConfig {
             send_threads: 1,
             contacts: false,
             correction_cost: true,
+            motion_cost: false,
+            drawn_view: false,
+            age_priority: false,
             eval_cap: 4096,
             eval_budget: 65_536,
         }
@@ -203,6 +224,10 @@ const DATAGRAM_HEADER: usize = 13;
 /// change this far from gravity's (m/s).
 const CONTACT_DV: f32 = 1.0;
 
+/// Frames drawn per second, as the perceptual scorer samples them (the
+/// lab's 60 Hz frame clock): how many pops a send interval holds.
+const FRAMES_PER_SECOND: f32 = 60.0;
+
 #[derive(Default)]
 struct ClientState {
     ordinal: u32,
@@ -227,6 +252,9 @@ struct ClientState {
     /// Bodies that were over tolerance last send and lost the ranking:
     /// evaluated again whatever the slice (`PerPlayerConfig::eval_cap`).
     hot: FxHashSet<BodyKey>,
+    /// The tick each body's error went over tolerance, until it is sent
+    /// (`PerPlayerConfig::age_priority`).
+    over_since: FxHashMap<BodyKey, u32>,
 }
 
 /// Counters for reports.
@@ -763,6 +791,7 @@ impl ReplicationStrategy for PerPlayer {
                 apply_spawns(def, state_ref, structure, tick, change_ref, &parents, &mut cs.believed);
                 for &(id, _) in &change_ref.parent_of {
                     cs.unsent.insert(BodyKey { structure, body: id });
+                    cs.over_since.remove(&BodyKey { structure, body: id });
                 }
             };
             let mut models: Vec<&mut ClientState> = self.clients.values_mut().collect();
@@ -1211,13 +1240,49 @@ fn send_for(
     for key in &evaluate {
         let truth = &truths[key];
         let required = cs.unsent.contains(key);
-        let rel = truth.keyframe.position - camera.eye;
-        let depth = rel.dot(forward);
-        let distance = rel.length().max(0.5);
+        let distance = (truth.keyframe.position - camera.eye).length().max(0.5);
         // In view: pixels at its depth. Behind or beside: half weight at
-        // its distance -- never culled.
-        let (px_per_m, weight) =
-            if depth > 0.5 { (focal / depth, 1.0f32) } else { (focal / distance, 0.5) };
+        // its distance -- never culled. This scales the keyframe's grid: the
+        // keyframe draws the body at the truth.
+        let scale_at = |p: Vec3| {
+            let rel = p - camera.eye;
+            let depth = rel.dot(forward);
+            if depth > 0.5 { (focal / depth, 1.0f32) } else { (focal / rel.length().max(0.5), 0.5) }
+        };
+        let (px_per_m, truth_weight) = scale_at(truth.keyframe.position);
+        // The error is seen where it is drawn as well as where it should be
+        // (the scorer projects both): in view if either is, at the nearer
+        // of the two. A body drawn in front of a player whose truth is
+        // behind them is in plain view.
+        let drawn_now = cs
+            .believed
+            .get(key)
+            .filter(|t| config.drawn_view && !t.keyframes().is_empty())
+            .map(|t| t.pose_at(r, physics));
+        let (error_px_per_m, weight) = match drawn_now.map(|(p, _)| scale_at(p)) {
+            Some((d_scale, d_weight)) if d_weight > truth_weight => (d_scale, d_weight),
+            Some((d_scale, d_weight)) if d_weight == truth_weight => (d_scale.max(px_per_m), d_weight),
+            _ => (px_per_m, truth_weight),
+        };
+        // The drawn motion against the truth's, one frame's step on screen.
+        let motion_px = match cs.believed.get(key) {
+            Some(track) if (config.motion_cost || config.age_priority) && !track.keyframes().is_empty() => {
+                let frame_ticks = config.sim_hz as f32 / FRAMES_PER_SECOND;
+                let (p0, q0) = track.pose_at(r, physics);
+                let (p1, q1) = track.pose_at(r + frame_ticks, physics);
+                let (t1, tq1) = vibe_land_perplayer::predict::predict(&truth.keyframe, frame_ticks, physics);
+                let drawn_turn = 2.0 * q0.dot(q1).abs().min(1.0).acos();
+                let true_turn = 2.0 * truth.keyframe.rotation.dot(tq1).abs().min(1.0).acos();
+                (((p1 - p0) - (t1 - truth.keyframe.position)).length() + truth.radius * (drawn_turn - true_turn).abs()) * error_px_per_m
+            }
+            _ => 0.0,
+        };
+        let motion_gain = if config.motion_cost && motion_px >= config.tolerance_px {
+            let frames = config.send_interval_ticks as f32 * FRAMES_PER_SECOND / config.sim_hz as f32;
+            model.penalty(ArtifactClass::Pop, f64::from(motion_px), f64::from(weight)) as f32 * frames
+        } else {
+            0.0
+        };
         let error_px = match cs.believed.get(key) {
             Some(track) if !track.keyframes().is_empty() => {
                 // Now, and a horizon ahead: the client's drawing then
@@ -1234,7 +1299,7 @@ fn send_for(
                     vibe_land_perplayer::predict::predict(&truth.keyframe, config.horizon_ticks, physics),
                 );
                 let _ = horizon_s;
-                now.max(ahead) * px_per_m
+                now.max(ahead) * error_px_per_m
             }
             _ => f32::INFINITY,
         };
@@ -1242,17 +1307,44 @@ fn send_for(
         // class of its own (V6), scored in ms, not pixels -- a small or far
         // piece's bounce moves it under the tolerance for frames, and is
         // drawn late. Waiting one more send delays it to `late_ms`.
+        // A contact is seen only on screen and at least a pixel across (the
+        // scorer scores visible contacts only): one off to the side or
+        // smaller than a pixel has no timing anyone can judge.
+        let on_screen = |p: Vec3| {
+            let rel = p - camera.eye;
+            let depth = rel.dot(forward);
+            if depth <= 0.5 {
+                return false;
+            }
+            let right = forward.cross(Vec3::Y).normalize_or_zero();
+            let up = right.cross(forward);
+            let (x, y) = (rel.dot(right) * focal / depth, rel.dot(up) * focal / depth);
+            let radius_px = truth.radius * focal / depth;
+            2.0 * radius_px >= 1.0
+                && x.abs() <= config.pane.0 as f32 * 0.5 + radius_px
+                && y.abs() <= config.pane.1 as f32 * 0.5 + radius_px
+        };
         let contact_gain = match cs.believed.get(key).and_then(|t| t.newest()) {
-            Some(newest) if config.contacts && truth.contact_tick > newest.tick => {
-                let late_ms = (r - truth.contact_tick as f32 + config.send_interval_ticks as f32) * 1000.0 / config.sim_hz as f32
-                    + cs.rtt_ms * 0.5;
-                model.penalty(ArtifactClass::ContactTiming, f64::from(late_ms), f64::from(weight)) as f32
+            Some(newest)
+                if config.contacts
+                    && truth.contact_tick > newest.tick
+                    && (on_screen(truth.keyframe.position) || drawn_now.is_some_and(|(p, _)| on_screen(p))) =>
+            {
+                // What sending now saves: drawn this late, against one send
+                // later. A contact already long past gains nothing either way.
+                let ms_per_tick = 1000.0 / config.sim_hz as f32;
+                let late_now = (r - truth.contact_tick as f32) * ms_per_tick + cs.rtt_ms * 0.5;
+                let late_wait = late_now + config.send_interval_ticks as f32 * ms_per_tick;
+                let p = |ms: f32| model.penalty(ArtifactClass::ContactTiming, f64::from(ms), 1.0) as f32;
+                p(late_wait) - p(late_now)
             }
             _ => 0.0,
         };
-        if !required && error_px < config.tolerance_px && contact_gain <= 0.0 {
+        if !required && error_px < config.tolerance_px && contact_gain <= 0.0 && motion_gain <= 0.0 {
+            cs.over_since.remove(key);
             continue;
         }
+        let over_since = *cs.over_since.entry(*key).or_insert(tick);
         // The coarsest grid whose step stays under half the tolerance.
         let mut tier = 0u8;
         for t in (0..4u8).rev() {
@@ -1297,7 +1389,7 @@ fn send_for(
             // saturates (a body metres off scores like one a few pixels
             // off); the pop it will become does not.
             let correction = if config.correction_cost && error_px >= config.tolerance_px {
-                let step_px = if error_px / px_per_m > vibe_land_perplayer::client::SNAP_METRES {
+                let step_px = if error_px / error_px_per_m > vibe_land_perplayer::client::SNAP_METRES {
                     error_px
                 } else {
                     error_px / vibe_land_perplayer::client::CORRECTION_TICKS
@@ -1306,7 +1398,18 @@ fn send_for(
             } else {
                 0.0
             };
-            screen + correction + contact_gain
+            if config.age_priority {
+                // The penalty this error costs per second, accrued since it
+                // went over tolerance and for the send interval to come.
+                let mut per_s = model.penalty(ArtifactClass::ScreenError, f64::from(error_px), f64::from(weight)) as f32;
+                if motion_px >= config.tolerance_px {
+                    per_s += model.penalty(ArtifactClass::Pop, f64::from(motion_px), f64::from(weight)) as f32 * FRAMES_PER_SECOND;
+                }
+                let age_s = (tick - over_since.min(tick) + config.send_interval_ticks) as f32 / config.sim_hz as f32;
+                per_s * age_s + correction + contact_gain
+            } else {
+                screen + correction + contact_gain + motion_gain
+            }
         } else {
             f32::MAX
         };
@@ -1364,6 +1467,9 @@ fn send_for(
     }
     // What lost the ranking is looked at again next send (the best of it,
     // up to half the cap).
+    for r in &chosen {
+        cs.over_since.remove(&r.key);
+    }
     cs.hot.clear();
     if slices > 1 {
         let sent: HashSet<BodyKey> = chosen.iter().map(|r| r.key).collect();
@@ -1414,4 +1520,241 @@ fn send_for(
     }
     cs.sends_since_datagram = 0;
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Camera;
+
+    fn keyframe(tick: u32, position: Vec3, velocity: Vec3, mode: Mode) -> Keyframe {
+        Keyframe {
+            tick,
+            position,
+            rotation: Quat::IDENTITY,
+            linear_velocity: velocity,
+            angular_velocity: Vec3::ZERO,
+            mode,
+            decel: 0.0,
+            floor_drop: None,
+        }
+    }
+
+    /// Two bodies drawn metres from where they rest, past where the
+    /// screen-error penalty saturates. One is drawn still, 8 m off; the
+    /// other 4 m off but drawn sliding at 50 m/s, so every frame it stays
+    /// unsent its displayed step disagrees with the truth's by tens of
+    /// pixels: a pop each frame (V2), which the scorer counts. With room for
+    /// one record, the sliding one is sent: its error alone ranks lower. (Adversarial round 3: a piece drawn sliding along the
+    /// ground for 3 s, 70 m off, lost the ranking to bodies drawn still.)
+    #[test]
+    fn a_body_drawn_moving_wrongly_outranks_one_drawn_still_wrong() {
+        let config = PerPlayerConfig { tolerance_px: 2.0, eval_cap: 0, event_copies: 0, motion_cost: true, ..PerPlayerConfig::validated(60) };
+        let physics = Physics::at_hz(60, config.gravity_y);
+        let model = PerceptualModel::literature();
+        let camera = Camera { eye: Vec3::new(0.0, 1.6, 0.0), direction: Vec3::new(0.0, 0.0, -1.0), fov_degrees: 80.0 };
+        let tick = 600;
+        let still = BodyKey { structure: 1, body: 9 };
+        let sliding = BodyKey { structure: 1, body: 10 };
+        let rest_still = Vec3::new(-6.0, 0.5, -30.0);
+        let rest_sliding = Vec3::new(6.0, 0.5, -30.0);
+        let off = Vec3::new(0.0, 0.0, 4.0);
+        let off_still = Vec3::new(0.0, 0.0, 8.0);
+        let mut truths: FxHashMap<BodyKey, Truth> = FxHashMap::default();
+        for (key, rest) in [(still, rest_still), (sliding, rest_sliding)] {
+            truths.insert(key, Truth { keyframe: keyframe(tick, rest, Vec3::ZERO, Mode::Resting), radius: 0.5, settled: false, contact_tick: 0, born: 0 });
+        }
+        let mut cs = ClientState { rtt_ms: 60.0, ..Default::default() };
+        let mut drawn_still = BodyTrack::default();
+        drawn_still.restart(keyframe(tick - 120, rest_still + off_still, Vec3::ZERO, Mode::Resting));
+        cs.believed.insert(still, drawn_still);
+        // Drawn 4 m off now too, sliding away at 50 m/s.
+        let v = Vec3::new(0.0, 0.0, 50.0);
+        let mut drawn_sliding = BodyTrack::default();
+        drawn_sliding.restart(keyframe(tick - 120, rest_sliding + off - v * 2.0, v, Mode::Sliding));
+        cs.believed.insert(sliding, drawn_sliding);
+        // Room for one record, not two (the finest grid is the largest).
+        let record = record_bytes(&KeyframeRecord::absolute(sliding, 0, truths[&sliding].keyframe), physics);
+        let one_record = DATAGRAM_HEADER + record + record / 2;
+        let order: Vec<BodyKey> = vec![still, sliding];
+        let mut stats = PerPlayerStats::default();
+        send_for(
+            config,
+            physics,
+            &truths,
+            &order,
+            &[],
+            &model,
+            &mut cs,
+            &ClientView { camera },
+            tick,
+            Some(SendBudget::Limited { allowance_bytes: one_record, sends: 1 }),
+            &mut stats,
+        );
+        let newest = |key: BodyKey| cs.believed[&key].newest().map(|k| k.tick);
+        assert_eq!(stats.keyframes_sent, 1, "room for one record");
+        assert_eq!(newest(sliding), Some(tick), "the body drawn sliding wrongly is the one sent");
+        assert_eq!(newest(still), Some(tick - 120));
+    }
+}
+
+#[cfg(test)]
+mod drawn_near_tests {
+    use super::*;
+    use crate::types::Camera;
+
+    fn still(tick: u32, position: Vec3) -> Keyframe {
+        Keyframe {
+            tick,
+            position,
+            rotation: Quat::IDENTITY,
+            linear_velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
+            mode: Mode::Resting,
+            decel: 0.0,
+            floor_drop: None,
+        }
+    }
+
+    /// An error is seen where it is drawn. One body truly lies 90 m behind
+    /// the camera but is drawn 6 m in front of it (it slid there on a stale
+    /// keyframe); another lies 30 m ahead and is drawn 3 m from there. Judged
+    /// by the truth's position alone, the first is behind the player (half
+    /// weight) and far (few pixels per metre). On the client's screen it is
+    /// in view and near, the larger error by far: the scorer sees the drawn
+    /// box. With room for one record, it is the one sent. (Adversarial round
+    /// 3: pieces drawn sliding past a player who had turned, their truth
+    /// behind them, went unsent for 3 s.)
+    #[test]
+    fn an_error_drawn_in_view_counts_where_it_is_drawn() {
+        let config = PerPlayerConfig { tolerance_px: 2.0, eval_cap: 0, event_copies: 0, drawn_view: true, ..PerPlayerConfig::validated(60) };
+        let physics = Physics::at_hz(60, config.gravity_y);
+        let model = PerceptualModel::literature();
+        let eye = Vec3::new(0.0, 1.6, 0.0);
+        let camera = Camera { eye, direction: Vec3::new(0.0, 0.0, -1.0), fov_degrees: 80.0 };
+        let tick = 600;
+        let mid = BodyKey { structure: 1, body: 9 };
+        let near_drawn = BodyKey { structure: 1, body: 10 };
+        let mut truths: FxHashMap<BodyKey, Truth> = FxHashMap::default();
+        let mid_truth = Vec3::new(-2.0, 0.5, -30.0);
+        let far_truth = Vec3::new(2.0, 0.5, 90.0);
+        for (key, at) in [(mid, mid_truth), (near_drawn, far_truth)] {
+            truths.insert(key, Truth { keyframe: still(tick, at), radius: 0.5, settled: false, contact_tick: 0, born: 0 });
+        }
+        let mut cs = ClientState { rtt_ms: 60.0, ..Default::default() };
+        let mut drawn_mid = BodyTrack::default();
+        drawn_mid.restart(still(tick - 120, mid_truth + Vec3::new(-3.0, 0.0, 0.0)));
+        cs.believed.insert(mid, drawn_mid);
+        let mut drawn_near = BodyTrack::default();
+        drawn_near.restart(still(tick - 120, Vec3::new(1.5, 0.5, -6.0)));
+        cs.believed.insert(near_drawn, drawn_near);
+        let record = record_bytes(&KeyframeRecord::absolute(mid, 0, truths[&mid].keyframe), physics);
+        let mut stats = PerPlayerStats::default();
+        send_for(
+            config,
+            physics,
+            &truths,
+            &[mid, near_drawn],
+            &[],
+            &model,
+            &mut cs,
+            &ClientView { camera },
+            tick,
+            Some(SendBudget::Limited { allowance_bytes: DATAGRAM_HEADER + record + record / 2, sends: 1 }),
+            &mut stats,
+        );
+        let newest = |key: BodyKey| cs.believed[&key].newest().map(|k| k.tick);
+        assert_eq!(stats.keyframes_sent, 1, "room for one record");
+        assert_eq!(newest(near_drawn), Some(tick), "the error drawn near the eye is the one sent");
+        assert_eq!(newest(mid), Some(tick - 120));
+    }
+}
+
+#[cfg(test)]
+mod age_tests {
+    use super::*;
+    use crate::types::Camera;
+
+    fn still(tick: u32, position: Vec3) -> Keyframe {
+        Keyframe {
+            tick,
+            position,
+            rotation: Quat::IDENTITY,
+            linear_velocity: Vec3::ZERO,
+            angular_velocity: Vec3::ZERO,
+            mode: Mode::Resting,
+            decel: 0.0,
+            floor_drop: None,
+        }
+    }
+
+    /// A body drawn moving wrongly costs the player a pop every frame (V2)
+    /// for as long as it is left: the scorer's heaviest steady charge. Each
+    /// send has room for one record, and a fresh error appears every send,
+    /// larger on screen than the old one's offset. The old body is drawn
+    /// sliding at 10 m/s on a stale keyframe while it truly rests; its record
+    /// (a sliding keyframe) costs more bytes. Ranked by one send's worth of
+    /// saturated penalty it loses every send. With the priority accumulator
+    /// it is sent within a tenth of a second. (Adversarial round 3: a piece
+    /// drawn sliding past a player for 3 s, 86 pops.)
+    #[test]
+    fn a_body_drawn_moving_wrongly_is_sent_within_a_tenth_of_a_second() {
+        let config = PerPlayerConfig { tolerance_px: 2.0, eval_cap: 0, event_copies: 0, age_priority: true, ..PerPlayerConfig::validated(60) };
+        let physics = Physics::at_hz(60, config.gravity_y);
+        let model = PerceptualModel::literature();
+        let camera = Camera { eye: Vec3::new(0.0, 1.6, 0.0), direction: Vec3::new(0.0, 0.0, -1.0), fov_degrees: 80.0 };
+        let old = BodyKey { structure: 1, body: 1 };
+        let start = 600u32;
+        let mut truths: FxHashMap<BodyKey, Truth> = FxHashMap::default();
+        let mut cs = ClientState { rtt_ms: 60.0, ..Default::default() };
+        let old_at = Vec3::new(0.0, 0.5, -15.0);
+        truths.insert(old, Truth { keyframe: still(start, old_at), radius: 0.5, settled: false, contact_tick: 0, born: 0 });
+        let mut drawn = BodyTrack::default();
+        // Drawn half a metre off now, sliding sideways at 10 m/s.
+        let v = Vec3::new(10.0, 0.0, 0.0);
+        let mut slide = still(start - 60, old_at + Vec3::new(0.5, 0.0, 0.0) - v * 1.0);
+        slide.linear_velocity = v;
+        slide.mode = Mode::Sliding;
+        drawn.restart(slide);
+        cs.believed.insert(old, drawn);
+        let record = record_bytes(&KeyframeRecord::absolute(old, 0, truths[&old].keyframe), physics);
+        let mut sent_at = None;
+        for i in 0..60u32 {
+            let tick = start + i;
+            // The truth rests where the old body is drawn sliding past.
+            // A fresh error: drawn 3 m off, 20 m away (larger on screen).
+            let fresh = BodyKey { structure: 2, body: i };
+            let at = Vec3::new(-4.0 + 0.1 * i as f32, 0.5, -20.0);
+            truths.insert(fresh, Truth { keyframe: still(tick, at), radius: 0.5, settled: false, contact_tick: 0, born: 0 });
+            let mut track = BodyTrack::default();
+            track.restart(still(tick - 30, at + Vec3::new(3.0, 0.0, 0.0)));
+            cs.believed.insert(fresh, track);
+            for t in truths.values_mut() {
+                t.keyframe.tick = tick;
+            }
+            let order: Vec<BodyKey> = truths.keys().copied().collect();
+            let mut stats = PerPlayerStats::default();
+            send_for(
+                config,
+                physics,
+                &truths,
+                &order,
+                &[],
+                &model,
+                &mut cs,
+                &ClientView { camera },
+                tick,
+                Some(SendBudget::Limited { allowance_bytes: DATAGRAM_HEADER + record + record / 2, sends: 1 }),
+                &mut stats,
+            );
+            if cs.believed[&old].newest().is_some_and(|k| k.tick >= start) {
+                sent_at = Some(i);
+                break;
+            }
+            // Whatever was sent is now right: drop it from the contest.
+            truths.retain(|k, _| cs.believed[k].newest().is_some_and(|n| n.tick < tick) || *k == old);
+        }
+        let sent_at = sent_at.expect("the old error is never sent");
+        assert!(sent_at < 6, "sent after {sent_at} sends");
+    }
 }
