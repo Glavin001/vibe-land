@@ -24,6 +24,27 @@
 - **The fix.** `CUMETAL_COOPERATIVE_RESIDENT_GRID=0` in `sim-native` `apply_app_defaults`: each cooperative launch is one threadgroup, which waits only on itself. `scripts/verify/lint-harness.sh` requires it. No watchdog or kill switch in the app.
 - **Confirmed (2026-10-09).** `scripts/verify/native-soak.sh` (Vibe Town, high profile, garage-clean on CuMetal 8943f10): 121 s, WindowServer worst 77.7 ms, GPU memory 11 GB in 2,278 allocations after a 20 s load ramp, flat to the end.
 
+## Recurred (2026-10-10): a hang the cooperative-grid fix does not explain
+
+- **What happened.** Two owner launches of Vibe Town hung WindowServer and logged the owner out. One ran on `garage-clean@b3af5a772`, the other on `garage-clean@95cf7c300.1`, the SDK that passed the soak. Both hung about 15–18 s after launch, about 1 s after the first frames. Reports: `WindowServer_2026-10-10-030839`, `WindowServer_2026-10-10-032148`.
+- **The stackshot (second report).**
+  - The app's main thread is in Dawn `Queue::SubmitPendingCommandBuffer` → `PrepareNextCommandBuffer`, blocked in IOGPU because the queue is full.
+  - The kernel is in `IOGPUFamily` `CommandQueueDispatch`.
+  - The sim thread is in `NpScene::fetchResults` → `PxSyncImpl::wait`.
+  - Together these mean a GPU compute kernel did not complete.
+- **Ruled out:**
+  - cooperative grids: the app runs with resident grids off;
+  - waits on the CPU side;
+  - memory pressure: 128 GB, 94% free;
+  - the zero-iteration convergence fix: the older SDK hangs too;
+  - large or heavy-on-light components: Vibe Town has none above 8,192 chunks, and its largest mass ratio is 5e3.
+- **What differed from the soak:** background CPU load, from another session's FP64 oracle runs and OrbStack. The soak ran on an idle machine.
+- **Diagnostic SDK** `garage-diag@af81bb521`, PhysX branch `fix/bounded-root-walk`:
+  - The three union-find root walks (`PxgDestructionTopology.cu`, `NvBlastExtStressGpuTopology.cuh`, `PxgPreSolveIslands.cuh`) assert that labels only point downward. On a violation they `__trap()` instead of looping.
+  - CuMetal (`diag/submit-trace`) prints `CUMETAL_SUBMIT` with each command buffer's kernels when it is committed. The last `SUBMIT` without a matching `CUMETAL_COMMIT` names the kernel that never finished.
+  - Results: destruction gate 116/116; quick tier 0 failing; answer drift 287 identical.
+- **Open.** The root cause is not found. A reproduction needs the owner's consent, because every hang so far has logged them out. Never relaunch after an unexplained quit; read `/Library/Logs/DiagnosticReports` first.
+
 ## Superseded: the app no longer runs a GPU keep-alive (kept off, but not the root cause)
 
 - **Cause.** CuMetal's GPU keep-alive, which the bridge turns on for the headless server (`physx_bridge.cc`): a 250 µs heartbeat (`CUMETAL_GPU_KEEPALIVE_US`) and a busy threadgroup (`CUMETAL_GPU_KEEPALIVE_BUSY`). It keeps the GPU from idling between ticks. In a desktop app that shares the GPU with WindowServer, it hung WindowServer 52–68 s after launch, at rest.
