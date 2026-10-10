@@ -558,6 +558,15 @@ impl Client {
     }
 
     /// The newest datagram ordinal and the 64 before it, as an ack.
+    /// The first events sequence not yet received (applied or pending).
+    pub fn events_through(&self) -> u32 {
+        let mut seq = self.next_seq;
+        while self.pending.contains_key(&seq) {
+            seq += 1;
+        }
+        seq
+    }
+
     pub fn ack(&mut self) -> Option<(u32, u64)> {
         let newest = *self.received.iter().max()?;
         let mut mask = 0u64;

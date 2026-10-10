@@ -770,20 +770,29 @@ pub fn decode_bootstrap(bytes: &[u8]) -> Result<Bootstrap, Truncated> {
 
 // ── acks ────────────────────────────────────────────────────────────────────
 
-pub fn encode_ack(newest: u32, mask: u64) -> Vec<u8> {
+/// The upstream ack: the newest keyframe-datagram ordinal and a mask of the
+/// 64 before it, then (optional, appended later) the first events sequence
+/// the client has not received -- the application-level event ack, which
+/// lets the server tell an event that landed late.
+pub fn encode_ack(newest: u32, mask: u64, events_through: Option<u32>) -> Vec<u8> {
     let mut w = Writer::default();
     w.u8(PKT_PP_ACK);
     w.u32(newest);
     w.u64(mask);
+    if let Some(through) = events_through {
+        w.u32(through);
+    }
     w.out
 }
 
-pub fn decode_ack(bytes: &[u8]) -> Result<(u32, u64), Truncated> {
+pub fn decode_ack(bytes: &[u8]) -> Result<(u32, u64, Option<u32>), Truncated> {
     let mut r = Reader::new(bytes);
     if r.u8()? != PKT_PP_ACK {
         return Err(Truncated);
     }
-    Ok((r.u32()?, r.u64()?))
+    let (newest, mask) = (r.u32()?, r.u64()?);
+    let events_through = if bytes.len() >= 17 { Some(r.u32()?) } else { None };
+    Ok((newest, mask, events_through))
 }
 
 #[cfg(test)]
@@ -890,7 +899,8 @@ mod tests {
         assert_eq!(seq, 9);
         assert_eq!(back[0], Event::Fracture { tick: 50, structure: 3, broken_bonds: vec![12, 13, 400, 900], removed_chunks: vec![7] });
         assert_eq!(back[2..], events[2..]);
-        assert_eq!(decode_ack(&encode_ack(5, 0b1011)).unwrap(), (5, 0b1011));
+        assert_eq!(decode_ack(&encode_ack(5, 0b1011, None)).unwrap(), (5, 0b1011, None));
+        assert_eq!(decode_ack(&encode_ack(5, 0b1011, Some(42))).unwrap(), (5, 0b1011, Some(42)));
     }
 
     #[test]

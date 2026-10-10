@@ -1671,9 +1671,12 @@ impl CityRuntime {
     }
 
     /// Wire 4: a client's datagram acks (`PKT_PP_ACK`).
-    pub fn per_player_ack(&mut self, client: u64, newest: u32, mask: u64) {
+    pub fn per_player_ack(&mut self, client: u64, newest: u32, mask: u64, events_through: Option<u32>) {
         if let Some(pp) = self.per_player.as_mut() {
             pp.strategy.on_feedback(client, ClientFeedback::DatagramAcks { newest, mask });
+            if let Some(through) = events_through {
+                pp.strategy.on_feedback(client, ClientFeedback::EventsReceived { through });
+            }
         }
     }
 
@@ -3360,7 +3363,7 @@ mod tests {
                     client.ingest(&packet.bytes, ms(tick));
                 }
                 if let Some((newest, mask)) = client.ack() {
-                    city.per_player_ack(client_id, newest, mask);
+                    city.per_player_ack(client_id, newest, mask, Some(client.events_through()));
                 }
             }
             client.advance(ms(tick));

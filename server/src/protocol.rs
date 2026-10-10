@@ -48,6 +48,9 @@ pub enum ClientPacket {
     CityPerPlayerAck {
         newest: u32,
         mask: u64,
+        /// The first events sequence the client has not received (newer
+        /// clients append it).
+        events_through: Option<u32>,
     },
     /// The client could not fetch the manifest over HTTP; send it down the
     /// session instead. Only this asks for it -- see `PKT_CITY_MANIFEST`.
@@ -99,6 +102,9 @@ pub enum ClientDatagram {
     CityPerPlayerAck {
         newest: u32,
         mask: u64,
+        /// The first events sequence the client has not received (newer
+        /// clients append it).
+        events_through: Option<u32>,
     },
 }
 
@@ -439,9 +445,9 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
             }
         }
         vibe_land_perplayer::wire::PKT_PP_ACK => {
-            let (newest, mask) = vibe_land_perplayer::wire::decode_ack(bytes)
+            let (newest, mask, events_through) = vibe_land_perplayer::wire::decode_ack(bytes)
                 .map_err(|_| anyhow::anyhow!("short city per-player ack datagram"))?;
-            ClientDatagram::CityPerPlayerAck { newest, mask }
+            ClientDatagram::CityPerPlayerAck { newest, mask, events_through }
         }
         PKT_CITY_NACK => {
             ensure!(buf.remaining() >= 2, "short city nack datagram");
@@ -487,8 +493,8 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
             physics_ms,
         },
         ClientDatagram::CityNack { bodies } => ClientPacket::CityNack { bodies },
-        ClientDatagram::CityPerPlayerAck { newest, mask } => {
-            ClientPacket::CityPerPlayerAck { newest, mask }
+        ClientDatagram::CityPerPlayerAck { newest, mask, events_through } => {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through }
         }
         ClientDatagram::CityResyncRequest {
             last_topo_seq,
@@ -899,9 +905,9 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
         }
         PKT_CITY_MANIFEST_REQUEST => ClientPacket::CityManifestRequest,
         vibe_land_perplayer::wire::PKT_PP_ACK => {
-            let (newest, mask) = vibe_land_perplayer::wire::decode_ack(bytes)
+            let (newest, mask, events_through) = vibe_land_perplayer::wire::decode_ack(bytes)
                 .map_err(|_| anyhow::anyhow!("short city per-player ack packet"))?;
-            ClientPacket::CityPerPlayerAck { newest, mask }
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through }
         }
         PKT_CITY_NACK => {
             ensure!(buf.remaining() >= 2, "short city nack packet");
@@ -1141,18 +1147,18 @@ mod tests {
     /// layout: u8 135, u32 newest LE, u64 mask LE.
     #[test]
     fn per_player_ack_decodes_on_both_paths() {
-        let bytes = vibe_land_perplayer::wire::encode_ack(0x0102_0304, 0x8000_0000_0000_0005);
+        let bytes = vibe_land_perplayer::wire::encode_ack(0x0102_0304, 0x8000_0000_0000_0005, None);
         assert_eq!(bytes.len(), 13);
         assert_eq!(bytes[0], 135);
         match decode_client_packet(&bytes).expect("ack packet") {
-            ClientPacket::CityPerPlayerAck { newest, mask } => {
-                assert_eq!((newest, mask), (0x0102_0304, 0x8000_0000_0000_0005));
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through } => {
+                assert_eq!((newest, mask, events_through), (0x0102_0304, 0x8000_0000_0000_0005, None));
             }
             other => panic!("wrong packet: {other:?}"),
         }
         match client_datagram_to_packet(decode_client_datagram(&bytes).expect("ack datagram")) {
-            ClientPacket::CityPerPlayerAck { newest, mask } => {
-                assert_eq!((newest, mask), (0x0102_0304, 0x8000_0000_0000_0005));
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through } => {
+                assert_eq!((newest, mask, events_through), (0x0102_0304, 0x8000_0000_0000_0005, None));
             }
             other => panic!("wrong packet: {other:?}"),
         }

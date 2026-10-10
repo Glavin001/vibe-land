@@ -239,6 +239,12 @@ struct LabClient {
     /// Feedback on its way up: (arrival at the server, feedback).
     inflight: VecDeque<(f64, ClientFeedback)>,
     stats: ClientStream,
+    /// Per-player events packets by sequence: where each copy went (lane,
+    /// downlink index); bootstraps and the sequence they resume at; and the
+    /// first sequence the client has not yet received (the event ack).
+    event_packets: BTreeMap<u32, Vec<(Lane, usize)>>,
+    bootstraps: Vec<(usize, u32)>,
+    events_through: u32,
 }
 
 impl LabClient {
@@ -255,7 +261,33 @@ impl LabClient {
             next_ack_ms: ORIGIN_MS,
             inflight: VecDeque::new(),
             stats: ClientStream::default(),
+            event_packets: BTreeMap::new(),
+            bootstraps: Vec::new(),
+            events_through: 0,
         }
+    }
+
+    /// The first events sequence this client has not received by `at`
+    /// (copies on datagrams count; the stream counts in order; a bootstrap
+    /// stands for every sequence before the one it resumes at).
+    fn events_received_through(&mut self, at: f64) -> u32 {
+        for &(index, next) in &self.bootstraps {
+            if next > self.events_through && self.down.stream_arrived(index, at) {
+                self.events_through = next;
+            }
+        }
+        loop {
+            let Some(copies) = self.event_packets.get(&self.events_through) else { break };
+            let arrived = copies.iter().any(|&(lane, index)| match lane {
+                Lane::Datagram => self.down.datagram_arrival(index).is_some_and(|t| t <= at),
+                Lane::Reliable => self.down.stream_arrived(index, at),
+            });
+            if !arrived {
+                break;
+            }
+            self.events_through += 1;
+        }
+        self.events_through
     }
 
     fn queue(&mut self, at_ms: f64, lane: replication::Lane, bytes: Vec<u8>) {
@@ -272,6 +304,15 @@ impl LabClient {
         }
         if let Some(bucket) = self.bucket.as_mut() {
             bucket.spend(at_ms / 1000.0, bytes.len());
+        }
+        if kind == vibe_land_perplayer::wire::PKT_PP_EVENTS {
+            if let Ok((seq, _)) = vibe_land_perplayer::wire::decode_events(&bytes) {
+                self.event_packets.entry(seq).or_default().push((lane, index));
+            }
+        } else if kind == vibe_land_perplayer::wire::PKT_PP_BOOTSTRAP {
+            if let Ok(boot) = vibe_land_perplayer::wire::decode_bootstrap(&bytes) {
+                self.bootstraps.push((index, boot.next_event_seq));
+            }
         }
         self.queued.push(Queued { depart_ms: at_ms, lane, kind, bytes });
     }
@@ -331,6 +372,11 @@ impl LabClient {
             if let Some(arrive) = self.up.datagram_arrival(index) {
                 self.stats.acks_delivered += 1;
                 self.inflight.push_back((arrive, ClientFeedback::DatagramAcks { newest: newest as u32, mask }));
+                if !self.event_packets.is_empty() || !self.bootstraps.is_empty() {
+                    // The same ack carries the event ack (wire 4).
+                    let through = self.events_received_through(at);
+                    self.inflight.push_back((arrive, ClientFeedback::EventsReceived { through }));
+                }
             }
         }
     }

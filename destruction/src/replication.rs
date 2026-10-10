@@ -119,6 +119,9 @@ pub enum ClientFeedback {
     /// client has received; bit `i` of `mask` is set when `newest - 1 - i`
     /// was received too.
     DatagramAcks { newest: u32, mask: u64 },
+    /// Application-level event ack: `through` is the first events sequence
+    /// the client has not received (every earlier one it has).
+    EventsReceived { through: u32 },
 }
 
 /// One client's turn in a batched send (`ReplicationStrategy::client_sends`).

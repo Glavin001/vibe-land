@@ -10,4 +10,9 @@ describe('encodePerPlayerAck', () => {
       135, 0x04, 0x03, 0x02, 0x01, 0x05, 0, 0, 0, 0, 0, 0, 0x80,
     ]);
   });
+
+  // encode_ack(.., Some(42)): the event ack appended as a u32.
+  it('appends the event ack when given', () => {
+    expect(Array.from(encodePerPlayerAck(0x0102_0304, 0x0000_0005, 0x8000_0000, 42)).slice(13)).toEqual([42, 0, 0, 0]);
+  });
 });

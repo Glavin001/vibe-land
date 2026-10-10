@@ -157,10 +157,10 @@ export class PerPlayerCityClient extends CityClient {
     super.handlePacket(bytes);
   }
 
-  /** [newest ordinal, mask low, mask high] for the upstream ack, or null. */
+  /** [newest ordinal, mask low, mask high, events through] for the upstream ack, or null. */
   ack(): Uint32Array | null {
     const a = this.core.ack();
-    return a.length === 3 ? a : null;
+    return a.length >= 3 ? a : null;
   }
 
   override samplePresentation(nowMs: number): Set<number> {

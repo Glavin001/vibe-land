@@ -152,7 +152,7 @@ impl PerPlayerClient {
     /// [newest, mask low 32, mask high 32], or empty before any datagram.
     pub fn ack(&mut self) -> Vec<u32> {
         match self.inner.ack() {
-            Some((newest, mask)) => vec![newest, mask as u32, (mask >> 32) as u32],
+            Some((newest, mask)) => vec![newest, mask as u32, (mask >> 32) as u32, self.inner.events_through()],
             None => Vec::new(),
         }
     }

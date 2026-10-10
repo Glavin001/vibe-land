@@ -1138,11 +1138,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       }
       const ack = cityClient.ack();
       if (!ack) return;
-      const key = `${ack[0]}:${ack[1]}:${ack[2]}`;
+      const key = `${ack[0]}:${ack[1]}:${ack[2]}:${ack[3] ?? ''}`;
       // Nothing new since the last ack: the server already has it.
       if (key === last) return;
       last = key;
-      client.sendCityResync(encodePerPlayerAck(ack[0], ack[1], ack[2]));
+      client.sendCityResync(encodePerPlayerAck(ack[0], ack[1], ack[2], ack[3]));
     }, 33);
   }
 

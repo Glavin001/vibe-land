@@ -4507,9 +4507,9 @@ impl MatchState {
                             city.restate_bodies(&bodies);
                         }
                     }
-                    ClientPacket::CityPerPlayerAck { newest, mask } => {
+                    ClientPacket::CityPerPlayerAck { newest, mask, events_through } => {
                         if let Some(city) = self.city.as_mut() {
-                            city.per_player_ack(u64::from(player_id), newest, mask);
+                            city.per_player_ack(u64::from(player_id), newest, mask, events_through);
                         }
                     }
                     ClientPacket::CityManifestRequest => {

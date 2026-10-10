@@ -220,6 +220,8 @@ struct ClientState {
     /// Events packets still to be copied onto this client's datagram lane,
     /// and how many copies each has left (decision D6).
     event_copies: VecDeque<(Vec<u8>, u32)>,
+    /// Events packets not yet acked: (sequence, tick, bodies they change).
+    event_marks: VecDeque<(u32, u32, Vec<BodyKey>)>,
     /// Sends so far (the evaluation slice rotates on it).
     sends: u64,
     /// Bodies that were over tolerance last send and lost the ranking:
@@ -254,6 +256,8 @@ pub struct PerPlayerStats {
     pub allowance_offered: u64,
     pub allowance_used: u64,
     pub sends_out_of_candidates: u64,
+    /// Bodies re-sent because the client received their event late.
+    pub late_event_resends: u64,
 }
 
 impl PerPlayerStats {
@@ -276,7 +280,14 @@ impl PerPlayerStats {
     }
 }
 
+/// The client's ack cadence (30 Hz), ms.
+const ACK_INTERVAL_MS: f32 = 1000.0 / 30.0;
+/// Events packets remembered per client awaiting their ack.
+const EVENT_MARKS_MAX: usize = 1024;
+
 pub struct PerPlayer {
+    /// The newest tick ingested (feedback arrives between ticks).
+    now_tick: u32,
     /// Past the evaluation cap: the order sends slice the bodies in, its
     /// membership, and the bodies with a recent contact (`begin_send`).
     order: Vec<BodyKey>,
@@ -303,6 +314,30 @@ pub struct PerPlayer {
 impl PerPlayer {
     /// From the manifest and the ledger at the start (a capture's
     /// checkpoint, or the intact city).
+    /// The event ack: every events packet before `through` reached the
+    /// client. One it received after its drawing passed the events' tick
+    /// was applied late, and the server's model of that client (which
+    /// applied it on time) no longer holds for the bodies it changed: they
+    /// are sent again. Received is estimated as now less half the round
+    /// trip and half the ack interval.
+    fn events_received(&mut self, client: u64, through: u32) {
+        let (hz, delay) = (self.config.sim_hz.max(1) as f32, self.config.delay_ticks);
+        let now = self.now_tick as f32;
+        let Some(cs) = self.clients.get_mut(&client) else { return };
+        let received = now - (cs.rtt_ms * 0.5 + ACK_INTERVAL_MS * 0.5) / 1000.0 * hz;
+        while cs.event_marks.front().is_some_and(|(seq, _, _)| *seq < through) {
+            let (_, tick, keys) = cs.event_marks.pop_front().unwrap();
+            if received > tick as f32 + delay {
+                for key in keys {
+                    if self.truth.get(&key).is_some_and(|t| !t.settled) {
+                        cs.unsent.insert(key);
+                        self.stats.late_event_resends += 1;
+                    }
+                }
+            }
+        }
+    }
+
     /// The config a send runs with: the evaluation cap shared out of the
     /// per-send budget.
     fn effective_config(&self) -> PerPlayerConfig {
@@ -346,6 +381,7 @@ impl PerPlayer {
             ledger,
             serial_body: HashMap::new(),
             truth: FxHashMap::default(),
+            now_tick: 0,
             order: Vec::new(),
             in_order: FxHashSet::default(),
             recent_contacts: Vec::new(),
@@ -580,6 +616,10 @@ impl ReplicationStrategy for PerPlayer {
     fn ingest_tick(&mut self, tick: u32, active: &[BodySnapshotInput], output: &DestructionTickOutput) -> Vec<Outgoing> {
         self.tick = tick;
         let mut events: Vec<Event> = Vec::new();
+        // The bodies this tick's events change: re-sent to a client that
+        // received the events after its drawing had passed them.
+        let mut touched: Vec<BodyKey> = Vec::new();
+        self.now_tick = tick;
         for batch in &output.batches {
             self.ledger.apply_batch(batch);
             let structure = batch.structure_id;
@@ -688,6 +728,7 @@ impl ReplicationStrategy for PerPlayer {
                 // client simply does not have yet.
                 let born = if id == parent { tick } else { 0 };
                 self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0, born });
+                touched.push(key);
             }
             // Each client's model spawns the new bodies from its own drawing
             // of their parents just before the split: only the parents this
@@ -824,6 +865,7 @@ impl ReplicationStrategy for PerPlayer {
                 cs.believed.entry(key).or_default().settle(tick, q.position, q.rotation);
             }
             events.push(Event::Settle { tick, key, position, rotation });
+            touched.push(key);
         }
         for &(structure, serial) in &output.wakes {
             self.ledger.apply_wake(structure, serial);
@@ -838,6 +880,7 @@ impl ReplicationStrategy for PerPlayer {
                 }
             }
             events.push(Event::Wake { tick, key });
+            touched.push(key);
         }
         if tick % self.config.hash_interval_ticks.max(1) == 0 {
             for (&structure, state) in &self.states {
@@ -848,6 +891,16 @@ impl ReplicationStrategy for PerPlayer {
             return Vec::new();
         }
         let packet = encode_events(self.event_seq, &events);
+        if !touched.is_empty() {
+            for cs in self.clients.values_mut() {
+                cs.event_marks.push_back((self.event_seq, tick, touched.clone()));
+                // Bounded: a client that never acks events keeps no more
+                // than a few seconds of them.
+                while cs.event_marks.len() > EVENT_MARKS_MAX {
+                    cs.event_marks.pop_front();
+                }
+            }
+        }
         self.event_seq += 1;
         if self.config.event_copies > 0 && packet.len() <= self.config.max_datagram {
             for cs in self.clients.values_mut() {
@@ -958,7 +1011,13 @@ impl ReplicationStrategy for PerPlayer {
     }
 
     fn on_feedback(&mut self, client: u64, feedback: ClientFeedback) {
-        let ClientFeedback::DatagramAcks { newest, mask } = feedback;
+        let (newest, mask) = match feedback {
+            ClientFeedback::DatagramAcks { newest, mask } => (newest, mask),
+            ClientFeedback::EventsReceived { through } => {
+                self.events_received(client, through);
+                return;
+            }
+        };
         let Some(cs) = self.clients.get_mut(&client) else { return };
         let acked = |o: u32| o == newest || (o < newest && newest - o <= 64 && mask & (1 << (newest - o - 1)) != 0);
         // A datagram an ack does not name may still be in flight: links
