@@ -327,12 +327,19 @@ impl SceneExtent {
     pub fn of(manifest: &DestructionManifest) -> Self {
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
+        // Each chunk's world box, not its bounding sphere: the sphere's
+        // radius put the "ground" (min.y) metres below the real one, and a
+        // walker's eye at ground + 1.6 m underground.
         for structure in &manifest.structures {
             let origin = Vec3::from_array(structure.world_position);
+            let rotation = glam::Quat::from_array(structure.world_rotation);
+            let axes = glam::Mat3::from_quat(rotation);
+            let abs = glam::Mat3::from_cols(axes.x_axis.abs(), axes.y_axis.abs(), axes.z_axis.abs());
             for chunk in &structure.chunks {
-                let centre = origin + Vec3::from_array(chunk.centroid);
-                min = min.min(centre - chunk.radius);
-                max = max.max(centre + chunk.radius);
+                let centre = origin + rotation * Vec3::from_array(chunk.centroid);
+                let half = abs * (Vec3::from_array(chunk.size) * 0.5);
+                min = min.min(centre - half);
+                max = max.max(centre + half);
             }
         }
         if min.x > max.x {
@@ -525,5 +532,24 @@ mod tests {
             assert_eq!(x.camera, y.camera);
         }
         assert!(matches!(a[9].camera, CameraSpec::Orbit { .. }));
+    }
+
+    #[test]
+    fn walkers_stand_on_the_ground_not_under_it() {
+        // A floor slab: thin, wide, so its bounding sphere reaches metres
+        // below the ground it lies on (the city's first chunk, verbatim).
+        let manifest: DestructionManifest = serde_json::from_str(
+            r#"{"version":1,"structures":[{"structureId":1,"worldPosition":[0,0,0],"worldRotation":[0,0,0,1],"bonds":[],
+                "chunks":[{"nodeIndex":0,"centroid":[-6.75,0.32,-4.66667],"mass":0,"volume":12.6,"size":[4.5,0.6,4.66667],
+                "radius":3.2552924,"support":true,"geometry":{"kind":"cuboid","halfExtents":[2.25,0.3,2.33333]}}]}]}"#,
+        )
+        .expect("manifest");
+        let extent = SceneExtent::of(&manifest);
+        assert!((extent.min.y - 0.02).abs() < 1e-4, "{:?}", extent.min);
+        for client in build_client_set(8, &PlayerTracks::default(), &manifest, &[], 3) {
+            if let CameraSpec::Walker { height, .. } = client.camera {
+                assert!((height - (0.02 + EYE_HEIGHT_M)).abs() < 1e-4, "{height}");
+            }
+        }
     }
 }
