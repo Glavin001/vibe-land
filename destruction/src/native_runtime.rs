@@ -126,6 +126,20 @@ pub fn stress_force_tolerance() -> f32 {
         .unwrap_or(0.0)
 }
 
+/// Whether a corrected pass keeps the contact pairs of bodies the split left
+/// unchanged (PxDestructionStressDesc::preserveUnchangedContactPairs), instead
+/// of re-narrowphasing every active pair as the stage's reference path does.
+/// An optimisation, so it must give the reference's answer; the textbook case
+/// pair-reuse checks that. It did not for a source re-installed as a free
+/// body until PhysX fix/fragment-wake, and still does not on a 12 x 12 wall
+/// struck by a ball (2026-10-10: the ball's tangential velocity -2.58 m/s
+/// against the reference's -0.73 and the rolling condition's -0.70). On by
+/// default (the runtime profile is unchanged); VIBE_NATIVE_PRESERVE_CONTACT_PAIRS=0
+/// is the reference (the high-fidelity profile).
+pub fn preserve_contact_pairs() -> bool {
+    std::env::var("VIBE_NATIVE_PRESERVE_CONTACT_PAIRS").map_or(true, |v| v != "0")
+}
+
 /// Contact-pair storage touched up front.
 ///
 /// Sized from the scene rather than fixed: the first impact on a city that has
@@ -589,7 +603,7 @@ impl NativeCityDestruction {
                 bend_gain_max: 3.0,
                 fibre_bending: true,
                 reserved_contact_pairs: reserved_contact_pairs(chunk_total),
-                preserve_unchanged_contact_pairs: true,
+                preserve_unchanged_contact_pairs: preserve_contact_pairs(),
                 gpu_island_repair: true,
                 verdict_sample_ticks: verdict_sample_ticks(),
             })

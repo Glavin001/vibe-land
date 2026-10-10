@@ -104,7 +104,7 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
         }
         tier == Tier::Quick || want == Tier::Full
     };
-    let wanted = |name: &str| wanted_tier(name, if ["impact-momentum", "split-momentum", "contact-load-stack", "impact-plate-punch", "impact-restitution", "crush-locality", "impact-energy"].contains(&name) { Tier::Quick } else { Tier::Full });
+    let wanted = |name: &str| wanted_tier(name, if ["impact-momentum", "split-momentum", "contact-load-stack", "impact-plate-punch", "impact-restitution", "crush-locality", "impact-energy", "pair-reuse"].contains(&name) { Tier::Quick } else { Tier::Full });
     if std::env::var("VERIFY_MODEL_ONLY").is_ok_and(|v| v == "1") {
         return;
     }
@@ -113,6 +113,9 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
     }
     if wanted("impact-plate-punch") {
         super::guard(config, "plate-punch", expected, out, |out| plate_punch(config, expected, out));
+    }
+    if wanted("pair-reuse") {
+        super::guard(config, "pair-reuse", expected, out, |out| pair_reuse(config, expected, out));
     }
     if wanted("impact-restitution") {
         super::guard(config, "restitution-cases", expected, out, |out| restitution_cases(config, expected, out));
@@ -333,6 +336,21 @@ fn split_momentum(config: Config, expected: &[Expectation], out: &mut Output) {
     row(config, "split-momentum", "angular momentum about the centre of mass", "sum (I w + m (r - c) x v)_y conserved", source, "N m s", l0, l0, l1, l0.abs().max(1e-9), expected, out);
 }
 
+/// A plug of mass `mp` (0.1 x 0.5 x 0.5 m) held in a fixed frame by four
+/// joints of strength `limit` on its edges.
+fn plate(limit: f64, mp: f64) -> Structure {
+    let mut s = Structure::new();
+    let joint = s.material(Material { modulus: E_CONCRETE, compression: limit, tension: limit, shear: limit });
+    let plug = s.chunk("plug", [0.0, 0.0, 0.0], [0.05, 0.25, 0.25], mp);
+    for (dir, axis) in [([0.0, 1.0, 0.0], Z), ([0.0, -1.0, 0.0], Z), ([0.0, 0.0, 1.0], Y), ([0.0, 0.0, -1.0], Y)] {
+        let c = [0.0, dir[1] * 0.5, dir[2] * 0.5];
+        let anchor = s.chunk("frame", c, [0.05, 0.25, 0.25], 0.0);
+        let face = [0.0, dir[1] * 0.25, dir[2] * 0.25];
+        s.rect_bond(plug, anchor, face, dir, X, 0.1, axis, 0.5, joint);
+    }
+    s
+}
+
 /// A 60 kg ball at 6 m/s into a 60 kg plug held in a frame by four brittle
 /// joints (limits 40 kPa, capacity F = 4 x 40 kPa x 0.05 m^2 = 8 kN). If the
 /// joints break, the ball and the freed plug collide as free bodies: the
@@ -343,17 +361,8 @@ fn plate_punch(config: Config, expected: &[Expectation], out: &mut Output) {
     let source = "[Hibbeler Dynamics] 15.4 with a capacity-bounded joint impulse: v' in [v_free - F dt/(m+m_p), v_free]";
     println!("\nimpact-plate-punch -- a ball punches a plug out of a framed plate\n  {source}");
     let limit = 40e3;
-    let mut s = Structure::new();
-    let joint = s.material(Material { modulus: E_CONCRETE, compression: limit, tension: limit, shear: limit });
     let mp = 60.0;
-    let plug = s.chunk("plug", [0.0, 0.0, 0.0], [0.05, 0.25, 0.25], mp);
-    let mut bonds = Vec::new();
-    for (dir, axis) in [([0.0, 1.0, 0.0], Z), ([0.0, -1.0, 0.0], Z), ([0.0, 0.0, 1.0], Y), ([0.0, 0.0, -1.0], Y)] {
-        let c = [0.0, dir[1] * 0.5, dir[2] * 0.5];
-        let anchor = s.chunk("frame", c, [0.05, 0.25, 0.25], 0.0);
-        let face = [0.0, dir[1] * 0.25, dir[2] * 0.25];
-        bonds.push(s.rect_bond(plug, anchor, face, dir, X, 0.1, axis, 0.5, joint));
-    }
+    let s = plate(limit, mp);
     let mut world = stage::build(&s);
     // 6 m/s: 0.1 m a tick, under the ball's radius (no tunnelling without CCD).
     let (m, v) = (60.0, 6.0);
@@ -387,9 +396,83 @@ fn plate_punch(config: Config, expected: &[Expectation], out: &mut Output) {
     row(config, "impact-plate-punch", "exit speed within the joints' capacity bound (no bounce, not free)", "v_free - F dt/(m+m_p) <= v' <= v_free", source, "1=yes", 1.0, f64::NAN, yes(within), 1.0, expected, out);
 }
 
+/// Keeping unchanged contact pairs across a corrected pass
+/// (PxDestructionStressDesc::preserveUnchangedContactPairs, the game's
+/// setting) is an optimisation of the stage's reference path, which
+/// re-narrowphases every pair: it must not change the answer. Three split
+/// impacts, each run both ways: the same bonds must break on the same ticks,
+/// and the ball must move the same. Until 2026-10-10 a split that re-installed
+/// a kinematic source as a free body kept its pairs classified as kinematic:
+/// the freed plug had no mass in the solve and the ball rebounded at -1.1 m/s
+/// where the reference gives +2.2 (PhysX fix/fragment-wake, ScPipeline).
+fn pair_reuse(config: Config, expected: &[Expectation], out: &mut Output) {
+    let source = "PxDestructionStressDesc::preserveUnchangedContactPairs is an optimisation of the reference path (false): the same answer";
+    println!("\npair-reuse -- a corrected pass that keeps unchanged contact pairs answers as the reference path\n  {source}");
+    // (structure, ball position, radius, mass, velocity, ticks)
+    let wall = {
+        let mut s = super::determinism::wall(12);
+        s.materials[0] = Material { modulus: 10e9, compression: 1e13, tension: 1e6, shear: 1e6 };
+        s
+    };
+    let hung = {
+        let mut s = Structure::new();
+        let m = s.material(Material { modulus: E_CONCRETE, compression: 1e13, tension: 1e13, shear: 25e3 });
+        let c = s.chunk("slab", [0.0, 0.0, 0.0], [0.5, 0.1, 0.5], CONCRETE * 0.2);
+        for side in [-1.0, 1.0] {
+            let anchor = s.chunk("anchor", [side * (0.5 + PLATE), 0.0, 0.0], [PLATE, 0.1, 0.5], 0.0);
+            s.rect_bond(anchor, c, [side * 0.5, 0.0, 0.0], [-side, 0.0, 0.0], Y, 0.2, Z, 1.0, m);
+        }
+        s
+    };
+    let scenes: [(&str, Structure, V3, f64, f64, V3, u32); 3] = [
+        ("plate punch", plate(40e3, 60.0), [-0.5, 20.0, 0.0], 0.1, 60.0, [6.0, 0.0, 0.0], 30),
+        ("hung slab", hung, [0.0, 20.4, 0.0], 0.1, 100.0, [0.0, -6.0, 0.0], 30),
+        ("12 x 12 wall", wall, [2.75, 23.0, -2.0], 0.3, 200.0, [0.0, 0.0, 15.0], 60),
+    ];
+    for (label, s, at, radius, mass, v, ticks) in scenes {
+        let run = |preserve: bool| {
+            let mut world = stage::build_with(&s, preserve);
+            ball(&mut world, 9500, at, radius, mass, v);
+            let mut breaks: Vec<(u32, Vec<u32>)> = Vec::new();
+            let mut velocity: Vec<V3> = Vec::new();
+            stage::run_ticks(&mut world, ticks, |t, _, broken, w| {
+                if !broken.is_empty() {
+                    let mut b = broken.to_vec();
+                    b.sort_unstable();
+                    breaks.push((t, b));
+                }
+                velocity.push(plain_velocity(w, 9500).unwrap_or([f64::NAN; 3]));
+                false
+            });
+            (breaks, velocity)
+        };
+        let (kept_breaks, kept_v) = run(true);
+        let (ref_breaks, ref_v) = run(false);
+        let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let worst = kept_v.iter().zip(&ref_v)
+            .map(|(a, b)| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt())
+            .fold(0.0f64, |m, d| if d.is_nan() { f64::INFINITY } else { m.max(d) });
+        let bits = kept_v.iter().zip(&ref_v).all(|(a, b)| a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()));
+        if std::env::var_os("VERIFY_VERBOSE").is_some() {
+            let first = kept_v.iter().zip(&ref_v).position(|(a, b)| a.iter().zip(b).any(|(x, y)| x.to_bits() != y.to_bits()));
+            println!("    first differing tick {first:?}: kept {:?} reference {:?}", first.map(|i| kept_v[i]), first.map(|i| ref_v[i]));
+            println!("    breaks kept {:?}", kept_breaks.iter().map(|b| (b.0, b.1.len())).collect::<Vec<_>>());
+            println!("    breaks ref  {:?}", ref_breaks.iter().map(|b| (b.0, b.1.len())).collect::<Vec<_>>());
+            if let Some((a, b)) = kept_breaks.iter().zip(&ref_breaks).find(|(a, b)| a != b) {
+                println!("    first differing break: kept {a:?}\n                           ref  {b:?}");
+            }
+        }
+        println!("  {label}: kept {} breaking ticks ({} bonds), reference {} ({} bonds); ball velocity worst difference {worst:.3e} m/s of {speed} ({}); last ball velocity kept {:?} reference {:?}",
+            kept_breaks.len(), kept_breaks.iter().map(|b| b.1.len()).sum::<usize>(), ref_breaks.len(), ref_breaks.iter().map(|b| b.1.len()).sum::<usize>(),
+            if bits { "bit-identical" } else { "not bit-identical" }, kept_v.last(), ref_v.last());
+        row(config, "pair-reuse", &format!("{label}: the same bonds break on the same ticks"), "kept pairs = reference", source, "1=yes", 1.0, f64::NAN, yes(kept_breaks == ref_breaks), 1.0, expected, out);
+        row(config, "pair-reuse", &format!("{label}: the ball moves the same (worst velocity difference)"), "|v_kept - v_ref| = 0", source, "m/s", 0.0, 0.0, worst, speed, expected, out);
+    }
+}
+
 /// A slab on an anchor. Unbreakable: a dropped ball rebounds at e times its
-/// impact speed (the authored restitution). Joints below the impact force: it
-/// breaks through instead of bouncing.
+/// impact speed (the authored restitution). A slab hung on joints below the
+/// impact force: it breaks through instead of bouncing.
 fn restitution_cases(config: Config, expected: &[Expectation], out: &mut Output) {
     let source = "[Hibbeler Dynamics] 15.4: e = v_out / v_in (WorldConfig restitution)";
     println!("\nimpact-restitution -- a ball dropped on a slab\n  {source}");
@@ -401,13 +484,14 @@ fn restitution_cases(config: Config, expected: &[Expectation], out: &mut Output)
         s.rect_bond(anchor, c, [0.0, -0.1, 0.0], Y, X, 1.0, Z, 1.0, m);
         s
     };
-    let drop = |s: &Structure, mass: f64| -> (f64, f64, usize) {
+    // (impact speed, highest speed after the hit, bonds broken before the
+    // hit, bonds broken from the hit on).
+    let drop = |s: &Structure, mass: f64| -> (f64, f64, usize, usize) {
         let mut world = stage::build(s);
         ball(&mut world, 9003, [0.0, 22.2, 0.0], 0.1, mass, [0.0, 0.0, 0.0]);
-        let (mut vin, mut vout, mut broken) = (0.0f64, f64::NEG_INFINITY, 0usize);
+        let (mut vin, mut vout, mut before, mut after) = (0.0f64, f64::NEG_INFINITY, 0usize, 0usize);
         let mut hit = false;
         stage::run_ticks(&mut world, 75, |_, _, b, w| {
-            broken += b.len();
             let vy = plain_velocity(w, 9003).map(|v| v[1]).unwrap_or(0.0);
             if !hit && vy < vin {
                 vin = vy;
@@ -416,20 +500,40 @@ fn restitution_cases(config: Config, expected: &[Expectation], out: &mut Output)
             }
             if hit {
                 vout = vout.max(vy);
+                after += b.len();
+            } else {
+                before += b.len();
             }
             false
         });
-        (vin, if hit { vout } else { f64::NAN }, broken)
+        (vin, if hit { vout } else { f64::NAN }, before, after)
     };
     // Unbreakable slab.
-    let (vin, vout, _) = drop(&slab(1e13), 10.0);
+    let (vin, vout, _, _) = drop(&slab(1e13), 10.0);
     let e = restitution();
     println!("  unbreakable: impact {vin:.3} m/s, rebound {vout:.3} m/s");
     row(config, "impact-restitution", "rebound / impact speed on an unbreakable slab", "e", source, "-", e, e, vout / -vin, e, expected, out);
-    // Joints that carry the slab's weight (4.7 kPa) twice over, not the impact.
-    let (vin, vout, broken) = drop(&slab(10e3), 100.0);
-    println!("  weak joints: impact {vin:.3} m/s, after {vout:.3} m/s, bonds broken {broken}");
-    row(config, "impact-restitution", "breaks through a weak slab instead of bouncing", "joint broken, no rebound", source, "1=yes", 1.0, f64::NAN, yes(broken > 0 && !(vout > 0.0)), 1.0, expected, out);
+    // Joints that carry the slab's weight twice over, not the impact. The slab
+    // hangs between two side anchors on shear joints (0.2 m x 1 m each: its
+    // 4.71 kN weight puts 11.8 kPa on them, against 25 kPa). Broken, nothing
+    // is under it, and slab and ball fall together. (Until 2026-10-10 the weak
+    // slab sat on the anchor plate like the unbreakable one: a crushed joint
+    // still leaves it bearing on the plate, so the ball must rebound, and
+    // "breaks through" was ill-posed there.)
+    let hung = {
+        let mut s = Structure::new();
+        let m = s.material(Material { modulus: E_CONCRETE, compression: 1e13, tension: 1e13, shear: 25e3 });
+        let c = s.chunk("slab", [0.0, 0.0, 0.0], [0.5, 0.1, 0.5], CONCRETE * 0.2);
+        for side in [-1.0, 1.0] {
+            let anchor = s.chunk("anchor", [side * (0.5 + PLATE), 0.0, 0.0], [PLATE, 0.1, 0.5], 0.0);
+            s.rect_bond(anchor, c, [side * 0.5, 0.0, 0.0], [-side, 0.0, 0.0], Y, 0.2, Z, 1.0, m);
+        }
+        s
+    };
+    let (vin, vout, before, after) = drop(&hung, 100.0);
+    println!("  weak joints: impact {vin:.3} m/s, after {vout:.3} m/s, bonds broken {before} before the hit and {after} from it");
+    row(config, "impact-restitution", "the hung slab carries its own weight until the hit", "no joint broken before the hit", source, "1=yes", 1.0, f64::NAN, yes(before == 0), 1.0, expected, out);
+    row(config, "impact-restitution", "breaks through a weak slab instead of bouncing", "joint broken, no rebound", source, "1=yes", 1.0, f64::NAN, yes(after > 0 && !(vout > 0.0)), 1.0, expected, out);
 }
 
 /// A ball strikes an anchored slab at 45 degrees. The tangential impulse is

@@ -463,7 +463,8 @@ Sources:
 |---|---|---|---|
 | impact-momentum | a ball strikes a free stage body: momentum, and the block's speed | m v = m v' + M V; V = m v (1+e)/(m+M) | [Hibbeler Dyn] 15.2-15.4 |
 | impact-plate-punch | a ball punches a plug out of a framed plate: the joints break; the exit speed stays within the joints' capacity impulse (no bounce, not free) | v' = v (m - e m_p)/(m+m_p) - at most F dt/(m+m_p) | [Hibbeler Dyn] 15.4 |
-| impact-restitution | the rebound off an unbreakable slab; a weak slab is broken through, not bounced off | e = v_out/v_in | [Hibbeler Dyn] 15.4 |
+| impact-restitution | the rebound off an unbreakable slab; a slab hung on weak joints stands until the hit, then is broken through, not bounced off | e = v_out/v_in | [Hibbeler Dyn] 15.4 |
+| pair-reuse | keeping unchanged contact pairs across a corrected pass gives the reference path's answer: plate punch, hung slab, 12 x 12 wall | the same breaks, the same ball velocity | `preserveUnchangedContactPairs` (an optimisation) |
 | impact-glancing | 45 degree impact: the friction bound, the rolling limit, and the friction impulse reaching the slab's bond | \|J_t\| <= mu J_n; dv_t = min(mu (1+e) v_n, 2 v_t/7); bond shear = m dv_t/dt | [Goldsmith] ch. 3 |
 | impact-sudden-load, impact-drop | a 1 t block released, or dropped 0.1 and 0.4 m, onto a cantilever: peak root stress over static | DAF = 1 + sqrt(1 + 2h/delta_st) (2 for h = 0) | [Gere] 2.8 |
 | rest-load-asleep | the block at rest keeps loading the beam after PhysX puts it to sleep | statics | |
@@ -532,14 +533,39 @@ By cause:
 5. **Square torsion** (12%, every configuration): Saint-Venant, see the limits
    above.
 6. **Truss gussets** (2.4%): rigid 0.3 m gussets on 2 m panels.
-7. **Stage: a freed fragment of a sleeping structure is born asleep and takes
-   no momentum.** Both profiles show it.
-   - impact-plate-punch: all four of the plug's joints break, but the plug
-     never moves (not even under gravity) and the ball rebounds at -1.1 m/s.
-   - impact-restitution: the weak slab's joint breaks, and the ball still
-     bounces off it.
+7. **Stage: a fragment freed from a kinematic (anchored) source took no
+   momentum.** Fixed 2026-10-10 in PhysX `fix/fragment-wake` (on
+   `clean/high-fidelity`); the runtime SDK (garage-roof) predates the fix and
+   still shows it.
+   - impact-plate-punch: all four of the plug's joints broke, but the plug
+     never moved and the ball rebounded at -1.1 m/s. Now the plug leaves at
+     2.50 m/s and the ball at 2.19 m/s. The momentum lost to the joints is
+     78 N s, inside their 133 N s capacity impulse.
+   - impact-restitution: a slab hung on weak shear joints. The joints broke,
+     and the ball still bounced (+0.46 m/s). Now slab and ball fall together
+     (-0.72 m/s). Until that day this case put the weak slab on the anchor
+     plate. There the plate still holds the slab up after its joint fails, so
+     "breaks through" was ill-posed; the slab is now held only by its joints.
+   - **Cause.** The split re-installs the kinematic source as the free plug.
+     With `preserveUnchangedContactPairs` (the game's setting), the corrected
+     pass kept the plug's contact pairs classified as kinematic, so the plug
+     had no mass in the solve. Not the wake counter: free split bodies
+     copying their source's zero wake counter is a separate, opt-in fix
+     (`fragmentWake`, `VIBE_NATIVE_FRAGMENT_WAKE=1`) that these cases do not
+     need.
+   - **pair-reuse.** This case runs three split impacts with pairs kept and
+     with the reference path (every pair re-narrowphased): the answers must
+     be identical.
+     - Plate punch and hung slab are now bit-identical.
+     - The 12 x 12 wall still diverges in the corrected pass of its first
+       fracture tick: 101 against 103 bonds; the ball's tangential velocity
+       -2.58 m/s against the reference's -0.73 and the rolling condition's
+       -0.70 [Goldsmith]. A known gap of the kept-pair path. The
+       high-fidelity profile uses the reference
+       (`VIBE_NATIVE_PRESERVE_CONTACT_PAIRS=0`); the game keeps pairs by
+       default.
 
-   This is the "wall that will not break" seen from the projectile's side.
+   This was the "wall that will not break" seen from the projectile's side.
 8. **Stage: a resting load disappears when its body sleeps.** A 1 t block on
    the cantilever's tip adds the textbook stress, exactly (high-fidelity: 6.896
    against 6.898 MPa). About 0.5 s later PhysX sleeps the block, and the root

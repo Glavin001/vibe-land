@@ -240,7 +240,7 @@ incidentally (see Scope).
 | Free fall | a fragment accelerates at g, not 2g or 0 | Newton II | **covered**: gravity-free-fall, carrier-gravity |
 | Linear momentum in impacts | Σ m v is conserved | Hibbeler 15 | **covered**: impact-momentum |
 | Energy bounds | no energy gained in an impact | | **covered**: impact-energy-* |
-| Restitution | rebound at e v | Hibbeler 15.4 | **covered**: impact-restitution (E3: breaks through instead) |
+| Restitution | rebound at e v | Hibbeler 15.4 | **covered**: impact-restitution (a hung slab broken through: fixed 2026-10-10, kept contact pairs) |
 | Friction | a block holds at tan θ < μ and slides above; glancing impulse ≤ μ J_n | Coulomb; Goldsmith | **covered**: surface-materials, impact-glancing (E2: dv_t overshoots rolling) |
 | **stage**: Compound body | mass Σm; centre of mass Σ m x / Σ m; inertia Σ(I_i + m_i(d²1 − d dᵀ)) (parallel-axis theorem) for a body of many chunks | Hibbeler 17.1 | **partial**: roof-com-* check the centre of mass; inertia untested |
 | **stage**: Rotation of a compound body | a chunked bar toppling about its foot: α = 3g/(2L) cos θ; torque-free spin keeps L = Iω | Hibbeler 17.4 | **missing** |

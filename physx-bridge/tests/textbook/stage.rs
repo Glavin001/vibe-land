@@ -30,6 +30,14 @@ fn v3(a: V3) -> Vec3 {
 
 /// Author, configure and return the world ready to tick.
 pub fn build(s: &Structure) -> World {
+    // As the game reads it (destruction native_runtime.rs preserve_contact_pairs).
+    build_with(s, std::env::var("VIBE_NATIVE_PRESERVE_CONTACT_PAIRS").map_or(true, |v| v != "0"))
+}
+
+/// `build`, choosing whether a corrected pass keeps unchanged contact pairs
+/// (the game's default) or re-narrowphases every pair (the stage's reference
+/// path; VIBE_NATIVE_PRESERVE_CONTACT_PAIRS=0, the high-fidelity profile).
+pub fn build_with(s: &Structure, preserve_pairs: bool) -> World {
     std::env::set_var("PX_DESTRUCTION_ALLOW_UNCONVERGED", "1");
     let mut world = World::new(WorldConfig::default()).expect("GPU scene");
     world.native_attach().unwrap();
@@ -116,7 +124,7 @@ pub fn build(s: &Structure) -> World {
             bend_gain_max: 3.0,
             fibre_bending: true,
             reserved_contact_pairs: (s.chunks.len() as u32 * 3 / 2).max(64),
-            preserve_unchanged_contact_pairs: true,
+            preserve_unchanged_contact_pairs: preserve_pairs,
             gpu_island_repair: true,
             verdict_sample_ticks: 1,
         })
