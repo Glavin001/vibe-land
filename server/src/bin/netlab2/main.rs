@@ -10,6 +10,9 @@
 //!   netlab2 compare  --a D1 --b D2 [--out D]
 //!   netlab2 calibrate --bundle B --out D  (the proxy check; exits 1 when it fails)
 //!   netlab2 profiles
+//!   netlab2 city     --capture C | --bundle B --out D [--strategy shared-v2] [--clients N]
+//!                    [--camera spec]... [--link L] [--seed N] [--budget-kbps K]
+//!                    (the destruction stream alone, N players; city_lab.rs)
 //!
 //! The production modules are compiled in from their own source files, not
 //! copied: see the `#[path]` modules below.
@@ -30,6 +33,7 @@ mod snapshot_builder;
 mod bundle;
 mod calibrate;
 mod chunks;
+mod city_lab;
 #[cfg(test)]
 mod fixture_tests;
 mod link;
@@ -543,6 +547,7 @@ fn main() {
         "run" => cmd_run(&args),
         "score" => cmd_score(&args),
         "calibrate" => calibrate::cmd_calibrate(&args),
+        "city" => city_lab::cmd_city(&args),
         "matrix" => report::cmd_matrix(&args),
         "compare" => report::cmd_compare(&args),
         "profiles" => {
@@ -552,7 +557,7 @@ fn main() {
             }
         }
         _ => {
-            eprintln!("{}", include_str!("main.rs").lines().take(14).collect::<Vec<_>>().join("\n"));
+            eprintln!("{}", include_str!("main.rs").lines().take(17).collect::<Vec<_>>().join("\n"));
             std::process::exit(if args.command == "help" { 0 } else { 2 });
         }
     }

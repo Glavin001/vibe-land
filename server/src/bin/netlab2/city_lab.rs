@@ -1,0 +1,821 @@
+//! `netlab2 city`: the destruction stream on its own, for N players at once,
+//! through any replication strategy, scored on one card.
+//!
+//!   netlab2 city --capture <city capture dir> | --bundle <session bundle>
+//!                --out <dir> [--strategy shared-v2] [--clients N]
+//!                [--camera <spec>]... [--link <profile>] [--seed N]
+//!                [--budget-kbps K [--burst-kbps B --burst-s S]]
+//!                [--rate-adapt 0|1] [--jobs J] [--client-root C] [--no-client]
+//!
+//! This is the lab the two replication approaches are compared in
+//! (docs/netcode-lab.md). What it holds fixed, so a difference in the card
+//! is the strategy's:
+//!
+//! - **Truth**: one city capture (the encoder tape: every awake island's pose
+//!   every tick, every fracture, settle and wake), recorded once.
+//! - **Players**: N clients, each with a camera (a recorded player's track or
+//!   a generated script, `CameraSpec`) and its own link.
+//! - **Links**: netlab2's QUIC model per client (`link::LinkSim`), seeded per
+//!   client. Downlink as production's sender queues it; an uplink for the
+//!   client's feedback (datagram acks), on the same profile, so a strategy
+//!   that listens to acks learns them when a real server would.
+//! - **Budget**: production's per-link rate controller (`link_rate.rs`), and
+//!   optionally the spec's burstable token bucket on top (decision D9: the
+//!   tighter of the two).
+//! - **Client**: the production client, headless (`clientStage.mts`), on a
+//!   tape of exactly what arrived; it writes every chunk as the city layer
+//!   draws it.
+//! - **Score**: every chunk drawn vs truth (`chunks.rs`), per client and
+//!   overall, plus bytes and the integrity gates.
+//!
+//! Every client joins cold at the capture's first tick with the strategy's
+//! join message; the clock is ideal (ticks exactly 1/hz apart), so the
+//! comparison is of netcode, not of server stalls.
+
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
+use vibe_land_destruction::encoder::{ChunkStreamEncoder, EncoderConfig};
+use vibe_land_destruction::manifest::DestructionManifest;
+use vibe_land_destruction::netlab::cameras::{build_client_set, CameraSpec, ClientSpec, PlayerTracks};
+use vibe_land_destruction::netlab::capture::{self as city_capture, CaptureDir, CaptureMeta};
+use vibe_land_destruction::netlab::tape::TapeReader;
+use vibe_land_destruction::replication::{
+    self, ClientFeedback, ClientView, ReplicationStrategy, SendBudget, SharedV2, TokenBucket,
+};
+
+use crate::link::{LinkSim, Profile};
+use crate::link_rate::{LinkSample, RateConfig, RateController, SendPlan};
+use crate::report::Pct;
+use crate::stream::Lane;
+use crate::vltape::{ClientTape, TapePacket, CHANNEL_WT_DATAGRAM, CHANNEL_WT_RELIABLE};
+use crate::{die, Args};
+
+/// Where the lab's tape clock starts: tick `first` is queued at this time.
+const ORIGIN_MS: f64 = 1000.0;
+/// How often a client acknowledges datagrams (its input cadence), ms.
+const ACK_INTERVAL_MS: f64 = 1000.0 / 30.0;
+/// Datagram ordinals one ack covers: the newest and the 64 before it.
+const ACK_WINDOW: usize = 65;
+/// Bytes of one ack datagram on the wire (kind, newest, mask, header).
+const ACK_BYTES: usize = 16;
+/// The packet kind the uplink model tags acks with (never on a tape).
+const KIND_ACK: u8 = 0xA0;
+
+// ── inputs ──────────────────────────────────────────────────────────────────
+
+/// One city capture: the truth every strategy is fed.
+pub struct CityCapture {
+    pub dir: PathBuf,
+    pub meta: CaptureMeta,
+    pub manifest: DestructionManifest,
+    pub checkpoint: Option<vibe_land_destruction::encoder::EncoderCheckpoint>,
+    pub tracks: PlayerTracks,
+}
+
+impl CityCapture {
+    pub fn open(dir: &Path) -> std::io::Result<Self> {
+        let capture = CaptureDir::open(dir)?;
+        let manifest: DestructionManifest = serde_json::from_slice(&std::fs::read(capture.manifest_path())?)?;
+        let checkpoint = city_capture::read_checkpoint(dir)?;
+        let tracks = PlayerTracks::from_samples(&capture.cameras()?);
+        Ok(Self { dir: dir.to_path_buf(), meta: capture.meta.clone(), manifest, checkpoint, tracks })
+    }
+
+    pub fn tape_path(&self) -> PathBuf {
+        self.dir.join(city_capture::TAPE_FILE)
+    }
+}
+
+/// Everything that defines a city run, echoed into its card.
+#[derive(Clone, Debug, Serialize)]
+pub struct CitySpec {
+    pub capture: String,
+    pub strategy: String,
+    pub link: String,
+    pub profile: Profile,
+    pub seed: u64,
+    pub rate_adapt: bool,
+    /// Sustained / burst kbit/s and burst seconds of the token bucket.
+    pub bucket: Option<(f64, f64, f64)>,
+    pub clients: Vec<ClientSpec>,
+    pub knobs: BTreeMap<String, String>,
+}
+
+/// A strategy by name, resumed from the capture's state.
+pub fn build_strategy(name: &str, capture: &CityCapture, knobs: &BTreeMap<String, String>) -> Box<dyn ReplicationStrategy> {
+    match name {
+        "shared-v2" => {
+            let mut encoder = match capture.checkpoint.clone() {
+                Some(mut checkpoint) => {
+                    apply_encoder_knobs(&mut checkpoint.config, knobs);
+                    ChunkStreamEncoder::from_checkpoint(&capture.manifest, checkpoint)
+                        .unwrap_or_else(|e| die(&format!("encoder checkpoint: {e}")))
+                }
+                None => {
+                    let mut config = EncoderConfig::validated(capture.meta.hz);
+                    apply_encoder_knobs(&mut config, knobs);
+                    ChunkStreamEncoder::new(&capture.manifest, config)
+                }
+            };
+            // The capture's live players are not the lab's: every lab client
+            // joins cold.
+            for client in encoder.clients() {
+                encoder.remove_client(client);
+            }
+            Box::new(SharedV2::new(encoder))
+        }
+        other => die(&format!("unknown --strategy {other}: shared-v2")),
+    }
+}
+
+/// The encoder knobs `netlab2 run` understands, by the same names.
+fn apply_encoder_knobs(config: &mut EncoderConfig, knobs: &BTreeMap<String, String>) {
+    let stream = crate::stream_config(crate::stream::Pace::Ideal, knobs);
+    stream.city.apply(config);
+}
+
+// ── one client's link ───────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+struct Queued {
+    depart_ms: f64,
+    lane: Lane,
+    kind: u8,
+    bytes: Vec<u8>,
+}
+
+/// Per-client stream totals for the card.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ClientStream {
+    pub packets: u64,
+    pub bytes: u64,
+    pub reliable_bytes: u64,
+    pub datagram_bytes: u64,
+    pub delivered: u64,
+    pub delivered_bytes: u64,
+    pub by_fate: BTreeMap<String, u64>,
+    pub by_kind_bytes: BTreeMap<String, u64>,
+    /// Bytes queued per second of stream, kbit/s.
+    pub kbit_s_mean: f64,
+    /// The busiest trailing 1 s window of queued bytes, kbit/s (gate G3).
+    pub kbit_s_max_1s: f64,
+    /// The busiest 100 ms window, as kbit/s.
+    pub kbit_s_max_100ms: f64,
+    pub datagram_latency_ms: Pct,
+    pub reliable_latency_ms: Pct,
+    pub reliable_hol_ms: Pct,
+    pub sends: u64,
+    pub sends_skipped: u64,
+    pub sends_limited: u64,
+    pub record_bytes: u64,
+    pub topology_copy_bytes: u64,
+    pub acks_sent: u64,
+    pub acks_delivered: u64,
+    /// The rate controller's state changes into Limited.
+    pub entered_limited: u64,
+}
+
+struct LabClient {
+    spec: ClientSpec,
+    down: LinkSim,
+    up: LinkSim,
+    controller: Option<RateController>,
+    origin_ms: Option<f64>,
+    bucket: Option<TokenBucket>,
+    queued: Vec<Queued>,
+    /// Per datagram ordinal (the n-th datagram this client was queued since
+    /// it joined): its index on the downlink.
+    datagram_index: Vec<usize>,
+    next_ack_ms: f64,
+    /// Feedback on its way up: (arrival at the server, feedback).
+    inflight: VecDeque<(f64, ClientFeedback)>,
+    stats: ClientStream,
+}
+
+impl LabClient {
+    fn new(spec: ClientSpec, profile: &Profile, seed: u64, rate_adapt: bool, bucket: Option<TokenBucket>) -> Self {
+        Self {
+            spec,
+            down: LinkSim::new(profile, seed.wrapping_mul(2).wrapping_add(1)),
+            up: LinkSim::new(profile, seed.wrapping_mul(2).wrapping_add(2)),
+            controller: rate_adapt.then(|| RateController::new(RateConfig::PRODUCTION)),
+            origin_ms: None,
+            bucket,
+            queued: Vec::new(),
+            datagram_index: Vec::new(),
+            next_ack_ms: ORIGIN_MS,
+            inflight: VecDeque::new(),
+            stats: ClientStream::default(),
+        }
+    }
+
+    fn queue(&mut self, at_ms: f64, lane: replication::Lane, bytes: Vec<u8>) {
+        let lane = match lane {
+            replication::Lane::Reliable => Lane::Reliable,
+            replication::Lane::Datagram => Lane::Datagram,
+        };
+        let kind = bytes.first().copied().unwrap_or(0);
+        let index = self.down.admit(at_ms, lane, kind, bytes.len());
+        if lane == Lane::Datagram {
+            self.datagram_index.push(index);
+        }
+        if let Some(bucket) = self.bucket.as_mut() {
+            bucket.spend(at_ms / 1000.0, bytes.len());
+        }
+        self.queued.push(Queued { depart_ms: at_ms, lane, kind, bytes });
+    }
+
+    /// The link's plan for this send (`MatchState::city_datagrams_for`).
+    fn plan(&mut self, at_ms: f64, send_interval_s: f64, ceiling: usize) -> (SendPlan, f64) {
+        let signals = self.down.signals(at_ms);
+        let Some(controller) = self.controller.as_mut() else {
+            return (SendPlan::Full, signals.rtt_ms);
+        };
+        let origin = *self.origin_ms.get_or_insert(at_ms - 1000.0);
+        let sample = LinkSample {
+            at_us: ((at_ms - origin) * 1000.0).max(0.0) as u64,
+            datagram_buffered_bytes: signals.datagram_buffered_bytes,
+            wire_bytes: signals.wire_bytes,
+            sent_packets: signals.sent_packets,
+            lost_packets: signals.lost_packets,
+            lost_bytes: signals.lost_bytes,
+            rtt_us: (signals.rtt_ms * 1000.0) as u64,
+            submitted_bytes: signals.submitted_bytes,
+            reliable_submitted_bytes: signals.reliable_submitted_bytes,
+        };
+        let before = controller.state();
+        let plan = controller.plan(sample, send_interval_s, ceiling);
+        if before != controller.state() && controller.state() == crate::link_rate::RateState::Limited {
+            self.stats.entered_limited += 1;
+        }
+        (plan, signals.rtt_ms)
+    }
+
+    /// Acks the client sends at instants before `until_ms`, up the uplink.
+    fn send_acks(&mut self, until_ms: f64) {
+        while self.next_ack_ms < until_ms {
+            let at = self.next_ack_ms;
+            self.next_ack_ms += ACK_INTERVAL_MS;
+            self.down.poll(at);
+            let n = self.datagram_index.len();
+            let from = n.saturating_sub(4 * ACK_WINDOW);
+            let mut newest: Option<usize> = None;
+            let mut received = Vec::new();
+            for ordinal in from..n {
+                if self.down.datagram_arrival(self.datagram_index[ordinal]).is_some_and(|t| t <= at) {
+                    newest = Some(ordinal);
+                    received.push(ordinal);
+                }
+            }
+            let Some(newest) = newest else { continue };
+            let mut mask = 0u64;
+            for ordinal in received {
+                if ordinal < newest && newest - 1 - ordinal < 64 {
+                    mask |= 1 << (newest - 1 - ordinal);
+                }
+            }
+            let index = self.up.admit(at, Lane::Datagram, KIND_ACK, ACK_BYTES);
+            self.up.poll(at + 1e-3);
+            self.stats.acks_sent += 1;
+            if let Some(arrive) = self.up.datagram_arrival(index) {
+                self.stats.acks_delivered += 1;
+                self.inflight.push_back((arrive, ClientFeedback::DatagramAcks { newest: newest as u32, mask }));
+            }
+        }
+    }
+}
+
+// ── the run ─────────────────────────────────────────────────────────────────
+
+pub struct CityRun {
+    pub spec: CitySpec,
+    pub first_tick: u32,
+    pub last_tick: u32,
+    pub hz: u32,
+    pub clients: Vec<(ClientSpec, ClientStream)>,
+}
+
+fn tick_ms(tick: u32, first: u32, hz: u32) -> f64 {
+    ORIGIN_MS + (f64::from(tick) - f64::from(first)) * 1000.0 / f64::from(hz)
+}
+
+/// The server stage and links: writes each client's tape and timeline.
+pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> std::io::Result<CityRun> {
+    std::fs::create_dir_all(out)?;
+    let mut strategy = build_strategy(&spec.strategy, capture, &spec.knobs);
+    let hz = capture.meta.hz.max(1);
+    let interval = strategy.send_interval_ticks().max(1);
+    let send_interval_s = f64::from(interval) / f64::from(hz);
+    let ceiling = strategy.ceiling_bytes();
+    let mut clients: BTreeMap<u64, LabClient> = BTreeMap::new();
+    for (index, client) in spec.clients.iter().enumerate() {
+        let bucket = spec.bucket.map(|(sustained, burst, seconds)| TokenBucket::new(sustained, burst, seconds));
+        clients.insert(
+            client.id,
+            LabClient::new(client.clone(), &spec.profile, spec.seed.wrapping_mul(1000).wrapping_add(index as u64), spec.rate_adapt, bucket),
+        );
+    }
+
+    let mut reader = TapeReader::open(&capture.tape_path())?;
+    let mut first_tick = None;
+    let mut last_tick = 0;
+    while let Some(entry) = reader.next_tick()? {
+        let tick = entry.tick;
+        let first = *first_tick.get_or_insert(tick);
+        last_tick = tick;
+        let t = tick_ms(tick, first, hz);
+        // Feedback that reached the server by now.
+        for (id, client) in clients.iter_mut() {
+            while client.inflight.front().is_some_and(|(arrive, _)| *arrive <= t) {
+                let (_, feedback) = client.inflight.pop_front().unwrap();
+                strategy.on_feedback(*id, feedback);
+            }
+        }
+        if tick == first {
+            for (id, client) in clients.iter_mut() {
+                for packet in strategy.join(*id, tick) {
+                    client.queue(t, packet.lane, packet.bytes);
+                }
+            }
+        }
+        let broadcast = strategy.ingest_tick(tick, &entry.snapshots, &entry.output);
+        for client in clients.values_mut() {
+            for packet in &broadcast {
+                client.queue(t, packet.lane, packet.bytes.clone());
+            }
+        }
+        if tick % interval == 0 {
+            strategy.begin_send(tick);
+            let has_records = strategy.has_records();
+            for (id, client) in clients.iter_mut() {
+                let Some(camera) = client.spec.camera.camera_at(tick, hz, &capture.tracks) else {
+                    continue;
+                };
+                if !has_records && !strategy.has_pending(*id) {
+                    continue;
+                }
+                let mut plan = None;
+                let budget = if has_records {
+                    let (link_plan, rtt) = client.plan(t, send_interval_s, ceiling);
+                    strategy.note_link_rtt(*id, rtt as f32);
+                    plan = Some(link_plan);
+                    let budget = match link_plan {
+                        SendPlan::Full => SendBudget::Full,
+                        SendPlan::Limited { allowance_bytes, sends } => SendBudget::Limited { allowance_bytes, sends },
+                        SendPlan::Skip => SendBudget::Skip,
+                    };
+                    let cap = client.bucket.as_mut().map(|bucket| bucket.allowance(t / 1000.0, send_interval_s));
+                    Some(budget.capped(cap))
+                } else {
+                    None
+                };
+                let send = strategy.client_send(*id, &ClientView { camera }, tick, budget);
+                client.stats.sends += 1;
+                match budget {
+                    Some(SendBudget::Skip) => client.stats.sends_skipped += 1,
+                    Some(SendBudget::Limited { .. }) => client.stats.sends_limited += 1,
+                    _ => {}
+                }
+                client.stats.record_bytes += send.record_bytes as u64;
+                client.stats.topology_copy_bytes += send.topology_bytes as u64;
+                let bytes: usize = send.packets.iter().map(|p| p.bytes.len()).sum();
+                if let Some(controller) = client.controller.as_mut() {
+                    match (plan, budget) {
+                        (Some(plan), Some(budget)) if budget != SendBudget::Skip => controller.sent(bytes, plan),
+                        _ => controller.sent_topology(send.topology_bytes),
+                    }
+                }
+                for packet in send.packets {
+                    client.queue(t, packet.lane, packet.bytes);
+                }
+            }
+        }
+        let next = tick_ms(tick + 1, first, hz);
+        for client in clients.values_mut() {
+            client.send_acks(next);
+        }
+    }
+    let first_tick = first_tick.ok_or_else(|| std::io::Error::other("the capture's tape has no ticks"))?;
+
+    // Each client's deliveries, tape and totals.
+    let mut results = Vec::new();
+    for (index, (_, client)) in clients.into_iter().enumerate() {
+        let dir = client_dir(out, index);
+        std::fs::create_dir_all(&dir)?;
+        let LabClient { spec: client_spec, down, queued, mut stats, .. } = client;
+        let (deliveries, _link_stats) = down.finish();
+        let mut tape: Vec<(f64, usize, TapePacket)> = Vec::new();
+        let (mut dgram_lat, mut rel_lat, mut rel_hol) = (Vec::new(), Vec::new(), Vec::new());
+        let mut windows: Vec<(f64, usize)> = Vec::new();
+        for (seq, (packet, delivery)) in queued.iter().zip(&deliveries).enumerate() {
+            stats.packets += 1;
+            stats.bytes += packet.bytes.len() as u64;
+            match packet.lane {
+                Lane::Reliable => stats.reliable_bytes += packet.bytes.len() as u64,
+                Lane::Datagram => stats.datagram_bytes += packet.bytes.len() as u64,
+            }
+            *stats.by_kind_bytes.entry(crate::kind_name(packet.kind)).or_default() += packet.bytes.len() as u64;
+            *stats.by_fate.entry(format!("{:?}", delivery.fate).to_lowercase()).or_default() += 1;
+            windows.push((packet.depart_ms, packet.bytes.len()));
+            if let Some(arrive) = delivery.arrive_ms {
+                stats.delivered += 1;
+                stats.delivered_bytes += packet.bytes.len() as u64;
+                if delivery.channel == CHANNEL_WT_DATAGRAM {
+                    dgram_lat.push((arrive - packet.depart_ms) as f32);
+                } else {
+                    rel_lat.push((arrive - packet.depart_ms) as f32);
+                    rel_hol.push(delivery.hol_ms as f32);
+                }
+                let channel = if delivery.channel == CHANNEL_WT_DATAGRAM { CHANNEL_WT_DATAGRAM } else { CHANNEL_WT_RELIABLE };
+                tape.push((arrive, seq, TapePacket { t_ms: arrive, channel, bytes: packet.bytes.clone() }));
+            }
+        }
+        stats.datagram_latency_ms = Pct::of(dgram_lat);
+        stats.reliable_latency_ms = Pct::of(rel_lat);
+        stats.reliable_hol_ms = Pct::of(rel_hol);
+        let duration_s = (f64::from(last_tick - first_tick) + 1.0) / f64::from(hz);
+        stats.kbit_s_mean = stats.bytes as f64 * 8.0 / 1000.0 / duration_s.max(1e-9);
+        stats.kbit_s_max_1s = max_window_kbit_s(&windows, 1000.0);
+        stats.kbit_s_max_100ms = max_window_kbit_s(&windows, 100.0);
+        tape.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let packets: Vec<TapePacket> = tape.into_iter().map(|(_, _, p)| p).collect();
+        write_city_tape(&dir.join("lab.vltape"), capture, &client_spec, hz, first_tick, last_tick, &packets, spec)?;
+        // The server's tick timeline on the tape clock (ideal pace).
+        let ticks: Vec<serde_json::Value> = (first_tick..=last_tick)
+            .map(|tick| serde_json::json!([tick, tick_ms(tick, first_tick, hz)]))
+            .collect();
+        std::fs::write(dir.join("timeline.json"), serde_json::to_vec(&serde_json::json!({"clock": "tape ms", "ticks": ticks}))?)?;
+        std::fs::write(dir.join("stream.json"), serde_json::to_vec_pretty(&serde_json::json!({"client": client_spec, "stream": stats}))?)?;
+        results.push((client_spec, stats));
+    }
+    Ok(CityRun { spec: spec.clone(), first_tick, last_tick, hz, clients: results })
+}
+
+pub fn client_dir(out: &Path, index: usize) -> PathBuf {
+    out.join(format!("c{index:02}"))
+}
+
+/// The busiest trailing window of `ms` over (time, bytes), as kbit/s.
+fn max_window_kbit_s(points: &[(f64, usize)], ms: f64) -> f64 {
+    let mut sorted: Vec<(f64, usize)> = points.to_vec();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (mut lo, mut sum, mut best) = (0usize, 0usize, 0usize);
+    for hi in 0..sorted.len() {
+        sum += sorted[hi].1;
+        while sorted[hi].0 - sorted[lo].0 >= ms {
+            sum -= sorted[lo].1;
+            lo += 1;
+        }
+        best = best.max(sum);
+    }
+    best as f64 * 8.0 / ms
+}
+
+/// A city-only client tape: the transport channels as delivered, no
+/// recorded frames (the client stage draws at a fixed cadence).
+#[allow(clippy::too_many_arguments)]
+fn write_city_tape(
+    path: &Path,
+    capture: &CityCapture,
+    client: &ClientSpec,
+    hz: u32,
+    first_tick: u32,
+    last_tick: u32,
+    packets: &[TapePacket],
+    spec: &CitySpec,
+) -> std::io::Result<()> {
+    let tape = ClientTape {
+        header: serde_json::json!({
+            "version": 2,
+            "capturedAt": "netlab2 city",
+            "matchId": "netlab-city",
+            "manifestHash": capture.manifest.hash_hex(),
+            "wireVersion": 2,
+            "simHz": hz,
+            "userAgent": "netlab2 city",
+            "durationMs": tick_ms(last_tick, first_tick, hz) + 1000.0 / f64::from(hz),
+            "frames": 0,
+            "frameBytes": 60,
+            "localPlayerId": client.id,
+            "transport": "webtransport",
+            "session": null,
+            "clockOriginMs": 0.0,
+        }),
+        frame_bytes: 60,
+        frames_raw: Vec::new(),
+        frames: Vec::new(),
+        packets: Vec::new(),
+    };
+    tape.write_with_packets(
+        path,
+        packets,
+        serde_json::json!({
+            "netlab": {
+                "lab": "city",
+                "strategy": spec.strategy,
+                "link": spec.link,
+                "seed": spec.seed,
+                "camera": client.camera.label(),
+            }
+        }),
+    )
+}
+
+// ── scoring ─────────────────────────────────────────────────────────────────
+
+/// One client's card.
+#[derive(Clone, Debug, Serialize)]
+pub struct ClientCard {
+    pub id: u64,
+    pub camera: String,
+    pub stream: ClientStream,
+    pub city_sync: Option<crate::score::CitySync>,
+    pub chunks: Option<crate::chunks::ChunkStats>,
+    pub all_draws: Option<crate::unified::AllDraws>,
+    pub client_cpu_ms: Option<f64>,
+    pub notes: Vec<String>,
+}
+
+/// Integrity gates (the spec's G1-G6) as far as the lab measures them yet.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Gates {
+    /// G1: structure hash mismatches across every client (0 to pass).
+    pub g1_hash_mismatches: u64,
+    pub g1_hash_checks: u64,
+    /// G3: clients whose busiest 1 s window exceeded the bucket's peak
+    /// (only with a bucket).
+    pub g3_cap: Option<f64>,
+    pub g3_clients_over: u64,
+    pub g3_worst_kbit_s: f64,
+    /// Gates the lab does not measure yet, and why.
+    pub pending: Vec<String>,
+    pub pass: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct CityCard {
+    pub spec: CitySpec,
+    pub hz: u32,
+    pub first_tick: u32,
+    pub last_tick: u32,
+    pub gates: Gates,
+    /// Every client's chunk draws pooled.
+    pub all_clients: Option<crate::unified::AllDraws>,
+    pub clients: Vec<ClientCard>,
+    /// Bytes across clients: mean of means, max of maxima, kbit/s.
+    pub kbit_s_mean: f64,
+    pub kbit_s_max_1s: f64,
+}
+
+pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::Result<CityCard> {
+    let mut pooled = crate::unified::AllDrawsAcc::default();
+    let mut cards = Vec::new();
+    let mut gates = Gates { pass: true, ..Default::default() };
+    gates.pending = vec![
+        "G2 event ordering: needs the client's applied-event log (milestone 3)".into(),
+        "G4 solid geometry: needs the static occupancy grid (milestone 1, recorder)".into(),
+        "G5 resurrection: needs settle-aware chunk scoring (milestone 3)".into(),
+        "G6 server time: needs the strategy timing in the lab (milestone 8)".into(),
+    ];
+    let tick_end: HashMap<u32, f64> =
+        (run.first_tick..=run.last_tick).map(|tick| (tick, tick_ms(tick, run.first_tick, run.hz))).collect();
+    for (index, (client, stream)) in run.clients.iter().enumerate() {
+        let dir = client_dir(out, index);
+        let mut card = ClientCard {
+            id: client.id,
+            camera: client.camera.label(),
+            stream: stream.clone(),
+            city_sync: None,
+            chunks: None,
+            all_draws: None,
+            client_cpu_ms: None,
+            notes: Vec::new(),
+        };
+        if let Ok(bytes) = std::fs::read(dir.join("client-stats.json")) {
+            if let Ok(stats) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                card.city_sync = crate::score::CitySync::from_client_stats(&stats);
+                card.client_cpu_ms = stats["clientCpuMs"].as_f64();
+            }
+        }
+        let chunks = dir.join(crate::chunks::CHUNKS_FILE);
+        if chunks.is_file() {
+            let mut acc = crate::unified::AllDrawsAcc::default();
+            match crate::chunks::score_chunks(
+                &chunks,
+                &capture.tape_path(),
+                &capture.manifest,
+                capture.checkpoint.as_ref(),
+                &mut acc,
+                None,
+                &tick_end,
+            ) {
+                Ok(stats) => card.chunks = Some(stats),
+                Err(error) => card.notes.push(format!("chunks not scored: {error}")),
+            }
+            card.all_draws = Some(acc.report());
+            // Pooled: score again into the shared accumulator (the scorer is
+            // a pure function of its inputs).
+            let _ = crate::chunks::score_chunks(
+                &chunks,
+                &capture.tape_path(),
+                &capture.manifest,
+                capture.checkpoint.as_ref(),
+                &mut pooled,
+                None,
+                &tick_end,
+            );
+        } else {
+            card.notes.push("no drawn-chunks.bin: the client stage did not run".into());
+        }
+        if let Some(sync) = &card.city_sync {
+            gates.g1_hash_mismatches += sync.hash_mismatches;
+            gates.g1_hash_checks += sync.hash_checks;
+        }
+        if let Some((_, burst, _)) = run.spec.bucket {
+            gates.g3_cap = Some(burst);
+            gates.g3_worst_kbit_s = gates.g3_worst_kbit_s.max(stream.kbit_s_max_1s);
+            // A 1 s window may hold the bucket's peak for at most 1 s.
+            if stream.kbit_s_max_1s > burst * 1.001 {
+                gates.g3_clients_over += 1;
+            }
+        }
+        cards.push(card);
+    }
+    gates.pass = gates.g1_hash_mismatches == 0 && gates.g3_clients_over == 0;
+    let n = cards.len().max(1) as f64;
+    let card = CityCard {
+        spec: run.spec.clone(),
+        hz: run.hz,
+        first_tick: run.first_tick,
+        last_tick: run.last_tick,
+        gates,
+        all_clients: (pooled.frames > 0).then(|| pooled.report()),
+        kbit_s_mean: cards.iter().map(|c| c.stream.kbit_s_mean).sum::<f64>() / n,
+        kbit_s_max_1s: cards.iter().map(|c| c.stream.kbit_s_max_1s).fold(0.0, f64::max),
+        clients: cards,
+    };
+    std::fs::write(out.join("scorecard.json"), serde_json::to_vec_pretty(&card)?)?;
+    std::fs::write(out.join("scorecard.md"), card_markdown(&card))?;
+    Ok(card)
+}
+
+fn card_markdown(card: &CityCard) -> String {
+    use std::fmt::Write;
+    let mut md = String::new();
+    let _ = writeln!(md, "# City lab: {} on {}\n", card.spec.strategy, card.spec.link);
+    let _ = writeln!(
+        md,
+        "Capture `{}`, ticks {}..{} at {} Hz, seed {}, rate adaptation {}, bucket {}.\n",
+        card.spec.capture,
+        card.first_tick,
+        card.last_tick,
+        card.hz,
+        card.spec.seed,
+        if card.spec.rate_adapt { "on" } else { "off" },
+        card.spec.bucket.map_or("none".into(), |(s, b, d)| format!("{s} kbit/s, {b} kbit/s for {d} s")),
+    );
+    let g = &card.gates;
+    let _ = writeln!(
+        md,
+        "**Gates: {}.** G1 hash mismatches {} of {} checks; G3 {}.",
+        if g.pass { "pass" } else { "FAIL" },
+        g.g1_hash_mismatches,
+        g.g1_hash_checks,
+        g.g3_cap.map_or("no cap".into(), |cap| format!(
+            "{} clients over {cap} kbit/s (worst 1 s window {:.0})",
+            g.g3_clients_over, g.g3_worst_kbit_s
+        )),
+    );
+    for pending in &g.pending {
+        let _ = writeln!(md, "- pending: {pending}");
+    }
+    let _ = writeln!(md, "\nBytes: {:.1} kbit/s mean per client, busiest 1 s window {:.1} kbit/s.\n", card.kbit_s_mean, card.kbit_s_max_1s);
+    let _ = writeln!(md, "| client | camera | kbit/s | max 1 s | debris pos@render p99 m | debris pos@now p99 m | missing | wrong id | hash mism. |");
+    let _ = writeln!(md, "|---|---|---:|---:|---:|---:|---:|---:|---:|");
+    for client in &card.clients {
+        let debris = client.all_draws.as_ref().and_then(|a| a.classes.get("chunk_debris").cloned()).unwrap_or_default();
+        let _ = writeln!(
+            md,
+            "| {} | {} | {:.1} | {:.1} | {:.3} | {:.3} | {:.0} | {:.0} | {} |",
+            client.id,
+            client.camera,
+            client.stream.kbit_s_mean,
+            client.stream.kbit_s_max_1s,
+            debris.pos_render_m.p99,
+            debris.pos_now_m.p99,
+            debris.missing,
+            debris.wrong_identity,
+            client.city_sync.as_ref().map_or("-".into(), |s| s.hash_mismatches.to_string()),
+        );
+    }
+    if let Some(all) = &card.all_clients {
+        let _ = writeln!(md, "\n{}", crate::unified::markdown_titled(all, "Every client's chunk draws"));
+    }
+    md
+}
+
+// ── the command ─────────────────────────────────────────────────────────────
+
+pub fn city_spec(args: &Args, capture: &CityCapture, capture_label: String) -> CitySpec {
+    let link = args.get("link").unwrap_or("loopback").to_string();
+    let profile = crate::load_profile(&link, args.get("profiles"));
+    let seed = args.get("seed").map_or(1, |s| s.parse().unwrap_or_else(|_| die("--seed N")));
+    let rate_adapt = args.get("rate-adapt").map_or(true, |v| v != "0");
+    let bucket = args.get("budget-kbps").map(|value| {
+        let num = |key: &str, default: f64| {
+            args.get(key).map_or(default, |v| v.parse::<f64>().unwrap_or_else(|_| die(&format!("--{key} number"))))
+        };
+        let sustained: f64 = value.parse().unwrap_or_else(|_| die("--budget-kbps number"));
+        (sustained, num("burst-kbps", sustained * 3.0), num("burst-s", 3.0))
+    });
+    let mut knobs = BTreeMap::new();
+    for knob in args.all("knob") {
+        for part in knob.split(',').filter(|p| !p.is_empty()) {
+            let (k, v) = part.split_once('=').unwrap_or_else(|| die(&format!("--knob {part}: k=v")));
+            knobs.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
+    let cameras = args.all("camera");
+    let clients: Vec<ClientSpec> = if cameras.is_empty() {
+        let count = args.get("clients").map_or(capture.tracks.players().len().max(1), |n| {
+            n.parse().unwrap_or_else(|_| die("--clients N"))
+        });
+        build_client_set(count, &capture.tracks, &capture.manifest, &[link.clone()], seed as u32)
+    } else {
+        cameras
+            .iter()
+            .enumerate()
+            .map(|(index, text)| ClientSpec {
+                id: 1 + index as u64,
+                camera: CameraSpec::parse(text).unwrap_or_else(|e| die(&e)),
+                profile: link.clone(),
+            })
+            .collect()
+    };
+    CitySpec {
+        capture: capture_label,
+        strategy: args.get("strategy").unwrap_or("shared-v2").to_string(),
+        link,
+        profile,
+        seed,
+        rate_adapt,
+        bucket,
+        clients,
+        knobs,
+    }
+}
+
+/// The capture a `--capture` or `--bundle` names.
+pub fn open_capture(args: &Args) -> (CityCapture, String) {
+    let dir = match (args.get("capture"), args.get("bundle")) {
+        (Some(dir), _) => PathBuf::from(dir),
+        (None, Some(bundle)) => {
+            let bundle = PathBuf::from(bundle);
+            let server = if bundle.join("server").is_dir() { bundle.join("server") } else { bundle.clone() };
+            server.join(crate::session_capture::CITY_DIR)
+        }
+        (None, None) => die("--capture <city capture dir> or --bundle <session bundle> is required"),
+    };
+    let capture = CityCapture::open(&dir).unwrap_or_else(|e| die(&format!("{}: {e}", dir.display())));
+    (capture, dir.display().to_string())
+}
+
+pub fn cmd_city(args: &Args) {
+    let (capture, label) = open_capture(args);
+    let out = args.path("out");
+    let spec = city_spec(args, &capture, label);
+    let run = run_city_stream(&capture, &spec, &out).unwrap_or_else(|e| die(&e.to_string()));
+    eprintln!(
+        "netlab2 city: {} clients, ticks {}..{}, {} on {}",
+        run.clients.len(),
+        run.first_tick,
+        run.last_tick,
+        spec.strategy,
+        spec.link
+    );
+    if args.get("no-client").is_none() {
+        let jobs: usize = args.get("jobs").map_or(4, |j| j.parse().unwrap_or_else(|_| die("--jobs N")));
+        let client_root = crate::client_root(args);
+        let manifest = capture.dir.join(city_capture::MANIFEST_FILE);
+        let dirs: Vec<PathBuf> = (0..run.clients.len()).map(|index| client_dir(&out, index)).collect();
+        for batch in dirs.chunks(jobs.max(1)) {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|dir| {
+                    let (dir, root, manifest) = (dir.clone(), client_root.clone(), manifest.clone());
+                    std::thread::spawn(move || {
+                        crate::run_client_stage(&dir.join("lab.vltape"), &dir, "60", &root, "city", &manifest)
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("client stage thread").unwrap_or_else(|e| die(&e.to_string()));
+            }
+        }
+    }
+    let card = score_city(&capture, &run, &out).unwrap_or_else(|e| die(&e.to_string()));
+    println!("{}", card_markdown(&card).lines().take(12).collect::<Vec<_>>().join("\n"));
+}

@@ -534,7 +534,7 @@ pub fn score(
     options: &ScoreOptions,
 ) -> std::io::Result<Scorecard> {
     let mut tape = TapeReader::open(tape_path)?;
-    if tape.manifest_hash != manifest.hash() {
+    if !manifest.matches_hash(&tape.manifest_hash) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "tape was recorded against a different manifest",

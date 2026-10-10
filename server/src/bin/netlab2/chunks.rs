@@ -338,7 +338,7 @@ impl ChunkTruth {
         checkpoint: Option<&vibe_land_destruction::encoder::EncoderCheckpoint>,
     ) -> std::io::Result<Self> {
         let mut tape = TapeReader::open(tape_path)?;
-        if tape.manifest_hash != manifest.hash() {
+        if !manifest.matches_hash(&tape.manifest_hash) {
             return Err(std::io::Error::other("the encoder tape was recorded against a different manifest"));
         }
         let (mut slot_base, mut structure_of, mut rest, mut mass, mut support) =

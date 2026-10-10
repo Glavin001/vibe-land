@@ -407,6 +407,30 @@ impl DestructionManifest {
         hasher.finalize().into()
     }
 
+    /// The hash this manifest had before binary format 2 (centre-of-mass
+    /// offsets, bcbc27d8), when it has no offsets to lose: what captures and
+    /// encoder checkpoints recorded before 2026-10-07 carry. Format 2 changed
+    /// every manifest's hash, offsets or not, so without this no capture from
+    /// before it could be replayed.
+    pub fn legacy_hash(&self) -> Option<[u8; 32]> {
+        let centred = self
+            .structures
+            .iter()
+            .all(|s| s.chunks.iter().all(|c| c.mass_offset == [0.0; 3]));
+        if !centred {
+            return None;
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(crate::manifest_binary::encode_format(self, 1));
+        Some(hasher.finalize().into())
+    }
+
+    /// Whether `hash` names this manifest, now or in a capture from before
+    /// format 2 (`legacy_hash`).
+    pub fn matches_hash(&self, hash: &[u8; 32]) -> bool {
+        &self.hash() == hash || self.legacy_hash().as_ref() == Some(hash)
+    }
+
     pub fn hash_hex(&self) -> String {
         self.hash().iter().map(|b| format!("{b:02x}")).collect()
     }
@@ -474,6 +498,28 @@ mod tests {
         }"#,
         )
         .expect("tiny pack")
+    }
+
+    /// Captures from before binary format 2 carry the format-1 hash. A
+    /// manifest whose chunks are all centred still answers to it (so they
+    /// replay), one with any offset does not (its old hash described a
+    /// different body frame), and the current hash is untouched.
+    #[test]
+    fn a_centred_manifest_still_answers_to_its_format_1_hash() {
+        let desc = CitySceneDesc { grid: 1, pitch_m: 10.0, varied_heights: false };
+        let mut manifest = DestructionManifest::from_city(&build_city_scene(&tiny_pack(), desc).unwrap());
+        let legacy = manifest.legacy_hash().expect("cuboids are centred");
+        assert_ne!(legacy, manifest.hash(), "format 2 changed every hash");
+        let mut format_1 = crate::manifest_binary::encode_format(&manifest, 1);
+        assert_eq!(&format_1[4..8], &1u32.to_le_bytes());
+        assert_eq!(legacy, <[u8; 32]>::from(Sha256::digest(&format_1)));
+        assert!(manifest.matches_hash(&legacy));
+        assert!(manifest.matches_hash(&manifest.hash()));
+        format_1[8] ^= 1;
+        assert!(!manifest.matches_hash(&<[u8; 32]>::from(Sha256::digest(&format_1))));
+        manifest.structures[0].chunks[1].mass_offset = [0.0, 0.1, 0.0];
+        assert!(manifest.legacy_hash().is_none());
+        assert!(!manifest.matches_hash(&legacy));
     }
 
     #[test]

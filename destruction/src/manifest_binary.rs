@@ -102,6 +102,13 @@ impl Writer {
 }
 
 pub fn encode(manifest: &DestructionManifest) -> Vec<u8> {
+    encode_format(manifest, FORMAT_VERSION)
+}
+
+/// `encode` in an older format: 1 has no centre-of-mass offsets. For the
+/// manifest hash of a capture recorded before format 2
+/// (`DestructionManifest::legacy_hash`); nothing serves it.
+pub fn encode_format(manifest: &DestructionManifest, format: u32) -> Vec<u8> {
     let mut w = Writer {
         out: Vec::with_capacity(estimated_size(manifest)),
     };
@@ -115,7 +122,7 @@ pub fn encode(manifest: &DestructionManifest) -> Vec<u8> {
     };
 
     w.out.extend_from_slice(MAGIC);
-    w.u32(FORMAT_VERSION);
+    w.u32(format);
     w.u32(manifest.version);
     w.u32(manifest.structures.len() as u32);
     w.u32(manifest.materials.len() as u32);
@@ -139,7 +146,7 @@ pub fn encode(manifest: &DestructionManifest) -> Vec<u8> {
     }
 
     for structure in &manifest.structures {
-        write_structure(&mut w, structure);
+        write_structure(&mut w, structure, format);
     }
 
     w.out.extend_from_slice(&appearance);
@@ -149,7 +156,7 @@ pub fn encode(manifest: &DestructionManifest) -> Vec<u8> {
 
 /// One structure: a fixed header, then every chunk field as its own array, then
 /// every bond field as its own array.
-fn write_structure(w: &mut Writer, structure: &StructureManifest) {
+fn write_structure(w: &mut Writer, structure: &StructureManifest, format: u32) {
     let chunks = &structure.chunks;
     let bonds = &structure.bonds;
     w.u32(structure.structure_id);
@@ -237,8 +244,10 @@ fn write_structure(w: &mut Writer, structure: &StructureManifest) {
     w.f32s(&inline_points);
     // Format 2: centre-of-mass offset from the centroid. Zero for nearly every
     // chunk of most packs, which is what gzip is best at.
-    for chunk in chunks {
-        w.f32s(&chunk.mass_offset);
+    if format >= 2 {
+        for chunk in chunks {
+            w.f32s(&chunk.mass_offset);
+        }
     }
 
     for bond in bonds {

@@ -34,6 +34,7 @@ pub mod membership;
 pub mod netlab;
 pub mod packet;
 pub mod quant;
+pub mod replication;
 pub mod scene_pack;
 pub mod scene_binary;
 pub mod scene_warm;
