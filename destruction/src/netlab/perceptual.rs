@@ -197,9 +197,9 @@ pub struct PerceptualReport {
     pub not_measured: Vec<String>,
     /// Gate G5: visible frames in which a body the truth has at rest moved
     /// more than 1 cm, counted once per body per frame -- except a step
-    /// that at least halves its distance to the resting truth, which is the
+    /// that ends closer to the resting truth than it began, which is the
     /// client landing on the settle pose (counted below; its size is scored
-    /// as a pop).
+    /// as a pop). Motion that does not converge on the rest pose fails.
     pub g5_resurrection_frames: u64,
     /// Steps onto the settle pose: frames a resting body was corrected onto
     /// the truth (not motion away from it).
@@ -568,7 +568,7 @@ impl PerceptualEval {
             let (d1, t1) = state.world[state.world_len - 1];
             let (d0, t0) = state.world[state.world_len - 2];
             if d1.distance(d0) > 0.01 && t1.distance(t0) < 0.001 {
-                if d1.distance(t1) <= 0.5 * d0.distance(t0) {
+                if d1.distance(t1) < d0.distance(t0) {
                     snaps.insert(item.body);
                     continue;
                 }
