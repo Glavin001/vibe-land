@@ -271,6 +271,44 @@ failures in this corner are its unbudgeted fracture events.
 per player's budgeted bytes peak at 756 kbit/s against the 768 cap; the
 reliable events push one second to 773. v2 peaks at 943.
 
+### The turning-camera corner, traced, and the ranking experiments
+
+**What the trace found.** In the round-3 corner, 56% of the flicking
+player's pops came from 3 pieces. Each was drawn sliding past the player at
+about 50 m/s on a stale keyframe: a ballistic prediction clamped to the
+ground floor. Each was 70 m from its truth, and none was re-sent for 3 s.
+
+**Why they were never re-sent.**
+- Their gain was flat at 5.0, because screen error and the correction pop
+  both saturate.
+- They ranked about 350th of 850 candidates, with about 30 sent per send.
+- The ranking prices one send's worth of penalty. The scorer charges a body
+  drawn moving wrongly a pop every frame (V2).
+
+**The experiments** (all `pp.*`, off by default; 18 runs: the corner's 5
+seeds, the three captures on lte, cable, poor-mobile and 256 kbit/s, and
+city-100k; change against current defaults):
+
+| knob(s) | corner, v2 / per player by seed | single collapses | city-100k | kept as |
+|---|---|---|---:|---|
+| `motion_cost` (one send's pop for wrong motion) | worse (0.81-0.95) | -12% to +6% | +4% | control |
+| `drawn_view` (judge the error where it is drawn too) | unchanged | -4% to +6% | +2% | knob |
+| `age_priority` (priority accumulator: penalty per second x time wrong) | 0.92-1.11 | -12% to +3% | +8% | knob |
+| `age_priority` + `drawn_view` | 0.95-1.07 (geomean 0.995: a tie) | -12% to +0.4% | +4.6% | candidate default |
+| + `contacts` (on-screen, marginal, from landing) | 0.94-1.11 | -15% to +0.7% | +25% | knob |
+| `age_priority` with the correction as a cost, waiting when it costs more than it saves | 0.95-1.11 | 2-6x worse | 3.5x worse | reverted |
+
+**What these show.**
+- **The accumulator fixes the slider:** at most 6 pops per piece, against 86.
+- **The candidate default helps where heavy collapses meet bad links or
+  small budgets,** by 8-12%, and leaves the corner tied.
+- **It costs 4.6% on city-100k,** where it corrects many small, steady,
+  distant errors, and each correction is itself a pop.
+- **Making the correction a cost instead held back the pieces about to sink
+  through the floor** (G4 in the thousands). The scorer charges those under
+  classes the accumulator does not see. The next lever is to put those
+  classes into the rate as well, not to hold corrections back.
+
 ## Cost
 
 Server CPU is thread CPU time, on a machine shared with other jobs. Send
