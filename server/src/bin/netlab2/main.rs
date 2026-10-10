@@ -33,6 +33,7 @@ mod snapshot_builder;
 mod bundle;
 mod calibrate;
 mod chunks;
+mod city_clips;
 mod city_lab;
 mod city_perceptual;
 mod city_pp_stage;
@@ -550,6 +551,7 @@ fn main() {
         "score" => cmd_score(&args),
         "calibrate" => calibrate::cmd_calibrate(&args),
         "city" => city_lab::cmd_city(&args),
+        "city-clips" => city_clips::cmd_city_clips(&args),
         "matrix" => report::cmd_matrix(&args),
         "compare" => report::cmd_compare(&args),
         "profiles" => {
