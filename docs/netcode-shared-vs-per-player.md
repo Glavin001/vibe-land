@@ -344,6 +344,13 @@ windows by the scorer's event log:
 
 - **Calibration.** Thresholds and severities are literature seeds. A
   simulated inspector needed about 80 trials per class to land within 10%.
+- **Debris damage, opt-in** (`VIBE_CITY_DEBRIS_DAMAGE=1`) is
+  server-authoritative and uses the vehicle-strike impulse model. It was
+  verified live: a player at a toppled tower's wall was killed by falling
+  debris in 3 of 3 runs with the flag on, and lost no HP in 3 runs with it
+  off. Walking into a standing wall or settled rubble does no damage.
+  Owner's decision pending: the model treats the player as immovable, which
+  overstates sideways bumps.
 - **Fairness and gameplay.** `VIBE_CITY_CHUNKS_BLOCK_SHOTS=1` (opt-in) makes
   chunks stop shots. With it on, F1 (a shot's outcome on the shooter's
   screen against the server's) is F2 at the shooter's render tick, which
