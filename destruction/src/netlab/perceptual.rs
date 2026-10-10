@@ -39,7 +39,8 @@
 //!   threshold. Per body per second.
 //! - **V13 rubber-banding.** The displayed-minus-true screen offset swings to
 //!   the opposite side within 500 ms, more than 2 px on both sides. One
-//!   event per swing, at the smaller side.
+//!   event per body per 500 ms (its chunks swing together), at the smaller
+//!   side.
 //!
 //! Visibility is free-gaze (weight 1 anywhere on screen) and occlusion-aware:
 //! the caller passes each item's visibility, from the object-ID buffer
@@ -50,7 +51,7 @@
 //! Not measured yet (listed in the report): V6 contact timing, V7 cause to
 //! effect, V8 group error, V9 video score, V11 overlap, V12 audio sync.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 
 use glam::{Quat, Vec2, Vec3};
 use serde::{Deserialize, Serialize};
@@ -161,8 +162,11 @@ pub struct PerceptualEval {
     visible_item_frames: u64,
     first_t: Option<f64>,
     last_t: f64,
-    /// (t, displayed, truth) history per body for energy, newest last.
     frame_dt: f64,
+    log_events: bool,
+    event_log: Vec<(f64, ArtifactClass, u32, f64)>,
+    /// When each body last scored a rubber band.
+    body_band_s: HashMap<u32, f64>,
 }
 
 /// Frames either side of an acceleration stencil (9 at 60 Hz: a 300 ms
@@ -195,6 +199,9 @@ impl PerceptualEval {
             first_t: None,
             last_t: 0.0,
             frame_dt: 1.0 / 60.0,
+            log_events: false,
+            event_log: Vec::new(),
+            body_band_s: HashMap::new(),
         }
     }
 
@@ -202,8 +209,25 @@ impl PerceptualEval {
         &self.model
     }
 
+    /// Every event at or above threshold, for diagnosis: (t, class, body,
+    /// magnitude). Off unless `record_events` was called.
+    pub fn take_events(&mut self) -> Vec<(f64, ArtifactClass, u32, f64)> {
+        std::mem::take(&mut self.event_log)
+    }
+
+    pub fn record_events(&mut self, on: bool) {
+        self.log_events = on;
+    }
+
     fn event(&mut self, class: ArtifactClass, m: f64, visibility: f32) {
+        self.event_for(class, m, visibility, u32::MAX);
+    }
+
+    fn event_for(&mut self, class: ArtifactClass, m: f64, visibility: f32, body: u32) {
         let theta = self.model.class(class).theta;
+        if self.log_events && m >= theta && visibility > 0.0 {
+            self.event_log.push((self.last_t, class, body, m));
+        }
         let penalty = self.model.penalty(class, m, f64::from(visibility));
         let acc = self.classes.get_mut(&class).unwrap();
         acc.events += 1;
@@ -261,7 +285,7 @@ impl PerceptualEval {
                 ArtifactClass::EnergyGain => (agg.sum / n).max(0.0),
                 _ => agg.sum / n,
             };
-            self.event(key.0, m, agg.visibility);
+            self.event_for(key.0, m, agg.visibility, key.1);
         }
     }
 
@@ -349,8 +373,14 @@ impl PerceptualEval {
                     let smaller = now_peak.length().min(before.length());
                     if !stored.swing_counted && smaller > RUBBER_BAND_PX && now_at - before_at <= RUBBER_BAND_S {
                         stored.swing_counted = true;
-                        self.sample(ArtifactClass::RubberBand, f64::from(smaller));
-                        self.event(ArtifactClass::RubberBand, f64::from(smaller), vis);
+                        // One event per body per swing window: a body's
+                        // chunks swing together.
+                        let last = self.body_band_s.get(&item.body).copied().unwrap_or(f64::MIN);
+                        if t_s - last > RUBBER_BAND_S {
+                            self.body_band_s.insert(item.body, t_s);
+                            self.sample(ArtifactClass::RubberBand, f64::from(smaller));
+                            self.event_for(ArtifactClass::RubberBand, f64::from(smaller), vis, item.body);
+                        }
                     }
                 }
             }
@@ -397,8 +427,8 @@ impl PerceptualEval {
         }
         let mut pops: Vec<(u32, (f64, f32))> = pops.into_iter().collect();
         pops.sort_unstable_by_key(|(body, _)| *body);
-        for (_, (m, vis)) in pops {
-            self.event(ArtifactClass::Pop, m, vis);
+        for (body, (m, vis)) in pops {
+            self.event_for(ArtifactClass::Pop, m, vis, body);
         }
     }
 

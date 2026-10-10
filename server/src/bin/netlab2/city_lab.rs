@@ -148,7 +148,8 @@ struct Queued {
 }
 
 /// Per-client stream totals for the card.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ClientStream {
     pub packets: u64,
     pub bytes: u64,
@@ -536,6 +537,8 @@ pub struct ClientCard {
     pub city_sync: Option<crate::score::CitySync>,
     pub chunks: Option<crate::chunks::ChunkStats>,
     pub all_draws: Option<crate::unified::AllDraws>,
+    /// What this client's screen showed, as noticed artifacts (V1-V13).
+    pub perceptual: Option<vibe_land_destruction::netlab::perceptual::PerceptualReport>,
     pub client_cpu_ms: Option<f64>,
     pub notes: Vec<String>,
 }
@@ -563,8 +566,12 @@ pub struct CityCard {
     pub first_tick: u32,
     pub last_tick: u32,
     pub gates: Gates,
-    /// Every client's chunk draws pooled.
-    pub all_clients: Option<crate::unified::AllDraws>,
+    /// The perceptual model the cards were scored with.
+    pub model: vibe_land_destruction::perception::PerceptualModel,
+    /// Mean over clients of Q and of the penalty per minute.
+    pub q_mean: Option<f64>,
+    pub q_min: Option<f64>,
+    pub penalty_per_minute_mean: Option<f64>,
     pub clients: Vec<ClientCard>,
     /// Bytes across clients: mean of means, max of maxima, kbit/s.
     pub kbit_s_mean: f64,
@@ -572,8 +579,7 @@ pub struct CityCard {
 }
 
 pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::Result<CityCard> {
-    let mut pooled = crate::unified::AllDrawsAcc::default();
-    let mut cards = Vec::new();
+    let model = vibe_land_destruction::perception::PerceptualModel::literature();
     let mut gates = Gates { pass: true, ..Default::default() };
     gates.pending = vec![
         "G2 event ordering: needs the client's applied-event log (milestone 3)".into(),
@@ -583,54 +589,21 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
     ];
     let tick_end: HashMap<u32, f64> =
         (run.first_tick..=run.last_tick).map(|tick| (tick, tick_ms(tick, run.first_tick, run.hz))).collect();
-    for (index, (client, stream)) in run.clients.iter().enumerate() {
-        let dir = client_dir(out, index);
-        let mut card = ClientCard {
-            id: client.id,
-            camera: client.camera.label(),
-            stream: stream.clone(),
-            city_sync: None,
-            chunks: None,
-            all_draws: None,
-            client_cpu_ms: None,
-            notes: Vec::new(),
-        };
-        if let Ok(bytes) = std::fs::read(dir.join("client-stats.json")) {
-            if let Ok(stats) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                card.city_sync = crate::score::CitySync::from_client_stats(&stats);
-                card.client_cpu_ms = stats["clientCpuMs"].as_f64();
-            }
-        }
-        let chunks = dir.join(crate::chunks::CHUNKS_FILE);
-        if chunks.is_file() {
-            let mut acc = crate::unified::AllDrawsAcc::default();
-            match crate::chunks::score_chunks(
-                &chunks,
-                &capture.tape_path(),
-                &capture.manifest,
-                capture.checkpoint.as_ref(),
-                &mut acc,
-                None,
-                &tick_end,
-            ) {
-                Ok(stats) => card.chunks = Some(stats),
-                Err(error) => card.notes.push(format!("chunks not scored: {error}")),
-            }
-            card.all_draws = Some(acc.report());
-            // Pooled: score again into the shared accumulator (the scorer is
-            // a pure function of its inputs).
-            let _ = crate::chunks::score_chunks(
-                &chunks,
-                &capture.tape_path(),
-                &capture.manifest,
-                capture.checkpoint.as_ref(),
-                &mut pooled,
-                None,
-                &tick_end,
-            );
-        } else {
-            card.notes.push("no drawn-chunks.bin: the client stage did not run".into());
-        }
+    // Clients are independent: score them in parallel.
+    let cards: Vec<ClientCard> = std::thread::scope(|scope| {
+        let handles: Vec<_> = run
+            .clients
+            .iter()
+            .enumerate()
+            .map(|(index, (client, stream))| {
+                let dir = client_dir(out, index);
+                let (tick_end, model) = (&tick_end, model.clone());
+                scope.spawn(move || score_client(capture, client, stream, &dir, tick_end, model))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("client scoring thread")).collect()
+    });
+    for (card, (_, stream)) in cards.iter().zip(&run.clients) {
         if let Some(sync) = &card.city_sync {
             gates.g1_hash_mismatches += sync.hash_mismatches;
             gates.g1_hash_checks += sync.hash_checks;
@@ -643,17 +616,21 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
                 gates.g3_clients_over += 1;
             }
         }
-        cards.push(card);
     }
     gates.pass = gates.g1_hash_mismatches == 0 && gates.g3_clients_over == 0;
     let n = cards.len().max(1) as f64;
+    let qs: Vec<f64> = cards.iter().filter_map(|c| c.perceptual.as_ref().map(|p| p.q)).collect();
+    let penalties: Vec<f64> = cards.iter().filter_map(|c| c.perceptual.as_ref().map(|p| p.penalty_per_minute)).collect();
     let card = CityCard {
         spec: run.spec.clone(),
         hz: run.hz,
         first_tick: run.first_tick,
         last_tick: run.last_tick,
         gates,
-        all_clients: (pooled.frames > 0).then(|| pooled.report()),
+        model,
+        q_mean: (!qs.is_empty()).then(|| qs.iter().sum::<f64>() / qs.len() as f64),
+        q_min: qs.iter().copied().reduce(f64::min),
+        penalty_per_minute_mean: (!penalties.is_empty()).then(|| penalties.iter().sum::<f64>() / penalties.len() as f64),
         kbit_s_mean: cards.iter().map(|c| c.stream.kbit_s_mean).sum::<f64>() / n,
         kbit_s_max_1s: cards.iter().map(|c| c.stream.kbit_s_max_1s).fold(0.0, f64::max),
         clients: cards,
@@ -661,6 +638,66 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
     std::fs::write(out.join("scorecard.json"), serde_json::to_vec_pretty(&card)?)?;
     std::fs::write(out.join("scorecard.md"), card_markdown(&card))?;
     Ok(card)
+}
+
+fn score_client(
+    capture: &CityCapture,
+    client: &ClientSpec,
+    stream: &ClientStream,
+    dir: &Path,
+    tick_end: &HashMap<u32, f64>,
+    model: vibe_land_destruction::perception::PerceptualModel,
+) -> ClientCard {
+    let mut card = ClientCard {
+        id: client.id,
+        camera: client.camera.label(),
+        stream: stream.clone(),
+        city_sync: None,
+        chunks: None,
+        all_draws: None,
+        perceptual: None,
+        client_cpu_ms: None,
+        notes: Vec::new(),
+    };
+    if let Ok(bytes) = std::fs::read(dir.join("client-stats.json")) {
+        if let Ok(stats) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            card.city_sync = crate::score::CitySync::from_client_stats(&stats);
+            card.client_cpu_ms = stats["clientCpuMs"].as_f64();
+        }
+    }
+    let chunks = dir.join(crate::chunks::CHUNKS_FILE);
+    if !chunks.is_file() {
+        card.notes.push("no drawn-chunks.bin: the client stage did not run".into());
+        return card;
+    }
+    let mut acc = crate::unified::AllDrawsAcc::default();
+    match crate::chunks::score_chunks(
+        &chunks,
+        &capture.tape_path(),
+        &capture.manifest,
+        capture.checkpoint.as_ref(),
+        &mut acc,
+        None,
+        tick_end,
+    ) {
+        Ok(stats) => card.chunks = Some(stats),
+        Err(error) => card.notes.push(format!("chunks not scored: {error}")),
+    }
+    card.all_draws = Some(acc.report());
+    match crate::city_perceptual::evaluate_client(
+        &chunks,
+        &capture.tape_path(),
+        &capture.manifest,
+        capture.checkpoint.as_ref(),
+        &client.camera,
+        &capture.tracks,
+        ORIGIN_MS,
+        model,
+    ) {
+        Ok(report) => card.perceptual = Some(report),
+        Err(error) => card.notes.push(format!("perceptual not scored: {error}")),
+    }
+    card
 }
 
 fn card_markdown(card: &CityCard) -> String {
@@ -693,7 +730,15 @@ fn card_markdown(card: &CityCard) -> String {
     for pending in &g.pending {
         let _ = writeln!(md, "- pending: {pending}");
     }
-    let _ = writeln!(md, "\nBytes: {:.1} kbit/s mean per client, busiest 1 s window {:.1} kbit/s.\n", card.kbit_s_mean, card.kbit_s_max_1s);
+    let _ = writeln!(md, "\nBytes: {:.1} kbit/s mean per client, busiest 1 s window {:.1} kbit/s.", card.kbit_s_mean, card.kbit_s_max_1s);
+    if let (Some(q), Some(q_min), Some(p)) = (card.q_mean, card.q_min, card.penalty_per_minute_mean) {
+        let _ = writeln!(
+            md,
+            "\n**Q {q:.1} mean, {q_min:.1} worst client** (penalty {p:.2} per client-minute; perceptual model {}).",
+            card.model.calibration
+        );
+    }
+    let _ = writeln!(md);
     let _ = writeln!(md, "| client | camera | kbit/s | max 1 s | debris pos@render p99 m | debris pos@now p99 m | missing | wrong id | hash mism. |");
     let _ = writeln!(md, "|---|---|---:|---:|---:|---:|---:|---:|---:|");
     for client in &card.clients {
@@ -712,8 +757,25 @@ fn card_markdown(card: &CityCard) -> String {
             client.city_sync.as_ref().map_or("-".into(), |s| s.hash_mismatches.to_string()),
         );
     }
-    if let Some(all) = &card.all_clients {
-        let _ = writeln!(md, "\n{}", crate::unified::markdown_titled(all, "Every client's chunk draws"));
+    let _ = writeln!(md, "\nNoticed artifacts per client-minute (events at or above threshold / penalty):\n");
+    let classes: Vec<String> = card
+        .clients
+        .iter()
+        .find_map(|c| c.perceptual.as_ref())
+        .map(|p| p.classes.iter().filter(|(_, c)| c.samples > 0.0 || c.events > 0).map(|(k, _)| k.clone()).collect())
+        .unwrap_or_default();
+    let _ = writeln!(md, "| client | Q | {} |", classes.join(" | "));
+    let _ = writeln!(md, "|---|---:|{}", classes.iter().map(|_| "---:|").collect::<String>());
+    for client in &card.clients {
+        let Some(p) = &client.perceptual else { continue };
+        let cells: Vec<String> = classes
+            .iter()
+            .map(|k| p.classes.get(k).map_or("-".into(), |c| format!("{:.1} / {:.2}", c.events_at_theta_per_minute, c.penalty_per_minute)))
+            .collect();
+        let _ = writeln!(md, "| {} | {:.1} | {} |", client.id, p.q, cells.join(" | "));
+    }
+    if let Some(p) = card.clients.iter().find_map(|c| c.perceptual.as_ref()) {
+        let _ = writeln!(md, "\nNot measured yet: {}.", p.not_measured.join("; "));
     }
     md
 }
@@ -784,10 +846,32 @@ pub fn open_capture(args: &Args) -> (CityCapture, String) {
     (capture, dir.display().to_string())
 }
 
+/// A finished run read back from its directory (`--rescore`): the spec as
+/// the command line gives it, each client's stream totals from its
+/// `stream.json`, the tick range from the capture.
+fn read_run(capture: &CityCapture, spec: CitySpec, out: &Path) -> std::io::Result<CityRun> {
+    let mut clients = Vec::new();
+    for index in 0..spec.clients.len() {
+        let value: serde_json::Value = serde_json::from_slice(&std::fs::read(client_dir(out, index).join("stream.json"))?)?;
+        let client: ClientSpec = serde_json::from_value(value["client"].clone())?;
+        let stream: ClientStream = serde_json::from_value(value["stream"].clone())?;
+        clients.push((client, stream));
+    }
+    let first = capture.meta.first_tick.unwrap_or(0);
+    let last = capture.meta.last_tick.unwrap_or(first);
+    Ok(CityRun { spec, first_tick: first, last_tick: last, hz: capture.meta.hz.max(1), clients })
+}
+
 pub fn cmd_city(args: &Args) {
     let (capture, label) = open_capture(args);
     let out = args.path("out");
     let spec = city_spec(args, &capture, label);
+    if args.get("rescore").is_some() {
+        let run = read_run(&capture, spec, &out).unwrap_or_else(|e| die(&format!("--rescore: {e}")));
+        let card = score_city(&capture, &run, &out).unwrap_or_else(|e| die(&e.to_string()));
+        println!("{}", card_markdown(&card));
+        return;
+    }
     let run = run_city_stream(&capture, &spec, &out).unwrap_or_else(|e| die(&e.to_string()));
     eprintln!(
         "netlab2 city: {} clients, ticks {}..{}, {} on {}",

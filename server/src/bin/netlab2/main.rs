@@ -34,6 +34,7 @@ mod bundle;
 mod calibrate;
 mod chunks;
 mod city_lab;
+mod city_perceptual;
 #[cfg(test)]
 mod fixture_tests;
 mod link;

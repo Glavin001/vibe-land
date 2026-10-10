@@ -5,8 +5,13 @@
 //! sharp at motion that breaks physics or causality. So the error that
 //! matters is not one pixel distance. It is a set of artifact classes, each
 //! with a psychometric function: the probability that a viewer notices an
-//! error of size `m` is a logistic curve with threshold `theta` (noticed half
-//! the time) and slope `k`. Each class also has a severity `S`: how
+//! error of size `m` is a log-logistic curve, `1 / (1 + (theta / m)^beta)`,
+//! with threshold `theta` (noticed half the time) and slope `beta` on a log
+//! scale -- the standard shape for detection thresholds (a Weibull-like
+//! function of log magnitude). Unlike a logistic in raw units it has no
+//! floor: an error a tenth of threshold is noticed 0.01% of the time at
+//! beta 4, not a few percent, which summed over hundreds of debris pieces
+//! would otherwise swamp the score with errors nobody can see. Each class also has a severity `S`: how
 //! objectionable the error is once noticed. The penalty is
 //!
 //!   sum over events e of  A_e * P(notice | m_e) * S_class,
@@ -104,8 +109,9 @@ impl ArtifactClass {
 pub struct Psychometric {
     /// The error noticed half the time, in the class's unit.
     pub theta: f64,
-    /// Logistic slope, per unit.
-    pub k: f64,
+    /// Slope on a log scale (dimensionless): at `beta` 4, half the
+    /// threshold is noticed 6% of the time and twice it 94%.
+    pub beta: f64,
     /// How objectionable a noticed error is (tier order until fitted).
     pub severity: f64,
     pub unit: String,
@@ -118,7 +124,7 @@ impl Psychometric {
         if !m.is_finite() || m <= 0.0 {
             return 0.0;
         }
-        1.0 / (1.0 + (-self.k * (m - self.theta)).exp())
+        1.0 / (1.0 + (self.theta / m).powf(self.beta))
     }
 }
 
@@ -139,28 +145,31 @@ impl PerceptualModel {
     /// The literature seeds (the spec's perception table). Uncalibrated.
     pub fn literature() -> Self {
         let mut classes = std::collections::BTreeMap::new();
-        let mut add = |class: ArtifactClass, theta: f64, k: f64, severity: f64, unit: &str, source: &str| {
+        // beta 4 throughout until the calibration study fits each class: a
+        // conventional detection slope (Weibull beta 3-4 is typical of
+        // displacement and timing detection).
+        let mut add = |class: ArtifactClass, theta: f64, severity: f64, unit: &str, source: &str| {
             classes.insert(
                 class.name().to_string(),
-                Psychometric { theta, k, severity, unit: unit.into(), source: source.into() },
+                Psychometric { theta, beta: 4.0, severity, unit: unit.into(), source: source.into() },
             );
         };
         // Tier 3: discontinuities and causality.
-        add(ArtifactClass::Pop, 2.0, 2.0, 4.0, "px", "spec V2 threshold (2 px); popping visibility, Schwarz & Stamminger 2009");
-        add(ArtifactClass::ContactTiming, 60.0, 0.08, 4.0, "ms", "collision delays of ~60 ms accepted on average, O'Sullivan et al. 2003");
-        add(ArtifactClass::CauseEffect, 3.0, 1.5, 4.0, "frames", "~50 ms launch window, Michotte (3 frames at 60 Hz)");
-        add(ArtifactClass::AudioSync, 75.0, 0.06, 3.0, "ms", "audio lead undetected to ~75 ms, Eg & Behne 2015 (Dixon & Spitz)");
-        add(ArtifactClass::RubberBand, 2.0, 1.5, 4.0, "px", "overshoot read as a pop that comes back; spec V13");
+        add(ArtifactClass::Pop, 2.0, 4.0, "px", "spec V2 threshold (2 px); popping visibility, Schwarz & Stamminger 2009");
+        add(ArtifactClass::ContactTiming, 60.0, 4.0, "ms", "collision delays of ~60 ms accepted on average, O'Sullivan et al. 2003");
+        add(ArtifactClass::CauseEffect, 3.0, 4.0, "frames", "~50 ms launch window, Michotte (3 frames at 60 Hz)");
+        add(ArtifactClass::AudioSync, 75.0, 3.0, "ms", "audio lead undetected to ~75 ms, Eg & Behne 2015 (Dixon & Spitz)");
+        add(ArtifactClass::RubberBand, 2.0, 4.0, "px", "overshoot read as a pop that comes back; spec V13");
         // Tier 4: physics-law violations.
-        add(ArtifactClass::Gravity, 0.2, 15.0, 3.0, "fraction of g", "gravity detected accurately, Lacquaniti et al. 2013; spec V3 target 20%");
-        add(ArtifactClass::EnergyGain, 0.15, 20.0, 3.0, "fraction of KE", "energy change predicts believability, Yeh et al. 2009");
-        add(ArtifactClass::UnexplainedAccel, 3.0, 1.0, 2.5, "m/s^2 (weighted)", "added horizontal/speed-up accelerations detected first, Reitsma & Pollard 2003");
-        add(ArtifactClass::Overlap, 5.0, 0.6, 2.5, "cm", "spec G4/V11 5 cm starting value");
+        add(ArtifactClass::Gravity, 0.2, 3.0, "fraction of g", "gravity detected accurately, Lacquaniti et al. 2013; spec V3 target 20%");
+        add(ArtifactClass::EnergyGain, 0.15, 3.0, "fraction of KE", "energy change predicts believability, Yeh et al. 2009");
+        add(ArtifactClass::UnexplainedAccel, 3.0, 2.5, "m/s^2 (weighted)", "added horizontal/speed-up accelerations detected first, Reitsma & Pollard 2003");
+        add(ArtifactClass::Overlap, 5.0, 2.5, "cm", "spec G4/V11 5 cm starting value");
         // Tier 5: smoothness.
-        add(ArtifactClass::Smoothness, 0.75, 4.0, 1.5, "px rms", "4-12 ms frame-time variation felt, 2023 study (arXiv 2306.01691)");
+        add(ArtifactClass::Smoothness, 0.75, 1.5, "px rms", "4-12 ms frame-time variation felt, 2023 study (arXiv 2306.01691)");
         // Tier 6: steady offsets.
-        add(ArtifactClass::ScreenError, 3.0, 1.0, 1.0, "px", "spec V1 target p95 <= 3 px; position judged poorly");
-        add(ArtifactClass::GroupError, 4.0, 0.8, 1.0, "px", "ensemble motion perceived accurately, Whitney & Yamanashi Leib 2018");
+        add(ArtifactClass::ScreenError, 3.0, 1.0, "px", "spec V1 target p95 <= 3 px; position judged poorly");
+        add(ArtifactClass::GroupError, 4.0, 1.0, "px", "ensemble motion perceived accurately, Whitney & Yamanashi Leib 2018");
         Self { calibration: "uncalibrated".into(), classes, q_scale: 10.0, pane: (1920, 1080) }
     }
 
@@ -324,6 +333,7 @@ mod tests {
         for class in ArtifactClass::ALL {
             let f = model.class(class);
             assert!((f.p_notice(f.theta) - 0.5).abs() < 1e-9, "{class:?}");
+            assert!(f.p_notice(f.theta * 0.1) < 1e-3, "{class:?}: a tenth of threshold is all but invisible");
             assert!(f.p_notice(f.theta * 2.0) > f.p_notice(f.theta));
             assert_eq!(f.p_notice(0.0), 0.0, "no error, nothing to notice");
             assert!(!f.source.is_empty(), "{class:?} has no source");
