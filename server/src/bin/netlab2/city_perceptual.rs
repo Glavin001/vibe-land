@@ -18,7 +18,7 @@ use glam::Vec3;
 use vibe_land_destruction::ids;
 use vibe_land_destruction::manifest::DestructionManifest;
 use vibe_land_destruction::netlab::cameras::{CameraSpec, PlayerTracks};
-use vibe_land_destruction::netlab::perceptual::{IdBuffer, ItemSample, PerceptualEval, PerceptualReport};
+use vibe_land_destruction::netlab::perceptual::{IdBuffer, ItemSample, PerceptualEval, PerceptualReport, StaticBox};
 use vibe_land_destruction::perception::{PerceptualModel, Projector};
 
 use crate::chunks::{ChunkReader, ChunkTruth, DrawnTables};
@@ -80,12 +80,31 @@ pub fn evaluate_client(
     let mut buffer = IdBuffer::new(ID_WIDTH, ID_HEIGHT, pane);
     let mut changed = Vec::new();
     let mut items: Vec<ItemSample> = Vec::new();
+    let mut standing_poses: std::collections::HashMap<u32, [f32; 7]> = std::collections::HashMap::new();
     let Some(first_tick) = truth.first_tick else {
         return Ok(eval.report());
     };
     while let Some(frame) = reader.next_frame()? {
         changed.clear();
         tables.apply(&frame, &mut changed);
+        // A stage may re-send every body every frame: rebuild only when a
+        // record or a standing body's pose actually changed.
+        let mut standing_moved = false;
+        for &(_, key, pose) in &frame.bodies {
+            if ids::body_entity_parts(key).1 == 0 && standing_poses.insert(key, pose) != Some(pose) {
+                standing_moved = true;
+            }
+        }
+        if !changed.is_empty() || standing_moved {
+            // G4's static world: the standing chunks as this client draws them.
+            let mut boxes = Vec::new();
+            for slot in 0..reader.chunk_count {
+                if let Some(d) = tables.chunk(slot).filter(|d| d.drawn && ids::body_entity_parts(d.key).1 == 0) {
+                    boxes.push(StaticBox { position: d.position, rotation: d.rotation, half_extents: slots[slot as usize].half_extents });
+                }
+            }
+            eval.set_static_world(boxes);
+        }
         truth.advance_to(frame.sim_tick)?;
         let render = if frame.render_tick >= 0.0 { frame.render_tick - frame.playout_delay_ticks } else { frame.sim_tick as f32 };
         if render < first_tick as f32 || frame.sim_tick > truth.last_tick || frame.sim_tick < first_tick {

@@ -34,6 +34,7 @@ mod bundle;
 mod calibrate;
 mod chunks;
 mod city_clips;
+mod city_fairness;
 mod city_lab;
 mod city_perceptual;
 mod city_study;

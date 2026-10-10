@@ -659,6 +659,11 @@ pub struct Gates {
     pub g5_resurrection_frames: u64,
     /// Corrections onto the settle pose (not a G5 failure; scored as pops).
     pub g5_settle_snap_frames: u64,
+    /// G4: body-frames a loose chunk is drawn inside the ground or a
+    /// standing structure more than 5 cm deeper than the truth, and the
+    /// worst depth (cm).
+    pub g4_solid_frames: u64,
+    pub g4_worst_cm: f64,
     /// Gates the lab does not measure yet, and why.
     pub pending: Vec<String>,
     pub pass: bool,
@@ -715,6 +720,9 @@ pub struct CityCard {
     /// Bytes across clients: mean of means, max of maxima, kbit/s.
     pub kbit_s_mean: f64,
     pub kbit_s_max_1s: f64,
+    /// F2/F3 sightlines between every pair of clients (city_fairness.rs).
+    #[serde(default)]
+    pub fairness: Option<crate::city_fairness::Fairness>,
 }
 
 /// The perceptual model a run scores (and per-player ranks) with: `--model
@@ -731,7 +739,6 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
     let model = perceptual_model(&run.spec.knobs);
     let mut gates = Gates { pass: true, ..Default::default() };
     gates.pending = vec![
-        "G4 solid geometry: needs the static occupancy grid".into(),
         "G6 server time: reported as C2 (server_cost); its budget is set at scale (milestone 8)".into(),
     ];
     let tick_end: HashMap<u32, f64> =
@@ -772,12 +779,15 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
         if let Some(p) = &card.perceptual {
             gates.g5_resurrection_frames += p.g5_resurrection_frames;
             gates.g5_settle_snap_frames += p.g5_settle_snap_frames;
+            gates.g4_solid_frames += p.g4_solid_frames;
+            gates.g4_worst_cm = gates.g4_worst_cm.max(p.g4_worst_cm);
         }
     }
     gates.pass = gates.g1_hash_mismatches == 0
         && gates.g3_clients_over == 0
         && gates.g2_events_early == 0
-        && gates.g5_resurrection_frames == 0;
+        && gates.g5_resurrection_frames == 0
+        && gates.g4_solid_frames == 0;
     let n = cards.len().max(1) as f64;
     let qs: Vec<f64> = cards.iter().filter_map(|c| c.perceptual.as_ref().map(|p| p.q)).collect();
     let penalties: Vec<f64> = cards.iter().filter_map(|c| c.perceptual.as_ref().map(|p| p.penalty_per_minute)).collect();
@@ -797,6 +807,10 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
         kbit_s_mean: cards.iter().map(|c| c.stream.kbit_s_mean).sum::<f64>() / n,
         kbit_s_max_1s: cards.iter().map(|c| c.stream.kbit_s_max_1s).fold(0.0, f64::max),
         clients: cards,
+        fairness: {
+            let specs: Vec<ClientSpec> = run.clients.iter().map(|(c, _)| c.clone()).collect();
+            crate::city_fairness::evaluate(capture, &specs, out).ok().filter(|f| f.pair_frames > 0)
+        },
     };
     std::fs::write(out.join("scorecard.json"), serde_json::to_vec_pretty(&card)?)?;
     std::fs::write(out.join("scorecard.md"), card_markdown(&card))?;
@@ -895,9 +909,16 @@ fn card_markdown(card: &CityCard) -> String {
     );
     let _ = writeln!(
         md,
-        "G2: {} events applied, {} before the drawing reached their tick, {} after it passed. G5: {} body-frames moved while at rest ({} more were corrections onto the rest pose).",
-        g.g2_events_applied, g.g2_events_early, g.g2_events_late, g.g5_resurrection_frames, g.g5_settle_snap_frames
+        "G2: {} events applied, {} before the drawing reached their tick, {} after it passed. G5: {} body-frames moved while at rest ({} more were corrections onto the rest pose). G4: {} body-frames inside solid geometry (worst {:.1} cm).",
+        g.g2_events_applied, g.g2_events_early, g.g2_events_late, g.g5_resurrection_frames, g.g5_settle_snap_frames, g.g4_solid_frames, g.g4_worst_cm
     );
+    if let Some(f) = &card.fairness {
+        let _ = writeln!(
+            md,
+            "Sightlines (F2/F3), {} pairs, {} pair-frames in range ({} contested): F2 {} phantom + {} see-through player-frames ({:.1} per pair-minute), F3 {} asymmetric pair-frames ({:.1} per pair-minute).\n",
+            f.pairs, f.pair_frames, f.contested_pair_frames, f.f2_phantom_frames, f.f2_see_through_frames, f.f2_per_pair_minute, f.f3_asymmetric_frames, f.f3_per_pair_minute
+        );
+    }
     let c = &card.server_cost;
     let _ = writeln!(
         md,

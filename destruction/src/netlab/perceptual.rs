@@ -204,6 +204,41 @@ pub struct PerceptualReport {
     /// Steps onto the settle pose: frames a resting body was corrected onto
     /// the truth (not motion away from it).
     pub g5_settle_snap_frames: u64,
+    /// Gate G4: visible body-frames in which a drawn loose chunk is inside
+    /// solid geometry (the ground, a standing structure) more than
+    /// `G4_TOLERANCE_M` deeper than the truth has it, and the worst such
+    /// depth (cm).
+    pub g4_solid_frames: u64,
+    pub g4_worst_cm: f64,
+}
+
+/// The static world's lookup grid, metres.
+const STATIC_CELL: f32 = 4.0;
+
+/// G4's tolerance (the spec's 5 cm, as V11's threshold).
+pub const G4_TOLERANCE_M: f32 = 0.05;
+
+/// A box of the static world (a standing chunk): centre, rotation, half
+/// extents.
+#[derive(Clone, Copy, Debug)]
+pub struct StaticBox {
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub half_extents: Vec3,
+}
+
+impl StaticBox {
+    /// How deep a sphere is inside the box (negative: outside by that much).
+    fn sphere_depth(&self, centre: Vec3, radius: f32) -> f32 {
+        let local = self.rotation.conjugate() * (centre - self.position);
+        let outside = (local.abs() - self.half_extents).max(Vec3::ZERO);
+        if outside.length_squared() > 0.0 {
+            radius - outside.length()
+        } else {
+            // Inside: to the nearest face, plus the radius.
+            radius + (self.half_extents - local.abs()).min_element()
+        }
+    }
 }
 
 pub struct PerceptualEval {
@@ -223,6 +258,11 @@ pub struct PerceptualEval {
     event_log: Vec<(f64, ArtifactClass, u32, f64)>,
     g5_frames: u64,
     g5_snap_frames: u64,
+    g4_frames: u64,
+    g4_worst_cm: f64,
+    /// The static world this frame, and a 4 m grid over it.
+    statics: Vec<StaticBox>,
+    static_cells: HashMap<(i32, i32, i32), Vec<u32>>,
     /// When each body last scored a rubber band, a contact.
     body_band_s: HashMap<u32, f64>,
     body_contact_s: HashMap<u32, f64>,
@@ -268,6 +308,10 @@ impl PerceptualEval {
             body_contact_s: HashMap::new(),
             g5_frames: 0,
             g5_snap_frames: 0,
+            g4_frames: 0,
+            g4_worst_cm: 0.0,
+            statics: Vec::new(),
+            static_cells: HashMap::new(),
         }
     }
 
@@ -507,6 +551,7 @@ impl PerceptualEval {
         self.overlaps(t_s, items);
         self.commit_accelerations(t_s, items);
         self.resurrections(items);
+        self.solid_geometry(items);
     }
 
     /// V3/V4/V5 samples wait `CONTACT_WINDOW_S` before they count, and are
@@ -551,6 +596,59 @@ impl PerceptualEval {
                 self.sample(ArtifactClass::EnergyGain, e.max(0.0));
                 self.per_second(ArtifactClass::EnergyGain, a.body, a.second, e, a.vis);
             }
+        }
+    }
+
+    /// The static world for the next frames (standing chunks as drawn); the
+    /// ground plane is y = 0 always.
+    pub fn set_static_world(&mut self, boxes: Vec<StaticBox>) {
+        self.static_cells.clear();
+        for (i, b) in boxes.iter().enumerate() {
+            let r = b.half_extents.length();
+            let lo = ((b.position - Vec3::splat(r)) / STATIC_CELL).floor();
+            let hi = ((b.position + Vec3::splat(r)) / STATIC_CELL).floor();
+            for x in lo.x as i32..=hi.x as i32 {
+                for y in lo.y as i32..=hi.y as i32 {
+                    for z in lo.z as i32..=hi.z as i32 {
+                        self.static_cells.entry((x, y, z)).or_default().push(i as u32);
+                    }
+                }
+            }
+        }
+        self.statics = boxes;
+    }
+
+    /// G4: each visible loose drawn chunk's inscribed sphere against the
+    /// ground and the standing boxes near it, against the truth's own depth
+    /// (truth rests on the ground and against walls, so only depth beyond
+    /// it is the display's).
+    fn solid_geometry(&mut self, items: &[ItemSample]) {
+        let mut bodies: HashMap<u32, f32> = HashMap::new();
+        for item in items {
+            if item.visibility <= 0.0 || item.displayed_standing {
+                continue;
+            }
+            let (Some((dp, _)), Some((tp, _))) = (item.displayed, item.truth) else { continue };
+            let r = item.half_extents.min_element();
+            let depth = |p: Vec3| -> f32 {
+                let mut d = r - p.y;
+                let cell = (p / STATIC_CELL).floor();
+                if let Some(list) = self.static_cells.get(&(cell.x as i32, cell.y as i32, cell.z as i32)) {
+                    for &i in list {
+                        d = d.max(self.statics[i as usize].sphere_depth(p, r));
+                    }
+                }
+                d
+            };
+            let extra = depth(dp) - depth(tp).max(0.0);
+            if extra > G4_TOLERANCE_M {
+                let e = bodies.entry(item.displayed_body).or_insert(0.0);
+                *e = e.max(extra);
+            }
+        }
+        self.g4_frames += bodies.len() as u64;
+        for depth in bodies.values() {
+            self.g4_worst_cm = self.g4_worst_cm.max(f64::from(*depth) * 100.0);
         }
     }
 
@@ -813,6 +911,8 @@ impl PerceptualEval {
         report.penalty_per_minute = total;
         report.g5_resurrection_frames = self.g5_frames;
         report.g5_settle_snap_frames = self.g5_snap_frames;
+        report.g4_solid_frames = self.g4_frames;
+        report.g4_worst_cm = self.g4_worst_cm;
         report.q = self.model.quality(total);
         report.not_measured = vec![
             "V8 group error".into(),
@@ -1084,6 +1184,45 @@ mod tests {
             eval.frame(t, camera(400.0), &make(t));
         }
         eval.report()
+    }
+
+    #[test]
+    fn a_chunk_drawn_inside_the_ground_or_a_wall_fails_g4_but_resting_on_them_does_not() {
+        let item = |id: u32, shown: Vec3, truth: Vec3| ItemSample {
+            id,
+            body: id,
+            half_extents: Vec3::splat(0.3),
+            mass: 1.0,
+            displayed: Some((shown, Quat::IDENTITY)),
+            truth: Some((truth, Quat::IDENTITY)),
+            visibility: 1.0,
+            displayed_body: id,
+            displayed_standing: false,
+            truth_standing: false,
+            truth_settled: false,
+        };
+        let wall = StaticBox { position: Vec3::new(5.0, 2.0, 0.0), rotation: Quat::IDENTITY, half_extents: Vec3::new(0.5, 2.0, 3.0) };
+        let run = |shown: Vec3, truth: Vec3| {
+            let mut eval = PerceptualEval::new(PerceptualModel::literature(), G);
+            eval.set_static_world(vec![wall]);
+            for i in 0..30 {
+                eval.frame(i as f64 * DT, camera(20.0), &[item(1, shown, truth)]);
+            }
+            eval.report()
+        };
+        // Resting on the ground and against the wall, as the truth does.
+        let ok = run(Vec3::new(0.0, 0.3, 0.0), Vec3::new(0.0, 0.3, 0.0));
+        assert_eq!(ok.g4_solid_frames, 0);
+        let leaning = run(Vec3::new(4.2, 1.0, 0.0), Vec3::new(4.2, 1.0, 0.0));
+        assert_eq!(leaning.g4_solid_frames, 0, "touching the wall as the truth does");
+        // 20 cm into the ground where the truth rests on it.
+        let sunk = run(Vec3::new(0.0, 0.1, 0.0), Vec3::new(0.0, 0.3, 0.0));
+        assert_eq!(sunk.g4_solid_frames, 30);
+        assert!((sunk.g4_worst_cm - 20.0).abs() < 0.1, "{}", sunk.g4_worst_cm);
+        // Half inside the wall.
+        let walled = run(Vec3::new(4.6, 1.0, 0.0), Vec3::new(4.0, 1.0, 0.0));
+        assert_eq!(walled.g4_solid_frames, 30);
+        assert!(walled.g4_worst_cm > 30.0);
     }
 
     #[test]

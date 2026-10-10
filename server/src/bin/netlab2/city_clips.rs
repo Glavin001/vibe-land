@@ -230,16 +230,16 @@ fn choose_windows(runs: &[Run], model: &PerceptualModel, top: usize, window_s: f
 }
 
 /// One run's drawn world, advanced frame by frame.
-struct DrawnRun {
+pub(crate) struct DrawnRun {
     reader: ChunkReader,
-    tables: DrawnTables,
+    pub(crate) tables: DrawnTables,
     pending: Option<ChunkFrame>,
     current: Option<(u32, f32)>,
     scratch: Vec<u32>,
 }
 
 impl DrawnRun {
-    fn open(path: &Path) -> std::io::Result<Self> {
+    pub(crate) fn open(path: &Path) -> std::io::Result<Self> {
         let mut reader = ChunkReader::open(path)?;
         let tables = DrawnTables::new(reader.chunk_count);
         let pending = reader.next_frame()?;
@@ -248,7 +248,12 @@ impl DrawnRun {
 
     /// Apply every frame sampled at or before `ms`; the newest's (sim tick,
     /// render tick).
-    fn advance(&mut self, ms: f64) -> std::io::Result<Option<(u32, f32)>> {
+    /// Every frame read.
+    pub(crate) fn finished(&self) -> bool {
+        self.pending.is_none()
+    }
+
+    pub(crate) fn advance(&mut self, ms: f64) -> std::io::Result<Option<(u32, f32)>> {
         while self.pending.as_ref().is_some_and(|f| f.sample_ms <= ms + 1e-6) {
             let frame = self.pending.take().unwrap();
             self.scratch.clear();
