@@ -392,6 +392,12 @@ pub struct PerPlayer {
     recent: usize,
     /// Bodies with a contact since the last send.
     fresh_contacts: Vec<BodyKey>,
+    /// Bodies whose listed contact may no longer hold since the last send:
+    /// a newer contact, or the body gone or made anew by a fracture.
+    contacts_stale: FxHashSet<BodyKey>,
+    /// Bodies new to the truth since the last send past the evaluation cap:
+    /// the only ones that can be missing from `order`.
+    order_new: FxHashSet<BodyKey>,
     config: PerPlayerConfig,
     model: PerceptualModel,
     physics: Physics,
@@ -399,7 +405,7 @@ pub struct PerPlayer {
     states: BTreeMap<u32, StructureState>,
     chunk_radius: BTreeMap<u32, Vec<f32>>,
     ledger: CityLedger,
-    serial_body: HashMap<(u32, u32), u32>,
+    serial_body: FxHashMap<(u32, u32), u32>,
     truth: FxHashMap<BodyKey, Truth>,
     /// Each awake body's last `BACKTEST_TICKS` + 1 truth states, for the
     /// mode backtest.
@@ -654,7 +660,7 @@ impl PerPlayer {
             states: BTreeMap::new(),
             chunk_radius,
             ledger,
-            serial_body: HashMap::new(),
+            serial_body: FxHashMap::default(),
             truth: FxHashMap::default(),
             now_tick: 0,
             order: Vec::new(),
@@ -662,6 +668,8 @@ impl PerPlayer {
             contacts: Vec::new(),
             recent: 0,
             fresh_contacts: Vec::new(),
+            contacts_stale: FxHashSet::default(),
+            order_new: FxHashSet::default(),
             history: FxHashMap::default(),
             event_seq: 0,
             clients: BTreeMap::new(),
@@ -690,6 +698,7 @@ impl PerPlayer {
                 if let Some(&min) = island.nodes.first() {
                     let key = BodyKey { structure: id, body: min };
                     let radius = this.radius_of(id, state, min);
+                    this.order_new.insert(key);
                     this.truth.insert(
                         key,
                         Truth {
@@ -958,6 +967,7 @@ impl ReplicationStrategy for PerPlayer {
             events.push(Event::Fracture { tick, structure, broken_bonds: broken, removed_chunks: removed });
             for id in &change.retired_bodies {
                 self.truth.remove(&BodyKey { structure, body: *id });
+                self.contacts_stale.insert(BodyKey { structure, body: *id });
             }
             // The new bodies' truth: the physics' own promotion (pose and
             // velocities in the new body's centre-of-mass frame), from the
@@ -1022,7 +1032,9 @@ impl ReplicationStrategy for PerPlayer {
                 let born = if id == parent { tick } else { 0 };
                 if self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0, born , ahead: None }).is_none() {
                     self.shapes_new.insert(key);
+                    self.order_new.insert(key);
                 }
+                self.contacts_stale.insert(key);
                 touched.push(key);
             }
             // Each client's model spawns the new bodies from its own drawing
@@ -1067,14 +1079,20 @@ impl ReplicationStrategy for PerPlayer {
         // `send_threads` workers (byte-identical to one); the history and
         // truth are then updated in order.
         let workers = pool;
-        let work: Vec<(BodyKey, &BodySnapshotInput)> = active
-            .iter()
-            .filter_map(|snapshot| {
-                let (structure, serial) = ids::body_entity_parts(snapshot.body_entity);
-                let &body = self.serial_body.get(&(structure, serial))?;
-                Some((BodyKey { structure, body }, snapshot))
-            })
-            .collect();
+        let serial_body = &self.serial_body;
+        fn keyed<'s>(serial_body: &FxHashMap<(u32, u32), u32>, snapshot: &'s BodySnapshotInput) -> Option<(BodyKey, &'s BodySnapshotInput)> {
+            let (structure, serial) = ids::body_entity_parts(snapshot.body_entity);
+            let &body = serial_body.get(&(structure, serial))?;
+            Some((BodyKey { structure, body }, snapshot))
+        }
+        let key_of = |snapshot| keyed(serial_body, snapshot);
+        let work: Vec<(BodyKey, &BodySnapshotInput)> = match workers.as_ref().filter(|_| active.len() >= 1024) {
+            Some(pool) => pool.install(|| {
+                use rayon::prelude::*;
+                active.par_iter().with_min_len(256).filter_map(key_of).collect()
+            }),
+            None => active.iter().filter_map(key_of).collect(),
+        };
         let classify = |&(key, snapshot): &(BodyKey, &BodySnapshotInput)| -> (BodyKey, Truth, bool, Option<Option<Vec<(Vec3, Vec3)>>>) {
             let previous = self.truth.get(&key).copied();
             let radius = previous.map_or(0.5, |p| p.radius);
@@ -1117,7 +1135,19 @@ impl ReplicationStrategy for PerPlayer {
             }),
             None => work.iter().map(classify).collect(),
         };
-        for (key, truth, continuous, derived) in classified {
+        // Written back in order; each chunk's entries fetched first, in a
+        // tight loop of independent lookups whose cache misses overlap.
+        let keys: Vec<BodyKey> = classified.iter().map(|c| c.0).collect();
+        for (i, (key, truth, continuous, derived)) in classified.into_iter().enumerate() {
+            if i % 64 == 0 {
+                let mut touched = 0u32;
+                for key in &keys[i..(i + 64).min(keys.len())] {
+                    touched = touched
+                        .wrapping_add(self.truth.get(key).map_or(0, |t| t.contact_tick))
+                        .wrapping_add(self.history.get(key).and_then(|h| h.back()).map_or(0, |k| k.tick));
+                }
+                std::hint::black_box(touched);
+            }
             if let Some(boxes) = derived {
                 self.floors.insert(key, boxes);
             }
@@ -1131,9 +1161,11 @@ impl ReplicationStrategy for PerPlayer {
             }
             if truth.contact_tick == tick && tick > 0 {
                 self.fresh_contacts.push(key);
+                self.contacts_stale.insert(key);
             }
             if self.truth.insert(key, truth).is_none() {
                 self.shapes_new.insert(key);
+                self.order_new.insert(key);
             }
         }
         // A body the physics put to sleep has no snapshot: it lies where it
@@ -1326,8 +1358,10 @@ impl ReplicationStrategy for PerPlayer {
                 .collect();
             fresh.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             fresh.dedup();
-            fresh.extend(self.contacts.iter().filter(|&&(at, key)| truth.get(&key).is_some_and(|t| t.contact_tick == at)));
+            let stale = &self.contacts_stale;
+            fresh.extend(self.contacts.iter().filter(|(_, key)| !stale.contains(key)));
             self.contacts = fresh;
+            self.contacts_stale.clear();
         }
         let cap = self.effective_config().eval_cap;
         // The body order sends slice (insertion order, new bodies sorted
@@ -1341,12 +1375,8 @@ impl ReplicationStrategy for PerPlayer {
         // Freshest first: sends take them in this order, up to a share of
         // the evaluation cap.
         self.recent = self.contacts.partition_point(|&(at, _)| at + window >= tick);
-        let mut fresh: Vec<BodyKey> = Vec::new();
-        for key in self.truth.keys() {
-            if !self.in_order.contains(key) {
-                fresh.push(*key);
-            }
-        }
+        let (truth, in_order) = (&self.truth, &self.in_order);
+        let mut fresh: Vec<BodyKey> = self.order_new.drain().filter(|k| truth.contains_key(k) && !in_order.contains(k)).collect();
         fresh.sort_unstable();
         self.in_order.extend(fresh.iter().copied());
         self.order.extend(fresh);
