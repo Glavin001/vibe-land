@@ -2,14 +2,15 @@
   "per-player": {
     "tape_sha256": "4216585202a18f0f406cebb3dcb1f366805c0f12fc315ec95a37bf2bf644086c",
     "kbit_s": 141.272,
-    "penalty": 127.58954211460265,
+    "penalty": 130.407747541133,
     "gates": true,
     "gate_counts": {
       "g1_hash_mismatches": 0,
       "g2_events_early": 0,
       "g3_clients_over": 0,
       "g4_solid_frames": 0,
-      "g5_resurrection_frames": 0
+      "g5_resurrection_frames": 0,
+      "g7_frames_ahead_of_data": 0
     }
   },
   "shared-v2": {
@@ -22,7 +23,8 @@
       "g2_events_early": 0,
       "g3_clients_over": 0,
       "g4_solid_frames": 0,
-      "g5_resurrection_frames": 0
+      "g5_resurrection_frames": 0,
+      "g7_frames_ahead_of_data": 0
     }
   }
 }

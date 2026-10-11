@@ -224,36 +224,100 @@ impl BodyTrack {
 
 /// The render clock: the server's tick estimated from packet arrivals, less
 /// the playout delay. It never runs backwards.
+///
+/// A live server can lose ticks (a tick overruns its budget and the server
+/// does not catch up), so its simulation runs slower than wall time and the
+/// clock must follow the server it has, not a nominal 60 Hz:
+/// - The server's clock is estimated from the fastest packets of the last
+///   `window_ms` only (the lower envelope of transit delay, as adaptive
+///   playout estimates it; Ramjee et al. 1994). An all-time estimate cannot
+///   follow a server that falls behind: it read the lost ticks as network
+///   delay and drew ever further past the data (recorded session
+///   20261011-042441: 35 ticks ahead).
+/// - What is shown glides towards that estimate less the playout delay,
+///   played between `MIN_RATE` and `MAX_RATE` of real time, so a slowing
+///   server slows the picture smoothly: never a stall, never a jump.
+/// - It steers no closer than half a playout delay to the newest tick
+///   received, and never shows a tick past it: there is no data for it.
 #[derive(Clone, Debug)]
 pub struct RenderClock {
     tick_ms: f64,
-    /// server_ms - local_ms, for the least delayed packet recently seen.
+    /// (arrival ms, server_ms - arrival ms) of recent packets.
+    samples: std::collections::VecDeque<(f64, f64)>,
+    /// server_ms - local_ms: the most of the recent samples (the least
+    /// delayed packet in the window).
     offset_ms: Option<f64>,
     pub delay_ticks: f32,
-    last_render: f32,
+    /// The shown tick and when it was last advanced.
+    shown: Option<(f64, f32)>,
+    /// The newest server tick any packet has named.
+    newest: Option<u32>,
 }
+
+/// How far back the estimate looks for its fastest packet: three playout
+/// delays. Long enough to hold a least-delayed packet under jitter, short
+/// enough that a server losing a fifth of its ticks moves the estimate by
+/// less than the playout delay before the window renews it.
+const WINDOW_DELAYS: f64 = 3.0;
+/// The shown simulation plays at this fraction of real time at least and at
+/// most, steering towards the estimate: above zero, so it never stalls; the
+/// error closes within about a playout delay.
+const MIN_RATE: f32 = 0.5;
+const MAX_RATE: f32 = 1.5;
 
 impl RenderClock {
     pub fn new(hz: u32, delay_ticks: f32) -> Self {
-        Self { tick_ms: 1000.0 / f64::from(hz.max(1)), offset_ms: None, delay_ticks, last_render: f32::MIN }
+        Self {
+            tick_ms: 1000.0 / f64::from(hz.max(1)),
+            samples: Default::default(),
+            offset_ms: None,
+            delay_ticks,
+            shown: None,
+            newest: None,
+        }
+    }
+
+    fn window_ms(&self) -> f64 {
+        WINDOW_DELAYS * f64::from(self.delay_ticks.max(1.0)) * self.tick_ms
     }
 
     pub fn observe(&mut self, server_tick: u32, arrival_ms: f64) {
+        self.newest = Some(self.newest.map_or(server_tick, |n| n.max(server_tick)));
         let sample = f64::from(server_tick) * self.tick_ms - arrival_ms;
-        self.offset_ms = Some(match self.offset_ms {
-            // A faster packet moves the estimate at once; a slower path pulls
-            // it back gently (1 ms per packet), so jitter does not shake it.
-            Some(current) if sample > current => sample,
-            Some(current) => current - (current - sample).min(1.0) * 0.05,
-            None => sample,
-        });
+        let window = self.window_ms();
+        self.samples.push_back((arrival_ms, sample));
+        while self.samples.front().is_some_and(|&(at, _)| at < arrival_ms - window) {
+            self.samples.pop_front();
+        }
+        self.offset_ms = self.samples.iter().map(|&(_, s)| s).reduce(f64::max);
     }
 
+    /// The tick to show at `now_ms`.
     pub fn render_tick(&mut self, now_ms: f64) -> Option<f32> {
         let offset = self.offset_ms?;
-        let r = ((now_ms + offset) / self.tick_ms) as f32 - self.delay_ticks;
-        self.last_render = self.last_render.max(r);
-        Some(self.last_render)
+        let newest = self.newest.map_or(f32::MAX, |n| n as f32);
+        // The estimate less the playout delay, and never closer than half a
+        // playout delay to the newest tick received: a server pausing
+        // between ticks slows the picture before it reaches the data.
+        let target = (((now_ms + offset) / self.tick_ms) as f32 - self.delay_ticks).min(newest - 0.5 * self.delay_ticks);
+        let r = match self.shown {
+            None => target.min(newest),
+            Some((at, shown)) if now_ms <= at => return Some(shown),
+            Some((at, shown)) => {
+                let elapsed = ((now_ms - at) / self.tick_ms) as f32;
+                // Steer: the error closes within about a playout delay.
+                let rate = (1.0 + (target - shown) / self.delay_ticks.max(1.0)).clamp(MIN_RATE, MAX_RATE);
+                // Never past the data; never backwards.
+                (shown + elapsed * rate).min(newest).max(shown)
+            }
+        };
+        self.shown = Some((now_ms, r));
+        Some(r)
+    }
+
+    /// The newest server tick any packet has named.
+    pub fn newest_tick(&self) -> Option<u32> {
+        self.newest
     }
 
     pub fn server_tick(&self, now_ms: f64) -> Option<f32> {
@@ -731,6 +795,57 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A live server can lose ticks: a tick overruns its budget and the
+    /// server does not catch up, so its simulation runs slower than wall time
+    /// (recorded session 20261011-042441: 54-57 ticks a second for seconds
+    /// while a building fell, under GPU contention). Packets then arrive later
+    /// than a 60 Hz schedule predicts. The render clock must follow the server
+    /// it has: what it shows stays behind the newest tick received (that is
+    /// the playout delay), never running ahead into prediction alone; and it
+    /// slows smoothly, never stalling or jumping, which would be hitches of
+    /// their own. That session drew 10-35 ticks ahead of the data.
+    #[test]
+    fn the_render_clock_stays_behind_a_server_that_loses_ticks() {
+        let hz = 60.0;
+        let tick_ms = 1000.0 / hz;
+        // When each server tick completes: on time, except from 2 s to 12 s
+        // one tick in five overruns by two tick lengths (48 ticks a second).
+        let mut done = Vec::new();
+        let mut wall = 0.0f64;
+        for t in 0..1200u32 {
+            wall += tick_ms;
+            if (120..720).contains(&t) && t % 5 == 0 {
+                wall += 2.0 * tick_ms;
+            }
+            done.push((t, wall + 3.0));
+        }
+        let mut clock = RenderClock::new(60, 5.0);
+        let mut next = 0;
+        let (mut worst_ahead, mut previous, mut stalls, mut worst_step) = (f32::MIN, None::<f32>, 0, 0.0f32);
+        let frame_ms = 1000.0 / 120.0;
+        let mut now = 0.0;
+        while now < done.last().unwrap().1 {
+            while next < done.len() && done[next].1 <= now {
+                clock.observe(done[next].0, done[next].1);
+                next += 1;
+            }
+            if let (Some(r), Some(newest)) = (clock.render_tick(now), clock.newest_tick()) {
+                if now > 1000.0 {
+                    worst_ahead = worst_ahead.max(r - newest as f32);
+                    if let Some(p) = previous {
+                        stalls += usize::from(r <= p);
+                        worst_step = worst_step.max(r - p);
+                    }
+                }
+                previous = Some(r);
+            }
+            now += frame_ms;
+        }
+        assert!(worst_ahead <= 0.0, "drawn up to {worst_ahead:.1} ticks past the newest tick received");
+        assert_eq!(stalls, 0, "frames that showed no advance");
+        assert!(worst_step <= 1.0, "a frame advanced {worst_step:.2} ticks (a jump)");
+    }
     use crate::structure::tests::column;
     use crate::wire::{encode_events, encode_keyframes, KeyframePacket, KeyframeRecord};
 
@@ -818,6 +933,9 @@ mod tests {
         // Body 3 loses chunk 5: it keeps its id, its centre of mass moves, and
         // chunk 4 -- still on body 3 -- has a new offset to be redrawn with.
         client.ingest(&encode_events(1, &[Event::Fracture { tick: 112, structure: 3, broken_bonds: vec![4], removed_chunks: vec![] }]), 3.0);
+        // The server's stream goes on (the clock never shows a tick it has
+        // no data for).
+        client.ingest(&encode_keyframes(&KeyframePacket { server_tick: 125, ordinal: 1, records: vec![] }, physics()), 3.5);
         let before = client.chunk_local(3, 4);
         client.advance(2.0 + 1000.0 / 60.0 * 10.0);
         assert_eq!(client.chunk_body(3, 4), Some(3));
