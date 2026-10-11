@@ -1060,6 +1060,12 @@ struct AppState {
     next_player_id: AtomicU32,
     verifier: SpacetimeVerifier,
     cert_hash_hex: String,
+    /// Whether `/session-config` publishes `cert_hash_hex` for pinning.
+    /// `WT_ADVERTISE_CERT_HASH=0` with a CA-signed certificate makes
+    /// browsers validate it normally: they apply the pinning API's 14-day
+    /// validity limit to any certificate they are given a hash for, so a
+    /// 90-day CA certificate (e.g. `tailscale cert`) fails when pinned.
+    advertise_cert_hash: bool,
     wt_base_url: String,
     strict_snapshot_datagrams: bool,
     respawn_delay_ms: u32,
@@ -1537,6 +1543,7 @@ pub async fn main() -> Result<()> {
                     .unwrap_or_else(|_| "https://maincloud.spacetimedb.com".to_string()),
             },
             cert_hash_hex,
+            advertise_cert_hash: std::env::var("WT_ADVERTISE_CERT_HASH").map_or(true, |v| v != "0"),
             wt_base_url,
             strict_snapshot_datagrams,
             respawn_delay_ms,
@@ -2300,7 +2307,7 @@ async fn session_config_handler(
     };
     let config = SessionConfig {
         url: format!("{}/game", state.inner.wt_base_url),
-        server_certificate_hash_hex: state.inner.cert_hash_hex.clone(),
+        server_certificate_hash_hex: if state.inner.advertise_cert_hash { state.inner.cert_hash_hex.clone() } else { String::new() },
         match_id: query.match_id,
         sim_hz: state.inner.physics.sim_hz(),
         snapshot_hz: state.inner.physics.snapshot_hz(),
