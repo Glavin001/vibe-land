@@ -91,6 +91,11 @@ impl StructureDef {
     pub fn node_count(&self) -> u32 {
         self.rest.len() as u32
     }
+
+    /// A node's neighbours: (neighbour, bond index).
+    pub fn neighbours(&self, node: u32) -> &[(u32, u32)] {
+        self.adjacency.get(node as usize).map_or(&[], Vec::as_slice)
+    }
 }
 
 /// What one fracture changed: bodies whose membership changed (new ones

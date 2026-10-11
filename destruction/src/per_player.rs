@@ -406,6 +406,9 @@ pub struct PerPlayer {
     chunk_radius: BTreeMap<u32, Vec<f32>>,
     ledger: CityLedger,
     serial_body: FxHashMap<(u32, u32), u32>,
+    /// Each structure's serials in `serial_body` (a refresh replaces only
+    /// its own).
+    serials_of: FxHashMap<u32, Vec<u32>>,
     truth: FxHashMap<BodyKey, Truth>,
     /// Each awake body's last `BACKTEST_TICKS` + 1 truth states, for the
     /// mode backtest.
@@ -661,6 +664,7 @@ impl PerPlayer {
             chunk_radius,
             ledger,
             serial_body: FxHashMap::default(),
+            serials_of: FxHashMap::default(),
             truth: FxHashMap::default(),
             now_tick: 0,
             order: Vec::new(),
@@ -736,17 +740,23 @@ impl PerPlayer {
     /// Nodes on a dynamic derived body that are on no physics island: the
     /// physics removed them without breaking their bonds.
     fn removed_nodes(&self, structure: u32, state: &StructureState) -> Vec<u32> {
-        let mut on_island: HashSet<u32> = HashSet::new();
-        for island in self.ledger.structure_islands(structure).into_iter().flat_map(|m| m.values()) {
-            on_island.extend(island.nodes.iter().copied());
-        }
         let n = self.defs[&structure].node_count();
-        (0..n)
-            .filter(|&node| {
-                let body = state.body_of(node);
-                body != ANCHORED && body != REMOVED && !on_island.contains(&node)
-            })
-            .collect()
+        let mut on_island = vec![0u64; (n as usize).div_ceil(64)];
+        for island in self.ledger.structure_islands(structure).into_iter().flat_map(|m| m.values()) {
+            for &node in island.nodes.iter().filter(|&&node| node < n) {
+                on_island[node as usize / 64] |= 1 << (node % 64);
+            }
+        }
+        // The dynamic chunks are the bodies' members (ascending once sorted).
+        let mut off: Vec<u32> = state
+            .bodies()
+            .values()
+            .flatten()
+            .copied()
+            .filter(|&node| node < n && on_island[node as usize / 64] & (1 << (node % 64)) == 0)
+            .collect();
+        off.sort_unstable();
+        off
     }
 
     fn radius_of(&self, structure: u32, state: &StructureState, body: u32) -> f32 {
@@ -770,13 +780,17 @@ impl PerPlayer {
     /// island the derivation disagrees with.
     fn refresh_serials(&mut self, structure: u32) {
         let state = &self.states[&structure];
-        self.serial_body.retain(|(s, _), _| *s != structure);
+        let serials = self.serials_of.entry(structure).or_default();
+        for serial in serials.drain(..) {
+            self.serial_body.remove(&(structure, serial));
+        }
         for (&serial, island) in self.ledger.structure_islands(structure).into_iter().flatten() {
             let Some(&min) = island.nodes.first() else { continue };
             if state.members(min) != Some(island.nodes.as_slice()) {
                 self.stats.derive_mismatches += 1;
             }
             self.serial_body.insert((structure, serial), min);
+            serials.push(serial);
         }
     }
 
@@ -931,13 +945,42 @@ impl ReplicationStrategy for PerPlayer {
             // Every client's drawn parents before the split (each client's
             // model spawns from its own drawing).
             let mut state = self.states.remove(&structure).unwrap();
-            let truth_parents: HashMap<u32, Truth> =
-                state.bodies().keys().filter_map(|&b| self.truth.get(&BodyKey { structure, body: b }).map(|t| (b, *t))).collect();
-            let parent_coms: HashMap<u32, Vec3> =
-                state.bodies().keys().map(|&b| (b, state.centre_of_mass(def, b))).collect();
+            // A body this batch splits holds a broken bond's end (or, for
+            // the crush pass below, a crushed chunk or its neighbour): only
+            // those can be a new body's parent, and their state before the
+            // split is kept.
+            let mut truth_parents: FxHashMap<u32, Truth> = FxHashMap::default();
+            let mut parent_coms: FxHashMap<u32, Vec3> = FxHashMap::default();
+            let mut keep_parent = |state: &StructureState, node: u32| {
+                let body = state.body_of(node);
+                if body == ANCHORED || body == REMOVED || parent_coms.contains_key(&body) {
+                    return;
+                }
+                parent_coms.insert(body, state.centre_of_mass(def, body));
+                if let Some(t) = self.truth.get(&BodyKey { structure, body }) {
+                    truth_parents.insert(body, *t);
+                }
+            };
+            for &bond in &broken {
+                if let Some(&(a, b)) = def.bonds.get(bond as usize) {
+                    keep_parent(&state, a);
+                    keep_parent(&state, b);
+                }
+            }
             let mut change = state.apply(def, &broken, &[]);
             let removed = self.removed_nodes(structure, &state);
             if !removed.is_empty() {
+                // The crush pass's parents: unchanged by the break pass (a
+                // body it changed maps to its own parent, kept above), so
+                // their state now is their state before the tick.
+                let changed: FxHashSet<u32> = change.changed_bodies.iter().copied().collect();
+                for &node in &removed {
+                    for n in std::iter::once(node).chain(def.neighbours(node).iter().map(|&(o, _)| o)) {
+                        if !changed.contains(&state.body_of(n)) {
+                            keep_parent(&state, n);
+                        }
+                    }
+                }
                 let more = state.apply(def, &[], &removed);
                 change.changed_bodies.extend(more.changed_bodies);
                 change.retired_bodies.extend(more.retired_bodies);
@@ -974,13 +1017,17 @@ impl ReplicationStrategy for PerPlayer {
             // ledger. A body the physics did not promote this tick (asleep,
             // re-keyed) is where its chunks were: its parent's frame moved to
             // its own centre of mass.
-            let islands: HashMap<u32, (Vec3, Quat, Vec3, Vec3, bool)> = self
+            let spawned: FxHashSet<u32> = change.parent_of.iter().map(|&(id, _)| id).collect();
+            let islands: FxHashMap<u32, (Vec3, Quat, Vec3, Vec3, bool)> = self
                 .ledger
                 .structure_islands(structure)
                 .into_iter()
                 .flatten()
                 .filter_map(|(_, i)| {
-                    i.nodes.first().map(|&min| (min, (i.pose.position, i.pose.rotation, i.linear_velocity, i.angular_velocity, i.settled)))
+                    i.nodes
+                        .first()
+                        .filter(|min| spawned.contains(min))
+                        .map(|&min| (min, (i.pose.position, i.pose.rotation, i.linear_velocity, i.angular_velocity, i.settled)))
                 })
                 .collect();
             for &(id, parent) in &change.parent_of {
@@ -2284,5 +2331,168 @@ mod sunk_tests {
         }
         // Both answers occur often enough to mean something.
         assert!(fired > 1_000 && checked - fired > 20_000, "{fired} of {checked}");
+    }
+}
+
+#[cfg(test)]
+mod fracture_scale_tests {
+    use super::*;
+    use crate::manifest::{BondDef, ChunkDef, ChunkGeometry, StructureManifest};
+    use crate::topology::CityLedger;
+    use vibe_netcode::destruction_backend::{FractureBatch, IslandPromotion};
+
+    /// A standing block `nx` x `ny` x `nz` of 1 m chunks, the bottom layer
+    /// supports, each chunk bonded to its six neighbours.
+    fn block(nx: u32, ny: u32, nz: u32) -> DestructionManifest {
+        let id = |x: u32, y: u32, z: u32| (y * nz + z) * nx + x;
+        let mut chunks = Vec::new();
+        for y in 0..ny {
+            for z in 0..nz {
+                for x in 0..nx {
+                    chunks.push(ChunkDef {
+                        node_index: id(x, y, z),
+                        centroid: [x as f32, y as f32 + 0.5, z as f32],
+                        mass: if y == 0 { 0.0 } else { 1.0 },
+                        volume: 1.0,
+                        size: [1.0, 1.0, 1.0],
+                        geometry: ChunkGeometry::Cuboid { half_extents: [0.5, 0.5, 0.5] },
+                        radius: 0.87,
+                        support: y == 0,
+                        material: 0,
+                        mass_offset: [0.0; 3],
+                    });
+                }
+            }
+        }
+        let mut bonds = Vec::new();
+        let mut bond = |a: u32, b: u32, bonds: &mut Vec<BondDef>| {
+            bonds.push(BondDef { bond_index: bonds.len() as u32, node0: a, node1: b, centroid: [0.0; 3], normal: [0.0, 1.0, 0.0], area: 1.0, material: 0 });
+        };
+        for y in 0..ny {
+            for z in 0..nz {
+                for x in 0..nx {
+                    if x + 1 < nx {
+                        bond(id(x, y, z), id(x + 1, y, z), &mut bonds);
+                    }
+                    if y + 1 < ny {
+                        bond(id(x, y, z), id(x, y + 1, z), &mut bonds);
+                    }
+                    if z + 1 < nz {
+                        bond(id(x, y, z), id(x, y, z + 1), &mut bonds);
+                    }
+                }
+            }
+        }
+        DestructionManifest {
+            version: crate::manifest::MANIFEST_VERSION,
+            structures: vec![StructureManifest { structure_id: 0, world_position: [0.0; 3], world_rotation: [0.0, 0.0, 0.0, 1.0], chunks, bonds }],
+            materials: Vec::new(),
+            material_appearance: Vec::new(),
+            shape_library: Vec::new(),
+        }
+    }
+
+    /// Per tick, one 2x2x2 piece of the block knocked loose (its bonds
+    /// broken, the physics' promotion of it), walking the block a piece at a
+    /// time; only the newest piece is awake (the rest lie asleep). Returns
+    /// the mean ingest per tick over the last `measured` ticks, ms.
+    fn knock_pieces_off(nx: u32, ny: u32, nz: u32, ticks: u32, measured: u32) -> f64 {
+        let manifest = block(nx, ny, nz);
+        let mut pp = PerPlayer::new(&manifest, CityLedger::from_manifest(&manifest), PerPlayerConfig::validated(60));
+        pp.add_client(1);
+        let structure = &manifest.structures[0];
+        let (px, pz) = (nx / 2, nz / 2);
+        let mut spent = std::time::Duration::ZERO;
+        for tick in 1..=ticks {
+            let k = tick - 1;
+            // Top down, so every piece is cut from standing chunks.
+            let (x0, z0, y0) = ((k % px) * 2, ((k / px) % pz) * 2, ny - 2 - (k / (px * pz)) * 2);
+            assert!(y0 >= 2, "the block has room for {ticks} pieces");
+            let inside = |n: u32| {
+                let (x, y, z) = (n % nx, n / (nx * nz), (n / nx) % nz);
+                x >= x0 && x < x0 + 2 && z >= z0 && z < z0 + 2 && y >= y0 && y < y0 + 2
+            };
+            let mut broken: Vec<u32> = Vec::new();
+            let mut nodes: Vec<u32> = Vec::new();
+            for y in y0.saturating_sub(1)..(y0 + 3).min(ny) {
+                for z in z0.saturating_sub(1)..(z0 + 3).min(nz) {
+                    for x in x0.saturating_sub(1)..(x0 + 3).min(nx) {
+                        let n = (y * nz + z) * nx + x;
+                        if inside(n) {
+                            nodes.push(n);
+                        }
+                    }
+                }
+            }
+            nodes.sort_unstable();
+            for b in &structure.bonds {
+                if inside(b.node0) != inside(b.node1) && (nodes.binary_search(&b.node0).is_ok() || nodes.binary_search(&b.node1).is_ok()) {
+                    broken.push(ids::bond_id(0, b.bond_index));
+                }
+            }
+            let centre = [x0 as f32 + 0.5, y0 as f32 + 1.5, z0 as f32 + 0.5];
+            let output = DestructionTickOutput {
+                batches: vec![FractureBatch {
+                    structure_id: 0,
+                    broken_bond_ids: broken,
+                    migrations: Vec::new(),
+                    promoted_islands: vec![IslandPromotion {
+                        structure_id: 0,
+                        island_id: tick,
+                        chunks: nodes.iter().map(|&n| ids::chunk_id(0, n)).collect(),
+                        mass: 8.0,
+                        center_of_mass: centre,
+                        inertia_diagonal: [1.0; 3],
+                        position: centre,
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        linear_velocity: [0.0, -1.0, 0.0],
+                        angular_velocity: [0.0; 3],
+                        split_impulse: [0.0; 3],
+                    }],
+                    retired_island_ids: Vec::new(),
+                }],
+                ..Default::default()
+            };
+            let snapshots = [BodySnapshotInput {
+                body_entity: ids::body_entity(0, tick),
+                position: centre,
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                linear_velocity: [0.0, -1.0, 0.0],
+                angular_velocity: [0.0; 3],
+                contacts: 0,
+                flags: 0,
+            }];
+            let started = std::time::Instant::now();
+            pp.ingest_tick(tick, &snapshots, &output);
+            if tick > ticks - measured {
+                spent += started.elapsed();
+            }
+        }
+        assert_eq!(pp.stats.fractures, u64::from(ticks));
+        assert_eq!(pp.stats.derive_mismatches, 0, "the derivation agrees with the promotions");
+        spent.as_secs_f64() * 1000.0 / f64::from(measured)
+    }
+
+    /// A fracture's server-side cost follows what it breaks, not the size of
+    /// the structure it breaks off (Vibe Town: one structure of 51,921
+    /// chunks). The same pieces knocked off a block 8 times larger must not
+    /// cost several times as much. (Before: 0.13 vs 0.17 ms, and 0.95 ms
+    /// with 2,000 bodies about; every body's centre of mass, a SipHash set
+    /// of every island chunk and every chunk scanned, per fracture.) Timing, so run alone:
+    /// `cargo test --release -p vibe-land-destruction --lib fracture_scale -- --ignored`.
+    #[test]
+    #[ignore]
+    fn a_fracture_costs_what_it_breaks_not_the_structure() {
+        // The same 400 pieces off a 6,600- and a 51,200-chunk block; then
+        // 2,000 pieces off the large one (five times the bodies lying about).
+        let small = knock_pieces_off(10, 66, 10, 400, 100);
+        let large = knock_pieces_off(40, 32, 40, 400, 100);
+        let crowded = knock_pieces_off(40, 32, 40, 2_000, 100);
+        println!("ingest per fracture tick: 6,600 chunks {small:.3} ms, 51,200 chunks {large:.3} ms, with 2,000 bodies {crowded:.3} ms");
+        assert!(large < 1.5 * small + 0.02, "structure size: {large:.3} ms vs {small:.3} ms");
+        // Still one pass over the debris's islands per fracture (the derive
+        // check, the crushed-chunk test): linear in the bodies lying about,
+        // never worse (it was 5.5x for 5x before).
+        assert!(crowded < 5.0 * large, "bodies: {crowded:.3} ms vs {large:.3} ms");
     }
 }
