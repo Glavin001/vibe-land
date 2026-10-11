@@ -256,6 +256,7 @@ const FLAG_SPIN: u8 = 1 << 5;
 const FLAG_INCARNATION: u8 = 1 << 6;
 
 /// A record's numbers as the wire carries them.
+#[derive(Clone, Copy, Debug)]
 struct RecordInts {
     flags: u8,
     baseline_ticks: u32,
@@ -382,12 +383,83 @@ pub fn decoded(record: &KeyframeRecord, physics: Physics) -> Keyframe {
 
 /// The bytes one record will take (for budgeting).
 pub fn record_bytes(record: &KeyframeRecord, physics: Physics) -> usize {
-    let mut w = Writer::default();
-    write_record(&mut w, &ints_of(record, physics), 0);
-    w.out.len() + 3
+    PreparedRecord::new(*record, physics).bytes()
 }
 
-fn write_record(w: &mut Writer, ints: &RecordInts, tick_delta: i64) {
+/// A record with its wire numbers worked out once: the encoder sizes it,
+/// packs it, writes it and decodes what the client will hold from the same
+/// numbers (a delta record's prediction from its baseline is not repeated).
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedRecord {
+    pub record: KeyframeRecord,
+    ints: RecordInts,
+    bytes: usize,
+}
+
+impl PreparedRecord {
+    pub fn new(record: KeyframeRecord, physics: Physics) -> Self {
+        let ints = ints_of(&record, physics);
+        let mut count = Count(0);
+        write_record(&mut count, &ints, 0);
+        Self { record, ints, bytes: count.0 + 3 }
+    }
+
+    /// As `record_bytes`.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// As `decoded`.
+    pub fn decoded(&self, physics: Physics) -> Keyframe {
+        let base = self.record.baseline.filter(|b| b.tick <= self.record.keyframe.tick);
+        from_ints(self.record.keyframe.tick, &self.ints, base.as_ref(), physics).expect("the encoder has its baseline")
+    }
+}
+
+/// Where a record's bytes go: a packet, or a count of them.
+trait RecordOut {
+    fn u8(&mut self, v: u8);
+    fn u32(&mut self, v: u32);
+    fn i16(&mut self, v: i16);
+    fn varint(&mut self, v: u64);
+    fn svarint(&mut self, v: i64) {
+        self.varint(((v << 1) ^ (v >> 63)) as u64);
+    }
+}
+
+impl RecordOut for Writer {
+    fn u8(&mut self, v: u8) {
+        Writer::u8(self, v);
+    }
+    fn u32(&mut self, v: u32) {
+        Writer::u32(self, v);
+    }
+    fn i16(&mut self, v: i16) {
+        Writer::i16(self, v);
+    }
+    fn varint(&mut self, v: u64) {
+        Writer::varint(self, v);
+    }
+}
+
+struct Count(usize);
+
+impl RecordOut for Count {
+    fn u8(&mut self, _: u8) {
+        self.0 += 1;
+    }
+    fn u32(&mut self, _: u32) {
+        self.0 += 4;
+    }
+    fn i16(&mut self, _: i16) {
+        self.0 += 2;
+    }
+    fn varint(&mut self, v: u64) {
+        self.0 += ((64 - v.leading_zeros()).max(1) as usize).div_ceil(7);
+    }
+}
+
+fn write_record(w: &mut impl RecordOut, ints: &RecordInts, tick_delta: i64) {
     w.svarint(tick_delta);
     w.u8(ints.flags);
     let moving = Mode::from_u8(ints.flags) != Mode::Resting;
@@ -429,22 +501,29 @@ fn write_record(w: &mut Writer, ints: &RecordInts, tick_delta: i64) {
 }
 
 pub fn encode_keyframes(packet: &KeyframePacket, physics: Physics) -> Vec<u8> {
-    let mut w = Writer::default();
+    let records: Vec<PreparedRecord> = packet.records.iter().map(|r| PreparedRecord::new(*r, physics)).collect();
+    encode_prepared(packet.server_tick, packet.ordinal, &records)
+}
+
+/// `encode_keyframes` from prepared records.
+pub fn encode_prepared(server_tick: u32, ordinal: u32, records: &[PreparedRecord]) -> Vec<u8> {
+    let mut w = Writer { out: Vec::with_capacity(16 + records.iter().map(|r| r.bytes).sum::<usize>()) };
     w.u8(PKT_PP_KEYFRAMES);
-    w.u32(packet.server_tick);
-    w.u32(packet.ordinal);
-    w.varint(packet.records.len() as u64);
-    let mut records = packet.records.clone();
-    records.sort_by_key(|r| r.key);
+    w.u32(server_tick);
+    w.u32(ordinal);
+    w.varint(records.len() as u64);
+    let mut order: Vec<&PreparedRecord> = records.iter().collect();
+    order.sort_by_key(|r| r.record.key);
     let mut last = BodyKey { structure: 0, body: 0 };
-    for record in &records {
+    for prepared in order {
+        let record = &prepared.record;
         let k = record.key;
         // Structure as a gap; body as a gap within the same structure.
         w.varint(u64::from(k.structure - last.structure));
         let base = if k.structure == last.structure { last.body } else { 0 };
         w.varint(u64::from(k.body.wrapping_sub(base)));
         last = k;
-        write_record(&mut w, &ints_of(record, physics), i64::from(record.keyframe.tick) - i64::from(packet.server_tick));
+        write_record(&mut w, &prepared.ints, i64::from(record.keyframe.tick) - i64::from(server_tick));
     }
     w.out
 }
@@ -813,6 +892,51 @@ mod tests {
 
     fn physics() -> Physics {
         Physics::at_hz(60, -9.81)
+    }
+
+    /// A prepared record is sized by counting, not writing: the count must
+    /// be the bytes written, and its decode the same as `decoded`'s, for
+    /// every kind of record (absolute and delta, each mode and tier, with
+    /// spin and incarnation, residuals of every varint length).
+    #[test]
+    fn a_prepared_record_counts_exactly_the_bytes_it_writes() {
+        let ph = physics();
+        let mut checked = 0;
+        for mode in [Mode::Ballistic, Mode::Sliding, Mode::Resting, Mode::Friction] {
+            for tier in 0..4u8 {
+                for scale in [0.0f32, 0.002, 0.3, 40.0, 3000.0] {
+                    for (delta, born) in [(false, None), (true, None), (true, Some(990)), (false, Some(999))] {
+                        let mut truth = kf(1000, mode);
+                        truth.decel = 2.5;
+                        let base = decoded(&KeyframeRecord::absolute(BodyKey { structure: 1, body: 2 }, tier, kf(990, mode)), ph);
+                        truth.position = crate::predict::predict(&base, 10.0, ph).0 + Vec3::new(scale, -scale * 0.7, scale * 0.1);
+                        truth.linear_velocity += Vec3::splat(scale * 0.01);
+                        truth.angular_velocity += Vec3::new(scale * 0.001, 0.0, 0.0);
+                        let record = KeyframeRecord {
+                            key: BodyKey { structure: 3, body: 7 },
+                            tier,
+                            keyframe: truth,
+                            baseline: delta.then_some(base),
+                            incarnation: born,
+                        };
+                        let mut w = Writer::default();
+                        write_record(&mut w, &ints_of(&record, ph), 0);
+                        let prepared = PreparedRecord::new(record, ph);
+                        assert_eq!(prepared.bytes(), w.out.len() + 3, "{record:?}");
+                        assert_eq!(prepared.decoded(ph), decoded(&record, ph));
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 320);
+        // Varint lengths at every boundary.
+        for v in [0u64, 1, 127, 128, 16383, 16384, (1 << 21) - 1, 1 << 21, u64::MAX] {
+            let (mut w, mut c) = (Writer::default(), Count(0));
+            RecordOut::varint(&mut w, v);
+            c.varint(v);
+            assert_eq!(c.0, w.out.len(), "{v}");
+        }
     }
 
     #[test]

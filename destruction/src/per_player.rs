@@ -35,8 +35,8 @@ use vibe_land_perplayer::client::{apply_spawns, BodyTrack, BASELINE_MAX_TICKS};
 use vibe_land_perplayer::predict::{Keyframe, Mode, Physics};
 use vibe_land_perplayer::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use vibe_land_perplayer::wire::{
-    decoded, encode_bootstrap, encode_events, encode_keyframes, quantised, record_bytes, BodyKey, Bootstrap,
-    BootstrapStructure, Event, KeyframePacket, KeyframeRecord, POSITION_STEPS,
+    encode_bootstrap, encode_events, encode_prepared, quantised, BodyKey, Bootstrap, BootstrapStructure, Event,
+    KeyframeRecord, PreparedRecord, POSITION_STEPS,
 };
 use vibe_netcode::destruction_backend::DestructionTickOutput;
 
@@ -1369,7 +1369,7 @@ fn send_for(
         rank: u32,
         /// Distance from the client's eye, m (for the cost report).
         distance: f32,
-        record: KeyframeRecord,
+        record: PreparedRecord,
     }
     let allowance = match budget {
         Some(SendBudget::Skip) => 0,
@@ -1623,16 +1623,14 @@ fn send_for(
         if truth.born > 0 && truth.born + INCARNATION_WINDOW >= tick {
             absolute.incarnation = Some(truth.born);
         }
-        let mut record = absolute;
-        let mut bytes = record_bytes(&absolute, physics);
+        let mut record = PreparedRecord::new(absolute, physics);
         if baseline.is_some() {
-            let delta = KeyframeRecord { baseline, ..absolute };
-            let delta_bytes = record_bytes(&delta, physics);
-            if delta_bytes < bytes {
+            let delta = PreparedRecord::new(KeyframeRecord { baseline, ..absolute }, physics);
+            if delta.bytes() < record.bytes() {
                 record = delta;
-                bytes = delta_bytes;
             }
         }
+        let bytes = record.bytes();
         let gain = if error_px.is_finite() {
             let screen = if error_px >= config.tolerance_px {
                 model.penalty(ArtifactClass::ScreenError, f64::from(error_px), f64::from(weight)) as f32
@@ -1702,7 +1700,7 @@ fn send_for(
         }
         cs.event_copies.retain(|(_, left)| *left > 0);
     }
-    let mut chosen: Vec<KeyframeRecord> = Vec::new();
+    let mut chosen: Vec<PreparedRecord> = Vec::new();
     // The datagrams' own headers count too: records are packed in this
     // order, a new datagram starting whenever the next one does not fit.
     let mut room = 0usize;
@@ -1719,11 +1717,11 @@ fn send_for(
         }
         room -= c.bytes.min(room);
         used += header + c.bytes;
-        if c.record.baseline.is_some() {
+        if c.record.record.baseline.is_some() {
             stats.delta_records += 1;
         }
-        stats.by_mode[c.record.keyframe.mode as usize] += 1;
-        stats.bytes_by_mode[c.record.keyframe.mode as usize] += c.bytes as u64;
+        stats.by_mode[c.record.record.keyframe.mode as usize] += 1;
+        stats.bytes_by_mode[c.record.record.keyframe.mode as usize] += c.bytes as u64;
         let band = DISTANCE_BANDS_M.iter().position(|&d| c.distance < d).unwrap_or(DISTANCE_BANDS_M.len());
         stats.keyframes_by_distance[band] += 1;
         stats.bytes_by_distance[band] += c.bytes as u64;
@@ -1732,11 +1730,11 @@ fn send_for(
     // What lost the ranking is looked at again next send (the best of it,
     // up to half the cap).
     for r in &chosen {
-        cs.over_since.remove(&r.key);
+        cs.over_since.remove(&r.record.key);
     }
     cs.hot.clear();
     if slices > 1 {
-        let sent: HashSet<BodyKey> = chosen.iter().map(|r| r.key).collect();
+        let sent: HashSet<BodyKey> = chosen.iter().map(|r| r.record.key).collect();
         cs.hot.extend(candidate_keys.iter().filter(|k| !sent.contains(k)).take(config.eval_cap / 4));
     }
     stats.allowance_offered += allowance as u64;
@@ -1756,21 +1754,22 @@ fn send_for(
     loop {
         let mut end = start;
         let mut bytes = DATAGRAM_HEADER;
-        while end < chosen.len() && bytes + record_bytes(&chosen[end], physics) <= config.max_datagram {
-            bytes += record_bytes(&chosen[end], physics);
+        while end < chosen.len() && bytes + chosen[end].bytes() <= config.max_datagram {
+            bytes += chosen[end].bytes();
             end += 1;
         }
-        let records = chosen[start..end].to_vec();
+        let records = &chosen[start..end];
         let ordinal = cs.ordinal;
         cs.ordinal += 1;
-        let packet = encode_keyframes(&KeyframePacket { server_tick: tick, ordinal, records: records.clone() }, physics);
+        let packet = encode_prepared(tick, ordinal, records);
         out.record_bytes += packet.len();
         out.packets.push(Outgoing::datagram(packet));
         let mut carried = Vec::with_capacity(records.len());
-        for record in &records {
+        for prepared in records {
+            let record = &prepared.record;
             // The client derives the floor from the body at the decoded
             // pose; the truth's is that to within the quantisation.
-            let decoded = Keyframe { floor_drop: record.keyframe.floor_drop, ..decoded(record, physics) };
+            let decoded = Keyframe { floor_drop: record.keyframe.floor_drop, ..prepared.decoded(physics) };
             cs.believed.entry(record.key).or_default().add(decoded, arrival_render, physics);
             cs.unsent.remove(&record.key);
             carried.push((record.key, decoded));
@@ -1789,6 +1788,7 @@ fn send_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vibe_land_perplayer::wire::record_bytes;
     use crate::types::Camera;
 
     fn keyframe(tick: u32, position: Vec3, velocity: Vec3, mode: Mode) -> Keyframe {
@@ -1868,6 +1868,7 @@ mod tests {
 #[cfg(test)]
 mod drawn_near_tests {
     use super::*;
+    use vibe_land_perplayer::wire::record_bytes;
     use crate::types::Camera;
 
     fn still(tick: u32, position: Vec3) -> Keyframe {
@@ -1943,6 +1944,7 @@ mod drawn_near_tests {
 #[cfg(test)]
 mod age_tests {
     use super::*;
+    use vibe_land_perplayer::wire::record_bytes;
     use crate::types::Camera;
 
     fn still(tick: u32, position: Vec3) -> Keyframe {
