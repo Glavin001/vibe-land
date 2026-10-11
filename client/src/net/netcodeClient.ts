@@ -136,7 +136,8 @@ export class NetcodeClient {
   private vehicleDetached = new Map<number, Map<number, VehicleRigPacket['detached'][number]>>();
   /** Per vehicle handle, its detached parts from the city's per-player stream (wire 4). */
   private vehicleDebris = new Map<number, VehicleRigPacket['detached']>();
-  private attachVehicleAsset(state: VehicleStateMeters, streamed = this.streamedCar(state.id)): void {
+  private attachVehicleAsset(state: VehicleStateMeters, streamed?: StreamedCar): void {
+    streamed ??= this.streamedCar(state.id);
     state.customVehicle = this.customVehicles.get(state.id);
     // A streamed car's wheels come with its pose (wire 4); others by rig.
     const rig: VehicleRigPacket | undefined = streamed?.wheels
@@ -165,10 +166,16 @@ export class NetcodeClient {
     this.streamedCars = { tick: Number.NaN, cars: new Map() };
   }
 
+  /** Car `id`'s newest rig packet as received (wheels; detached parts on wire 2). */
+  getVehicleRig(id: number): VehicleRigPacket | undefined {
+    return this.vehicleRigs.get(id);
+  }
+
   /** Car `id` as streamed at `renderTimeUs`, unless this client drives it. */
-  private streamedCar(id: number, renderTimeUs = this.getRenderTimeUs()): StreamedCar | undefined {
+  private streamedCar(id: number, renderTimeUs?: number): StreamedCar | undefined {
     if (!this.streamedCarSource || id === this.getLocalDrivenVehicleId()) return undefined;
-    const tick = renderTimeUs / SERVER_TICK_US;
+    // Read the render clock only here: reading it slews it.
+    const tick = (renderTimeUs ?? this.getRenderTimeUs()) / SERVER_TICK_US;
     if (tick !== this.streamedCars.tick) {
       this.streamedCars = { tick, cars: new Map(this.streamedCarSource(tick).map((car) => [car.handle, car])) };
     }

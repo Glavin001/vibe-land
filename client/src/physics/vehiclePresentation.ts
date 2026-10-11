@@ -1,5 +1,5 @@
 import {Quaternion, Vector3} from 'three';
-import {BTN_JUMP, type InputCmd, type VehicleStateMeters} from '../net/protocol';
+import {BTN_JUMP, SERVER_TICK_US, type InputCmd, type VehicleStateMeters} from '../net/protocol';
 import type {VehicleSample} from '../net/interpolation';
 import {resolveDrivingSetup, resolveVehicleGeometry} from '../vehicles/configuration.mjs';
 import {getSharedVehicleDefinition} from '../wasm/sharedVehicleDefinitions';
@@ -221,6 +221,23 @@ export class VehiclePresentationPredictor {
     const presented=renderLeadSec>0&&!this.stalled?extrapolateVehicle(this.raw,Math.min(DT,renderLeadSec),this.proxy,this.sweep):this.raw;
     const moved=moveVehicle(presented.position,presented.quaternion,a3(this.offset),this.proxy,this.sweep);
     return {position:moved.position,quaternion:a4(this.rotationOffset.clone().multiply(q(presented.quaternion)))};
+  }
+  /**
+   * The driven car's wheels as drawn with its predicted pose: the server's
+   * newest rig (travel, steer, spin as Vehicle2 had them at its tick), its
+   * front wheels turned by the steering the replayed inputs added since, and
+   * every wheel spun on at the predicted forward speed to the drawn time. So
+   * the wheels answer the stick when the body does, not a round trip later.
+   */
+  wheels(rig:{serverTick:number;wheels:readonly {travelM:number;steeringRad:number;rotationRad:number;grounded:boolean}[]},renderLeadSec=0)
+    :{travelM:number;steeringRad:number;rotationRad:number;grounded:boolean}[]|null {
+    const motion=this.cacheMotion;
+    if(!this.raw||!this.proxy||!motion||this.stalled||rig.wheels.length!==4)return null;
+    const ahead=Math.max(0,(this.raw.serverTimeUs-rig.serverTick*SERVER_TICK_US)/1e6+Math.min(DT,Math.max(0,renderLeadSec)));
+    const speed=v(this.raw.linearVelocity).dot(new Vector3(0,0,1).applyQuaternion(q(this.raw.quaternion)));
+    const steer=(motion.steering-this.steering)*this.proxy.lock;
+    const spin=speed/Math.max(1e-3,this.proxy.radius)*ahead;
+    return rig.wheels.map((w,i)=>({...w,steeringRad:i<2?w.steeringRad+steer:w.steeringRad,rotationRad:w.rotationRad+spin}));
   }
   debug(now:number) {return {stalled:this.stalled,pending:this.pending.length,ack:this.ack??0,latestSeq:this.latestSeq,
     correction:this.offset.length(),replayError:this.replayError,replayMs:this.replayMs,

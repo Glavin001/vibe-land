@@ -2926,6 +2926,9 @@ export function GameWorld({
         (id, vs) => {
           const isLocalVehicle = isDrivingNow && localVehiclePos !== null && drivenVehicleId === id;
           if (isLocalVehicle && localVehiclePos) {
+            // Its wheels with its prediction (the renderer reads the rig next).
+            const wheels = client.getDrivenVehicleWheels();
+            if (wheels && vs.customRig) vs.customRig = { ...vs.customRig, wheels };
             return { position: localVehiclePos.position, quaternion: localVehiclePos.quaternion, localDebug: localVehicleDebug };
           }
           const sample = localAuthorityTransport

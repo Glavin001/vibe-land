@@ -106,4 +106,26 @@ describe('collision-aware Vehicle2 presentation',()=>{
     expect(p.radius).toBe(configuration.dimensions.tireRadius);
     expect(p.acceleration).toBeCloseTo(.8*configuration.driving.grip*9.81/2);
   });
+  // The server's rig is a round trip old; the predicted body is not. Its
+  // wheels follow the body: steered by the inputs replayed since, spun on at
+  // the predicted speed to the drawn time.
+  it('turns and spins the driven wheels with the prediction, not a round trip later',()=>{
+    const driver=new VehiclePresentationPredictor(sweep);
+    driver.observe(1,state({serverTimeUs:100*16666,linearVelocity:[0,0,10]}),0,proxy,0);
+    // Six ticks of full right steer since the acked state.
+    driver.record(1,[1,2,3,4,5,6].map(seq=>input(seq,127,127)));
+    driver.update(1/60,10);
+    const rig={serverTick:100,wheels:[0,1,2,3].map(()=>({travelM:.01,steeringRad:0,rotationRad:1,grounded:true}))};
+    const wheels=driver.wheels(rig)!;
+    // Right is negative steer (Vehicle2 and the proxy: positive yaw is left).
+    expect(wheels[0].steeringRad).toBeLessThan(-.05);
+    expect(wheels[1].steeringRad).toBe(wheels[0].steeringRad);
+    expect(wheels[2].steeringRad).toBe(0);
+    // Six ticks ahead at about 10 m/s on 0.4 m tyres: about 2.5 rad more.
+    expect(wheels[3].rotationRad-1).toBeGreaterThan(2.3);
+    expect(wheels[3].rotationRad-1).toBeLessThan(2.8);
+    expect(wheels[0].travelM).toBe(.01);
+    // Nothing to draw from without a prediction.
+    expect(new VehiclePresentationPredictor(sweep).wheels(rig)).toBeNull();
+  });
 });

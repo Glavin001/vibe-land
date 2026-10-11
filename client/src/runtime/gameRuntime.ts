@@ -3,7 +3,7 @@ import { ingestAudioContacts, resetAudioContacts } from '../audio/contactStream'
 import {VehiclePresentationPredictor, extrapolateVehicle, vehicleProxy, type VehicleProxy} from '../physics/vehiclePresentation';
 import type { CityCameraDropCmd } from '../net/protocol';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
-import { loadVehicleMetadata } from '../vehicles/vehicleStream';
+import { loadVehicleMetadata, type WheelPose } from '../vehicles/vehicleStream';
 import { DetachBlend } from '../vehicles/detachBlend';
 import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
@@ -314,6 +314,8 @@ export interface GameRuntimeClient {
   ): void;
   reconcileVehicle(vehicleState: NetVehicleState, ackInputSeq: number): void;
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null;
+  /** The driven car's wheels drawn with its predicted pose (null: draw the server's rig). */
+  getDrivenVehicleWheels(): WheelPose[] | null;
   getDrivenVehicleId(): number | null;
   getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   isInVehicle(): boolean;
@@ -576,6 +578,9 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   ): void;
   abstract reconcileVehicle(vehicleState: NetVehicleState, ackInputSeq: number): void;
   abstract getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null;
+  getDrivenVehicleWheels(): WheelPose[] | null {
+    return null;
+  }
   abstract getDrivenVehicleId(): number | null;
   abstract getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   abstract isInVehicle(): boolean;
@@ -2373,6 +2378,14 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       if(!this.client?.vehicles.has(id))this.vehicleProxies.delete(id);
     }
     return proxy;
+  }
+
+  override getDrivenVehicleWheels(): WheelPose[] | null {
+    if (!this.thinAuthoritative || !this.client || this.client.presentsImmediately) return null;
+    const id = this.client.getLocalDrivenVehicleId();
+    if (id == null || this.thinVehiclePredictor.vehicleId !== id) return null;
+    const rig = this.client.getVehicleRig(id);
+    return rig ? this.thinVehiclePredictor.wheels(rig, this.authoritativeInputBundler.remainderSec()) : null;
   }
 
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
