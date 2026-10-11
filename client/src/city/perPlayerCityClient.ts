@@ -56,6 +56,13 @@ export interface PerPlayerCore {
   hash_mismatches(): number;
   vehicle_groups_version(): number;
   vehicle_groups(): Float32Array;
+  set_vehicle_parts(structure: number, flat: Float32Array): void;
+}
+
+/** A car part's hull shapes in its authored frame (vehicle metadata.json `parts`). */
+export interface VehiclePartHulls {
+  position: [number, number, number];
+  shapes: { position: [number, number, number]; vertices: [number, number, number][] }[];
 }
 
 /** Flatten a manifest the way the core's constructor reads it. */
@@ -238,6 +245,25 @@ export class PerPlayerCityClient extends CityClient {
     }
     this.live = live;
     return live;
+  }
+
+  /**
+   * A car's part hulls, from its prepared asset: its detached parts then
+   * rest on the ground between keyframes, as the server models them. The
+   * points are the server's own (part + shape position + vertex).
+   */
+  setVehicleParts(handle: number, parts: VehiclePartHulls[]): void {
+    const flat: number[] = [parts.length];
+    for (const part of parts) {
+      const count = part.shapes.reduce((n, s) => n + s.vertices.length, 0);
+      flat.push(count);
+      for (const shape of part.shapes) {
+        for (const v of shape.vertices) {
+          for (let k = 0; k < 3; k += 1) flat.push(Math.fround(Math.fround(part.position[k] + shape.position[k]) + v[k]));
+        }
+      }
+    }
+    this.core.set_vehicle_parts(VEHICLE_STRUCTURE_BASE + handle, new Float32Array(flat));
   }
 
   /** Each frame, every car's detached parts (wire 4 streams them as bodies). */

@@ -8,6 +8,18 @@ export type VehicleAssetPacket = {type:'vehicleAsset'; handle:number; vehicle:Ve
 export type DetachedPart = {part:number; position:[number,number,number]; rotation:[number,number,number,number]};
 export type VehicleRigPacket = {type:'vehicleRig'; handle:number; serverTick:number; wheels:WheelPose[]; detached:DetachedPart[]; page?:number; pages?:number};
 
+const metadataByHash=new Map<string,Promise<any|null>>();
+/** A prepared car's metadata.json (parts, hulls, visual groups), fetched once per geometry. */
+export function loadVehicleMetadata(origin:string,geometryHash:string):Promise<any|null> {
+  let loading=metadataByHash.get(geometryHash);
+  if(!loading) {
+    loading=fetch(`${origin}/vehicle-assets/${geometryHash}/metadata.json`).then(r=>r.ok?r.json():null).catch(()=>null);
+    metadataByHash.set(geometryHash,loading);
+    loading.then(m=>{ if(!m) metadataByHash.delete(geometryHash); });
+  }
+  return loading;
+}
+
 export function decodeVehicleAsset(bytes:Uint8Array):VehicleAssetPacket {
   if(bytes.length<2 || bytes.length>8192 || bytes[0]!==PKT_VEHICLE_ASSET)throw Error('Invalid vehicle asset packet');
   const value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(1)));

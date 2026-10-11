@@ -146,6 +146,14 @@ export class NetcodeClient {
    * Wire 4: a car's detached parts this frame (the per-player stream carries
    * them as bodies; its rig packets carry the wheels). Empty: none.
    */
+  private vehicleAssetListener: ((handle: number, vehicle: VehicleAsset) => void) | null = null;
+
+  /** Every car asset, those already received first (a car's hull shapes, say). */
+  setVehicleAssetListener(listener: ((handle: number, vehicle: VehicleAsset) => void) | null): void {
+    this.vehicleAssetListener = listener;
+    if (listener) for (const [handle, vehicle] of this.customVehicles) listener(handle, vehicle);
+  }
+
   setVehicleDebris(handle: number, parts: VehicleRigPacket['detached']): void {
     if (parts.length === 0) {
       if (!this.vehicleDebris.delete(handle)) return;
@@ -1373,6 +1381,7 @@ export class NetcodeClient {
     switch (packet.type) {
       case 'vehicleAsset': {
         this.customVehicles.set(packet.handle, packet.vehicle);
+        this.vehicleAssetListener?.(packet.handle, packet.vehicle);
         // An asset packet is a fresh car (e.g. respawned by a city reset): it
         // has no loose parts until its rig stream says so.
         this.vehicleDetached.delete(packet.handle);

@@ -163,6 +163,22 @@ impl PerPlayerClient {
         self.inner.render_tick()
     }
 
+    /// A car's parts' hull points in its authored frame, from its asset, as
+    /// `[parts, per part: points, then x, y, z per point]`: the floor of its
+    /// detached groups (`Client::set_vehicle_parts`).
+    pub fn set_vehicle_parts(&mut self, structure: u32, flat: &[f32]) {
+        let value = |i: usize| flat.get(i).copied().unwrap_or(0.0);
+        let mut at = 1usize;
+        let mut parts = Vec::new();
+        for _ in 0..value(0) as usize {
+            let n = value(at) as usize;
+            at += 1;
+            parts.push((0..n).map(|i| Vec3::new(value(at + 3 * i), value(at + 3 * i + 1), value(at + 3 * i + 2))).collect());
+            at += 3 * n;
+        }
+        self.inner.set_vehicle_parts(structure, parts);
+    }
+
     /// A count that changes whenever any car's detached groups do.
     pub fn vehicle_groups_version(&self) -> u32 {
         self.inner.vehicle_groups().1
@@ -193,8 +209,9 @@ impl PerPlayerClient {
     pub fn stats_json(&self) -> String {
         let s = &self.inner.stats;
         format!(
-            "{{\"keyframes\":{},\"lateKeyframes\":{},\"eventsApplied\":{},\"eventsLate\":{},\"hashChecks\":{},\"hashMismatches\":{},\"decodeErrors\":{},\"bootstraps\":{},\"missingBaselines\":{}}}",
-            s.keyframes, s.late_keyframes, s.events_applied, s.events_late, s.hash_checks, s.hash_mismatches, s.decode_errors, s.bootstraps, s.missing_baselines
+            "{{\"keyframes\":{},\"lateKeyframes\":{},\"eventsApplied\":{},\"eventsLate\":{},\"hashChecks\":{},\"hashMismatches\":{},\"decodeErrors\":{},\"bootstraps\":{},\"missingBaselines\":{},\"vehicleHulls\":{}}}",
+            s.keyframes, s.late_keyframes, s.events_applied, s.events_late, s.hash_checks, s.hash_mismatches, s.decode_errors, s.bootstraps, s.missing_baselines,
+            self.inner.vehicle_part_cars()
         )
     }
 }

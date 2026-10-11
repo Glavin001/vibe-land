@@ -36,7 +36,7 @@ use vibe_land_perplayer::predict::{Keyframe, Mode, Physics};
 use vibe_land_perplayer::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use vibe_land_perplayer::wire::{
     encode_bootstrap, encode_events, encode_prepared, quantised, BodyKey, Bootstrap, BootstrapStructure, Event,
-    KeyframeRecord, PreparedRecord, VehicleGroup, POSITION_STEPS, VEHICLE_STRUCTURE_BASE,
+    KeyframeRecord, PreparedRecord, VehicleGroup, POSITION_STEPS, VEHICLE_STRUCTURE_BASE, is_vehicle_structure,
 };
 use vibe_netcode::destruction_backend::{DestructionTickOutput, FractureBatch};
 
@@ -409,6 +409,10 @@ fn classify(
             None => derived.insert(state.floor_boxes(def, key.body)).as_deref(),
         };
         keyframe.floor_drop = boxes.map(|b| StructureState::floor_drop_of(b, keyframe.position, keyframe.rotation));
+    } else if is_vehicle_structure(key.structure) {
+        // A car group's, from its parts' hulls (`ingest_vehicles`).
+        let boxes = floors.get(&key).and_then(|b| b.as_deref());
+        keyframe.floor_drop = boxes.map(|b| StructureState::floor_drop_of(b, keyframe.position, keyframe.rotation));
     }
     (Truth { keyframe, radius, settled: false, contact_tick, born: previous.map_or(0, |p| p.born), ahead: None }, continuous, derived)
 }
@@ -673,13 +677,16 @@ pub struct PerPlayer {
 }
 
 /// One part of a car, as its detached groups need it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct VehiclePartModel {
     pub mass: f32,
     /// Its centre of mass in the car's authored frame.
     pub centre: [f32; 3],
     /// The farthest point of its hull from that centre, m.
     pub reach: f32,
+    /// Its hull points in the car's authored frame: the floor of its
+    /// groups' keyframes (`vehicle_floor_boxes`).
+    pub points: Vec<[f32; 3]>,
 }
 
 /// A detached part of a car, with the rigid body it is on.
@@ -699,6 +706,8 @@ pub struct VehicleDetachedPart {
 
 struct VehicleModel {
     parts: Vec<VehiclePartModel>,
+    /// Each part's hull points, as `vehicle_floor_boxes` takes them.
+    points: Vec<Vec<Vec3>>,
     /// The groups as last stated to clients (`Event::VehicleGroups`).
     groups: Vec<VehicleGroup>,
 }
@@ -960,7 +969,8 @@ impl PerPlayer {
     /// Stream `handle`'s car: its detached parts become bodies of structure
     /// `VEHICLE_STRUCTURE_BASE + handle` (`ingest_vehicles`).
     pub fn register_vehicle(&mut self, handle: u8, parts: Vec<VehiclePartModel>) {
-        self.vehicles.insert(VEHICLE_STRUCTURE_BASE + u32::from(handle), VehicleModel { parts, groups: Vec::new() });
+        let points = parts.iter().map(|p| p.points.iter().map(|&q| Vec3::from_array(q)).collect()).collect();
+        self.vehicles.insert(VEHICLE_STRUCTURE_BASE + u32::from(handle), VehicleModel { parts, points, groups: Vec::new() });
     }
 
     /// This tick's detached parts of every registered car, each with the
@@ -1011,6 +1021,10 @@ impl PerPlayer {
                 let same = kept(group);
                 let previous = if same { self.truth.get(&key).copied() } else { None };
                 let history = if same { self.truth.history(&key) } else { None };
+                if !same {
+                    let points = &self.vehicles[&structure].points;
+                    self.floors.insert(key, vibe_land_perplayer::wire::vehicle_floor_boxes(points, group));
+                }
                 let snapshot = BodySnapshotInput {
                     body_entity: 0,
                     position: state.com,
@@ -1041,6 +1055,7 @@ impl PerPlayer {
                 for gone in previous_groups.iter().filter(|p| !now.iter().any(|g| g.body == p.body)) {
                     let key = BodyKey { structure, body: gone.body };
                     self.truth.remove(&key);
+                    self.floors.remove(&key);
                     self.contacts_stale.insert(key);
                     for cs in self.clients.values_mut() {
                         cs.believed.remove(&key);
@@ -3118,10 +3133,10 @@ mod vehicle_tests {
         // Parts 0..4 of a car (handle 7): 2 and 3 break off; their centres in
         // the car frame, 2 kg and 1 kg.
         let parts = vec![
-            VehiclePartModel { mass: 50.0, centre: [0.0, 0.5, 0.0], reach: 1.0 },
-            VehiclePartModel { mass: 10.0, centre: [0.0, 0.5, 1.0], reach: 0.5 },
-            VehiclePartModel { mass: 2.0, centre: [0.8, 0.4, 1.2], reach: 0.2 },
-            VehiclePartModel { mass: 1.0, centre: [0.8, 0.4, 1.5], reach: 0.15 },
+            VehiclePartModel { mass: 50.0, centre: [0.0, 0.5, 0.0], reach: 1.0, points: vec![] },
+            VehiclePartModel { mass: 10.0, centre: [0.0, 0.5, 1.0], reach: 0.5, points: vec![] },
+            VehiclePartModel { mass: 2.0, centre: [0.8, 0.4, 1.2], reach: 0.2, points: vec![] },
+            VehiclePartModel { mass: 1.0, centre: [0.8, 0.4, 1.5], reach: 0.15, points: vec![] },
         ];
         pp.register_vehicle(7, parts.clone());
         let structure = VEHICLE_STRUCTURE_BASE + 7;
@@ -3226,5 +3241,86 @@ mod vehicle_tests {
         // Prediction carries free flight: far fewer keyframes than ticks.
         assert!(keyframes * 3 < ticks_flying, "{keyframes} keyframes over {ticks_flying} body-ticks in flight");
         eprintln!("car debris: {keyframes} keyframes over {ticks_flying} body-ticks; {checked} drawn poses within tolerance");
+    }
+
+    /// A car part's packets are lost while it falls and lands; later ones
+    /// arrive. Drawn on from its last keyframe, it comes to rest on the
+    /// ground, never through it, because both sides take its floor from its
+    /// hull.
+    #[test]
+    fn a_falling_car_part_is_never_drawn_through_the_ground() {
+        let manifest = super::fracture_scale_tests_support::block_manifest(2, 2, 2);
+        let config = PerPlayerConfig::validated(60);
+        let mut pp = PerPlayer::new(&manifest, CityLedger::from_manifest(&manifest), config.clone());
+        pp.add_client(1);
+        let boot = pp.join(1, 0);
+        let cube = |c: [f32; 3], h: f32| -> Vec<[f32; 3]> {
+            (0..8).map(|i| [c[0] + if i & 1 == 0 { -h } else { h }, c[1] + if i & 2 == 0 { -h } else { h }, c[2] + if i & 4 == 0 { -h } else { h }]).collect()
+        };
+        let parts = vec![
+            VehiclePartModel { mass: 50.0, centre: [0.0, 0.5, 0.0], reach: 0.87, points: cube([0.0, 0.5, 0.0], 0.5) },
+            VehiclePartModel { mass: 2.0, centre: [0.8, 0.4, 1.2], reach: 0.35, points: cube([0.8, 0.4, 1.2], 0.2) },
+        ];
+        pp.register_vehicle(7, parts.clone());
+        let structure = VEHICLE_STRUCTURE_BASE + 7;
+        let physics = Physics::at_hz(60, config.gravity_y);
+        let mut client = Client::new(structure_defs(&manifest), physics, 60, config.delay_ticks);
+        client.set_vehicle_parts(structure, parts.iter().map(|p| p.points.iter().map(|&q| Vec3::from_array(q)).collect()).collect());
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        for packet in &boot {
+            client.ingest(&packet.bytes, ms(0));
+        }
+        let camera = Camera { eye: Vec3::new(6.0, 3.0, 0.0), direction: Vec3::new(-1.0, -0.3, 0.2).normalize(), fov_degrees: 70.0 };
+        let centre = Vec3::from_array(parts[1].centre);
+        let lowest = |com: Vec3, r: Quat| parts[1].points.iter().map(|&p| (com + r * (Vec3::from_array(p) - centre)).y).fold(f32::INFINITY, f32::min);
+        let g = Vec3::new(0.0, physics.gravity.y, 0.0);
+        // Part 1 leaves the car 2 m up, tilted; it falls until it lands.
+        let (mut com, rotation, mut v) = (centre + Vec3::new(0.0, 2.0, 0.0), Quat::from_rotation_z(0.4), Vec3::new(1.0, 1.0, 0.0));
+        let (mut landed, mut checked, mut worst) = (None, 0u32, f32::INFINITY);
+        for tick in 10..=150u32 {
+            if tick > 10 && landed.is_none() {
+                v += g * physics.dt;
+                com += v * physics.dt;
+                let low = lowest(com, rotation);
+                if low <= 0.0 {
+                    com.y -= low;
+                    v = Vec3::ZERO;
+                    landed = Some(tick);
+                }
+            }
+            let detached = vec![VehicleDetachedPart {
+                part: 1,
+                body: 1,
+                position: (com - rotation * centre).to_array(),
+                rotation: rotation.to_array(),
+                com: com.to_array(),
+                linear_velocity: v.to_array(),
+                angular_velocity: [0.0; 3],
+            }];
+            pp.ingest_tick(tick, &[], &DestructionTickOutput::default());
+            for packet in pp.ingest_vehicles(tick, &[(7, detached)]) {
+                client.ingest(&packet.bytes, ms(tick));
+            }
+            pp.begin_send(tick);
+            let send = pp.client_send(1, &ClientView { camera }, tick, Some(SendBudget::Full));
+            // Lost from tick 25 until well after it lands; later packets
+            // (heartbeats) arrive, so the client draws on from what it had.
+            if tick < 25 || landed.is_some_and(|l| tick >= l + 20) {
+                for packet in send.packets {
+                    client.ingest(&packet.bytes, ms(tick) + 30.0);
+                }
+            }
+            if client.advance(ms(tick) + 33.0).is_none() || tick < 40 {
+                continue;
+            }
+            for (_, p, q, _) in client.body_poses().into_iter().filter(|b| b.0.structure == structure) {
+                checked += 1;
+                worst = worst.min(lowest(p, q));
+            }
+        }
+        assert!(landed.is_some_and(|t| t > 25), "the part lands after its keyframes stop ({landed:?})");
+        assert!(checked > 100, "{checked} drawn poses checked");
+        // On the ground, to float precision; never below it.
+        assert!(worst > -1e-4, "drawn {worst} m below the ground");
     }
 }

@@ -38,6 +38,7 @@ const stubCore = (): PerPlayerCore & { ingested: number } => ({
   hash_mismatches: () => 0,
   vehicle_groups_version: () => 0,
   vehicle_groups: () => new Float32Array(),
+  set_vehicle_parts: () => {},
 });
 
 describe('per-player stream stats', () => {
@@ -129,5 +130,18 @@ describe('per-player car debris', () => {
     seen.length = 0;
     client.samplePresentation(16);
     expect(seen).toEqual([[3, []]]);
+  });
+
+  // The floor of a car's groups: each part's hull points in the car frame,
+  // as the server takes them (part + shape position + vertex, in f32).
+  it('hands the core each part hull as car-frame points', () => {
+    const calls: Array<[number, number[]]> = [];
+    const core = { ...stubCore(), set_vehicle_parts: (structure: number, flat: Float32Array) => calls.push([structure, Array.from(flat)]) };
+    const client = new PerPlayerCityClient(tinyManifest(), () => {}, core);
+    client.setVehicleParts(4, [
+      { position: [1, 0, 0], shapes: [{ position: [0, 1, 0], vertices: [[0, 0, 0.5], [0, 0, -0.5]] }, { position: [0, 0, 0], vertices: [[2, 0, 0]] }] },
+      { position: [0, 0, 0], shapes: [] },
+    ]);
+    expect(calls).toEqual([[0x8000 + 4, [2, 3, 1, 1, 0.5, 1, 1, -0.5, 3, 0, 0, 0]]]);
   });
 });

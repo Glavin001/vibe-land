@@ -3,6 +3,7 @@ import { ingestAudioContacts, resetAudioContacts } from '../audio/contactStream'
 import {VehiclePresentationPredictor, extrapolateVehicle, vehicleProxy, type VehicleProxy} from '../physics/vehiclePresentation';
 import type { CityCameraDropCmd } from '../net/protocol';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { loadVehicleMetadata } from '../vehicles/vehicleStream';
 import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
@@ -1202,6 +1203,13 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         const perPlayer = new PerPlayerCityClient(manifest, sendUpstream, createPerPlayerCore(manifest, 60));
         // Cars' broken-off parts are bodies of this stream; their cars draw them.
         perPlayer.setVehicleDebrisListener((handle, parts) => client.setVehicleDebris(handle, parts));
+        // Their hulls, so a part between keyframes rests on the ground as the
+        // server models it.
+        client.setVehicleAssetListener((handle, vehicle) => {
+          void loadVehicleMetadata(this.backend.httpOrigin, vehicle.geometryHash).then(m => {
+            if (Array.isArray(m?.parts)) perPlayer.setVehicleParts(handle, m.parts);
+          });
+        });
         this.startPerPlayerAcks(client, perPlayer);
         cityClient = perPlayer;
         console.info('[city] wire 4: per-player core ready');

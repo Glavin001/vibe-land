@@ -4,6 +4,7 @@ import { defaultConfiguration, vehicles as vehicleModels } from '../vehicles/con
 import { registerShaderWarmup } from './ShaderWarmup';
 import { debugState } from '../vehicles/destructionDebug';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { loadVehicleMetadata } from '../vehicles/vehicleStream';
 // The networked world's entities as the game draws them: players (animated
 // characters with HP bars, spawn shields and id labels), dynamic bodies
 // (balls, boxes, cannonballs), batteries and vehicles.
@@ -567,8 +568,7 @@ export class VehiclesRenderer {
           vehicleMeshGroup.userData.geometryHash = vs.customVehicle.geometryHash;
           this.customVisuals.set(id, visual);
           // Native part index -> visual ids, for drawing parts that break off.
-          fetch(`${resolveMultiplayerBackend().httpOrigin}/vehicle-assets/${vs.customVehicle.geometryHash}/metadata.json`)
-            .then(r => r.ok ? r.json() : null)
+          loadVehicleMetadata(resolveMultiplayerBackend().httpOrigin, vs.customVehicle.geometryHash)
             .then(m => { if (Array.isArray(m?.parts)) visual.setFractureGroups(m.parts.map((p: {visualIds: string[]}) => p.visualIds)); })
             .catch(() => {});
         } else vehicleMeshGroup = createVehicleMesh(id, vehicleType);

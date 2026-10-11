@@ -104,6 +104,13 @@ impl BodyTrack {
         self.correction = None;
     }
 
+    /// Re-derive each keyframe's floor (its body's shape became known).
+    pub fn refloor(&mut self, floor: impl Fn(&Keyframe) -> Option<f32>) {
+        for keyframe in &mut self.keyframes {
+            keyframe.floor_drop = floor(keyframe);
+        }
+    }
+
     /// This track as it stood before `tick`: keyframes at or after it may
     /// belong to the body the id names after a split there.
     pub fn before(&self, tick: u32) -> BodyTrack {
@@ -481,6 +488,9 @@ pub struct Client {
     /// (`Event::VehicleGroups`), and a count of changes to them.
     vehicles: BTreeMap<u32, Vec<VehicleGroup>>,
     vehicles_version: u32,
+    /// Per car, each part's hull points in the car frame (`set_vehicle_parts`):
+    /// the floor of its groups' keyframes.
+    vehicle_parts: BTreeMap<u32, Vec<Vec<Vec3>>>,
 }
 
 /// How long a held keyframe waits for its fracture event, ticks.
@@ -513,7 +523,43 @@ impl Client {
             held: Vec::new(),
             vehicles: BTreeMap::new(),
             vehicles_version: 0,
+            vehicle_parts: BTreeMap::new(),
         }
+    }
+
+    /// A car's parts' hull points (car frame), from its asset: its detached
+    /// groups' keyframes then rest on the ground as the server's do.
+    pub fn set_vehicle_parts(&mut self, structure: u32, parts: Vec<Vec<Vec3>>) {
+        self.vehicle_parts.insert(structure, parts);
+        self.refloor_vehicle(structure, None);
+    }
+
+    /// Re-derive the floor of a car's groups' keyframes: drawn before their
+    /// groups applied (a keyframe can arrive first) or its parts were known.
+    fn refloor_vehicle(&mut self, structure: u32, only: Option<&[u32]>) {
+        let Some(groups) = self.vehicles.get(&structure) else { return };
+        let Some(parts) = self.vehicle_parts.get(&structure) else { return };
+        for group in groups.iter().filter(|g| only.map_or(true, |o| o.contains(&g.body))) {
+            let Some(track) = self.bodies.get_mut(&BodyKey { structure, body: group.body }) else { continue };
+            let boxes = crate::wire::vehicle_floor_boxes(parts, group);
+            track.refloor(|k| boxes.as_deref().map(|b| StructureState::floor_drop_of(b, k.position, k.rotation)));
+        }
+    }
+
+    /// Cars whose part hulls are known (`set_vehicle_parts`).
+    pub fn vehicle_part_cars(&self) -> usize {
+        self.vehicle_parts.len()
+    }
+
+    /// How far a body's centre can fall from a pose before it reaches the
+    /// ground (`Keyframe::floor_drop`): from its chunks, or a car group's parts.
+    fn floor_drop(&self, key: BodyKey, position: Vec3, rotation: Quat) -> Option<f32> {
+        if let Some(cs) = self.structures.get(&key.structure) {
+            return cs.state.floor_drop(&cs.def, key.body, position, rotation);
+        }
+        let group = self.vehicles.get(&key.structure)?.iter().find(|g| g.body == key.body)?;
+        let boxes = crate::wire::vehicle_floor_boxes(self.vehicle_parts.get(&key.structure)?, group)?;
+        Some(StructureState::floor_drop_of(&boxes, position, rotation))
     }
 
     /// Every car's detached groups as drawn now, and a count that changes
@@ -573,9 +619,7 @@ impl Client {
     /// its track from `render` on.
     fn add_keyframe(&mut self, record: &KeyframeRecord, render: f32) {
         let mut keyframe = record.keyframe;
-        if let Some(cs) = self.structures.get(&record.key.structure) {
-            keyframe.floor_drop = cs.state.floor_drop(&cs.def, record.key.body, keyframe.position, keyframe.rotation);
-        }
+        keyframe.floor_drop = self.floor_drop(record.key, keyframe.position, keyframe.rotation);
         self.bodies.entry(record.key).or_default().add(keyframe, render, self.physics);
     }
 
@@ -666,9 +710,7 @@ impl Client {
                         self.bodies.insert(key, track);
                     }
                     for (key, mut kf) in boot.awake {
-                        if let Some(cs) = self.structures.get(&key.structure) {
-                            kf.floor_drop = cs.state.floor_drop(&cs.def, key.body, kf.position, kf.rotation);
-                        }
+                        kf.floor_drop = self.floor_drop(key, kf.position, kf.rotation);
                         self.bodies.entry(key).or_default().add(kf, f32::MIN, self.physics);
                     }
                     // A body the server has no pose for yet rests where it
@@ -822,10 +864,12 @@ impl Client {
                     }
                 }
                 // A group new, or with other parts, is a new body from `tick`.
+                let mut changed = Vec::new();
                 for group in &groups {
                     if old.iter().any(|g| g.body == group.body && g.members == group.members) {
                         continue;
                     }
+                    changed.push(group.body);
                     if let Some(track) = self.bodies.get_mut(&BodyKey { structure, body: group.body }) {
                         track.begin(tick);
                     }
@@ -833,6 +877,7 @@ impl Client {
                 if !groups.is_empty() {
                     self.vehicles.insert(structure, groups);
                 }
+                self.refloor_vehicle(structure, Some(&changed));
                 self.vehicles_version = self.vehicles_version.wrapping_add(1);
             }
         }

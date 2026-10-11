@@ -649,6 +649,20 @@ pub struct VehicleGroup {
     pub centre: Vec3,
 }
 
+/// A car group's floor boxes, as `structure::lowest_point_of` takes them:
+/// its parts' hull points (car frame, per part) about the group's centre of
+/// mass, each a box of no extent. Both sides derive the floor of a group's
+/// keyframes from these, so a late keyframe never draws a part through the
+/// ground. None when a member has no points.
+pub fn vehicle_floor_boxes(parts: &[Vec<Vec3>], group: &VehicleGroup) -> Option<Vec<(Vec3, Vec3)>> {
+    let mut boxes = Vec::new();
+    for &m in &group.members {
+        let points = parts.get(m as usize).filter(|p| !p.is_empty())?;
+        boxes.extend(points.iter().map(|&p| (p - group.centre, Vec3::ZERO)));
+    }
+    (!boxes.is_empty()).then_some(boxes)
+}
+
 impl Event {
     pub fn tick(&self) -> u32 {
         match self {
