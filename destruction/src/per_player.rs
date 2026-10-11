@@ -261,6 +261,236 @@ struct Truth {
     ahead: Option<TruthAhead>,
 }
 
+/// Every body the strategy has known, in slots: its truth while it exists,
+/// and its recent truths (`history`, which outlives the truth: an id a split
+/// re-makes keeps it, as a map of histories did). Looked up by key like a
+/// map; a tick's snapshots are written into their slots in place, in
+/// parallel, rather than through a map one body at a time.
+#[derive(Default)]
+struct Bodies {
+    slot_of: FxHashMap<BodyKey, u32>,
+    slots: Vec<BodySlot>,
+    live: usize,
+}
+
+struct BodySlot {
+    key: BodyKey,
+    truth: Option<Truth>,
+    history: VecDeque<Keyframe>,
+}
+
+impl Bodies {
+    fn slot(&mut self, key: BodyKey) -> u32 {
+        let slots = &mut self.slots;
+        *self.slot_of.entry(key).or_insert_with(|| {
+            slots.push(BodySlot { key, truth: None, history: VecDeque::new() });
+            (slots.len() - 1) as u32
+        })
+    }
+
+    fn get(&self, key: &BodyKey) -> Option<&Truth> {
+        self.slot_of.get(key).and_then(|&s| self.slots[s as usize].truth.as_ref())
+    }
+
+    fn get_mut(&mut self, key: &BodyKey) -> Option<&mut Truth> {
+        let s = *self.slot_of.get(key)?;
+        self.slots[s as usize].truth.as_mut()
+    }
+
+    fn contains_key(&self, key: &BodyKey) -> bool {
+        self.get(key).is_some()
+    }
+
+    fn insert(&mut self, key: BodyKey, truth: Truth) -> Option<Truth> {
+        let s = self.slot(key) as usize;
+        let old = self.slots[s].truth.replace(truth);
+        self.live += usize::from(old.is_none());
+        old
+    }
+
+    fn remove(&mut self, key: &BodyKey) -> Option<Truth> {
+        let s = *self.slot_of.get(key)?;
+        let old = self.slots[s as usize].truth.take();
+        self.live -= usize::from(old.is_some());
+        old
+    }
+
+    fn len(&self) -> usize {
+        self.live
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&BodyKey, &Truth)> {
+        self.slots.iter().filter_map(|s| s.truth.as_ref().map(|t| (&s.key, t)))
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (&BodyKey, &mut Truth)> {
+        self.slots.iter_mut().filter_map(|s| s.truth.as_mut().map(|t| (&s.key, t)))
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &BodyKey> {
+        self.iter().map(|(k, _)| k)
+    }
+
+    fn values(&self) -> impl Iterator<Item = &Truth> {
+        self.iter().map(|(_, t)| t)
+    }
+
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Truth> {
+        self.iter_mut().map(|(_, t)| t)
+    }
+
+    #[cfg(test)]
+    fn retain(&mut self, mut keep: impl FnMut(&BodyKey, &mut Truth) -> bool) {
+        for slot in &mut self.slots {
+            if let Some(t) = slot.truth.as_mut() {
+                if !keep(&slot.key, t) {
+                    slot.truth = None;
+                    self.live -= 1;
+                }
+            }
+        }
+    }
+
+    /// The body's recent truths (None before its first snapshot).
+    fn history(&self, key: &BodyKey) -> Option<&VecDeque<Keyframe>> {
+        self.slot_of.get(key).map(|&s| &self.slots[s as usize].history).filter(|h| !h.is_empty())
+    }
+}
+
+impl std::ops::Index<&BodyKey> for Bodies {
+    type Output = Truth;
+    fn index(&self, key: &BodyKey) -> &Truth {
+        self.get(key).expect("a body with a truth")
+    }
+}
+
+/// A body's truth from this tick's snapshot (`ingest_tick`): a pure function
+/// of the snapshot, its previous truth and its history.
+#[allow(clippy::too_many_arguments)]
+fn classify(
+    tick: u32,
+    key: BodyKey,
+    snapshot: &BodySnapshotInput,
+    previous: Option<Truth>,
+    history: Option<&VecDeque<Keyframe>>,
+    config: &PerPlayerConfig,
+    physics: Physics,
+    states: &BTreeMap<u32, StructureState>,
+    defs: &BTreeMap<u32, StructureDef>,
+    floors: &FxHashMap<BodyKey, Option<Vec<(Vec3, Vec3)>>>,
+) -> (Truth, bool, Option<Option<Vec<(Vec3, Vec3)>>>) {
+    let radius = previous.map_or(0.5, |p| p.radius);
+    let mut keyframe = Keyframe {
+        tick,
+        position: Vec3::from_array(snapshot.position),
+        rotation: Quat::from_array(snapshot.rotation).normalize(),
+        linear_velocity: Vec3::from_array(snapshot.linear_velocity),
+        angular_velocity: Vec3::from_array(snapshot.angular_velocity),
+        mode: Mode::Ballistic,
+        decel: 0.0,
+        floor_drop: None,
+    };
+    // Only this incarnation's continuous past counts.
+    let history = history.filter(|h| h.back().map_or(true, |k| k.tick + 1 == tick));
+    let continuous = history.is_some();
+    // A contact this tick: the velocity changed by more than gravity explains.
+    let gravity_step = Vec3::new(0.0, config.gravity_y, 0.0) / config.sim_hz.max(1) as f32;
+    let contact = history
+        .and_then(|h| h.back())
+        .is_some_and(|p| (keyframe.linear_velocity - p.linear_velocity - gravity_step).length() > CONTACT_DV);
+    let contact_tick = if contact { tick } else { previous.map_or(0, |p| p.contact_tick) };
+    let (mode, decel) = mode_of(config, physics, history, &keyframe, radius);
+    keyframe.mode = mode;
+    keyframe.decel = decel;
+    let mut derived = None;
+    if let (Some(state), Some(def)) = (states.get(&key.structure), defs.get(&key.structure)) {
+        let boxes = match floors.get(&key) {
+            Some(boxes) => boxes.as_deref(),
+            None => derived.insert(state.floor_boxes(def, key.body)).as_deref(),
+        };
+        keyframe.floor_drop = boxes.map(|b| StructureState::floor_drop_of(b, keyframe.position, keyframe.rotation));
+    }
+    (Truth { keyframe, radius, settled: false, contact_tick, born: previous.map_or(0, |p| p.born), ahead: None }, continuous, derived)
+}
+
+/// How the client should predict a body from its state now: whichever
+/// predictor would have best predicted its last `BACKTEST_TICKS` from the
+/// truth already seen -- ballistic, sliding, sliding to a stop (with the
+/// deceleration measured over that window) or resting. The spec's "best
+/// predictor of the next few ticks", measured on the past few. Without
+/// the history: ballistic for a body just freed (most likely falling).
+fn mode_of(config: &PerPlayerConfig, physics: Physics, history: Option<&VecDeque<Keyframe>>, now: &Keyframe, radius: f32) -> (Mode, f32) {
+    if !config.backtest_modes {
+        let prev = history.and_then(|h| h.back()).filter(|k| k.tick + 1 == now.tick);
+        if now.linear_velocity.length() < 0.05 && now.angular_velocity.length() < 0.05 {
+            return (Mode::Resting, 0.0);
+        }
+        return match prev {
+            Some(prev) => {
+                let accel = (now.linear_velocity - prev.linear_velocity) / physics.dt;
+                let g = physics.gravity;
+                (if (accel - g).length() <= 0.15 * g.length() { Mode::Ballistic } else { Mode::Sliding }, 0.0)
+            }
+            None => (Mode::Ballistic, 0.0),
+        };
+    }
+    let Some(history) = history.filter(|h| !h.is_empty()) else {
+        return (if now.linear_velocity.length() < 0.05 && now.angular_velocity.length() < 0.05 { Mode::Resting } else { Mode::Ballistic }, 0.0);
+    };
+    let past = *history.front().unwrap();
+    let ticks = now.tick.saturating_sub(past.tick) as f32;
+    if ticks < 1.0 {
+        return (Mode::Ballistic, 0.0);
+    }
+    let decel = ((past.linear_velocity.length() - now.linear_velocity.length()) / (ticks * physics.dt)).max(0.0);
+    let error = |mode: Mode| {
+        let kf = Keyframe { mode, decel, ..past };
+        let (p, q) = vibe_land_perplayer::predict::predict(&kf, ticks, physics);
+        let angle = 2.0 * q.dot(now.rotation).abs().min(1.0).acos();
+        (p - now.position).length() + radius * angle
+    };
+    // Supported now: free flight accelerates at exactly g each step
+    // (PhysX integrates it), so a body whose last two steps fell short
+    // of g by more than half is on something. The backtest scores the
+    // past, which for a body that just landed is a fall; predicting a
+    // fall from here draws it sinking into what holds it up.
+    let g_y = physics.gravity.y;
+    let mut supported = history.len() >= 2;
+    let mut later = now;
+    for earlier in history.iter().rev().take(2) {
+        if later.tick != earlier.tick + 1 {
+            supported = false;
+            break;
+        }
+        let accel_y = (later.linear_velocity.y - earlier.linear_velocity.y) / physics.dt;
+        supported &= accel_y > 0.5 * g_y;
+        later = earlier;
+    }
+    // Cheapest first: a tie goes to the one with fewer bytes.
+    let mut best = (Mode::Resting, error(Mode::Resting));
+    for mode in [Mode::Ballistic, Mode::Sliding, Mode::Friction] {
+        if supported && mode == Mode::Ballistic {
+            continue;
+        }
+        let e = error(mode);
+        if e + 1e-3 < best.1 {
+            best = (mode, e);
+        }
+    }
+    (best.0, if best.0 == Mode::Friction { decel } else { 0.0 })
+}
+
+/// A truth's history after this tick's keyframe.
+fn push_history(history: &mut VecDeque<Keyframe>, keyframe: Keyframe, continuous: bool) {
+    if !continuous {
+        history.clear();
+    }
+    history.push_back(keyframe);
+    while history.len() > BACKTEST_TICKS as usize + 1 {
+        history.pop_front();
+    }
+}
+
 /// How long a body's records name the fracture that made it (ticks): long
 /// enough for its event to arrive through loss.
 const INCARNATION_WINDOW: u32 = 240;
@@ -408,10 +638,7 @@ pub struct PerPlayer {
     serial_body: FxHashMap<(u32, u32), u32>,
     /// Each structure's islands as last seen (`IslandMirror`).
     mirrors: FxHashMap<u32, IslandMirror>,
-    truth: FxHashMap<BodyKey, Truth>,
-    /// Each awake body's last `BACKTEST_TICKS` + 1 truth states, for the
-    /// mode backtest.
-    history: FxHashMap<BodyKey, VecDeque<Keyframe>>,
+    truth: Bodies,
     event_seq: u32,
     clients: BTreeMap<u64, ClientState>,
     tick: u32,
@@ -754,7 +981,7 @@ impl PerPlayer {
             ledger,
             serial_body: FxHashMap::default(),
             mirrors: FxHashMap::default(),
-            truth: FxHashMap::default(),
+            truth: Bodies::default(),
             now_tick: 0,
             order: Vec::new(),
             in_order: FxHashSet::default(),
@@ -763,7 +990,6 @@ impl PerPlayer {
             fresh_contacts: Vec::new(),
             contacts_stale: FxHashSet::default(),
             order_new: FxHashSet::default(),
-            history: FxHashMap::default(),
             event_seq: 0,
             clients: BTreeMap::new(),
             tick: 0,
@@ -940,72 +1166,6 @@ impl PerPlayer {
         self.stats.derive_mismatches += mirror.mismatched.len() as u64;
     }
 
-    /// How the client should predict a body from its state now: whichever
-    /// predictor would have best predicted its last `BACKTEST_TICKS` from the
-    /// truth already seen -- ballistic, sliding, sliding to a stop (with the
-    /// deceleration measured over that window) or resting. The spec's "best
-    /// predictor of the next few ticks", measured on the past few. Without
-    /// the history: ballistic for a body just freed (most likely falling).
-    fn mode_of(&self, history: Option<&VecDeque<Keyframe>>, now: &Keyframe, radius: f32) -> (Mode, f32) {
-        if !self.config.backtest_modes {
-            let prev = history.and_then(|h| h.back()).filter(|k| k.tick + 1 == now.tick);
-            if now.linear_velocity.length() < 0.05 && now.angular_velocity.length() < 0.05 {
-                return (Mode::Resting, 0.0);
-            }
-            return match prev {
-                Some(prev) => {
-                    let accel = (now.linear_velocity - prev.linear_velocity) / self.physics.dt;
-                    let g = self.physics.gravity;
-                    (if (accel - g).length() <= 0.15 * g.length() { Mode::Ballistic } else { Mode::Sliding }, 0.0)
-                }
-                None => (Mode::Ballistic, 0.0),
-            };
-        }
-        let Some(history) = history.filter(|h| !h.is_empty()) else {
-            return (if now.linear_velocity.length() < 0.05 && now.angular_velocity.length() < 0.05 { Mode::Resting } else { Mode::Ballistic }, 0.0);
-        };
-        let past = *history.front().unwrap();
-        let ticks = now.tick.saturating_sub(past.tick) as f32;
-        if ticks < 1.0 {
-            return (Mode::Ballistic, 0.0);
-        }
-        let decel = ((past.linear_velocity.length() - now.linear_velocity.length()) / (ticks * self.physics.dt)).max(0.0);
-        let error = |mode: Mode| {
-            let kf = Keyframe { mode, decel, ..past };
-            let (p, q) = vibe_land_perplayer::predict::predict(&kf, ticks, self.physics);
-            let angle = 2.0 * q.dot(now.rotation).abs().min(1.0).acos();
-            (p - now.position).length() + radius * angle
-        };
-        // Supported now: free flight accelerates at exactly g each step
-        // (PhysX integrates it), so a body whose last two steps fell short
-        // of g by more than half is on something. The backtest scores the
-        // past, which for a body that just landed is a fall; predicting a
-        // fall from here draws it sinking into what holds it up.
-        let g_y = self.physics.gravity.y;
-        let mut supported = history.len() >= 2;
-        let mut later = now;
-        for earlier in history.iter().rev().take(2) {
-            if later.tick != earlier.tick + 1 {
-                supported = false;
-                break;
-            }
-            let accel_y = (later.linear_velocity.y - earlier.linear_velocity.y) / self.physics.dt;
-            supported &= accel_y > 0.5 * g_y;
-            later = earlier;
-        }
-        // Cheapest first: a tie goes to the one with fewer bytes.
-        let mut best = (Mode::Resting, error(Mode::Resting));
-        for mode in [Mode::Ballistic, Mode::Sliding, Mode::Friction] {
-            if supported && mode == Mode::Ballistic {
-                continue;
-            }
-            let e = error(mode);
-            if e + 1e-3 < best.1 {
-                best = (mode, e);
-            }
-        }
-        (best.0, if best.0 == Mode::Friction { decel } else { 0.0 })
-    }
 }
 
 impl ReplicationStrategy for PerPlayer {
@@ -1308,94 +1468,82 @@ impl ReplicationStrategy for PerPlayer {
             }),
             None => active.iter().filter_map(key_of).collect(),
         };
-        let classify = |&(key, snapshot): &(BodyKey, &BodySnapshotInput)| -> (BodyKey, Truth, bool, Option<Option<Vec<(Vec3, Vec3)>>>) {
-            let previous = self.truth.get(&key).copied();
-            let radius = previous.map_or(0.5, |p| p.radius);
-            let mut keyframe = Keyframe {
-                tick,
-                position: Vec3::from_array(snapshot.position),
-                rotation: Quat::from_array(snapshot.rotation).normalize(),
-                linear_velocity: Vec3::from_array(snapshot.linear_velocity),
-                angular_velocity: Vec3::from_array(snapshot.angular_velocity),
-                mode: Mode::Ballistic,
-                decel: 0.0, floor_drop: None,
-            };
-            // Only this incarnation's continuous past counts.
-            let history = self.history.get(&key).filter(|h| h.back().map_or(true, |k| k.tick + 1 == tick));
-            let continuous = history.is_some();
-            // A contact this tick: the velocity changed by more than gravity
-            // explains.
-            let gravity_step = Vec3::new(0.0, self.config.gravity_y, 0.0) / self.config.sim_hz.max(1) as f32;
-            let contact = history
-                .and_then(|h| h.back())
-                .is_some_and(|p| (keyframe.linear_velocity - p.linear_velocity - gravity_step).length() > CONTACT_DV);
-            let contact_tick = if contact { tick } else { previous.map_or(0, |p| p.contact_tick) };
-            let (mode, decel) = self.mode_of(history, &keyframe, radius);
-            keyframe.mode = mode;
-            keyframe.decel = decel;
-            let mut derived = None;
-            if let (Some(state), Some(def)) = (self.states.get(&key.structure), self.defs.get(&key.structure)) {
-                let boxes = match self.floors.get(&key) {
-                    Some(boxes) => boxes.as_deref(),
-                    None => derived.insert(state.floor_boxes(def, key.body)).as_deref(),
+        // Each snapshot's truth, written into its body's slot. With enough
+        // of them, every slot at once on the workers, in place: a snapshot's
+        // body, or a sleeper (a body with no snapshot lies where it was last
+        // seen -- without this its last awake velocity carried on, and the
+        // server kept sending a falling body that lay still). The result is
+        // the same as classifying every snapshot, then writing them in order.
+        let slots: Vec<u32> = work.iter().map(|&(key, _)| self.truth.slot(key)).collect();
+        let mut work_of = vec![u32::MAX; self.truth.slots.len()];
+        let mut repeated = false;
+        for (i, &slot) in slots.iter().enumerate() {
+            repeated |= work_of[slot as usize] != u32::MAX;
+            work_of[slot as usize] = i as u32;
+        }
+        let (config, physics) = (self.config, self.physics);
+        let (states, defs, floors) = (&self.states, &self.defs, &self.floors);
+        // What each written slot reports: its key, whether it is new to the
+        // truth, its contact, and floor boxes derived for it.
+        type Report = (BodyKey, bool, bool, Option<Option<Vec<(Vec3, Vec3)>>>);
+        let reports: Vec<Report> = match workers.filter(|_| work.len() >= 2_048 && !repeated) {
+            Some(pool) => {
+                let write = |(i, slot): (usize, &mut BodySlot)| -> Option<Report> {
+                    let w = work_of[i];
+                    if w == u32::MAX {
+                        if let Some(t) = slot.truth.as_mut().filter(|t| !t.settled && t.keyframe.tick < tick) {
+                            t.keyframe = Keyframe { tick, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, ..t.keyframe };
+                        }
+                        return None;
+                    }
+                    let (key, snapshot) = work[w as usize];
+                    let history = Some(&slot.history).filter(|h| !h.is_empty());
+                    let (truth, continuous, derived) = classify(tick, key, snapshot, slot.truth, history, &config, physics, states, defs, floors);
+                    push_history(&mut slot.history, truth.keyframe, continuous);
+                    let contact = truth.contact_tick == tick && tick > 0;
+                    let fresh = slot.truth.replace(truth).is_none();
+                    (fresh || contact || derived.is_some()).then_some((key, fresh, contact, derived))
                 };
-                keyframe.floor_drop = boxes.map(|b| StructureState::floor_drop_of(b, keyframe.position, keyframe.rotation));
+                pool.install(|| {
+                    use rayon::prelude::*;
+                    self.truth.slots.par_iter_mut().enumerate().with_min_len(256).filter_map(write).collect()
+                })
             }
-            (key, Truth { keyframe, radius, settled: false, contact_tick, born: previous.map_or(0, |p| p.born), ahead: None }, continuous, derived)
-        };
-        let classified: Vec<(BodyKey, Truth, bool, Option<Option<Vec<(Vec3, Vec3)>>>)> = match workers.filter(|_| work.len() >= 2_048) {
-            Some(pool) => pool.install(|| {
-                use rayon::prelude::*;
-                work.par_iter().with_min_len(64).map(classify).collect()
-            }),
-            None => work.iter().map(classify).collect(),
-        };
-        // Written back in order; each chunk's entries fetched first, in a
-        // tight loop of independent lookups whose cache misses overlap.
-        let keys: Vec<BodyKey> = classified.iter().map(|c| c.0).collect();
-        for (i, (key, truth, continuous, derived)) in classified.into_iter().enumerate() {
-            if i % 64 == 0 {
-                let mut touched = 0u32;
-                for key in &keys[i..(i + 64).min(keys.len())] {
-                    touched = touched
-                        .wrapping_add(self.truth.get(key).map_or(0, |t| t.contact_tick))
-                        .wrapping_add(self.history.get(key).and_then(|h| h.back()).map_or(0, |k| k.tick));
+            None => {
+                let classified: Vec<(Truth, bool, Option<Option<Vec<(Vec3, Vec3)>>>)> = work
+                    .iter()
+                    .map(|&(key, snapshot)| classify(tick, key, snapshot, self.truth.get(&key).copied(), self.truth.history(&key), &config, physics, states, defs, floors))
+                    .collect();
+                let mut reports = Vec::new();
+                for ((&(key, _), &slot), (truth, continuous, derived)) in work.iter().zip(&slots).zip(classified) {
+                    let slot = &mut self.truth.slots[slot as usize];
+                    push_history(&mut slot.history, truth.keyframe, continuous);
+                    let contact = truth.contact_tick == tick && tick > 0;
+                    let fresh = slot.truth.replace(truth).is_none();
+                    if fresh || contact || derived.is_some() {
+                        reports.push((key, fresh, contact, derived));
+                    }
                 }
-                std::hint::black_box(touched);
+                for t in self.truth.values_mut() {
+                    if !t.settled && t.keyframe.tick < tick {
+                        t.keyframe = Keyframe { tick, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, ..t.keyframe };
+                    }
+                }
+                reports
             }
+        };
+        for (key, fresh, contact, derived) in reports {
             if let Some(boxes) = derived {
                 self.floors.insert(key, boxes);
             }
-            let history = self.history.entry(key).or_default();
-            if !continuous {
-                history.clear();
-            }
-            history.push_back(truth.keyframe);
-            while history.len() > BACKTEST_TICKS as usize + 1 {
-                history.pop_front();
-            }
-            if truth.contact_tick == tick && tick > 0 {
+            if contact {
                 self.fresh_contacts.push(key);
                 self.contacts_stale.insert(key);
             }
-            if self.truth.insert(key, truth).is_none() {
+            if fresh {
+                self.truth.live += 1;
                 self.shapes_new.insert(key);
                 self.order_new.insert(key);
-            }
-        }
-        // A body the physics put to sleep has no snapshot: it lies where it
-        // was last seen. (Without this its last awake velocity carried on,
-        // and the server kept sending a falling body that lay still.) Every
-        // body updated above has this tick, so the rest are the sleepers.
-        for truth in self.truth.values_mut() {
-            if !truth.settled && truth.keyframe.tick < tick {
-                truth.keyframe = Keyframe {
-                    tick,
-                    linear_velocity: Vec3::ZERO,
-                    angular_velocity: Vec3::ZERO,
-                    mode: Mode::Resting,
-                    ..truth.keyframe
-                };
             }
         }
         for settle in &output.settled {
@@ -1717,7 +1865,7 @@ impl ReplicationStrategy for PerPlayer {
 fn send_for(
     config: PerPlayerConfig,
     physics: Physics,
-    truths: &FxHashMap<BodyKey, Truth>,
+    truths: &Bodies,
     shapes: &FxHashMap<BodyKey, BodyShape>,
     statics: &FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>,
     order: &[BodyKey],
@@ -1783,7 +1931,7 @@ fn send_for(
         if depth > 0.5 { truth.radius * focal / depth } else { 0.5 * truth.radius * focal / rel.length().max(0.5) }
     };
     if slices <= 1 {
-        for (key, truth) in truths {
+        for (key, truth) in truths.iter() {
             if truth.settled {
                 continue;
             }
@@ -2216,7 +2364,7 @@ mod tests {
         let rest_sliding = Vec3::new(6.0, 0.5, -30.0);
         let off = Vec3::new(0.0, 0.0, 4.0);
         let off_still = Vec3::new(0.0, 0.0, 8.0);
-        let mut truths: FxHashMap<BodyKey, Truth> = FxHashMap::default();
+        let mut truths = Bodies::default();
         for (key, rest) in [(still, rest_still), (sliding, rest_sliding)] {
             truths.insert(key, Truth { keyframe: keyframe(tick, rest, Vec3::ZERO, Mode::Resting), radius: 0.5, settled: false, contact_tick: 0, born: 0 , ahead: None });
         }
@@ -2294,7 +2442,7 @@ mod drawn_near_tests {
         let tick = 600;
         let mid = BodyKey { structure: 1, body: 9 };
         let near_drawn = BodyKey { structure: 1, body: 10 };
-        let mut truths: FxHashMap<BodyKey, Truth> = FxHashMap::default();
+        let mut truths = Bodies::default();
         let mid_truth = Vec3::new(-2.0, 0.5, -30.0);
         let far_truth = Vec3::new(2.0, 0.5, 90.0);
         for (key, at) in [(mid, mid_truth), (near_drawn, far_truth)] {
@@ -2367,7 +2515,7 @@ mod age_tests {
         let camera = Camera { eye: Vec3::new(0.0, 1.6, 0.0), direction: Vec3::new(0.0, 0.0, -1.0), fov_degrees: 80.0 };
         let old = BodyKey { structure: 1, body: 1 };
         let start = 600u32;
-        let mut truths: FxHashMap<BodyKey, Truth> = FxHashMap::default();
+        let mut truths = Bodies::default();
         let mut cs = ClientState { rtt_ms: 60.0, ..Default::default() };
         let old_at = Vec3::new(0.0, 0.5, -15.0);
         truths.insert(old, Truth { keyframe: still(start, old_at), radius: 0.5, settled: false, contact_tick: 0, born: 0 , ahead: None });
