@@ -402,6 +402,12 @@ pub struct PerPlayer {
     /// each member's offset from the body's centre of mass and inscribed
     /// radius.
     shapes: FxHashMap<BodyKey, BodyShape>,
+    /// What can make a shape stale since the last send: bodies new to the
+    /// truth, and structures a fracture changed (membership changes
+    /// nowhere else). Until the first send, every body.
+    shapes_new: FxHashSet<BodyKey>,
+    shapes_dirty: FxHashSet<u32>,
+    shapes_built: bool,
     /// Standing chunk boxes by G4's grid cell (`PerPlayerConfig::solid_gate`),
     /// rebuilt when a fracture changes what stands.
     statics: FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>,
@@ -568,6 +574,9 @@ impl PerPlayer {
             tick: 0,
             stats: PerPlayerStats::default(),
             shapes: FxHashMap::default(),
+            shapes_new: FxHashSet::default(),
+            shapes_dirty: FxHashSet::default(),
+            shapes_built: false,
             statics: FxHashMap::default(),
             static_cells_of: FxHashMap::default(),
             statics_dirty: FxHashSet::default(),
@@ -845,6 +854,7 @@ impl ReplicationStrategy for PerPlayer {
             }
             self.stats.fractures += 1;
             self.statics_dirty.insert(structure);
+            self.shapes_dirty.insert(structure);
             self.stats.removed_chunks += removed.len() as u64;
             events.push(Event::Fracture { tick, structure, broken_bonds: broken, removed_chunks: removed });
             for id in &change.retired_bodies {
@@ -911,7 +921,9 @@ impl ReplicationStrategy for PerPlayer {
                 // lowest chunk) needs its version named: a new id is one the
                 // client simply does not have yet.
                 let born = if id == parent { tick } else { 0 };
-                self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0, born });
+                if self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0, born }).is_none() {
+                    self.shapes_new.insert(key);
+                }
                 touched.push(key);
             }
             // Each client's model spawns the new bodies from its own drawing
@@ -1016,7 +1028,9 @@ impl ReplicationStrategy for PerPlayer {
             while history.len() > BACKTEST_TICKS as usize + 1 {
                 history.pop_front();
             }
-            self.truth.insert(key, truth);
+            if self.truth.insert(key, truth).is_none() {
+                self.shapes_new.insert(key);
+            }
         }
         // A body the physics put to sleep has no snapshot: it lies where it
         // was last seen. (Without this its last awake velocity carried on,
@@ -1142,8 +1156,22 @@ impl ReplicationStrategy for PerPlayer {
         }
         if self.config.ground_gate || self.config.solid_gate {
             let (defs, states, truth) = (&self.defs, &self.states, &self.truth);
-            self.shapes.retain(|k, _| truth.contains_key(k));
-            for key in truth.keys() {
+            // Only what a fracture or a new body can have changed (bodies
+            // leave the truth only in a fracture).
+            let mut stale: Vec<BodyKey> = Vec::new();
+            if !self.shapes_built || !self.shapes_dirty.is_empty() {
+                self.shapes.retain(|k, _| truth.contains_key(k));
+            }
+            let all = !self.shapes_built;
+            let dirty = &self.shapes_dirty;
+            if all || !dirty.is_empty() {
+                stale.extend(truth.keys().filter(|k| all || dirty.contains(&k.structure)));
+            }
+            stale.extend(self.shapes_new.iter().filter(|k| !all && !dirty.contains(&k.structure) && truth.contains_key(k)));
+            self.shapes_built = true;
+            self.shapes_dirty.clear();
+            self.shapes_new.clear();
+            for key in &stale {
                 let (Some(def), Some(state)) = (defs.get(&key.structure), states.get(&key.structure)) else { continue };
                 let Some(members) = state.members(key.body) else { continue };
                 if self.shapes.get(key).is_some_and(|s| s.members == members.len()) || def.half_extents.len() != def.rest.len() {
