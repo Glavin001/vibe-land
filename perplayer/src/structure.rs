@@ -42,6 +42,9 @@ pub struct StructureDef {
     pub half_extents: Vec<Vec3>,
     /// Per node: (neighbour, bond index).
     adjacency: Vec<Vec<(u32, u32)>>,
+    /// Per node: bonds to the nearest support, intact (u32::MAX: none).
+    /// Steers the search a fracture makes for a support; never decides.
+    support_hops: Vec<u32>,
 }
 
 impl StructureDef {
@@ -62,7 +65,21 @@ impl StructureDef {
                 adjacency[b as usize].push((a, index as u32));
             }
         }
-        Self { id, world_position, world_rotation, rest, mass_center, mass, support, bonds, half_extents: Vec::new(), adjacency }
+        // Breadth first from every support at once.
+        let mut support_hops = vec![u32::MAX; rest.len()];
+        let mut queue: std::collections::VecDeque<u32> = (0..rest.len() as u32).filter(|&n| support[n as usize]).collect();
+        for &n in &queue {
+            support_hops[n as usize] = 0;
+        }
+        while let Some(n) = queue.pop_front() {
+            for &(other, _) in &adjacency[n as usize] {
+                if support_hops[other as usize] == u32::MAX {
+                    support_hops[other as usize] = support_hops[n as usize] + 1;
+                    queue.push_back(other);
+                }
+            }
+        }
+        Self { id, world_position, world_rotation, rest, mass_center, mass, support, bonds, half_extents: Vec::new(), adjacency, support_hops }
     }
 
     /// With each node's box half extents (`ChunkDef::size` / 2).
@@ -95,6 +112,25 @@ pub struct StructureState {
     removed: Vec<u64>,
     body_of: Vec<u32>,
     members: BTreeMap<u32, Vec<u32>>,
+}
+
+/// The height of the lowest corner of `boxes` (`floor_boxes`) at a pose.
+pub fn lowest_point_of(boxes: &[(Vec3, Vec3)], position: Vec3, rotation: Quat) -> f32 {
+    // A box's lowest point below its centre: |R row y| . half.
+    let m = glam::Mat3::from_quat(rotation);
+    let row_y = Vec3::new(m.x_axis.y, m.y_axis.y, m.z_axis.y).abs();
+    boxes.iter().map(|&(offset, half)| (position + rotation * offset).y - row_y.dot(half)).fold(f32::INFINITY, f32::min)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Nodes a fracture looked at (searched or re-derived): the work.
+    pub(crate) static WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn note_work(_nodes: usize) {
+    #[cfg(test)]
+    WORK.with(|w| w.set(w.get() + _nodes));
 }
 
 fn bit(bits: &[u64], i: u32) -> bool {
@@ -172,14 +208,19 @@ impl StructureState {
             }
         }
         // Everything on a body a seed was on is re-derived (a split can move
-        // any of them).
+        // any of them), except the standing structure: of that, only what
+        // no longer reaches a support (the rest stays standing, unchanged).
         let mut region: Vec<u32> = Vec::new();
         let mut in_region = vec![false; def.node_count() as usize];
+        let mut standing: Vec<u32> = Vec::new();
         for &seed in &seeds {
             let body = self.body_of[seed as usize];
             let nodes: Vec<u32> = match body {
-                ANCHORED => (0..def.node_count()).filter(|&n| self.body_of[n as usize] == ANCHORED).collect(),
-                REMOVED => vec![seed],
+                ANCHORED if !bit(&self.removed, seed) => {
+                    standing.push(seed);
+                    continue;
+                }
+                ANCHORED | REMOVED => vec![seed],
                 id => self.members.get(&id).cloned().unwrap_or_else(|| vec![seed]),
             };
             for n in nodes {
@@ -189,11 +230,83 @@ impl StructureState {
                 }
             }
         }
+        for n in self.cut_off(def, &standing) {
+            if !in_region[n as usize] {
+                in_region[n as usize] = true;
+                region.push(n);
+            }
+        }
         self.rederive(def, &region)
+    }
+
+    /// The standing chunks among `seeds`' components that no longer reach a
+    /// support: whole components. From each seed, a search over intact bonds
+    /// heads for the nearest support (by `support_hops`); reaching one (or a
+    /// chunk already found to) proves the component still stands, and
+    /// running out of chunks first proves it fell. Either way it looks at no
+    /// more than the side it settles, and steered downhill, a standing side
+    /// settles in about its height.
+    fn cut_off(&self, def: &StructureDef, seeds: &[u32]) -> Vec<u32> {
+        use std::cmp::Reverse;
+        const UNSEEN: u8 = 0;
+        const SEARCHING: u8 = 1;
+        const STANDS: u8 = 2;
+        const FELL: u8 = 3;
+        if seeds.is_empty() {
+            return Vec::new();
+        }
+        let mut mark = vec![UNSEEN; def.node_count() as usize];
+        let mut fell: Vec<u32> = Vec::new();
+        let mut visited: Vec<u32> = Vec::new();
+        let mut frontier: std::collections::BinaryHeap<Reverse<(u32, u32)>> = std::collections::BinaryHeap::new();
+        for &seed in seeds {
+            if mark[seed as usize] != UNSEEN {
+                continue;
+            }
+            visited.clear();
+            frontier.clear();
+            mark[seed as usize] = SEARCHING;
+            visited.push(seed);
+            frontier.push(Reverse((def.support_hops[seed as usize], seed)));
+            let mut stands = false;
+            'search: while let Some(Reverse((_, node))) = frontier.pop() {
+                if def.support.get(node as usize).copied().unwrap_or(false) {
+                    stands = true;
+                    break;
+                }
+                for &(other, bond) in &def.adjacency[node as usize] {
+                    if !bit(&self.alive, bond) || bit(&self.removed, other) {
+                        continue;
+                    }
+                    match mark[other as usize] {
+                        UNSEEN => {
+                            mark[other as usize] = SEARCHING;
+                            visited.push(other);
+                            frontier.push(Reverse((def.support_hops[other as usize], other)));
+                        }
+                        STANDS => {
+                            stands = true;
+                            break 'search;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            note_work(visited.len());
+            let outcome = if stands { STANDS } else { FELL };
+            for &n in &visited {
+                mark[n as usize] = outcome;
+            }
+            if !stands {
+                fell.extend_from_slice(&visited);
+            }
+        }
+        fell
     }
 
     /// Re-derive the bodies of `region` (a union of whole bodies).
     fn rederive(&mut self, def: &StructureDef, region: &[u32]) -> FractureChange {
+        note_work(region.len());
         let mut change = FractureChange::default();
         let before: Vec<(u32, u32)> = region.iter().map(|&n| (n, self.body_of[n as usize])).collect();
         let old_bodies: std::collections::BTreeSet<u32> =
@@ -326,22 +439,24 @@ impl StructureState {
     /// The height of `body`'s lowest chunk corner at a pose (negative:
     /// below the ground).
     pub fn lowest_point(&self, def: &StructureDef, body: u32, position: Vec3, rotation: Quat) -> Option<f32> {
+        Some(lowest_point_of(&self.floor_boxes(def, body)?, position, rotation))
+    }
+
+    /// `body`'s chunk boxes as `lowest_point_of` takes them: each one's
+    /// offset from the body's centre of mass and its half extents. They
+    /// change only with the body's membership.
+    pub fn floor_boxes(&self, def: &StructureDef, body: u32) -> Option<Vec<(Vec3, Vec3)>> {
         let members = self.members.get(&body)?;
         if def.half_extents.len() != def.rest.len() || members.is_empty() {
             return None;
         }
         let com = self.centre_of_mass(def, body);
-        // A box's lowest point below its centre: |R row y| . half.
-        let m = glam::Mat3::from_quat(rotation);
-        let row_y = Vec3::new(m.x_axis.y, m.y_axis.y, m.z_axis.y).abs();
-        let lowest = members
-            .iter()
-            .map(|&n| {
-                let n = n as usize;
-                (position + rotation * (def.rest[n] - com)).y - row_y.dot(def.half_extents[n])
-            })
-            .fold(f32::INFINITY, f32::min);
-        Some(lowest)
+        Some(members.iter().map(|&n| (def.rest[n as usize] - com, def.half_extents[n as usize])).collect())
+    }
+
+    /// `floor_drop` from `floor_boxes`.
+    pub fn floor_drop_of(boxes: &[(Vec3, Vec3)], position: Vec3, rotation: Quat) -> f32 {
+        lowest_point_of(boxes, position, rotation).max(0.0)
     }
 
     pub fn alive_bits(&self) -> &[u64] {
@@ -437,6 +552,153 @@ pub(crate) mod tests {
         assert_eq!(joined.bodies(), a.bodies());
         let c = StructureState::new(&def);
         assert_ne!(c.hash(), a.hash());
+    }
+
+    /// A standing block `nx` x `ny` x `nz`, the bottom layer supports, each
+    /// chunk bonded to its six neighbours.
+    pub(crate) fn block(nx: u32, ny: u32, nz: u32) -> StructureDef {
+        let id = |x: u32, y: u32, z: u32| (y * nz + z) * nx + x;
+        let mut rest = Vec::new();
+        let mut support = Vec::new();
+        for y in 0..ny {
+            for z in 0..nz {
+                for x in 0..nx {
+                    rest.push(Vec3::new(x as f32, y as f32, z as f32));
+                    support.push(y == 0);
+                }
+            }
+        }
+        let mut bonds = Vec::new();
+        for y in 0..ny {
+            for z in 0..nz {
+                for x in 0..nx {
+                    if x + 1 < nx {
+                        bonds.push((id(x, y, z), id(x + 1, y, z)));
+                    }
+                    if y + 1 < ny {
+                        bonds.push((id(x, y, z), id(x, y + 1, z)));
+                    }
+                    if z + 1 < nz {
+                        bonds.push((id(x, y, z), id(x, y, z + 1)));
+                    }
+                }
+            }
+        }
+        let n = rest.len();
+        StructureDef::new(5, Vec3::ZERO, Quat::IDENTITY, rest.clone(), rest, vec![1.0; n], support, bonds)
+    }
+
+    /// The bonds with exactly one end in `inside`.
+    fn cut(def: &StructureDef, inside: impl Fn(Vec3) -> bool) -> Vec<u32> {
+        (0..def.bonds.len() as u32)
+            .filter(|&b| {
+                let (a, c) = def.bonds[b as usize];
+                inside(def.rest[a as usize]) != inside(def.rest[c as usize])
+            })
+            .collect()
+    }
+
+    /// The derivation before anchored fractures were searched: every
+    /// anchored chunk re-derived whenever one is touched.
+    fn apply_everything(state: &mut StructureState, def: &StructureDef, broken: &[u32], removed: &[u32]) -> FractureChange {
+        let mut seeds: Vec<u32> = Vec::new();
+        for &bond in broken {
+            if (bond as usize) < def.bonds.len() && bit(&state.alive, bond) {
+                set_bit(&mut state.alive, bond, false);
+                let (a, b) = def.bonds[bond as usize];
+                seeds.push(a);
+                seeds.push(b);
+            }
+        }
+        for &node in removed {
+            if node < def.node_count() && !bit(&state.removed, node) {
+                set_bit(&mut state.removed, node, true);
+                seeds.push(node);
+                for &(other, _) in &def.adjacency[node as usize] {
+                    seeds.push(other);
+                }
+            }
+        }
+        let mut region: Vec<u32> = Vec::new();
+        let mut in_region = vec![false; def.node_count() as usize];
+        for &seed in &seeds {
+            let nodes: Vec<u32> = match state.body_of[seed as usize] {
+                ANCHORED => (0..def.node_count()).filter(|&n| state.body_of[n as usize] == ANCHORED).collect(),
+                REMOVED => vec![seed],
+                id => state.members.get(&id).cloned().unwrap_or_else(|| vec![seed]),
+            };
+            for n in nodes {
+                if !in_region[n as usize] {
+                    in_region[n as usize] = true;
+                    region.push(n);
+                }
+            }
+        }
+        state.rederive(def, &region)
+    }
+
+    fn work<T>(f: impl FnOnce() -> T) -> (T, usize) {
+        WORK.with(|w| w.set(0));
+        let out = f();
+        (out, WORK.with(|w| w.get()))
+    }
+
+    /// A break in a standing structure of Vibe Town's size (51,200 chunks)
+    /// looks at what it can change, not at every standing chunk, and
+    /// derives exactly what re-deriving everything does.
+    #[test]
+    fn a_fracture_in_a_large_standing_structure_looks_only_near_the_break() {
+        let def = block(40, 32, 40);
+        let (mut state, mut reference) = (StructureState::new(&def), StructureState::new(&def));
+        // Fractures, each with the most it may look at: a corner knocked off
+        // the top (8 chunks free), one bond in a wall's middle (nothing
+        // frees), a slab through a column of the block (nothing frees: the
+        // rest holds it), and a chunk crushed out of the middle.
+        let steps: Vec<(Vec<u32>, Vec<u32>, usize)> = vec![
+            (cut(&def, |p| p.x >= 38.0 && p.y >= 30.0 && p.z >= 38.0), vec![], 400),
+            (vec![def.bonds.iter().position(|&(a, b)| a == 20 + 40 * (20 + 40 * 16) && b == a + 1).unwrap() as u32], vec![], 400),
+            (cut(&def, |p| p.x < 3.0 && p.z < 3.0 && p.y >= 10.0 && p.y < 12.0), vec![], 2_000),
+            (vec![], vec![20 + 40 * (20 + 40 * 16)], 400),
+        ];
+        for (i, (broken, removed, most)) in steps.into_iter().enumerate() {
+            let (change, looked) = work(|| state.apply(&def, &broken, &removed));
+            let expected = apply_everything(&mut reference, &def, &broken, &removed);
+            assert_eq!(change, expected, "step {i}");
+            assert_eq!(state.hash(), reference.hash(), "step {i}");
+            assert_eq!(state.bodies(), reference.bodies(), "step {i}");
+            assert!(looked <= most, "step {i}: looked at {looked} chunks (at most {most})");
+        }
+        // Cutting the top 4 layers off frees them: what it frees is the work.
+        let broken = cut(&def, |p| p.y >= 28.0);
+        let (change, looked) = work(|| state.apply(&def, &broken, &[]));
+        assert_eq!(change, apply_everything(&mut reference, &def, &broken, &[]));
+        assert_eq!(state.bodies(), reference.bodies());
+        assert!(looked <= 3 * 4 * 40 * 40, "looked at {looked}");
+    }
+
+    /// Random breaks and crushes, step by step, against re-deriving
+    /// everything: identical bodies, changes and hash throughout.
+    #[test]
+    fn searched_fractures_derive_what_rederiving_everything_does() {
+        let def = block(9, 7, 8);
+        let mut seed = 0x2545f4914f6cdd1du64;
+        let mut rand = move |n: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % u64::from(n)) as u32
+        };
+        for _ in 0..40 {
+            let (mut state, mut reference) = (StructureState::new(&def), StructureState::new(&def));
+            for step in 0..30 {
+                let broken: Vec<u32> = (0..rand(12)).map(|_| rand(def.bonds.len() as u32)).collect();
+                let removed: Vec<u32> = (0..rand(3).saturating_sub(1)).map(|_| rand(def.node_count())).collect();
+                let change = state.apply(&def, &broken, &removed);
+                assert_eq!(change, apply_everything(&mut reference, &def, &broken, &removed), "step {step}");
+                assert_eq!(state.hash(), reference.hash());
+                assert_eq!(state.bodies(), reference.bodies());
+            }
+        }
     }
 
     #[test]
