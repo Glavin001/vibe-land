@@ -24,9 +24,22 @@ pub enum Mode {
     /// Sliding to a stop: slowing along its velocity at `decel` until it
     /// stops, spin slowing with it; no gravity (it is supported).
     Friction = 3,
+    /// A car driving: its velocity held in its own frame, so it turns with
+    /// its spin (a steady turn is an arc); no gravity. IEEE 1278.1 dead
+    /// reckoning DRM (R,P,B), algorithm 7. Car records only: on the wire it is Sliding
+    /// with a bit in the car's wheel block.
+    Turning = 4,
 }
 
 impl Mode {
+    /// The two bits the wire's flags carry (Turning rides as Sliding).
+    pub fn wire_bits(self) -> u8 {
+        match self {
+            Mode::Turning => Mode::Sliding as u8,
+            m => m as u8,
+        }
+    }
+
     pub fn from_u8(value: u8) -> Self {
         match value & 3 {
             1 => Mode::Sliding,
@@ -90,6 +103,7 @@ fn predict_free(keyframe: &Keyframe, ticks: f32, physics: Physics) -> (Vec3, Qua
     match keyframe.mode {
         Mode::Resting => (keyframe.position, keyframe.rotation),
         Mode::Sliding => (keyframe.position + keyframe.linear_velocity * t, spin(keyframe, t)),
+        Mode::Turning => (keyframe.position + turned(keyframe.linear_velocity, keyframe.angular_velocity, t), spin(keyframe, t)),
         Mode::Friction => {
             let (travel, spun) = friction(keyframe, t);
             (keyframe.position + keyframe.linear_velocity.normalize_or_zero() * travel, spin(keyframe, spun))
@@ -117,6 +131,7 @@ fn predict_velocity_free(keyframe: &Keyframe, ticks: f32, physics: Physics) -> V
     match keyframe.mode {
         Mode::Resting => Vec3::ZERO,
         Mode::Sliding => keyframe.linear_velocity,
+        Mode::Turning => turn(keyframe.linear_velocity, keyframe.angular_velocity, ticks.max(0.0) * physics.dt),
         Mode::Friction => {
             let speed = keyframe.linear_velocity.length();
             let left = (speed - keyframe.decel.max(0.0) * ticks.max(0.0) * physics.dt).max(0.0);
@@ -138,6 +153,29 @@ fn friction(keyframe: &Keyframe, t: f32) -> (f32, f32) {
     // rate over the same "effective" time the distance implies.
     let spun = if speed > 1e-4 { travel / speed } else { t.min(stop) };
     (travel, spun)
+}
+
+/// How far a velocity `v` held in a body spinning at `w` carries it in `t`
+/// seconds: the integral of `v` turned by the spin so far (Rodrigues), the
+/// (R,P,B) position term of IEEE 1278.1.
+fn turned(v: Vec3, w: Vec3, t: f32) -> Vec3 {
+    let omega = w.length();
+    let theta = omega * t;
+    if theta < 1e-4 {
+        return v * t + w.cross(v) * (0.5 * t * t);
+    }
+    let n = w / omega;
+    let along = n * n.dot(v);
+    along * t + ((v - along) * theta.sin() + n.cross(v) * (1.0 - theta.cos())) / omega
+}
+
+/// `v` turned by the spin `w` over `t` seconds.
+fn turn(v: Vec3, w: Vec3, t: f32) -> Vec3 {
+    let theta = w.length() * t;
+    if theta < 1e-7 {
+        return v;
+    }
+    Quat::from_axis_angle(w.normalize(), theta) * v
 }
 
 fn spin(keyframe: &Keyframe, t: f32) -> Quat {

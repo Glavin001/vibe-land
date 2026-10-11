@@ -51,6 +51,9 @@ pub enum ClientPacket {
         /// The first events sequence the client has not received (newer
         /// clients append it).
         events_through: Option<u32>,
+        /// Bodies whose delta records the client could not decode: resent
+        /// absolute (`vibe_land_perplayer::wire::encode_ack_missing`).
+        missing: Vec<vibe_land_perplayer::wire::BodyKey>,
     },
     /// The client could not fetch the manifest over HTTP; send it down the
     /// session instead. Only this asks for it -- see `PKT_CITY_MANIFEST`.
@@ -105,6 +108,9 @@ pub enum ClientDatagram {
         /// The first events sequence the client has not received (newer
         /// clients append it).
         events_through: Option<u32>,
+        /// Bodies whose delta records the client could not decode: resent
+        /// absolute (`vibe_land_perplayer::wire::encode_ack_missing`).
+        missing: Vec<vibe_land_perplayer::wire::BodyKey>,
     },
 }
 
@@ -447,7 +453,8 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
         vibe_land_perplayer::wire::PKT_PP_ACK => {
             let (newest, mask, events_through) = vibe_land_perplayer::wire::decode_ack(bytes)
                 .map_err(|_| anyhow::anyhow!("short city per-player ack datagram"))?;
-            ClientDatagram::CityPerPlayerAck { newest, mask, events_through }
+            let missing = vibe_land_perplayer::wire::decode_ack_missing(bytes);
+            ClientDatagram::CityPerPlayerAck { newest, mask, events_through, missing }
         }
         PKT_CITY_NACK => {
             ensure!(buf.remaining() >= 2, "short city nack datagram");
@@ -493,8 +500,8 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
             physics_ms,
         },
         ClientDatagram::CityNack { bodies } => ClientPacket::CityNack { bodies },
-        ClientDatagram::CityPerPlayerAck { newest, mask, events_through } => {
-            ClientPacket::CityPerPlayerAck { newest, mask, events_through }
+        ClientDatagram::CityPerPlayerAck { newest, mask, events_through, missing } => {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, missing }
         }
         ClientDatagram::CityResyncRequest {
             last_topo_seq,
@@ -907,7 +914,8 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
         vibe_land_perplayer::wire::PKT_PP_ACK => {
             let (newest, mask, events_through) = vibe_land_perplayer::wire::decode_ack(bytes)
                 .map_err(|_| anyhow::anyhow!("short city per-player ack packet"))?;
-            ClientPacket::CityPerPlayerAck { newest, mask, events_through }
+            let missing = vibe_land_perplayer::wire::decode_ack_missing(bytes);
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, missing }
         }
         PKT_CITY_NACK => {
             ensure!(buf.remaining() >= 2, "short city nack packet");
@@ -1151,13 +1159,13 @@ mod tests {
         assert_eq!(bytes.len(), 13);
         assert_eq!(bytes[0], 135);
         match decode_client_packet(&bytes).expect("ack packet") {
-            ClientPacket::CityPerPlayerAck { newest, mask, events_through } => {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, .. } => {
                 assert_eq!((newest, mask, events_through), (0x0102_0304, 0x8000_0000_0000_0005, None));
             }
             other => panic!("wrong packet: {other:?}"),
         }
         match client_datagram_to_packet(decode_client_datagram(&bytes).expect("ack datagram")) {
-            ClientPacket::CityPerPlayerAck { newest, mask, events_through } => {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, .. } => {
                 assert_eq!((newest, mask, events_through), (0x0102_0304, 0x8000_0000_0000_0005, None));
             }
             other => panic!("wrong packet: {other:?}"),

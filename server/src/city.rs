@@ -1687,7 +1687,7 @@ impl CityRuntime {
             return ClientSend::default();
         };
         let before = pp.strategy.stats.keyframes_sent;
-        let send = pp.strategy.client_send(client, &ClientView { camera }, sim_tick, Some(budget));
+        let send = pp.strategy.client_send(client, &ClientView { camera, own_car: None }, sim_tick, Some(budget));
         let records = pp.strategy.stats.keyframes_sent - before;
         let bytes: usize = send.packets.iter().map(|packet| packet.bytes.len()).sum();
         self.sent_packets += send.packets.len() as u64;
@@ -1700,16 +1700,18 @@ impl CityRuntime {
 
     /// Wire 4: every client's keyframe datagrams this send, each under its
     /// budget, in one batch (`send_threads` run them at once).
-    pub fn per_player_sends(&mut self, requests: &[(u64, Camera, SendBudget)], sim_tick: u32) -> Vec<ClientSend> {
+    /// Each request: (client, camera, the car it drives (body-key structure),
+    /// budget).
+    pub fn per_player_sends(&mut self, requests: &[(u64, Camera, Option<u32>, SendBudget)], sim_tick: u32) -> Vec<ClientSend> {
         let Some(pp) = self.per_player.as_mut() else {
             return requests.iter().map(|_| ClientSend::default()).collect();
         };
         let before = pp.strategy.stats.keyframes_sent;
         let batch: Vec<vibe_land_destruction::replication::SendRequest> = requests
             .iter()
-            .map(|&(client, camera, budget)| vibe_land_destruction::replication::SendRequest {
+            .map(|&(client, camera, own_car, budget)| vibe_land_destruction::replication::SendRequest {
                 client,
-                view: ClientView { camera },
+                view: ClientView { camera, own_car },
                 tick: sim_tick,
                 budget: Some(budget),
             })
@@ -1753,10 +1755,18 @@ impl CityRuntime {
         packets
     }
 
+    /// Wire 4: this tick's cars (chassis and wheels) for the stream.
+    pub fn per_player_ingest_cars(&mut self, sim_tick: u32, cars: &[vibe_land_destruction::per_player::CarInput]) {
+        if let Some(pp) = self.per_player.as_mut() {
+            pp.strategy.ingest_cars(sim_tick, cars);
+        }
+    }
+
     /// Wire 4: a client's datagram acks (`PKT_PP_ACK`).
-    pub fn per_player_ack(&mut self, client: u64, newest: u32, mask: u64, events_through: Option<u32>) {
+    pub fn per_player_ack(&mut self, client: u64, newest: u32, mask: u64, events_through: Option<u32>, missing: &[vibe_land_perplayer::wire::BodyKey]) {
         if let Some(pp) = self.per_player.as_mut() {
             pp.strategy.on_feedback(client, ClientFeedback::DatagramAcks { newest, mask });
+            pp.strategy.missing_baselines(client, missing);
             if let Some(through) = events_through {
                 pp.strategy.on_feedback(client, ClientFeedback::EventsReceived { through });
             }
@@ -3446,7 +3456,7 @@ mod tests {
                     client.ingest(&packet.bytes, ms(tick));
                 }
                 if let Some((newest, mask)) = client.ack() {
-                    city.per_player_ack(client_id, newest, mask, Some(client.events_through()));
+                    city.per_player_ack(client_id, newest, mask, Some(client.events_through()), &client.take_missing_baselines());
                 }
             }
             client.advance(ms(tick));

@@ -91,6 +91,13 @@ pub struct SnapshotConfig {
     /// With `idle_cold`: an unchanged remote player is resent this often.
     #[serde(default = "default_cold_player_refresh_ticks")]
     pub cold_player_refresh_ticks: u32,
+    /// City wire 4: other players' cars are streamed as predicted bodies of
+    /// the per-player stream, so their records here carry only what that
+    /// does not (type, driver, flags): sent on entry, when those change, and
+    /// at the cold refresh, never because the car moved. The car the
+    /// recipient drives or stands on is sent every snapshot as before.
+    #[serde(default)]
+    pub streamed_cars: bool,
 }
 
 fn default_cold_player_refresh_ticks() -> u32 {
@@ -114,7 +121,11 @@ impl SnapshotConfig {
         removals: true,
         idle_cold: true,
         cold_player_refresh_ticks: COLD_PLAYER_REFRESH_TICKS,
+        streamed_cars: false,
     };
+
+    /// City wire 4 with its cars streamed (`streamed_cars`).
+    pub const PER_PLAYER_CARS: Self = Self { streamed_cars: true, ..Self::PRODUCTION };
 
     /// The selection as it was before `compact_self`, `removals` and
     /// `idle_cold`: what a capture that records none of them was made with.
@@ -889,7 +900,20 @@ pub fn build_recipient_snapshot(
         // parked or not; with it, a vehicle is sent while it moves or its
         // record changes (a driver getting in counts), then settles and goes
         // cold like any other.
-        let (hot, remember) = if config.idle_cold {
+        let (hot, remember) = if config.streamed_cars && state.driver_id != recipient_id {
+            // Its pose and motion come from the per-player stream: only a
+            // change to what it is, or the refresh, is due.
+            let (due, sent) = idle_cold_due(
+                interest.sent_vehicles.get(vehicle_id),
+                world.server_tick,
+                [0; 3],
+                [0; 4],
+                IDLE_ROTATION_TOLERANCE_SNORM,
+                [i32::from(state.vehicle_type), i32::from(driver_handle), i32::from(state.flags), 0],
+                config.cold_vehicle_refresh_ticks,
+            );
+            (due || refresh, Some(sent))
+        } else if config.idle_cold {
             let (due, sent) = vehicle_idle_cold_due(interest, *vehicle_id, world.server_tick, state, driver_handle, config);
             (state.driver_id == recipient_id || moving || due || refresh, Some(sent))
         } else {

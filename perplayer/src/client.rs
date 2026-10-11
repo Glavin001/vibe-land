@@ -28,7 +28,7 @@ use glam::{Quat, Vec3};
 use crate::predict::{predict, predict_velocity, Keyframe, Mode, Physics};
 use crate::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use crate::wire::{
-    is_vehicle_structure, KeyframeRecord, VehicleGroup,
+    is_vehicle_structure, KeyframeRecord, VehicleGroup, Wheel, CAR_BODY,
     decode_bootstrap, decode_events, decode_keyframes_with, BodyKey, Event, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS,
     PKT_PP_KEYFRAMES,
 };
@@ -497,7 +497,28 @@ pub struct Client {
     vehicle_render: Option<f32>,
     /// Events packets of car groups (by sequence), applied on the car clock.
     vehicle_events: BTreeMap<u32, Vec<Event>>,
+    /// Each car chassis's wheel keyframes (tick order, the newest few).
+    car_wheels: HashMap<BodyKey, Vec<(u32, [Wheel; 4])>>,
+    /// Bodies whose delta records could not be decoded since the last ack
+    /// (their baseline was gone): the ack names them, and the server
+    /// resends each absolute.
+    missing_baselines: Vec<BodyKey>,
 }
+
+/// A car as the stream draws it (`Client::car_states`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CarState {
+    /// Its body-key structure (`VEHICLE_STRUCTURE_BASE` + handle).
+    pub structure: u32,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub linear_velocity: Vec3,
+    pub angular_velocity: Vec3,
+    pub wheels: Option<[Wheel; 4]>,
+}
+
+/// Wheel keyframes kept per car: enough to draw from under any late arrival.
+const CAR_WHEEL_KEYFRAMES: usize = 8;
 
 /// How long a held keyframe waits for its fracture event, ticks.
 const HOLD_TICKS: f32 = 300.0;
@@ -532,7 +553,41 @@ impl Client {
             vehicle_parts: BTreeMap::new(),
             vehicle_render: None,
             vehicle_events: BTreeMap::new(),
+            car_wheels: HashMap::new(),
+            missing_baselines: Vec::new(),
         }
+    }
+
+    /// The bodies whose delta records could not be decoded since last asked.
+    pub fn take_missing_baselines(&mut self) -> Vec<BodyKey> {
+        std::mem::take(&mut self.missing_baselines)
+    }
+
+    /// Every car the stream carries, as drawn on the car clock: its
+    /// chassis's pose and velocities, and its wheels (spin carried on at its
+    /// rate from the newest wheel keyframe drawn).
+    pub fn car_states(&self) -> Vec<CarState> {
+        self.car_states_at(self.vehicle_render.unwrap_or(self.render))
+    }
+
+    /// Every car the stream carries, as drawn at tick `r` (moves no clock).
+    pub fn car_states_at(&self, r: f32) -> Vec<CarState> {
+        let mut out = Vec::new();
+        for (key, track) in &self.bodies {
+            if key.body != CAR_BODY || !is_vehicle_structure(key.structure) || track.keyframes().is_empty() {
+                continue;
+            }
+            let (position, rotation) = track.pose_at(r, self.physics);
+            let (linear_velocity, angular_velocity) = track.velocity_at(r, self.physics);
+            let wheels = self.car_wheels.get(key).and_then(|list| {
+                let i = list.partition_point(|(t, _)| *t as f32 <= r);
+                let (tick, wheels) = list.get(i.saturating_sub(1))?;
+                Some(wheels.map(|w| w.at(r - *tick as f32, self.physics)))
+            });
+            out.push(CarState { structure: key.structure, position, rotation, linear_velocity, angular_velocity, wheels });
+        }
+        out.sort_by_key(|c| c.structure);
+        out
     }
 
     /// The tick `structure`'s bodies are drawn at: a car's groups on the car
@@ -636,6 +691,9 @@ impl Client {
     }
 
     fn has_body(&self, key: BodyKey) -> bool {
+        if is_vehicle_structure(key.structure) && key.body == CAR_BODY {
+            return true;
+        }
         if is_vehicle_structure(key.structure) {
             self.vehicles.get(&key.structure).is_some_and(|groups| groups.iter().any(|g| g.body == key.body))
         } else {
@@ -699,10 +757,14 @@ impl Client {
     pub fn ingest(&mut self, bytes: &[u8], arrival_ms: f64) {
         match bytes.first() {
             Some(&PKT_PP_KEYFRAMES) => match {
-                let (history, bodies) = (&self.history, &self.bodies);
+                let (history, bodies, missed) = (&self.history, &self.bodies, &mut self.missing_baselines);
                 decode_keyframes_with(bytes, self.physics, &mut |key, tick| {
                     let incarnation = bodies.get(&key).map_or(0, BodyTrack::incarnation);
-                    (tick >= incarnation).then(|| history.get(&key)?.iter().find(|k| k.tick == tick).copied()).flatten()
+                    let base = (tick >= incarnation).then(|| history.get(&key)?.iter().find(|k| k.tick == tick).copied()).flatten();
+                    if base.is_none() && !missed.contains(&key) {
+                        missed.push(key);
+                    }
+                    base
                 })
             } {
                 Ok((packet, missing)) => {
@@ -724,6 +786,17 @@ impl Client {
                             self.held.push(record);
                         } else {
                             self.add_keyframe(&record, render);
+                        }
+                        if let Some(wheels) = record.wheels {
+                            let list = self.car_wheels.entry(record.key).or_default();
+                            let tick = record.keyframe.tick;
+                            match list.binary_search_by_key(&tick, |(t, _)| *t) {
+                                Ok(i) => list[i].1 = wheels,
+                                Err(i) => list.insert(i, (tick, wheels)),
+                            }
+                            if list.len() > CAR_WHEEL_KEYFRAMES {
+                                list.remove(0);
+                            }
                         }
                         let history = self.history.entry(record.key).or_default();
                         history.push_back(record.keyframe);
@@ -774,7 +847,14 @@ impl Client {
                         }
                     }
                     self.bodies.clear();
-                    self.history.clear();
+                    // Keyframes from the bootstrap's tick on still hold (a
+                    // datagram can overtake it): the server may name them
+                    // as baselines.
+                    self.history.retain(|_, h| {
+                        h.retain(|k| k.tick >= boot.tick);
+                        !h.is_empty()
+                    });
+                    self.car_wheels.clear();
                     for (key, p, q) in boot.settled {
                         let mut track = BodyTrack::default();
                         track.restart(Keyframe {

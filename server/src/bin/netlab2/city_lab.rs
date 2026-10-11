@@ -513,7 +513,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                 } else {
                     None
                 };
-                requests.push(SendRequest { client: *id, view: ClientView { camera }, tick, budget });
+                requests.push(SendRequest { client: *id, view: ClientView { camera, own_car: None }, tick, budget });
                 plans.push(plan);
             }
             let (batch_cpu, batch_process) = (thread_cpu(), process_cpu());

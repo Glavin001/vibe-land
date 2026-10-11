@@ -269,6 +269,24 @@ pub struct PreparedGeometry {
     #[serde(skip)]
     pub fracture_layout: Option<FractureLayout>,
 }
+impl PreparedGeometry {
+    /// The wheel radius its Vehicle2 is built with.
+    pub fn wheel_radius(&self) -> f32 {
+        self.origin_height as f32 - 0.25
+    }
+
+    /// The farthest corner of its bounds from its actor origin, m.
+    pub fn reach(&self) -> f32 {
+        let (lo, hi) = (self.bounds.min, self.bounds.max);
+        (0..8)
+            .map(|i| {
+                let c = [if i & 1 == 0 { lo[0] } else { hi[0] }, if i & 2 == 0 { lo[1] } else { hi[1] }, if i & 4 == 0 { lo[2] } else { hi[2] }];
+                (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
+            })
+            .fold(0.0f32, f32::max)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct AssetBounds {
     pub min: [f32; 3],

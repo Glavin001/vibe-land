@@ -1140,11 +1140,13 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       }
       const ack = cityClient.ack();
       if (!ack) return;
+      const missing = ack.length > 5 ? ack.subarray(5, 5 + 2 * ack[4]) : undefined;
       const key = `${ack[0]}:${ack[1]}:${ack[2]}:${ack[3] ?? ''}`;
-      // Nothing new since the last ack: the server already has it.
-      if (key === last) return;
+      // Nothing new since the last ack (and nothing undecodable to name):
+      // the server already has it.
+      if (key === last && !missing?.length) return;
       last = key;
-      client.sendCityResync(encodePerPlayerAck(ack[0], ack[1], ack[2], ack[3]));
+      client.sendCityResync(encodePerPlayerAck(ack[0], ack[1], ack[2], ack[3], missing));
     }, 33);
   }
 
@@ -1225,6 +1227,8 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         if (new URLSearchParams(globalThis.location?.search ?? '').get('carClock') !== '0') {
           perPlayer.setVehicleClock(() => client.getRenderTimeUs() / SERVER_TICK_US);
         }
+        // Other players' cars, pose and wheels, as the stream draws them.
+        client.setStreamedCarSource((tick) => perPlayer.carsAt(tick));
         // Their hulls, so a part between keyframes rests on the ground as the
         // server models it.
         client.setVehicleAssetListener((handle, vehicle) => {

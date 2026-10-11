@@ -232,12 +232,72 @@ pub struct KeyframeRecord {
     /// fracture's event arrives, rather than drawing the new body's pose
     /// with the old body's chunks.
     pub incarnation: Option<u32>,
+    /// A car's wheels at this keyframe (`CAR_BODY` records only).
+    pub wheels: Option<[Wheel; 4]>,
 }
 
 impl KeyframeRecord {
     pub fn absolute(key: BodyKey, tier: u8, keyframe: Keyframe) -> Self {
-        Self { key, tier, keyframe, baseline: None, incarnation: None }
+        Self { key, tier, keyframe, baseline: None, incarnation: None, wheels: None }
     }
+}
+
+/// A car's chassis, in its car's body-key structure (its detached groups
+/// are named by their lowest part, always below this).
+pub const CAR_BODY: u32 = 0xFFFF;
+
+/// One wheel of a car as it is drawn: suspension travel from neutral (m),
+/// steer (rad), spin angle (rad) and spin rate (rad/s), and whether it is on
+/// the road. Between keyframes the spin carries on at its rate; travel and
+/// steer hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wheel {
+    pub travel: f32,
+    pub steer: f32,
+    pub angle: f32,
+    pub rate: f32,
+    pub grounded: bool,
+}
+
+impl Wheel {
+    /// As drawn `ticks` after its keyframe.
+    pub fn at(&self, ticks: f32, physics: Physics) -> Wheel {
+        Wheel { angle: self.angle + self.rate * ticks * physics.dt, ..*self }
+    }
+}
+
+/// Wire steps: travel 1 mm, steer 0.1 mrad, angle a turn in 65536, rate
+/// 0.01 rad/s.
+const TRAVEL_STEP: f32 = 0.001;
+const STEER_STEP: f32 = 0.0001;
+const RATE_STEP: f32 = 0.01;
+
+fn wheel_ints(wheels: &[Wheel; 4]) -> (u8, [[i16; 4]; 4]) {
+    let q = |v: f32, step: f32| (v / step).round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
+    let turn = std::f32::consts::TAU;
+    let mut grounded = 0u8;
+    let ints = std::array::from_fn(|i| {
+        let w = wheels[i];
+        if w.grounded {
+            grounded |= 1 << i;
+        }
+        let angle = ((w.angle.rem_euclid(turn) / turn * 65536.0).round() as u32 % 65536) as u16 as i16;
+        [q(w.travel, TRAVEL_STEP), q(w.steer, STEER_STEP), angle, q(w.rate, RATE_STEP)]
+    });
+    (grounded, ints)
+}
+
+fn wheels_from_ints(grounded: u8, ints: &[[i16; 4]; 4]) -> [Wheel; 4] {
+    std::array::from_fn(|i| {
+        let [travel, steer, angle, rate] = ints[i];
+        Wheel {
+            travel: f32::from(travel) * TRAVEL_STEP,
+            steer: f32::from(steer) * STEER_STEP,
+            angle: f32::from(angle as u16) / 65536.0 * std::f32::consts::TAU,
+            rate: f32::from(rate) * RATE_STEP,
+            grounded: grounded & (1 << i) != 0,
+        }
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -254,6 +314,9 @@ const ROTATION_STEP: f32 = 0.001;
 const FLAG_DELTA: u8 = 1 << 4;
 const FLAG_SPIN: u8 = 1 << 5;
 const FLAG_INCARNATION: u8 = 1 << 6;
+const FLAG_WHEELS: u8 = 1 << 7;
+/// In a car's wheel block's on-road byte: the record's Sliding is Turning.
+const WHEELS_TURNING: u8 = 1 << 4;
 
 /// A record's numbers as the wire carries them.
 #[derive(Clone, Copy, Debug)]
@@ -269,6 +332,9 @@ struct RecordInts {
     decel: u8,
     /// Ticks from the body's birth to this keyframe (FLAG_INCARNATION).
     incarnation_ticks: u32,
+    /// FLAG_WHEELS: the on-road mask and each wheel's travel, steer, angle
+    /// and rate.
+    wheels: (u8, [[i16; 4]; 4]),
 }
 
 const DECEL_STEP: f32 = 0.1;
@@ -278,7 +344,7 @@ fn ints_of(record: &KeyframeRecord, physics: Physics) -> RecordInts {
     let tier = record.tier & 3;
     let step = POSITION_STEPS[tier as usize];
     let moving = kf.mode != Mode::Resting;
-    let mut flags = (kf.mode as u8) | (tier << 2);
+    let mut flags = kf.mode.wire_bits() | (tier << 2);
     let mut out = RecordInts {
         flags: 0,
         baseline_ticks: 0,
@@ -289,7 +355,15 @@ fn ints_of(record: &KeyframeRecord, physics: Physics) -> RecordInts {
         angular: [0; 3],
         decel: (kf.decel / DECEL_STEP).round().clamp(0.0, 255.0) as u8,
         incarnation_ticks: 0,
+        wheels: (0, [[0; 4]; 4]),
     };
+    if let Some(wheels) = &record.wheels {
+        flags |= FLAG_WHEELS;
+        out.wheels = wheel_ints(wheels);
+        if kf.mode == Mode::Turning {
+            out.wheels.0 |= WHEELS_TURNING;
+        }
+    }
     if let Some(born) = record.incarnation.filter(|&b| b <= kf.tick) {
         flags |= FLAG_INCARNATION;
         out.incarnation_ticks = kf.tick - born;
@@ -335,7 +409,10 @@ fn ints_of(record: &KeyframeRecord, physics: Physics) -> RecordInts {
 }
 
 fn from_ints(tick: u32, ints: &RecordInts, base: Option<&Keyframe>, physics: Physics) -> Option<Keyframe> {
-    let mode = Mode::from_u8(ints.flags);
+    let mode = match Mode::from_u8(ints.flags) {
+        Mode::Sliding if ints.flags & FLAG_WHEELS != 0 && ints.wheels.0 & WHEELS_TURNING != 0 => Mode::Turning,
+        mode => mode,
+    };
     let step = POSITION_STEPS[((ints.flags >> 2) & 3) as usize];
     let moving = mode != Mode::Resting;
     let v3 = |a: [i64; 3], s: f32| Vec3::new(a[0] as f32 * s, a[1] as f32 * s, a[2] as f32 * s);
@@ -407,6 +484,11 @@ impl PreparedRecord {
     /// As `record_bytes`.
     pub fn bytes(&self) -> usize {
         self.bytes
+    }
+
+    /// The wheels the client will decode (FLAG_WHEELS).
+    pub fn decoded_wheels(&self) -> Option<[Wheel; 4]> {
+        (self.ints.flags & FLAG_WHEELS != 0).then(|| wheels_from_ints(self.ints.wheels.0, &self.ints.wheels.1))
     }
 
     /// As `decoded`.
@@ -498,6 +580,14 @@ fn write_record(w: &mut impl RecordOut, ints: &RecordInts, tick_delta: i64) {
     if ints.flags & FLAG_INCARNATION != 0 {
         w.varint(u64::from(ints.incarnation_ticks));
     }
+    if ints.flags & FLAG_WHEELS != 0 {
+        w.u8(ints.wheels.0);
+        for wheel in ints.wheels.1 {
+            for v in wheel {
+                w.i16(v);
+            }
+        }
+    }
 }
 
 pub fn encode_keyframes(packet: &KeyframePacket, physics: Physics) -> Vec<u8> {
@@ -564,7 +654,7 @@ fn decode_keyframes_ending(
         let tick = (i64::from(server_tick) + r.svarint()?) as u32;
         let flags = r.u8()?;
         let moving = Mode::from_u8(flags) != Mode::Resting;
-        let mut ints = RecordInts { flags, baseline_ticks: 0, position: [0; 3], rotation_abs: 0, rotation: [0; 3], linear: [0; 3], angular: [0; 3], decel: 0, incarnation_ticks: 0 };
+        let mut ints = RecordInts { flags, baseline_ticks: 0, position: [0; 3], rotation_abs: 0, rotation: [0; 3], linear: [0; 3], angular: [0; 3], decel: 0, incarnation_ticks: 0, wheels: (0, [[0; 4]; 4]) };
         if flags & FLAG_DELTA != 0 {
             ints.baseline_ticks = r.varint()? as u32;
             for v in &mut ints.position {
@@ -598,9 +688,20 @@ fn decode_keyframes_ending(
             ints.decel = r.u8()?;
         }
         let incarnation = if flags & FLAG_INCARNATION != 0 { Some(tick.wrapping_sub(r.varint()? as u32)) } else { None };
+        let wheels = if flags & FLAG_WHEELS != 0 {
+            ints.wheels.0 = r.u8()?;
+            for wheel in &mut ints.wheels.1 {
+                for v in wheel.iter_mut() {
+                    *v = r.i16()?;
+                }
+            }
+            Some(wheels_from_ints(ints.wheels.0, &ints.wheels.1))
+        } else {
+            None
+        };
         let base = if flags & FLAG_DELTA != 0 { baseline(key, tick.wrapping_sub(ints.baseline_ticks)) } else { None };
         match from_ints(tick, &ints, base.as_ref(), physics) {
-            Some(keyframe) => records.push(KeyframeRecord { key, tier: (flags >> 2) & 3, keyframe, baseline: base, incarnation }),
+            Some(keyframe) => records.push(KeyframeRecord { key, tier: (flags >> 2) & 3, keyframe, baseline: base, incarnation, wheels }),
             None => missing += 1,
         }
     }
@@ -968,6 +1069,33 @@ pub fn encode_ack(newest: u32, mask: u64, events_through: Option<u32>) -> Vec<u8
     w.out
 }
 
+/// `encode_ack`, then the bodies whose delta records this client could not
+/// decode (their baseline was gone): u8 count, then per body u32 structure
+/// and u32 body (LE). The server resends each absolute. At most 255.
+pub fn encode_ack_missing(newest: u32, mask: u64, events_through: u32, missing: &[BodyKey]) -> Vec<u8> {
+    let mut out = encode_ack(newest, mask, Some(events_through));
+    let n = missing.len().min(255);
+    out.push(n as u8);
+    for key in &missing[..n] {
+        out.extend(key.structure.to_le_bytes());
+        out.extend(key.body.to_le_bytes());
+    }
+    out
+}
+
+/// The bodies an ack names as undecodable (`encode_ack_missing`); none for a
+/// plain ack.
+pub fn decode_ack_missing(bytes: &[u8]) -> Vec<BodyKey> {
+    let Some(&n) = bytes.get(17) else { return Vec::new() };
+    (0..usize::from(n))
+        .map_while(|i| {
+            let at = 18 + i * 8;
+            let word = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            Some(BodyKey { structure: word(at)?, body: word(at + 4)? })
+        })
+        .collect()
+}
+
 pub fn decode_ack(bytes: &[u8]) -> Result<(u32, u64, Option<u32>), Truncated> {
     let mut r = Reader::new(bytes);
     if r.u8()? != PKT_PP_ACK {
@@ -1022,6 +1150,7 @@ mod tests {
                             keyframe: truth,
                             baseline: delta.then_some(base),
                             incarnation: born,
+                            wheels: None,
                         };
                         let mut w = Writer::default();
                         write_record(&mut w, &ints_of(&record, ph), 0);
@@ -1088,7 +1217,7 @@ mod tests {
             angular_velocity: base.angular_velocity,
             mode: Mode::Ballistic, decel: 0.0, floor_drop: None,
         };
-        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(base), incarnation: None };
+        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(base), incarnation: None, wheels: None };
         let bytes = encode_keyframes(&KeyframePacket { server_tick: 920, ordinal: 5, records: vec![record] }, ph);
         let (back, missing) = decode_keyframes_with(&bytes, ph, &mut |key, tick| (key.body == 2 && tick == 900).then_some(base)).unwrap();
         assert_eq!(missing, 0);
@@ -1108,7 +1237,7 @@ mod tests {
         let base = decoded(&KeyframeRecord::absolute(BodyKey { structure: 1, body: 2 }, 1, kf(900, Mode::Ballistic)), ph);
         let floored = Keyframe { floor_drop: Some(0.1), ..base };
         let truth = Keyframe { tick: 940, position: base.position + Vec3::new(1.0, -0.05, 0.0), ..base };
-        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(floored), incarnation: None };
+        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(floored), incarnation: None, wheels: None };
         let bytes = encode_keyframes(&KeyframePacket { server_tick: 940, ordinal: 1, records: vec![record] }, ph);
         let (back, _) = decode_keyframes_with(&bytes, ph, &mut |_, _| Some(base)).unwrap();
         assert!((back.records[0].keyframe.position - truth.position).length() < 0.004, "{:?}", back.records[0].keyframe.position);
@@ -1129,10 +1258,51 @@ mod tests {
         assert_eq!(back[2..], events[2..]);
         assert_eq!(decode_ack(&encode_ack(5, 0b1011, None)).unwrap(), (5, 0b1011, None));
         assert_eq!(decode_ack(&encode_ack(5, 0b1011, Some(42))).unwrap(), (5, 0b1011, Some(42)));
+        let missing = [BodyKey { structure: VEHICLE_STRUCTURE_BASE + 3, body: CAR_BODY }, BodyKey { structure: 7, body: 40 }];
+        let with = encode_ack_missing(5, 0b1011, 42, &missing);
+        assert_eq!(decode_ack(&with).unwrap(), (5, 0b1011, Some(42)));
+        assert_eq!(decode_ack_missing(&with), missing);
+        assert!(decode_ack_missing(&encode_ack(5, 0b1011, Some(42))).is_empty());
     }
 
     /// A car's groups round-trip exactly (members and centres), as an event
     /// and in a bootstrap; a bootstrap without cars ends where it did.
+    /// A car's chassis record carries its wheels: each decodes to within its
+    /// wire step (the angle within a 65536th of a turn, wrapped), the record
+    /// counts its own bytes, and records without wheels are unchanged.
+    #[test]
+    fn a_car_record_carries_its_wheels() {
+        let ph = Physics::at_hz(60, -9.81);
+        let kf = Keyframe { tick: 500, position: Vec3::new(10.0, 0.6, -4.0), rotation: Quat::from_rotation_y(0.3), linear_velocity: Vec3::new(12.0, 0.0, 1.0), angular_velocity: Vec3::new(0.0, 0.2, 0.0), mode: Mode::Sliding, decel: 0.0, floor_drop: None };
+        let wheels = [
+            Wheel { travel: -0.031, steer: 0.21, angle: 7.5, rate: 34.2, grounded: true },
+            Wheel { travel: 0.012, steer: 0.19, angle: -1.0, rate: 34.1, grounded: true },
+            Wheel { travel: 0.0, steer: 0.0, angle: 3.0, rate: -2.5, grounded: false },
+            Wheel { travel: 0.4, steer: 0.0, angle: 0.0, rate: 0.0, grounded: true },
+        ];
+        let key = BodyKey { structure: VEHICLE_STRUCTURE_BASE + 3, body: CAR_BODY };
+        let record = KeyframeRecord { wheels: Some(wheels), ..KeyframeRecord::absolute(key, 1, kf) };
+        let plain = PreparedRecord::new(KeyframeRecord::absolute(key, 1, kf), ph);
+        let prepared = PreparedRecord::new(record, ph);
+        assert_eq!(prepared.bytes(), plain.bytes() + 33, "the wheels cost 33 bytes");
+        let bytes = encode_prepared(500, 9, &[prepared]);
+        let back = decode_keyframes(&bytes, ph).unwrap();
+        let got = back.records[0].wheels.expect("wheels");
+        assert_eq!(Some(got), prepared.decoded_wheels());
+        let turn = std::f32::consts::TAU;
+        for (g, w) in got.iter().zip(&wheels) {
+            assert!((g.travel - w.travel).abs() <= 0.0005 + 1e-6);
+            assert!((g.steer - w.steer).abs() <= 0.00005 + 1e-6);
+            assert!((g.rate - w.rate).abs() <= 0.005 + 1e-5);
+            let da = (g.angle - w.angle).rem_euclid(turn);
+            assert!(da.min(turn - da) <= turn / 65536.0, "angle {} vs {}", g.angle, w.angle);
+            assert_eq!(g.grounded, w.grounded);
+        }
+        // Spin carries on at its rate.
+        assert!((got[0].at(6.0, ph).angle - (got[0].angle + got[0].rate * 0.1)).abs() < 1e-5);
+        assert_eq!(decode_keyframes(&encode_prepared(500, 9, &[plain]), ph).unwrap().records[0].wheels, None);
+    }
+
     #[test]
     fn car_groups_round_trip_as_events_and_in_a_bootstrap() {
         let groups = vec![

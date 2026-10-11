@@ -61,6 +61,7 @@ import {
   MELEE_RANGE_M,
   RIFLE_FIRE_INTERVAL_MS,
   VEHICLE_INTERACT_RADIUS_M,
+  SERVER_TICK_US,
 } from '../net/protocol';
 import type {
   DamageEventPacket,
@@ -2846,6 +2847,10 @@ export function GameWorld({
 
     const currentRemote = state.remotePlayers;
     const renderTimeUs = client.getRenderTimeUs();
+    // Vehicle QA traces: the server tick other players' cars are drawn at.
+    if ((globalThis as { __VIBE_VEHICLE_TRACE__?: unknown }).__VIBE_VEHICLE_TRACE__) {
+      (globalThis as { __VIBE_CAR_TICK__?: number }).__VIBE_CAR_TICK__ = renderTimeUs / SERVER_TICK_US;
+    }
     let crosshairAimState: CrosshairAimState = 'idle';
     let closestAimDistance = Number.POSITIVE_INFINITY;
 

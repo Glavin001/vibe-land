@@ -541,7 +541,7 @@ impl PhysxPhysicsArena {
                 suspension_travel: travel,
                 suspension_stiffness: tune.map(|t| t.spring_stiffness).unwrap_or(stiffness),
                 suspension_damping: tune.map(|t| t.damping).unwrap_or(damping),
-                wheel_radius: prepared.map(|p| p.origin_height as f32 - 0.25).unwrap_or(definition.wheel_radius_m),
+                wheel_radius: prepared.map(|p| p.wheel_radius()).unwrap_or(definition.wheel_radius_m),
                 wheel_half_width: prepared.map(|p| p.wheel_half_width).unwrap_or(0.15),
                 tyre_friction: tune.map(|t| t.tyre_friction).unwrap_or(PHYSX_TYRE_FRICTION),
                 front_lateral_stiffness: PHYSX_FRONT_LATERAL_STIFFNESS_PER_N * rest_load,
@@ -1758,6 +1758,11 @@ impl PhysxPhysicsArena {
     pub fn vehicle_rig(&self, id:u32, neutral_jounce:f32) -> Option<[[f32;4];4]> {
         let snapshot = self.current_vehicle_snapshots().into_iter().find(|s|s.user_id == id)?;
         Some(rig_from_snapshot(&snapshot, neutral_jounce))
+    }
+
+    /// Every vehicle's state this tick: pose, velocities, wheels.
+    pub fn vehicle_snapshots(&self) -> Vec<bridge::VehicleSnapshot> {
+        self.current_vehicle_snapshots()
     }
 
     pub fn snapshot_vehicles(&self) -> Vec<NetVehicleState> {

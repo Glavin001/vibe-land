@@ -58,7 +58,25 @@ export interface PerPlayerCore {
   vehicle_groups(): Float32Array;
   set_vehicle_parts(structure: number, flat: Float32Array): void;
   advance_vehicles(tick: number): void;
+  car_states(): Float32Array;
+  car_states_at(tick: number): Float32Array;
 }
+
+/** A car as the per-player stream draws it, on the car clock (`car_states`). */
+export interface StreamedCar {
+  handle: number;
+  /** The car-clock tick it is drawn at. */
+  tick: number;
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  linearVelocity: [number, number, number];
+  angularVelocity: [number, number, number];
+  /** Its wheels (rig wheel poses), once a car record has carried them. */
+  wheels: { travelM: number; steeringRad: number; rotationRad: number; grounded: boolean }[] | null;
+}
+
+/** Floats per car in the core's `car_states`. */
+const CAR_STRIDE = 35;
 
 /** A car part's hull shapes in its authored frame (vehicle metadata.json `parts`). */
 export interface VehiclePartHulls {
@@ -189,7 +207,11 @@ export class PerPlayerCityClient extends CityClient {
     super.handlePacket(bytes);
   }
 
-  /** [newest ordinal, mask low, mask high, events through] for the upstream ack, or null. */
+  /**
+   * [newest ordinal, mask low, mask high, events through, n, then n
+   * (structure, body) pairs: bodies whose records could not be decoded] for
+   * the upstream ack, or null.
+   */
   ack(): Uint32Array | null {
     const a = this.core.ack();
     return a.length >= 3 ? a : null;
@@ -270,6 +292,34 @@ export class PerPlayerCityClient extends CityClient {
   }
 
   private vehicleClock: (() => number) | null = null;
+  /**
+   * The cars the stream carries (other players' cars, wire 4) as drawn at
+   * server tick `tick`. A query: no clock moves (callers ask about other
+   * times than the frame's).
+   */
+  carsAt(tick: number): StreamedCar[] {
+    if (!this.core.started()) return [];
+    return this.readCars(tick, this.core.car_states_at(tick));
+  }
+
+  private readCars(tick: number, flat: Float32Array): StreamedCar[] {
+    const cars: StreamedCar[] = [];
+    for (let at = 0; at + CAR_STRIDE <= flat.length; at += CAR_STRIDE) {
+      const f = (i: number) => flat[at + i];
+      cars.push({
+        handle: f(0),
+        tick,
+        position: [f(1), f(2), f(3)],
+        quaternion: [f(4), f(5), f(6), f(7)],
+        linearVelocity: [f(8), f(9), f(10)],
+        angularVelocity: [f(11), f(12), f(13)],
+        wheels: f(14) > 0
+          ? [0, 1, 2, 3].map((w) => ({ travelM: f(15 + w * 5), steeringRad: f(16 + w * 5), rotationRad: f(17 + w * 5), grounded: f(19 + w * 5) > 0 }))
+          : null,
+      });
+    }
+    return cars;
+  }
 
   /**
    * The tick cars are drawn at (the car clock), read each frame: their

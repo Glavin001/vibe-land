@@ -182,6 +182,14 @@ fn chunks_block_shots() -> bool {
     })
 }
 
+/// City wire 4: other players' cars, chassis and wheels, are bodies of the
+/// per-player stream rather than every-tick snapshot records and rig
+/// packets (`VIBE_PP_CARS=0` turns it off). Wire 4 only.
+fn per_player_cars() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VIBE_PP_CARS").map_or(true, |value| value != "0"))
+}
+
 fn rifle_damage(zone: HitZone) -> u8 {
     match zone {
         HitZone::Body => RIFLE_BODY_DAMAGE,
@@ -540,6 +548,9 @@ struct CityStatsSnapshot {
     packets_per_sec: u64,
     records_per_sec: u64,
     bytes_per_sec: u64,
+    /// Wire 4: car chassis records sent so far, and their bytes.
+    pp_car_records: u64,
+    pp_car_bytes: u64,
     topo_seq: u32,
     baseline_id: u16,
     min_body_y: f32,
@@ -4151,6 +4162,7 @@ impl MatchState {
                             // Which car this is, and its network handle (the client's vehicle id).
                             debug["car"]=(car-garage::VEHICLE_ID).into();
                             debug["handle"]=self.vehicle_handles.get(&car).copied().into();
+                            debug["tick"]=self.server_tick.into();
                             // What interest sees: the snapshot pose and the box the loose parts span.
                             let parts=self.arena.vehicle_detached_parts(car);
                             debug["detachedParts"]=parts.len().into();
@@ -4526,9 +4538,9 @@ impl MatchState {
                             city.restate_bodies(&bodies);
                         }
                     }
-                    ClientPacket::CityPerPlayerAck { newest, mask, events_through } => {
+                    ClientPacket::CityPerPlayerAck { newest, mask, events_through, missing } => {
                         if let Some(city) = self.city.as_mut() {
-                            city.per_player_ack(u64::from(player_id), newest, mask, events_through);
+                            city.per_player_ack(u64::from(player_id), newest, mask, events_through, &missing);
                         }
                     }
                     ClientPacket::CityManifestRequest => {
@@ -5762,7 +5774,7 @@ impl MatchState {
         // Every client's plan first (each link is its own), then one batched
         // send (`send_threads` run the clients at once), then each result
         // onto its link.
-        let mut requests: Vec<(u64, vibe_land_destruction::types::Camera, SendBudget)> = Vec::new();
+        let mut requests: Vec<(u64, vibe_land_destruction::types::Camera, Option<u32>, SendBudget)> = Vec::new();
         let mut plans: Vec<(u32, link_rate::SendPlan)> = Vec::new();
         for (player_id, camera) in cameras {
             let client = u64::from(player_id);
@@ -5783,7 +5795,12 @@ impl MatchState {
                 }
                 link_rate::SendPlan::Skip => SendBudget::Skip,
             };
-            requests.push((client, camera, budget));
+            let own_car = self
+                .arena
+                .player_vehicle_id(player_id)
+                .and_then(|id| self.vehicle_handles.get(&id))
+                .map(|&handle| vibe_land_perplayer::wire::VEHICLE_STRUCTURE_BASE + u32::from(handle));
+            requests.push((client, camera, own_car, budget));
             plans.push((player_id, plan));
         }
         let sends = city.per_player_sends(&requests, tick);
@@ -6043,6 +6060,37 @@ impl MatchState {
             }
             self.detached_parts = (self.server_tick, read);
             reliable.extend(city.per_player_ingest_vehicles(self.server_tick, &cars));
+            // The cars themselves, chassis and wheels (`VIBE_PP_CARS=0`: by
+            // snapshot and rig packets, as on wire 2).
+            if per_player_cars() {
+                let custom = &self.custom_vehicles;
+                let inputs: Vec<vibe_land_destruction::per_player::CarInput> = self
+                    .arena
+                    .vehicle_stream_states(|id| custom.get(&id).map(|v| v.geometry.neutral_jounce))
+                    .into_iter()
+                    .filter_map(|s| {
+                        let handle = *self.vehicle_handles.get(&s.id)?;
+                        let geometry = &custom.get(&s.id)?.geometry;
+                        Some(vibe_land_destruction::per_player::CarInput {
+                            handle,
+                            position: s.position,
+                            rotation: s.rotation,
+                            linear_velocity: s.linear_velocity,
+                            angular_velocity: s.angular_velocity,
+                            wheels: std::array::from_fn(|i| vibe_land_perplayer::wire::Wheel {
+                                travel: s.wheels[i][0],
+                                steer: s.wheels[i][1],
+                                angle: s.wheels[i][2],
+                                rate: s.wheel_rates[i],
+                                grounded: s.wheels[i][3] > 0.5,
+                            }),
+                            wheel_radius: geometry.wheel_radius(),
+                            radius: geometry.reach(),
+                        })
+                    })
+                    .collect();
+                city.per_player_ingest_cars(self.server_tick, &inputs);
+            }
         }
         // A staged tick's datagrams do not exist yet — its live-lane ingest
         // runs at flush, which drains them there.
@@ -6636,6 +6684,8 @@ impl MatchState {
                     packets_per_sec: packets,
                     records_per_sec: records,
                     bytes_per_sec: bytes,
+                    pp_car_records: city.per_player_stats().map_or(0, |s| s.car_records),
+                    pp_car_bytes: city.per_player_stats().map_or(0, |s| s.car_bytes),
                     topo_seq: encoder.topo_seq,
                     baseline_id: encoder.baseline_id,
                     min_body_y: stats.min_body_y,
@@ -7544,6 +7594,8 @@ impl MatchState {
         let mut vehicle_rigs: Vec<(u32, vehicle_assets::RigFrame, u8, [[f32; 4]; 4], Vec<(u16, [f32; 3], [f32; 4])>)> = Vec::new();
         let mut vehicle_extents: HashMap<u32, ([f32; 3], [f32; 3])> = HashMap::new();
         let per_player_debris = self.city.as_ref().is_some_and(|city| city.is_per_player());
+        // Wire 4 streams other players' cars (pose and wheels) as bodies.
+        let streamed_cars = per_player_debris && per_player_cars();
         for (id, asset) in &self.custom_vehicles {
             let Some(&handle) = self.vehicle_handles.get(id) else { continue };
             let Some(wheels) = self.arena.vehicle_rig(*id, asset.geometry.neutral_jounce) else { continue };
@@ -7657,7 +7709,7 @@ impl MatchState {
                 &recipient,
                 &mut runtime.snapshot_interest,
                 self.strict_snapshot_datagrams,
-                &snapshot_builder::SnapshotConfig::PRODUCTION,
+                if streamed_cars { &snapshot_builder::SnapshotConfig::PER_PLAYER_CARS } else { &snapshot_builder::SnapshotConfig::PRODUCTION },
             ) else {
                 continue;
             };
@@ -7693,8 +7745,11 @@ impl MatchState {
             let visible = &runtime.snapshot_interest.visible_vehicles;
             runtime.rig_sent.retain(|car, _| visible.contains(car));
             let mut rig_bytes = 0usize;
+            // Streamed cars' wheels ride the stream: rigs only for the car
+            // this recipient drives.
+            let own_car = self.arena.player_vehicle_id(recipient_id);
             for (car, frame, handle, wheels, detached) in &vehicle_rigs {
-                if !visible.contains(car) {
+                if !visible.contains(car) || (streamed_cars && own_car != Some(*car)) {
                     continue;
                 }
                 let due = match runtime.rig_sent.get(car) {

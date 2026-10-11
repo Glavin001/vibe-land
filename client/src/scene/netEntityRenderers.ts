@@ -602,7 +602,10 @@ export class VehiclesRenderer {
       if (custom) {
         const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
         if (Array.isArray(trace) && trace.length < 20000) trace.push({ kind: 'frame', t: performance.now(), id,
-          position: [vPos[0], vPos[1], vPos[2]], rigTick: vs.customRig?.serverTick ?? null, detached: vs.customRig?.detached?.length ?? 0,
+          position: [vPos[0], vPos[1], vPos[2]], quaternion: [vQuat[0], vQuat[1], vQuat[2], vQuat[3]],
+          // The server tick other players' cars are drawn at this frame (GameWorld).
+          drawTick: (globalThis as { __VIBE_CAR_TICK__?: number }).__VIBE_CAR_TICK__ ?? null,
+          rigTick: vs.customRig?.serverTick ?? null, detached: vs.customRig?.detached?.length ?? 0,
           fractureGroups: custom.hasFractureGroups(), drawnLoose: custom.drawnLooseParts(4096),
           rigDetached: vs.customRig?.detached?.slice(0, 4096).map(d => ({ part: d.part, position: d.position, rotation: d.rotation })) ?? [] });
       }

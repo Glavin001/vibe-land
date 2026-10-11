@@ -1,4 +1,5 @@
 import type { VehicleAsset, VehicleRigPacket } from '../vehicles/vehicleStream';
+import type { StreamedCar } from '../city/perPlayerCityClient';
 import { SERVER_CLOSE_MARKER } from './disconnectReason';
 import { CITY_WIRE_VERSION } from '../city/wire';
 import { GameSocket } from './gameSocket';
@@ -135,9 +136,12 @@ export class NetcodeClient {
   private vehicleDetached = new Map<number, Map<number, VehicleRigPacket['detached'][number]>>();
   /** Per vehicle handle, its detached parts from the city's per-player stream (wire 4). */
   private vehicleDebris = new Map<number, VehicleRigPacket['detached']>();
-  private attachVehicleAsset(state: VehicleStateMeters): void {
+  private attachVehicleAsset(state: VehicleStateMeters, streamed = this.streamedCar(state.id)): void {
     state.customVehicle = this.customVehicles.get(state.id);
-    const rig = this.vehicleRigs.get(state.id);
+    // A streamed car's wheels come with its pose (wire 4); others by rig.
+    const rig: VehicleRigPacket | undefined = streamed?.wheels
+      ? { type: 'vehicleRig', handle: state.id, serverTick: Math.floor(streamed.tick), wheels: streamed.wheels, detached: [] }
+      : this.vehicleRigs.get(state.id);
     const debris = this.vehicleDebris.get(state.id);
     state.customRig = rig && debris ? { ...rig, detached: debris } : rig;
   }
@@ -147,6 +151,29 @@ export class NetcodeClient {
    * them as bodies; its rig packets carry the wheels). Empty: none.
    */
   private vehicleAssetListener: ((handle: number, vehicle: VehicleAsset) => void) | null = null;
+  private streamedCarSource: ((tick: number) => StreamedCar[]) | null = null;
+  private streamedCars = { tick: Number.NaN, cars: new Map<number, StreamedCar>() };
+
+  /**
+   * Wire 4: other players' cars as the per-player stream draws them at a
+   * server tick (on the car clock). They replace the snapshot pose and rig
+   * of every car this client does not drive, evaluated at the time the
+   * renderer asks for (once per tick), whatever order the frame runs in.
+   */
+  setStreamedCarSource(source: ((tick: number) => StreamedCar[]) | null): void {
+    this.streamedCarSource = source;
+    this.streamedCars = { tick: Number.NaN, cars: new Map() };
+  }
+
+  /** Car `id` as streamed at `renderTimeUs`, unless this client drives it. */
+  private streamedCar(id: number, renderTimeUs = this.getRenderTimeUs()): StreamedCar | undefined {
+    if (!this.streamedCarSource || id === this.getLocalDrivenVehicleId()) return undefined;
+    const tick = renderTimeUs / SERVER_TICK_US;
+    if (tick !== this.streamedCars.tick) {
+      this.streamedCars = { tick, cars: new Map(this.streamedCarSource(tick).map((car) => [car.handle, car])) };
+    }
+    return this.streamedCars.cars.get(id);
+  }
 
   /** Every car asset, those already received first (a car's hull shapes, say). */
   setVehicleAssetListener(listener: ((handle: number, vehicle: VehicleAsset) => void) | null): void {
@@ -1633,6 +1660,29 @@ export class NetcodeClient {
 
   /** Get the render time for interpolating remote vehicles. */
   sampleRemoteVehicle(id: number, renderTimeUs?: number): VehicleSample | null {
+    const streamed = this.streamedCar(id, renderTimeUs);
+    if (streamed) {
+      const state = this.vehicles.get(id);
+      if (state) {
+        // Everything reading the car's state sees it as drawn, and its
+        // wheels with it (the renderer reads the rig after the pose).
+        state.position = [...streamed.position];
+        state.quaternion = [...streamed.quaternion];
+        state.linearVelocity = [...streamed.linearVelocity];
+        state.angularVelocity = [...streamed.angularVelocity];
+        this.attachVehicleAsset(state, streamed);
+      }
+      return {
+        serverTimeUs: streamed.tick * SERVER_TICK_US,
+        position: [...streamed.position],
+        quaternion: [...streamed.quaternion],
+        linearVelocity: [...streamed.linearVelocity],
+        angularVelocity: [...streamed.angularVelocity],
+        wheelData: [0, 0, 0, 0],
+        driverPlayerId: state?.driverId ?? 0,
+        flags: state?.flags ?? 0,
+      };
+    }
     const t = renderTimeUs ?? this.getRenderTimeUs();
     return this.vehicleInterpolator.sample(id, t);
   }

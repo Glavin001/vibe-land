@@ -36,7 +36,7 @@ use vibe_land_perplayer::predict::{Keyframe, Mode, Physics};
 use vibe_land_perplayer::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use vibe_land_perplayer::wire::{
     encode_bootstrap, encode_events, encode_prepared, quantised, BodyKey, Bootstrap, BootstrapStructure, Event,
-    KeyframeRecord, PreparedRecord, VehicleGroup, POSITION_STEPS, VEHICLE_STRUCTURE_BASE, is_vehicle_structure,
+    KeyframeRecord, PreparedRecord, VehicleGroup, Wheel, CAR_BODY, POSITION_STEPS, VEHICLE_STRUCTURE_BASE, is_vehicle_structure,
 };
 use vibe_netcode::destruction_backend::{DestructionTickOutput, FractureBatch};
 
@@ -405,7 +405,7 @@ fn classify(
         .and_then(|h| h.back())
         .is_some_and(|p| (keyframe.linear_velocity - p.linear_velocity - gravity_step).length() > CONTACT_DV);
     let contact_tick = if contact { tick } else { previous.map_or(0, |p| p.contact_tick) };
-    let (mode, decel) = mode_of(config, physics, history, &keyframe, radius);
+    let (mode, decel) = mode_of(config, physics, history, &keyframe, radius, key.body == CAR_BODY && is_vehicle_structure(key.structure));
     keyframe.mode = mode;
     keyframe.decel = decel;
     let mut derived = None;
@@ -429,7 +429,8 @@ fn classify(
 /// deceleration measured over that window) or resting. The spec's "best
 /// predictor of the next few ticks", measured on the past few. Without
 /// the history: ballistic for a body just freed (most likely falling).
-fn mode_of(config: &PerPlayerConfig, physics: Physics, history: Option<&VecDeque<Keyframe>>, now: &Keyframe, radius: f32) -> (Mode, f32) {
+/// `car`: a car's chassis, which may also be predicted Turning.
+fn mode_of(config: &PerPlayerConfig, physics: Physics, history: Option<&VecDeque<Keyframe>>, now: &Keyframe, radius: f32, car: bool) -> (Mode, f32) {
     if !config.backtest_modes {
         let prev = history.and_then(|h| h.back()).filter(|k| k.tick + 1 == now.tick);
         if now.linear_velocity.length() < 0.05 && now.angular_velocity.length() < 0.05 {
@@ -478,8 +479,8 @@ fn mode_of(config: &PerPlayerConfig, physics: Physics, history: Option<&VecDeque
     }
     // Cheapest first: a tie goes to the one with fewer bytes.
     let mut best = (Mode::Resting, error(Mode::Resting));
-    for mode in [Mode::Ballistic, Mode::Sliding, Mode::Friction] {
-        if supported && mode == Mode::Ballistic {
+    for mode in [Mode::Ballistic, Mode::Sliding, Mode::Friction, Mode::Turning] {
+        if (supported && mode == Mode::Ballistic) || (mode == Mode::Turning && !car) {
             continue;
         }
         let e = error(mode);
@@ -548,6 +549,8 @@ struct ClientState {
     /// The tick each body's error went over tolerance, until it is sent
     /// (`PerPlayerConfig::age_priority`).
     over_since: FxHashMap<BodyKey, u32>,
+    /// Each car's wheel keyframes this client was sent (as it keeps them).
+    wheels: FxHashMap<BodyKey, Vec<(u32, [Wheel; 4])>>,
 }
 
 /// Counters for reports.
@@ -583,6 +586,12 @@ pub struct PerPlayerStats {
     /// eye: under 10, 25, 50, 100 m, and beyond (the collapse-cost report).
     pub keyframes_by_distance: [u64; 5],
     pub bytes_by_distance: [u64; 5],
+    /// Car chassis records sent, and their bytes (`ingest_cars`; live
+    /// telemetry, not in the lab's report).
+    #[serde(skip)]
+    pub car_records: u64,
+    #[serde(skip)]
+    pub car_bytes: u64,
 }
 
 /// The distance bands of the cost report, m.
@@ -609,6 +618,8 @@ impl PerPlayerStats {
             self.by_mode[m] += other.by_mode[m];
             self.bytes_by_mode[m] += other.bytes_by_mode[m];
         }
+        self.car_records += other.car_records;
+        self.car_bytes += other.car_bytes;
     }
 }
 
@@ -680,6 +691,8 @@ pub struct PerPlayer {
     /// Cars whose detached parts stream as bodies, by body-key structure
     /// (`register_vehicle`).
     vehicles: BTreeMap<u32, VehicleModel>,
+    /// Cars whose chassis the stream carries (`ingest_cars`), by chassis key.
+    cars: FxHashMap<BodyKey, CarTruth>,
 }
 
 /// One part of a car, as its detached groups need it.
@@ -708,6 +721,53 @@ pub struct VehicleDetachedPart {
     pub com: [f32; 3],
     pub linear_velocity: [f32; 3],
     pub angular_velocity: [f32; 3],
+}
+
+/// One car as the per-player stream carries it (`ingest_cars`).
+#[derive(Clone, Copy, Debug)]
+pub struct CarInput {
+    pub handle: u8,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    pub wheels: [Wheel; 4],
+    /// Its wheels' radius, m: a spin or steer error's distance at the rim.
+    pub wheel_radius: f32,
+    /// Its farthest point from its centre, m.
+    pub radius: f32,
+}
+
+/// A car's wheels now, and their radius.
+#[derive(Clone, Copy, Debug)]
+struct CarTruth {
+    wheels: [Wheel; 4],
+    wheel_radius: f32,
+}
+
+/// Wheel keyframes kept per car per client (as the client keeps them).
+const CAR_WHEEL_KEYFRAMES: usize = 8;
+
+/// How far drawn wheels are from the truth, m: the spin's arc at the rim,
+/// the steer's at the rim, the suspension's travel.
+fn wheel_error(drawn: &[Wheel; 4], truth: &[Wheel; 4], radius: f32) -> f32 {
+    let turn = std::f32::consts::TAU;
+    drawn
+        .iter()
+        .zip(truth)
+        .map(|(d, t)| {
+            let da = (d.angle - t.angle).rem_euclid(turn);
+            (da.min(turn - da) * radius).max((d.steer - t.steer).abs() * radius).max((d.travel - t.travel).abs())
+        })
+        .fold(0.0, f32::max)
+}
+
+/// The wheels a client draws at `r`: its newest wheel keyframe at or before
+/// it, spun on at its rate.
+fn wheels_at(list: &[(u32, [Wheel; 4])], r: f32, physics: Physics) -> Option<[Wheel; 4]> {
+    let i = list.partition_point(|(t, _)| *t as f32 <= r);
+    let (tick, wheels) = list.get(i.saturating_sub(1))?;
+    Some(wheels.map(|w| w.at(r - *tick as f32, physics)))
 }
 
 struct VehicleModel {
@@ -979,6 +1039,77 @@ impl PerPlayer {
         self.vehicles.insert(VEHICLE_STRUCTURE_BASE + u32::from(handle), VehicleModel { parts, points, groups: Vec::new() });
     }
 
+    /// Bodies whose delta records `client` could not decode (it no longer
+    /// had their baseline, though the datagram that carried it was acked):
+    /// its next record of each is absolute, and nothing it was sent of them
+    /// is assumed drawn. Without this, each acked but undecodable record
+    /// became the next one's baseline, and the body froze.
+    pub fn missing_baselines(&mut self, client: u64, keys: &[BodyKey]) {
+        let Some(cs) = self.clients.get_mut(&client) else { return };
+        for key in keys {
+            cs.acked.remove(key);
+            cs.believed.remove(key);
+            cs.wheels.remove(key);
+            if self.truth.contains_key(key) {
+                cs.unsent.insert(*key);
+            }
+        }
+    }
+
+    /// This tick's cars: each chassis is a body of its car's structure
+    /// (`CAR_BODY`), classified as every body is from the physics' own state,
+    /// with one more predictor for cars: Turning, velocity held in the car's
+    /// frame (IEEE 1278.1 DRM (R,P,B)), so a steady turn is an arc. Its
+    /// wheels ride its records. A car no longer listed leaves the stream.
+    pub fn ingest_cars(&mut self, tick: u32, cars: &[CarInput]) {
+        let mut seen: FxHashSet<BodyKey> = FxHashSet::default();
+        for car in cars {
+            let key = BodyKey { structure: VEHICLE_STRUCTURE_BASE + u32::from(car.handle), body: CAR_BODY };
+            seen.insert(key);
+            let previous = self.truth.get(&key).copied();
+            let history = self.truth.history(&key);
+            let snapshot = BodySnapshotInput {
+                body_entity: 0,
+                position: car.position,
+                rotation: car.rotation,
+                linear_velocity: car.linear_velocity,
+                angular_velocity: car.angular_velocity,
+                contacts: 0,
+                flags: 0,
+            };
+            let (mut truth, continuous, _) =
+                classify(tick, key, &snapshot, previous, history, &self.config, self.physics, &self.states, &self.defs, &self.floors);
+            truth.radius = car.radius;
+            let slot = self.truth.slot(key) as usize;
+            push_history(&mut self.truth.slots[slot].history, truth.keyframe, continuous);
+            if truth.contact_tick == tick && tick > 0 {
+                self.fresh_contacts.push(key);
+                self.contacts_stale.insert(key);
+            }
+            if self.truth.insert(key, truth).is_none() {
+                self.shapes_new.insert(key);
+                self.order_new.insert(key);
+                for cs in self.clients.values_mut() {
+                    cs.unsent.insert(key);
+                }
+            }
+            self.cars.insert(key, CarTruth { wheels: car.wheels, wheel_radius: car.wheel_radius });
+        }
+        let gone: Vec<BodyKey> = self.cars.keys().filter(|k| !seen.contains(k)).copied().collect();
+        for key in gone {
+            self.cars.remove(&key);
+            self.truth.remove(&key);
+            self.contacts_stale.insert(key);
+            for cs in self.clients.values_mut() {
+                cs.believed.remove(&key);
+                cs.acked.remove(&key);
+                cs.unsent.remove(&key);
+                cs.over_since.remove(&key);
+                cs.wheels.remove(&key);
+            }
+        }
+    }
+
     /// This tick's detached parts of every registered car, each with the
     /// rigid body it is on (named by its lowest part). Each body is a group;
     /// its truth is the physics' own state of it: centre of mass, rotation
@@ -1198,6 +1329,7 @@ impl PerPlayer {
             statics_built: false,
             workers: None,
             vehicles: BTreeMap::new(),
+            cars: FxHashMap::default(),
         };
         // A capture that starts mid-match: derive the structure from the
         // ledger's bonds and islands, as a joining client would from bits.
@@ -1688,7 +1820,9 @@ impl ReplicationStrategy for PerPlayer {
                 let write = |(i, slot): (usize, &mut BodySlot)| -> Option<Report> {
                     let w = work_of[i];
                     if w == u32::MAX {
-                        if let Some(t) = slot.truth.as_mut().filter(|t| !t.settled && t.keyframe.tick < tick) {
+                        // Unreported: at rest. Cars are not in this tick's
+                        // snapshots (`ingest_cars`, `ingest_vehicles`).
+                        if let Some(t) = slot.truth.as_mut().filter(|t| !t.settled && t.keyframe.tick < tick && !is_vehicle_structure(slot.key.structure)) {
                             t.keyframe = Keyframe { tick, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, ..t.keyframe };
                         }
                         return None;
@@ -1721,8 +1855,8 @@ impl ReplicationStrategy for PerPlayer {
                         reports.push((key, fresh, contact, derived));
                     }
                 }
-                for t in self.truth.values_mut() {
-                    if !t.settled && t.keyframe.tick < tick {
+                for (key, t) in self.truth.iter_mut() {
+                    if !t.settled && t.keyframe.tick < tick && !is_vehicle_structure(key.structure) {
                         t.keyframe = Keyframe { tick, linear_velocity: Vec3::ZERO, angular_velocity: Vec3::ZERO, mode: Mode::Resting, ..t.keyframe };
                     }
                 }
@@ -1944,7 +2078,7 @@ impl ReplicationStrategy for PerPlayer {
     fn client_send(&mut self, client: u64, view: &ClientView, tick: u32, budget: Option<SendBudget>) -> ClientSend {
         let config = self.effective_config();
         let Some(cs) = self.clients.get_mut(&client) else { return ClientSend::default() };
-        send_for(config, self.physics, &self.truth, &self.shapes, &self.statics, &self.order, &self.contacts[..self.recent], &self.model, cs, view, tick, budget, &mut self.stats)
+        send_for(config, self.physics, &self.truth, &self.cars, &self.shapes, &self.statics, &self.order, &self.contacts[..self.recent], &self.model, cs, view, tick, budget, &mut self.stats)
     }
 
     fn client_sends(&mut self, requests: &[SendRequest]) -> Vec<ClientSend> {
@@ -1959,6 +2093,7 @@ impl ReplicationStrategy for PerPlayer {
             self.clients.iter_mut().filter_map(|(id, cs)| index.get(id).map(|&i| (i, cs))).collect();
         jobs.sort_by_key(|j| j.0);
         let (physics, truth, model, shapes, statics) = (self.physics, &self.truth, &self.model, &self.shapes, &self.statics);
+        let cars = &self.cars;
         let (order, recent) = (&self.order[..], &self.contacts[..self.recent]);
         // One client per task: costs vary a lot between clients (what each
         // sees), and the pool steals work rather than waiting on the
@@ -1969,7 +2104,7 @@ impl ReplicationStrategy for PerPlayer {
                 .map(|(i, cs)| {
                     let r = &requests[i];
                     let mut stats = PerPlayerStats::default();
-                    let send = send_for(config, physics, truth, shapes, statics, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats);
+                    let send = send_for(config, physics, truth, cars, shapes, statics, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats);
                     (vec![(i, send)], stats)
                 })
                 .collect()
@@ -2030,6 +2165,9 @@ impl ReplicationStrategy for PerPlayer {
             if let Some(track) = cs.believed.get_mut(&key) {
                 track.remove_keyframe(kf.tick);
             }
+            if let Some(list) = cs.wheels.get_mut(&key) {
+                list.retain(|(t, _)| *t != kf.tick);
+            }
             self.stats.keyframes_lost += 1;
         }
     }
@@ -2043,6 +2181,7 @@ fn send_for(
     config: PerPlayerConfig,
     physics: Physics,
     truths: &Bodies,
+    cars: &FxHashMap<BodyKey, CarTruth>,
     shapes: &FxHashMap<BodyKey, BodyShape>,
     statics: &FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>,
     order: &[BodyKey],
@@ -2198,6 +2337,10 @@ fn send_for(
     }
     std::hint::black_box(touched);
     for (key, &entry) in evaluate.iter().zip(&entries) {
+        // The car this client drives: its own prediction draws it.
+        if key.body == CAR_BODY && view.own_car == Some(key.structure) {
+            continue;
+        }
         let truth = &truths[key];
         // The truth's share, computed once per send for every client (or
         // here, when this send had no begin_send: tests).
@@ -2311,6 +2454,20 @@ fn send_for(
             }
             _ => 0.0,
         };
+        // A car's wheels: drawn now and a horizon ahead against the truth's
+        // (its spin carried on at its rate), at the rim.
+        let car = (key.body == CAR_BODY).then(|| cars.get(key)).flatten();
+        let error_px = match car {
+            Some(car) => match cs.wheels.get(key).and_then(|list| Some((wheels_at(list, r, physics)?, wheels_at(list, r + config.horizon_ticks, physics)?))) {
+                Some((now, ahead)) => {
+                    let truth_ahead = car.wheels.map(|w| w.at(config.horizon_ticks, physics));
+                    let m = wheel_error(&now, &car.wheels, car.wheel_radius).max(wheel_error(&ahead, &truth_ahead, car.wheel_radius));
+                    error_px.max(m * error_px_per_m)
+                }
+                None => f32::INFINITY,
+            },
+            None => error_px,
+        };
         if !required && error_px < config.tolerance_px && contact_gain <= 0.0 && motion_gain <= 0.0 {
             cs.over_since.remove(key);
             continue;
@@ -2334,6 +2491,7 @@ fn send_for(
             .filter(|b| b.tick >= incarnation && b.tick <= tick && tick - b.tick <= BASELINE_MAX_TICKS)
             .copied();
         let mut absolute = KeyframeRecord::absolute(*key, tier, keyframe);
+        absolute.wheels = car.map(|c| c.wheels);
         if truth.born > 0 && truth.born + INCARNATION_WINDOW >= tick {
             absolute.incarnation = Some(truth.born);
         }
@@ -2441,8 +2599,12 @@ fn send_for(
         if c.record.record.baseline.is_some() {
             stats.delta_records += 1;
         }
-        stats.by_mode[c.record.record.keyframe.mode as usize] += 1;
-        stats.bytes_by_mode[c.record.record.keyframe.mode as usize] += c.bytes as u64;
+        stats.by_mode[c.record.record.keyframe.mode.wire_bits() as usize] += 1;
+        stats.bytes_by_mode[c.record.record.keyframe.mode.wire_bits() as usize] += c.bytes as u64;
+        if c.key.body == CAR_BODY {
+            stats.car_records += 1;
+            stats.car_bytes += c.bytes as u64;
+        }
         let band = DISTANCE_BANDS_M.iter().position(|&d| c.distance < d).unwrap_or(DISTANCE_BANDS_M.len());
         stats.keyframes_by_distance[band] += 1;
         stats.bytes_by_distance[band] += c.bytes as u64;
@@ -2492,6 +2654,17 @@ fn send_for(
             // pose; the truth's is that to within the quantisation.
             let decoded = Keyframe { floor_drop: record.keyframe.floor_drop, ..prepared.decoded(physics) };
             cs.believed.entry(record.key).or_default().add(decoded, arrival_at(&record.key), physics);
+            if let Some(wheels) = prepared.decoded_wheels() {
+                let list = cs.wheels.entry(record.key).or_default();
+                let tick = record.keyframe.tick;
+                match list.binary_search_by_key(&tick, |(t, _)| *t) {
+                    Ok(i) => list[i].1 = wheels,
+                    Err(i) => list.insert(i, (tick, wheels)),
+                }
+                if list.len() > CAR_WHEEL_KEYFRAMES {
+                    list.remove(0);
+                }
+            }
             cs.unsent.remove(&record.key);
             carried.push((record.key, decoded));
             stats.keyframes_sent += 1;
@@ -2569,11 +2742,12 @@ mod tests {
             &truths,
             &FxHashMap::default(),
             &FxHashMap::default(),
+            &FxHashMap::default(),
             &order,
             &[],
             &model,
             &mut cs,
-            &ClientView { camera },
+            &ClientView { camera, own_car: None },
             tick,
             Some(SendBudget::Limited { allowance_bytes: one_record, sends: 1 }),
             &mut stats,
@@ -2644,11 +2818,12 @@ mod drawn_near_tests {
             &truths,
             &FxHashMap::default(),
             &FxHashMap::default(),
+            &FxHashMap::default(),
             &[mid, near_drawn],
             &[],
             &model,
             &mut cs,
-            &ClientView { camera },
+            &ClientView { camera, own_car: None },
             tick,
             Some(SendBudget::Limited { allowance_bytes: DATAGRAM_HEADER + record + record / 2, sends: 1 }),
             &mut stats,
@@ -2731,11 +2906,12 @@ mod age_tests {
                 &truths,
                 &FxHashMap::default(),
                 &FxHashMap::default(),
+                &FxHashMap::default(),
                 &order,
                 &[],
                 &model,
                 &mut cs,
-                &ClientView { camera },
+                &ClientView { camera, own_car: None },
                 tick,
                 Some(SendBudget::Limited { allowance_bytes: DATAGRAM_HEADER + record + record / 2, sends: 1 }),
                 &mut stats,
@@ -3216,7 +3392,7 @@ mod vehicle_tests {
             }
             pp.begin_send(tick);
             let before = pp.stats.keyframes_sent;
-            let send = pp.client_send(1, &ClientView { camera }, tick, Some(SendBudget::Full));
+            let send = pp.client_send(1, &ClientView { camera, own_car: None }, tick, Some(SendBudget::Full));
             keyframes += pp.stats.keyframes_sent - before;
             for packet in send.packets {
                 client.ingest(&packet.bytes, ms(tick) + 30.0);
@@ -3251,6 +3427,185 @@ mod vehicle_tests {
         // Prediction carries free flight: far fewer keyframes than ticks.
         assert!(keyframes * 3 < ticks_flying, "{keyframes} keyframes over {ticks_flying} body-ticks in flight");
         eprintln!("car debris: {keyframes} keyframes over {ticks_flying} body-ticks; {checked} drawn poses within tolerance");
+    }
+
+    /// A car drives at 10-13 m/s, accelerating, then weaving (yaw rate
+    /// 0.4 rad/s, a sine). One client watches it from 20 m; another drives
+    /// it. The watcher draws its chassis on the car clock, and its wheels
+    /// (spin, steer, suspension), within the tolerance from keyframes sent
+    /// only when the drawing would drift: far fewer than the 60 a second the
+    /// snapshot sends. The driver is sent none: its own prediction draws it.
+    #[test]
+    fn a_driven_car_is_drawn_from_few_keyframes_and_never_sent_to_its_driver() {
+        let manifest = super::fracture_scale_tests_support::block_manifest(2, 2, 2);
+        let config = PerPlayerConfig::validated(60);
+        let mut pp = PerPlayer::new(&manifest, CityLedger::from_manifest(&manifest), config.clone());
+        pp.add_client(1);
+        pp.add_client(2);
+        let boot = pp.join(1, 0);
+        let _ = pp.join(2, 0);
+        let structure = VEHICLE_STRUCTURE_BASE + 3;
+        let physics = Physics::at_hz(60, config.gravity_y);
+        let mut client = Client::new(structure_defs(&manifest), physics, 60, config.delay_ticks);
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        for packet in &boot {
+            client.ingest(&packet.bytes, ms(0));
+        }
+        let (wheel_radius, wheelbase, car_lead) = (0.35f32, 2.6f32, 3.4f32);
+        // The watcher, 20 m to the side of the course, looking along it.
+        let camera = Camera { eye: Vec3::new(20.0, 2.0, 30.0), direction: Vec3::new(-1.0, -0.05, 0.0).normalize(), fov_degrees: 70.0 };
+        let (mut p, mut yaw, mut v) = (Vec3::new(0.0, 0.6, 0.0), 0.0f32, 10.0f32);
+        let mut spin = 0.0f32;
+        let mut truth: Vec<(u32, Vec3, Quat, [Wheel; 4])> = Vec::new();
+        let (mut keyframes, mut driver_records, mut checked) = (0u64, 0u64, 0u32);
+        let (mut worst_px, mut worst_wheel_px) = (0.0f32, 0.0f32);
+        for tick in 1..=360u32 {
+            let t = tick as f32 / 60.0;
+            let accel = if t < 2.0 { 1.5 } else { 0.0 };
+            let yaw_rate = if t < 2.0 { 0.0 } else { 0.4 * (0.8 * (t - 2.0)).sin() };
+            v += accel * physics.dt;
+            yaw += yaw_rate * physics.dt;
+            let forward = Vec3::new(yaw.sin(), 0.0, yaw.cos());
+            p += forward * v * physics.dt;
+            let rate = v / wheel_radius;
+            spin += rate * physics.dt;
+            // Bicycle-model steer for the yaw rate; the front wheels steer.
+            let steer = (wheelbase * yaw_rate / v).atan();
+            let wheels: [Wheel; 4] = std::array::from_fn(|i| Wheel {
+                travel: 0.02 * (3.0 * t + i as f32).sin(),
+                steer: if i < 2 { steer } else { 0.0 },
+                angle: spin,
+                rate,
+                grounded: true,
+            });
+            let rotation = Quat::from_rotation_y(yaw);
+            truth.push((tick, p, rotation, wheels));
+            let car = CarInput {
+                handle: 3,
+                position: p.to_array(),
+                rotation: rotation.to_array(),
+                linear_velocity: (forward * v).to_array(),
+                angular_velocity: [0.0, yaw_rate, 0.0],
+                wheels,
+                wheel_radius,
+                radius: 2.4,
+            };
+            pp.ingest_tick(tick, &[], &DestructionTickOutput::default());
+            pp.ingest_cars(tick, &[car]);
+            pp.begin_send(tick);
+            let before = pp.stats.keyframes_sent;
+            let send = pp.client_send(1, &ClientView { camera, own_car: None }, tick, Some(SendBudget::Full));
+            keyframes += pp.stats.keyframes_sent - before;
+            for packet in send.packets {
+                client.ingest(&packet.bytes, ms(tick) + 30.0);
+            }
+            let before = pp.stats.keyframes_sent;
+            let _ = pp.client_send(2, &ClientView { camera, own_car: Some(structure) }, tick, Some(SendBudget::Full));
+            driver_records += pp.stats.keyframes_sent - before;
+            let Some(r) = client.advance(ms(tick) + 33.0) else { continue };
+            let car_r = r + car_lead;
+            client.advance_vehicles(car_r);
+            let at = car_r.floor() as u32;
+            let (Some(a), Some(b)) = (truth.iter().find(|x| x.0 == at), truth.iter().find(|x| x.0 == at + 1)) else { continue };
+            let f = car_r.fract();
+            let Some(state) = client.car_states().into_iter().find(|c| c.structure == structure) else { continue };
+            let (tp, tq) = (a.1.lerp(b.1, f), a.2.slerp(b.2, f));
+            let px_per_m = 935.0 / (tp - camera.eye).length();
+            let angle = 2.0 * state.rotation.dot(tq).abs().min(1.0).acos();
+            worst_px = worst_px.max(((state.position - tp).length() + 2.4 * angle) * px_per_m);
+            if let Some(drawn) = state.wheels {
+                let truth_wheels: [Wheel; 4] = std::array::from_fn(|i| Wheel {
+                    travel: a.3[i].travel + (b.3[i].travel - a.3[i].travel) * f,
+                    steer: a.3[i].steer + (b.3[i].steer - a.3[i].steer) * f,
+                    angle: a.3[i].angle + (b.3[i].angle - a.3[i].angle) * f,
+                    ..a.3[i]
+                });
+                worst_wheel_px = worst_wheel_px.max(wheel_error(&drawn, &truth_wheels, wheel_radius) * px_per_m);
+            }
+            checked += 1;
+        }
+        eprintln!("driven car: {keyframes} keyframes over 360 ticks; drawn within {worst_px:.2} px, wheels {worst_wheel_px:.2} px; {checked} frames");
+        assert!(checked > 300, "{checked} frames checked");
+        assert_eq!(driver_records, 0, "the driver is sent its own car");
+        assert!(keyframes * 4 < 360, "{keyframes} keyframes over 360 ticks");
+        // The tolerance (1 px) and a half for the car clock's extrapolation.
+        assert!(worst_px < 1.5, "chassis drawn {worst_px:.2} px off");
+        assert!(worst_wheel_px < 1.5, "wheels drawn {worst_wheel_px:.2} px off");
+    }
+
+    /// A client is bootstrapped again while a car drives past, and the
+    /// send's datagram overtakes the bootstrap (it rides the reliable lane).
+    /// The datagram is acked, so the server codes the car's next records
+    /// against what it carried: the client keeps that (it is from after the
+    /// bootstrap), names any record it still cannot decode, and the server
+    /// resends that one whole. The car stays drawn where it is; before, each
+    /// acked but undecodable record became the next one's baseline and the
+    /// car froze.
+    #[test]
+    fn a_car_keeps_being_drawn_when_a_datagram_overtakes_a_bootstrap() {
+        let manifest = super::fracture_scale_tests_support::block_manifest(2, 2, 2);
+        let config = PerPlayerConfig::validated(60);
+        let mut pp = PerPlayer::new(&manifest, CityLedger::from_manifest(&manifest), config.clone());
+        pp.add_client(1);
+        let boot = pp.join(1, 0);
+        let structure = VEHICLE_STRUCTURE_BASE + 3;
+        let physics = Physics::at_hz(60, config.gravity_y);
+        let mut client = Client::new(structure_defs(&manifest), physics, 60, config.delay_ticks);
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        for packet in &boot {
+            client.ingest(&packet.bytes, ms(0));
+        }
+        let camera = Camera { eye: Vec3::new(20.0, 2.0, 15.0), direction: Vec3::new(-1.0, -0.05, 0.0).normalize(), fov_degrees: 70.0 };
+        let mut truth: Vec<(u32, Vec3)> = Vec::new();
+        let (mut worst, mut checked) = (0.0f32, 0u32);
+        for tick in 1..=240u32 {
+            let t = tick as f32 / 60.0;
+            // Weaving at 10 m/s, so its records are frequent.
+            let yaw = 0.3 * (1.5 * t).sin();
+            let yaw_rate = 0.45 * (1.5 * t).cos();
+            let p = Vec3::new(0.0, 0.6, 10.0 * t);
+            let v = Vec3::new(yaw.sin(), 0.0, yaw.cos()) * 10.0;
+            truth.push((tick, p));
+            let car = CarInput {
+                handle: 3,
+                position: p.to_array(),
+                rotation: Quat::from_rotation_y(yaw).to_array(),
+                linear_velocity: v.to_array(),
+                angular_velocity: [0.0, yaw_rate, 0.0],
+                wheels: [Wheel { rate: 10.0 / 0.35, grounded: true, ..Default::default() }; 4],
+                wheel_radius: 0.35,
+                radius: 2.4,
+            };
+            pp.ingest_tick(tick, &[], &DestructionTickOutput::default());
+            pp.ingest_cars(tick, &[car]);
+            let rejoin = (tick == 60).then(|| pp.join(1, tick));
+            pp.begin_send(tick);
+            for packet in pp.client_send(1, &ClientView { camera, own_car: None }, tick, Some(SendBudget::Full)).packets {
+                client.ingest(&packet.bytes, ms(tick) + 10.0);
+            }
+            // The bootstrap lands after the datagram sent with it.
+            for packet in rejoin.into_iter().flatten() {
+                client.ingest(&packet.bytes, ms(tick) + 20.0);
+            }
+            if let Some((newest, mask)) = client.ack() {
+                pp.on_feedback(1, ClientFeedback::DatagramAcks { newest, mask });
+                pp.on_feedback(1, ClientFeedback::EventsReceived { through: client.events_through() });
+                pp.missing_baselines(1, &client.take_missing_baselines());
+            }
+            let Some(r) = client.advance(ms(tick) + 33.0) else { continue };
+            client.advance_vehicles(r);
+            if tick < 90 {
+                continue;
+            }
+            let Some(car) = client.car_states().into_iter().find(|c| c.structure == structure) else { continue };
+            let at = r.floor() as u32;
+            let (Some(a), Some(b)) = (truth.iter().find(|x| x.0 == at), truth.iter().find(|x| x.0 == at + 1)) else { continue };
+            worst = worst.max((car.position - a.1.lerp(b.1, r.fract())).length());
+            checked += 1;
+        }
+        assert!(checked > 100, "{checked} frames checked");
+        // Within the tolerance from 20 m (1 px, 2 cm) and a half for the clock.
+        assert!(worst < 0.04, "the car drawn up to {worst:.3} m from where it is");
     }
 
     /// A flying pair of car parts splits, and the new pieces' first
@@ -3320,7 +3675,7 @@ mod vehicle_tests {
                 client.ingest(&packet.bytes, ms(tick));
             }
             pp.begin_send(tick);
-            let send = pp.client_send(1, &ClientView { camera }, tick, Some(SendBudget::Full));
+            let send = pp.client_send(1, &ClientView { camera, own_car: None }, tick, Some(SendBudget::Full));
             // The keyframes sent just after the split are lost; those of the
             // ticks before it arrive late, together, as the split applies
             // (the pair is mid-correction when it splits).
@@ -3411,7 +3766,7 @@ mod vehicle_tests {
                 client.ingest(&packet.bytes, ms(tick));
             }
             pp.begin_send(tick);
-            for packet in pp.client_send(1, &ClientView { camera }, tick, Some(SendBudget::Full)).packets {
+            for packet in pp.client_send(1, &ClientView { camera, own_car: None }, tick, Some(SendBudget::Full)).packets {
                 client.ingest(&packet.bytes, ms(tick) + 30.0);
             }
             let Some(r) = client.advance(ms(tick) + 33.0) else { continue };
@@ -3489,7 +3844,7 @@ mod vehicle_tests {
                 client.ingest(&packet.bytes, ms(tick));
             }
             pp.begin_send(tick);
-            let send = pp.client_send(1, &ClientView { camera }, tick, Some(SendBudget::Full));
+            let send = pp.client_send(1, &ClientView { camera, own_car: None }, tick, Some(SendBudget::Full));
             // Lost from tick 25 until well after it lands; later packets
             // (heartbeats) arrive, so the client draws on from what it had.
             if tick < 25 || landed.is_some_and(|l| tick >= l + 20) {

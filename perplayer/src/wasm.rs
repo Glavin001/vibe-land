@@ -162,7 +162,13 @@ impl PerPlayerClient {
     /// [newest, mask low 32, mask high 32], or empty before any datagram.
     pub fn ack(&mut self) -> Vec<u32> {
         match self.inner.ack() {
-            Some((newest, mask)) => vec![newest, mask as u32, (mask >> 32) as u32, self.inner.events_through()],
+            Some((newest, mask)) => {
+                // Then the bodies it could not decode: count, then (structure, body) each.
+                let missing = self.inner.take_missing_baselines();
+                let mut out = vec![newest, mask as u32, (mask >> 32) as u32, self.inner.events_through(), missing.len() as u32];
+                out.extend(missing.iter().flat_map(|k| [k.structure, k.body]));
+                out
+            }
             None => Vec::new(),
         }
     }
@@ -185,6 +191,32 @@ impl PerPlayerClient {
             at += 3 * n;
         }
         self.inner.set_vehicle_parts(structure, parts);
+    }
+
+    /// Every car the stream carries, drawn on the car clock: per car
+    /// [handle, position (3), rotation (4), velocity (3), spin (3), wheels
+    /// known (0/1), per wheel travel, steer, angle, rate, on road (0/1)]
+    /// (35 floats).
+    pub fn car_states(&self) -> Vec<f32> {
+        self.car_states_at(f32::NAN)
+    }
+
+    /// `car_states` as drawn at `tick` (NaN: the car clock); moves no clock.
+    pub fn car_states_at(&self, tick: f32) -> Vec<f32> {
+        let cars = if tick.is_finite() { self.inner.car_states_at(tick) } else { self.inner.car_states() };
+        let mut out = Vec::with_capacity(cars.len() * 35);
+        for car in cars {
+            out.push((car.structure - crate::wire::VEHICLE_STRUCTURE_BASE) as f32);
+            out.extend_from_slice(&car.position.to_array());
+            out.extend_from_slice(&car.rotation.to_array());
+            out.extend_from_slice(&car.linear_velocity.to_array());
+            out.extend_from_slice(&car.angular_velocity.to_array());
+            out.push(if car.wheels.is_some() { 1.0 } else { 0.0 });
+            for w in car.wheels.unwrap_or_default() {
+                out.extend_from_slice(&[w.travel, w.steer, w.angle, w.rate, if w.grounded { 1.0 } else { 0.0 }]);
+            }
+        }
+        out
     }
 
     /// A count that changes whenever any car's detached groups do.

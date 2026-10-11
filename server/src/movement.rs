@@ -99,6 +99,18 @@ enum PhysicsBackend {
     Physx(PhysxPhysicsArena),
 }
 
+/// A vehicle's state for the per-player stream (`vehicle_stream_states`).
+pub struct VehicleStreamState {
+    pub id: u32,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    /// Per wheel: travel from neutral, steer, spin angle, on road (1/0; -1 gone).
+    pub wheels: [[f32; 4]; 4],
+    pub wheel_rates: [f32; 4],
+}
+
 /// Server-owned physics facade. Engine-specific handles never leave this type.
 pub struct PhysicsArena {
     backend: PhysicsBackend,
@@ -192,6 +204,28 @@ impl PhysicsArena {
             #[cfg(feature="native-destruction")]
             PhysicsBackend::Physx(arena) => arena.vehicle_destruction_debug(id),
             _ => { let _ = id; Err("vehicle destruction requires the native PhysX destruction backend".into()) }
+        }
+    }
+
+    /// Every vehicle's state this tick as the per-player stream takes it:
+    /// pose, velocities, and per wheel [travel, steer, angle, on road]
+    /// (`neutral_jounce` per vehicle id) with its spin rate.
+    pub fn vehicle_stream_states(&self, neutral_jounce: impl Fn(u32) -> Option<f32>) -> Vec<VehicleStreamState> {
+        match &self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_snapshots().into_iter().filter_map(|s| {
+                let rig = crate::physx_runtime::rig_from_snapshot(&s, neutral_jounce(s.user_id)?);
+                Some(VehicleStreamState {
+                    id: s.user_id,
+                    position: [s.pose.position.x, s.pose.position.y, s.pose.position.z],
+                    rotation: [s.pose.rotation.x, s.pose.rotation.y, s.pose.rotation.z, s.pose.rotation.w],
+                    linear_velocity: [s.linear_velocity.x, s.linear_velocity.y, s.linear_velocity.z],
+                    angular_velocity: [s.angular_velocity.x, s.angular_velocity.y, s.angular_velocity.z],
+                    wheels: rig,
+                    wheel_rates: s.wheel_rotation_speed,
+                })
+            }).collect(),
+            _ => { let _ = neutral_jounce; Vec::new() }
         }
     }
 

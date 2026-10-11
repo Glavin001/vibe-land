@@ -110,6 +110,9 @@ impl SendBudget {
 #[derive(Clone, Copy, Debug)]
 pub struct ClientView {
     pub camera: Camera,
+    /// The car this client drives (its body-key structure): its own
+    /// prediction draws it, from its every-tick state, so the stream skips it.
+    pub own_car: Option<u32>,
 }
 
 /// What a client tells the server about its stream.
@@ -487,7 +490,7 @@ mod tests {
                 live.extend(packets);
                 let send = strategy.client_send(
                     client,
-                    &ClientView { camera: close_camera() },
+                    &ClientView { camera: close_camera(), own_car: None },
                     tick,
                     records.map(|_| budget),
                 );
