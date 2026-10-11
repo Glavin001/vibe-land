@@ -1627,6 +1627,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       const paced=driven!=null?this.client?.vehicleInputQueue??null:null;
       const cmds = this.authoritativeInputBundler.produce(frameDeltaSec*inputClockRate(paced), input);
       if(driven!=null) {
+        this.thinVehiclePredictor.setPaced(paced!==null);
         this.thinVehiclePredictor.record(driven,cmds);
         this.cityColliders?.sync();
         this.thinVehiclePredictor.update(frameDeltaSec,performance.now());

@@ -73,6 +73,10 @@ export interface ServerPolicy {
    * the last `jitterWindow` inputs, rounded up. The client dilates to it. */
   targetQuantile?: number;
   jitterWindow?: number;
+  /** Take lateness after removing the client clock's rate (the least-squares
+   * slope of arrival on sequence, over a full window), as the server does
+   * (server/src/vehicle_input_pacing.rs); false is the first, drifting version. */
+  removeSkew?: boolean;
 }
 
 export interface PipelineResult {
@@ -87,6 +91,8 @@ export interface PipelineResult {
   delayTicks: { p50: number; p95: number };
   /** The server's queue depth after each tick, mean. */
   meanDepth: number;
+  /** The queue depth after each tick, mean over each second. */
+  depthBySecond: number[];
 }
 
 const idle: SemanticInputState = {} as SemanticInputState;
@@ -109,7 +115,7 @@ export function simulatePipeline(opts: {
   // Events: packets up (inputs) and down (ack seq, server queue depth).
   const up: { at: number; cmds: Cmd[] }[] = [];
   const down: { at: number; ack: number | null; depth: number; target: number | null }[] = [];
-  const lateness: number[] = [];
+  const arrivals: [number, number][] = []; // (unwrapped seq, arrival tick)
   let unwrapped = 0;
   let lastSeqSeen: number | null = null;
   let reportedTarget: number | null = null;
@@ -123,6 +129,7 @@ export function simulatePipeline(opts: {
   const applied = new Set<number>();
   const delays: number[] = [];
   let depthSum = 0;
+  const depthBySecond: number[] = [];
   // Client clock.
   let clientMs = r() * TICK_MS;
   let knownDepth: number | null = null;
@@ -140,11 +147,11 @@ export function simulatePipeline(opts: {
       if (opts.server.targetQuantile !== undefined && (lastSeqSeen === null || newer(cmd.seq, lastSeqSeen))) {
         unwrapped += lastSeqSeen === null ? cmd.seq : (cmd.seq - lastSeqSeen) & 0xffff;
         lastSeqSeen = cmd.seq;
-        lateness.push(arrivalMs / TICK_MS - unwrapped);
-        if (lateness.length > (opts.server.jitterWindow ?? 120)) lateness.shift();
-        const sorted = [...lateness].sort((a, b) => a - b);
-        const at = sorted[Math.min(sorted.length - 1, Math.floor(opts.server.targetQuantile * sorted.length))];
-        reportedTarget = Math.ceil(at - sorted[0]);
+        const window = opts.server.jitterWindow ?? 120;
+        // The server sees whole ticks: the next it simulates.
+        arrivals.push([unwrapped, Math.ceil((arrivalMs - serverPhase) / TICK_MS)]);
+        if (arrivals.length > window) arrivals.shift();
+        reportedTarget = jitterTarget(arrivals, opts.server.targetQuantile, opts.server.removeSkew ? window : Infinity);
       }
       if (opts.server.accept === 'received') {
         if (lastReceived !== null && !newer(cmd.seq, lastReceived)) continue;
@@ -188,6 +195,8 @@ export function simulatePipeline(opts: {
       starved += 1;
     }
     depthSum += queue.length;
+    const second = Math.floor(tick / 60);
+    depthBySecond[second] = (depthBySecond[second] ?? 0) + queue.length / 60;
     if (r() >= opts.downlink.loss) {
       down.push({ at: now + opts.downlink.delayMs + (r() * 2 - 1) * opts.downlink.jitterMs, ack: lastApplied, depth: queue.length, target: reportedTarget });
     }
@@ -241,7 +250,30 @@ export function simulatePipeline(opts: {
     mispredictionsPerMin: (starved + dropped) / minutes,
     delayTicks: { p50: q(0.5), p95: q(0.95) },
     meanDepth: depthSum / Math.max(1, tick),
+    depthBySecond,
   };
+}
+
+/**
+ * The queue depth absorbing the `quantile` of lateness: arrival against
+ * sequence, after the clock-rate trend when the window (`fitAt` inputs) is
+ * full. Mirrors `ArrivalJitter::target` (server) when `fitAt` is the window;
+ * `Infinity` is the first version (no trend removed, ceiling).
+ */
+export function jitterTarget(arrivals: [number, number][], quantile: number, fitAt: number): number {
+  const n = arrivals.length;
+  const [x0, y0] = arrivals[0];
+  let slope = 1;
+  if (n >= fitAt) {
+    const mx = arrivals.reduce((a, [x]) => a + x - x0, 0) / n;
+    const my = arrivals.reduce((a, [, y]) => a + y - y0, 0) / n;
+    let sxy = 0, sxx = 0;
+    for (const [x, y] of arrivals) { sxy += (x - x0 - mx) * (y - y0 - my); sxx += (x - x0 - mx) ** 2; }
+    if (sxx > 0) slope = sxy / sxx;
+  }
+  const lateness = arrivals.map(([x, y]) => y - y0 - slope * (x - x0)).sort((a, b) => a - b);
+  const spread = lateness[Math.min(n - 1, Math.floor(quantile * n))] - lateness[0];
+  return fitAt === Infinity ? Math.ceil(spread) : Math.round(spread);
 }
 
 /** The shipping pipeline (2026-10-11). */
@@ -249,5 +281,5 @@ export const SHIPPING = { client: { resend: 3 } as ClientPolicy, server: { accep
 /** VIBE_VEHICLE_INPUT_PACING: resend all unacked, ordered queue, no collapse, p95 jitter target. */
 export const PACED = {
   client: { resend: 'all', cap: INPUT_BUNDLE_MAX_FRAMES } as ClientPolicy,
-  server: { accept: 'applied', targetQuantile: 0.95, jitterWindow: 120 } as ServerPolicy,
+  server: { accept: 'applied', targetQuantile: 0.95, jitterWindow: 120, removeSkew: true } as ServerPolicy,
 };

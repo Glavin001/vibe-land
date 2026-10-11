@@ -52,6 +52,24 @@ describe('collision-aware Vehicle2 presentation',()=>{
     expect(driver.pose()).toEqual(reconciled);expect(driver.resendWindow().map(i=>i.seq)).toEqual([0,1]);
     driver.record(2,[input(2)]);expect(driver.pose()).toBeNull();
   });
+  it('draws the newest input when paced, however many are unacked',()=>{
+    // Live 2026-10-11, wall course on LTE with server input pacing: the
+    // round trip plus the paced queue left 20-30 inputs unacked, past the
+    // replay's 0.4 s (24 inputs), so the newest were not drawn until acked:
+    // input-to-drawn p95 121 ms against 33-44 ms without pacing.
+    const presented:number[]=[];
+    const driver=new VehiclePresentationPredictor(sweep,e=>{if(e.type==='vehicle_input_presented')presented.push(e.seq);});
+    driver.observe(1,state(),0,proxy,0);
+    driver.setPaced(true);
+    driver.record(1,Array.from({length:30},(_,i)=>input(i+1)));
+    driver.update(1/60,16);driver.presented(16);
+    expect(presented).toContain(30);
+    expect(driver.predictedTimeUs()).toBeCloseTo(state().serverTimeUs+30*1e6/60,0);
+    // Not paced, the shipping replay is unchanged.
+    const shipping=new VehiclePresentationPredictor(sweep);shipping.observe(1,state(),0,proxy,0);
+    shipping.record(1,Array.from({length:30},(_,i)=>input(i+1)));shipping.update(1/60,16);
+    expect(shipping.predictedTimeUs()).toBeCloseTo(state().serverTimeUs+24*1e6/60,0);
+  });
   it('resends every unacked input when paced, up to a datagram',()=>{
     const driver=new VehiclePresentationPredictor(sweep);driver.observe(1,state(),0,proxy,0);
     driver.record(1,Array.from({length:8},(_,i)=>input(i+1)));

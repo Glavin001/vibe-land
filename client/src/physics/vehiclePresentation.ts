@@ -150,6 +150,11 @@ export class VehiclePresentationPredictor {
   private cacheCount=0;
   private cacheFirst=-1;
   private inputTimes = new Map<number,number>();
+  /** Server vehicle input pacing: unacked inputs are the round trip plus the
+   * paced queue, so all of them are replayed (to MAX_PENDING), as client
+   * prediction does, or the newest are not drawn until acked. */
+  private paced=false;
+  setPaced(paced:boolean):void {this.paced=paced;}
   constructor(private readonly sweep:Sweep, private readonly telemetry?: (event:VehiclePredictionEvent)=>void) {}
   /** Called by the renderer-facing runtime, never by internal reconciliation pose reads. */
   presented(now:number):void {
@@ -208,7 +213,7 @@ export class VehiclePresentationPredictor {
   private replay():VehicleSample|null {
     if(!this.base||!this.proxy)return null;
     const start=performance.now();
-    const inputs=this.pending.slice(0,Math.round(MAX_DRIVER_LEAD_SEC/DT));
+    const inputs=this.paced?this.pending:this.pending.slice(0,Math.round(MAX_DRIVER_LEAD_SEC/DT));
     const first=inputs[0]?.seq??-1;
     if(this.cacheBase!==this.base || this.cacheFirst!==first || this.cacheCount>inputs.length) {
       this.cacheBase=this.base;this.cacheFirst=first;this.cacheCount=0;

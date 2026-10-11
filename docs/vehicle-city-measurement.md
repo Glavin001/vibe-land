@@ -160,9 +160,48 @@ queue holding the jitter. The driver's own car is predicted locally, so
 steering responds the same. The delay shows in when the server, and
 everyone else, sees the input.
 
-**Not yet measured live** (the GPU was reserved for another session). Next:
-`vehicle-measure.mjs` on the wall and street courses, clean and LTE, pacing
-on vs off, reading `skippedPerMin` and `starvedPerMin`.
+**First live run** (2026-10-11, one run, wall course, in-process LTE, seed 1;
+shipping is the three earlier runs of that course and link, colliders off):
+
+| | Shipping (3 runs) | Paced |
+|---|---|---|
+| Queue empty a minute | 1,210-1,493 | 102 |
+| Inputs collapsed / skipped a minute | 876-1,010 / - | 0 / 0 |
+| Hard corrections a minute | 278-374 | 194 |
+| Correction p95 | 0.60-0.79 m | 0.42 m |
+| Mean queue depth | 1.4-1.6 | 8.8 (5.5 in the first second, 12-15 later) |
+| Input-to-drawn p95 | 33-44 ms | 121 ms |
+
+The server half worked: every input was applied, once and in order. Two
+problems showed, each now reproduced by a test and fixed:
+
+1. **The driver's replay was capped at 0.4 s** (24 inputs,
+   `MAX_DRIVER_LEAD_SEC`, from a WIP checkpoint with no derivation). Paced,
+   the unacked inputs are the round trip plus the queue, 20-30 on LTE, so the
+   newest inputs were not drawn until acked: the 121 ms. Paced, the predictor
+   now replays every unacked input, as client prediction does. Shipping is
+   unchanged.
+2. **The target read the client's paced clock as jitter.** A client running
+   its input clock fast makes lateness drift: with no jitter at all, the
+   first estimator asked for 5 inputs of queue. That raises the target, which
+   paces harder. The server now removes the clock's rate (the least-squares
+   slope of arrival on sequence, over a full window) before taking the spread,
+   the standard clock skew removal (Moon, Skelly and Towsley, INFOCOM 1999).
+   In simulation (headless, LTE) that trims mean depth 6.8 to 5.8 and p95
+   delay 18.5 to 16.2 ticks, at 72 to 86 mispredicted ticks a minute. The
+   simulation does not reproduce the live growth to 18, so the drift is
+   likely not its only cause.
+
+Driver drawn-vs-truth error is not comparable between these runs. Only 544
+of the paced run's 1,403 frames could be judged (shipping about 1,300 of
+1,360), and the shipping runs predate the `tapeFrom` filter. Shipping's
+p50 of 0 also reflects its collapse: acking everything leaves nothing to
+replay, so the car is drawn unpredicted. `vehicle-measure.mjs` now saves
+`frames.json` (each drawn frame and the tick it was judged at) to explain
+the unjudged frames.
+
+Next, live: pacing on vs off with both fixes, same build, several seeds,
+clean and LTE.
 
 Tests:
 - `vehicle_input_pacing::tests`;

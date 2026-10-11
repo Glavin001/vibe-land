@@ -15,11 +15,18 @@
 //!   a packet overtaken by a later one still lands in its place
 //!   ([`enqueue_ordered`]); the client resends every unacked input;
 //! - never collapses the queue;
-//! - measures each input's lateness (arrival tick minus sequence) and reports
-//!   a target depth: the spread of lateness from its least to its 95th
-//!   percentile ([`ArrivalJitter`]). A queue that deep absorbs 95% of the
+//! - measures each input's lateness (arrival tick against sequence) and
+//!   reports a target depth: the spread of lateness from its least to its
+//!   95th percentile ([`ArrivalJitter`]). A queue that deep absorbs 95% of the
 //!   arrival jitter, as a playout buffer sized from a delay quantile does
-//!   (WebRTC NetEq). The quantile matches the client's render clock.
+//!   (WebRTC NetEq). The quantile matches the client's render clock. The
+//!   client's input clock runs at its own rate (and, pacing, deliberately
+//!   off real time), so lateness is taken after removing that rate, the
+//!   linear trend of arrival against sequence (clock skew removal: Moon,
+//!   Skelly and Towsley, "Estimation and removal of clock skew from network
+//!   delay measurements", IEEE INFOCOM 1999). Without it, pacing's own drift
+//!   read as jitter, raised the target and paced harder: live, the queue grew
+//!   from 5 to 18 inputs in 12 s.
 //!
 //! The pipeline was chosen in simulation
 //! (`client/netlab/vehicle/inputPipeline.ts`): on LTE at 60 Hz, 1,533
@@ -41,8 +48,8 @@ pub const JITTER_WINDOW: usize = 120;
 /// Input lateness, and the queue depth that absorbs its jitter.
 #[derive(Debug, Default)]
 pub struct ArrivalJitter {
-    /// Arrival tick minus unwrapped sequence, newest last.
-    lateness: VecDeque<i64>,
+    /// (unwrapped sequence, arrival tick) of each input's first arrival, newest last.
+    arrivals: VecDeque<(i64, i64)>,
     last_seq: Option<u16>,
     unwrapped: i64,
 }
@@ -59,22 +66,42 @@ impl ArrivalJitter {
             Some(_) => return,
         }
         self.last_seq = Some(seq);
-        self.lateness.push_back(tick as i64 - self.unwrapped);
-        while self.lateness.len() > JITTER_WINDOW {
-            self.lateness.pop_front();
+        self.arrivals.push_back((self.unwrapped, tick as i64));
+        while self.arrivals.len() > JITTER_WINDOW {
+            self.arrivals.pop_front();
         }
     }
 
     /// The queue depth (inputs left after a tick) that absorbs the
     /// [`TARGET_QUANTILE`] of arrival jitter; None before any input.
     pub fn target(&self) -> Option<u8> {
-        if self.lateness.is_empty() {
+        let n = self.arrivals.len();
+        if n == 0 {
             return None;
         }
-        let mut sorted: Vec<i64> = self.lateness.iter().copied().collect();
-        sorted.sort_unstable();
-        let at = ((TARGET_QUANTILE * sorted.len() as f32) as usize).min(sorted.len() - 1);
-        Some((sorted[at] - sorted[0]).clamp(0, u8::MAX as i64) as u8)
+        // Ticks per input: the least-squares slope of arrival on sequence
+        // (1 when the client's clock runs at the server's). Estimated over a
+        // full window only: on a few inputs a line fits their jitter too.
+        let (x0, y0) = self.arrivals[0];
+        let mean = |f: fn(&(i64, i64)) -> i64, origin: i64| {
+            self.arrivals.iter().map(|a| (f(a) - origin) as f64).sum::<f64>() / n as f64
+        };
+        let (mx, my) = (mean(|a| a.0, x0), mean(|a| a.1, y0));
+        let (mut sxy, mut sxx) = (0.0, 0.0);
+        for &(x, y) in &self.arrivals {
+            let (dx, dy) = ((x - x0) as f64 - mx, (y - y0) as f64 - my);
+            sxy += dx * dy;
+            sxx += dx * dx;
+        }
+        let slope = if n == JITTER_WINDOW && sxx > 0.0 { sxy / sxx } else { 1.0 };
+        let mut lateness: Vec<f64> =
+            self.arrivals.iter().map(|&(x, y)| (y - y0) as f64 - slope * (x - x0) as f64).collect();
+        lateness.sort_unstable_by(f64::total_cmp);
+        let at = ((TARGET_QUANTILE * n as f32) as usize).min(n - 1);
+        // Arrivals are whole ticks: a fractional spread is the fit's residue
+        // (a straggler tilts the line by 1e-4 a tick), so the nearest tick.
+        let spread = (lateness[at] - lateness[0]).round();
+        Some(spread.clamp(0.0, u8::MAX as f64) as u8)
     }
 }
 
@@ -105,6 +132,26 @@ pub fn enqueue_ordered(queue: &mut VecDeque<InputCmd>, last_applied: u16, cmd: I
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lateness 0..=9 ticks, each 12 times in 120, in a seeded shuffle:
+    /// jitter, uncorrelated with sequence.
+    fn shuffled_lateness() -> Vec<u32> {
+        let mut values: Vec<u32> = (0..120).map(|i| i % 10).collect();
+        let mut state = 0x2545_f491_u32;
+        for i in (1..values.len()).rev() {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            values.swap(i, state as usize % (i + 1));
+        }
+        values
+    }
+
+    /// The true spread is 9. The clock-rate fit over 120 inputs carries a
+    /// standard error of about sd(jitter) / (sd(seq) sqrt(n)) = 2.9 / (34.6 x
+    /// 11) = 0.008 ticks per input: under half a tick across the window, so
+    /// the target is the spread or one more.
+    const SPREAD_9: std::ops::RangeInclusive<u8> = 9..=10;
 
     fn cmd(seq: u16) -> InputCmd {
         InputCmd { seq, ..InputCmd::default() }
@@ -166,10 +213,10 @@ mod tests {
         let mut jitter = ArrivalJitter::default();
         // Lateness 0..9 ticks, each equally often: 95% arrive within 9 of
         // the earliest (index floor(0.95 * 120) = 114 of 120 sorted is 9).
-        for i in 0..120u32 {
-            jitter.observe(i as u16, i + 100 + (i % 10));
+        for (i, late) in shuffled_lateness().into_iter().enumerate() {
+            jitter.observe(i as u16, i as u32 + 100 + late);
         }
-        assert_eq!(jitter.target(), Some(9));
+        assert!(SPREAD_9.contains(&jitter.target().unwrap()), "{:?}", jitter.target());
         // A single late straggler in the window moves no quantile below it.
         let mut jitter = ArrivalJitter::default();
         for i in 0..120u32 {
@@ -188,17 +235,38 @@ mod tests {
         jitter.observe(0xffff, 11);
         jitter.observe(0, 12); // wraps
         jitter.observe(1, 13);
-        assert_eq!(jitter.lateness.len(), 4);
+        assert_eq!(jitter.arrivals.len(), 4);
         assert_eq!(jitter.target(), Some(0));
+    }
+
+    #[test]
+    fn a_client_pacing_its_clock_is_not_jitter() {
+        // Live 2026-10-11 (wall course, LTE): the queue grew from 5 to 14-18
+        // inputs over a 12 s drive. A client running its input clock 5% fast
+        // (pacing toward a deeper target) makes each input arrive a little
+        // earlier than the last relative to its sequence: steady drift, no
+        // jitter. Read as jitter, it raises the target, which speeds the
+        // client further.
+        let mut jitter = ArrivalJitter::default();
+        for i in 0..120u32 {
+            jitter.observe(i as u16, 100 + (i as f32 / 1.05) as u32);
+        }
+        assert!(jitter.target().unwrap() <= 1, "drift read as jitter: {:?}", jitter.target());
+        // And slow (5% under real time) the same.
+        let mut jitter = ArrivalJitter::default();
+        for i in 0..120u32 {
+            jitter.observe(i as u16, 100 + (i as f32 / 0.95) as u32);
+        }
+        assert!(jitter.target().unwrap() <= 1, "drift read as jitter: {:?}", jitter.target());
     }
 
     #[test]
     fn the_window_forgets_old_jitter() {
         let mut jitter = ArrivalJitter::default();
-        for i in 0..120u32 {
-            jitter.observe(i as u16, i + (i % 10));
+        for (i, late) in shuffled_lateness().into_iter().enumerate() {
+            jitter.observe(i as u16, i as u32 + late);
         }
-        assert_eq!(jitter.target(), Some(9));
+        assert!(SPREAD_9.contains(&jitter.target().unwrap()), "{:?}", jitter.target());
         for i in 120..240u32 {
             jitter.observe(i as u16, i + 9);
         }

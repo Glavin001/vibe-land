@@ -230,4 +230,9 @@ writeFileSync(pathJoin(out, 'report.json'), JSON.stringify(report, null, 1));
 // The drive, for the deterministic replay.
 writeFileSync(pathJoin(out, 'tape.json'), JSON.stringify({ source: 'live /city-vehicle-tape', course: COURSE, link: IMPAIR || 'clean', seed: SEED, car: CAR,
   vehicle: tape.vehicle, frames: tape.frames }));
+// Each role's drawn frames, with the tick each was judged at (null: no tick,
+// or no truth there), for diagnosing what the scores leave out.
+const judgedAt = (frames, tickOf) => frames.map((f) => ({ ...f, judgedTick: tickOf(f) != null && truthAt(tickOf(f)) ? tickOf(f) : null }));
+writeFileSync(pathJoin(out, 'frames.json'), JSON.stringify({ tapeTicks: [ticks[0], ticks.at(-1)],
+  driver: judgedAt(driver.frames, (f) => f.drivenTick), observer: judgedAt(observer.frames, (f) => f.carTick) }));
 console.log(JSON.stringify(report, null, 1));

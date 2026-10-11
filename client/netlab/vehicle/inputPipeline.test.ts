@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SHIPPING, PACED, frames, simulatePipeline } from './inputPipeline';
+import { SHIPPING, PACED, frames, jitterTarget, simulatePipeline } from './inputPipeline';
 
 // The driven car's input pipeline: every tick the server repeats or skips an
 // input the driver predicted is a correction (docs/vehicle-city-measurement.md).
@@ -24,6 +24,15 @@ describe('vehicle input pipeline', () => {
       // ms) and the server's tick phase (one tick).
       expect(paced.delayTicks.p50).toBeLessThan((90 + 70) / (1000 / 60) + 1);
     }
+  });
+
+  it("the jitter target does not read the client's paced clock as jitter (as the server)", () => {
+    // server vehicle_input_pacing a_client_pacing_its_clock_is_not_jitter.
+    const drift = (rate: number) => Array.from({ length: 120 }, (_, i) => [i, 100 + Math.floor(i / rate)] as [number, number]);
+    expect(jitterTarget(drift(1.05), 0.95, 120)).toBeLessThanOrEqual(1);
+    expect(jitterTarget(drift(0.95), 0.95, 120)).toBeLessThanOrEqual(1);
+    // The first version did: 5 ticks of queue for none of jitter.
+    expect(jitterTarget(drift(1.05), 0.95, Infinity)).toBe(5);
   });
 
   it('paced holds with display hitches', () => {
