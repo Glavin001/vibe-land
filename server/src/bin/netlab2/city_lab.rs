@@ -440,6 +440,8 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
 
     let mut reader = TapeReader::open(&capture.tape_path())?;
     let (mut ingest_ms, mut send_ms, mut send_wall_ms) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut ingest_process_ms, mut send_process_ms) = (Vec::new(), Vec::new());
+    let (mut ingest_wall_ms, mut send_total_wall_ms) = (Vec::new(), Vec::new());
     let (mut client_us_total, mut client_sends) = (0.0f64, 0u64);
     let mut first_tick = None;
     let mut last_tick = 0;
@@ -462,9 +464,11 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                 }
             }
         }
-        let started = thread_cpu();
+        let (started, process_started, wall_started) = (thread_cpu(), process_cpu(), std::time::Instant::now());
         let broadcast = strategy.ingest_tick(tick, &entry.snapshots, &entry.output);
+        ingest_wall_ms.push(wall_started.elapsed().as_secs_f32() * 1000.0);
         ingest_ms.push((thread_cpu() - started).as_secs_f32() * 1000.0);
+        ingest_process_ms.push((process_cpu() - process_started).as_secs_f32() * 1000.0);
         for client in clients.values_mut() {
             for packet in &broadcast {
                 client.queue(t, packet.lane, packet.bytes.clone(), true);
@@ -472,9 +476,14 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         }
         if tick % interval == 0 {
             let mut send_cpu = std::time::Duration::ZERO;
+            let mut send_process = std::time::Duration::ZERO;
             let shared_started = thread_cpu();
+            let shared_process = process_cpu();
+            let shared_wall = std::time::Instant::now();
             strategy.begin_send(tick);
+            let mut send_wall = shared_wall.elapsed();
             send_cpu += thread_cpu() - shared_started;
+            send_process += process_cpu() - shared_process;
             let has_records = strategy.has_records();
             // Every client's plan first (each link is its own), then one
             // batched send (a strategy may run its clients at once), then
@@ -507,11 +516,14 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                 requests.push(SendRequest { client: *id, view: ClientView { camera }, tick, budget });
                 plans.push(plan);
             }
-            let batch_cpu = thread_cpu();
+            let (batch_cpu, batch_process) = (thread_cpu(), process_cpu());
             let batch_wall = std::time::Instant::now();
             let sends = strategy.client_sends(&requests);
             let spent = thread_cpu() - batch_cpu;
+            send_process += process_cpu() - batch_process;
             send_wall_ms.push(batch_wall.elapsed().as_secs_f32() * 1000.0);
+            send_wall += batch_wall.elapsed();
+            send_total_wall_ms.push(send_wall.as_secs_f32() * 1000.0);
             send_cpu += spent;
             if !requests.is_empty() {
                 client_us_total += spent.as_secs_f64() * 1e6;
@@ -540,6 +552,7 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
                 }
             }
             send_ms.push(send_cpu.as_secs_f32() * 1000.0);
+            send_process_ms.push(send_process.as_secs_f32() * 1000.0);
         }
         let next = tick_ms(tick + 1, first, hz);
         for client in clients.values_mut() {
@@ -554,6 +567,10 @@ pub fn run_city_stream(capture: &CityCapture, spec: &CitySpec, out: &Path) -> st
         ingest_ms: Pct::of(ingest_ms),
         send_ms: Pct::of(send_ms),
         send_wall_ms: Pct::of(send_wall_ms),
+        ingest_process_ms: Pct::of(ingest_process_ms),
+        ingest_wall_ms: Pct::of(ingest_wall_ms),
+        send_total_wall_ms: Pct::of(send_total_wall_ms),
+        send_process_ms: Pct::of(send_process_ms),
         per_client_us: if client_sends > 0 { client_us_total / client_sends as f64 } else { 0.0 },
     };
     std::fs::write(out.join("server-cost.json"), serde_json::to_vec_pretty(&server_cost)?)?;
@@ -760,6 +777,13 @@ pub struct Gates {
 
 /// This thread's CPU time: what the strategy costs, unaffected by whatever
 /// else the machine runs (wall time on a shared machine is not).
+fn process_cpu() -> std::time::Duration {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: clock_gettime writes the timespec it is given.
+    unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
+    std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}
+
 fn thread_cpu() -> std::time::Duration {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: clock_gettime writes the timespec it is given.
@@ -781,6 +805,14 @@ pub struct ServerCost {
     pub send_ms: Pct,
     /// The batched send's wall time, ms (what parallel sends shorten).
     pub send_wall_ms: Pct,
+    /// The ingest and the send in the whole process's CPU, ms: every
+    /// worker's time too (`pp.send_threads`), spinning included.
+    pub ingest_process_ms: Pct,
+    pub send_process_ms: Pct,
+    /// The ingest's wall time, and the whole send's (the shared part and
+    /// every client): what a tick waits on.
+    pub ingest_wall_ms: Pct,
+    pub send_total_wall_ms: Pct,
     /// One client's packets, us (mean).
     pub per_client_us: f64,
 }
