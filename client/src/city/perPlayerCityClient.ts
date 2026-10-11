@@ -460,7 +460,7 @@ export class PerPlayerCityClient extends CityClient {
       eventsAppliedLate: core.eventsLate,
       // The lab's gate G2 reads this name (as the Rust stage writes it).
       eventsLate: core.eventsLate,
-      perPlayer: { ...core, resyncsGated: this.resyncGate.gated },
+      perPlayer: { ...core, resyncsGated: this.resyncGate.gated, renderTick: this.core.render_tick() },
     } as ReturnType<CityClient['stats']>;
   }
 }
