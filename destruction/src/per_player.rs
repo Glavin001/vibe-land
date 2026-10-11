@@ -1512,7 +1512,10 @@ fn send_for(
     let entries: Vec<Option<&BodyTrack>> = evaluate.iter().map(|key| cs.believed.get(key)).collect();
     let mut touched = 0u32;
     for track in entries.iter().flatten() {
-        touched = touched.wrapping_add(track.keyframes().last().map_or(0, |k| k.tick));
+        // Both ends: a keyframe straddles cache lines.
+        if let Some(k) = track.keyframes().last() {
+            touched = touched.wrapping_add(k.rotation.x.to_bits() ^ k.mode as u32 ^ k.tick);
+        }
     }
     std::hint::black_box(touched);
     for (key, &entry) in evaluate.iter().zip(&entries) {
