@@ -663,6 +663,8 @@ impl MatchTimingStats {
 #[derive(Default)]
 struct MatchSnapshotStats {
     bytes_per_client: RollingSamples,
+    /// Car rig bytes queued per client per snapshot tick.
+    rig_bytes_per_client: RollingSamples,
     bytes_per_tick: RollingSamples,
     players_per_client: RollingSamples,
     dynamic_bodies_per_client: RollingSamples,
@@ -711,6 +713,8 @@ struct MatchNetworkSnapshot {
     dropped_outbound_packets: u64,
     dropped_outbound_snapshots: u64,
     snapshot_bytes_per_client: SummaryStatsSnapshot,
+    #[serde(default)]
+    rig_bytes_per_client: SummaryStatsSnapshot,
     snapshot_bytes_per_tick: SummaryStatsSnapshot,
     snapshot_players_per_client: SummaryStatsSnapshot,
     snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot,
@@ -1261,6 +1265,9 @@ struct PlayerRuntime {
     respawn_at_ms: Option<u32>,
     /// The snapshot selection's memory of this recipient (see snapshot_builder).
     snapshot_interest: snapshot_builder::RecipientInterest,
+    /// Per car in this recipient's interest, the tick its rig was last sent
+    /// (`broadcast_snapshot`: whole on entry, then on change or refresh).
+    rig_sent: HashMap<u32, u32>,
     visible_batteries: HashSet<u32>,
     battery_full_resync_pending: bool,
     /// When this player's own energy is next worth sending.
@@ -4217,6 +4224,7 @@ impl MatchState {
                         spawn_protection_ends_at_tick: 0,
                         respawn_at_ms: None,
                         snapshot_interest: Default::default(),
+                        rig_sent: HashMap::new(),
                         visible_batteries: HashSet::new(),
                         battery_full_resync_pending: true,
                         energy_gate: crate::energy_stream::EnergySendGate::default(),
@@ -6438,6 +6446,7 @@ impl MatchState {
                     .dropped_outbound_snapshots
                     .load(Ordering::Relaxed),
                 snapshot_bytes_per_client: self.snapshot_stats.bytes_per_client.snapshot(),
+                rig_bytes_per_client: self.snapshot_stats.rig_bytes_per_client.snapshot(),
                 snapshot_bytes_per_tick: self.snapshot_stats.bytes_per_tick.snapshot(),
                 snapshot_players_per_client: self.snapshot_stats.players_per_client.snapshot(),
                 snapshot_dynamic_bodies_per_client: self
@@ -7505,7 +7514,9 @@ impl MatchState {
 
     fn broadcast_snapshot(&mut self) {
         let snapshot_started = Instant::now();
-        let mut vehicle_rigs: Vec<Vec<u8>> = Vec::new();
+        // Per car: (id, this tick's frame, the whole rig for a client the car
+        // just entered the interest of, built when first needed).
+        let mut vehicle_rigs: Vec<(u32, vehicle_assets::RigFrame, u8, [[f32; 4]; 4], Vec<(u16, [f32; 3], [f32; 4])>)> = Vec::new();
         let mut vehicle_extents: HashMap<u32, ([f32; 3], [f32; 3])> = HashMap::new();
         for (id, asset) in &self.custom_vehicles {
             let Some(&handle) = self.vehicle_handles.get(id) else { continue };
@@ -7517,7 +7528,8 @@ impl MatchState {
                 let e = vehicle_extents.entry(*id).or_insert((*p, *p));
                 for k in 0..3 { e.0[k] = e.0[k].min(p[k]); e.1[k] = e.1[k].max(p[k]); }
             }
-            vehicle_rigs.extend(self.rig_streams.entry(*id).or_default().packets(self.server_tick, handle, wheels, &detached));
+            let frame = self.rig_streams.entry(*id).or_default().frame(self.server_tick, handle, wheels, &detached);
+            vehicle_rigs.push((*id, frame, handle, wheels, detached));
         }
         let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
         // When this tick's state became available: stamped on every SnapshotV2
@@ -7644,7 +7656,36 @@ impl MatchState {
                 recipient_inputs.push(recipient);
             }
             let _ = try_queue_packet(&tx, encoded, &self.io);
-            for rig in &vehicle_rigs {let _ = try_queue_packet(&tx, rig.clone(), &self.io);}
+            // Car rigs: only the cars in this recipient's interest; the whole
+            // rig when one enters it, then a frame when the rig changed or
+            // the cold refresh is due (the client keeps the last rig).
+            let visible = &runtime.snapshot_interest.visible_vehicles;
+            runtime.rig_sent.retain(|car, _| visible.contains(car));
+            let mut rig_bytes = 0usize;
+            for (car, frame, handle, wheels, detached) in &vehicle_rigs {
+                if !visible.contains(car) {
+                    continue;
+                }
+                let due = match runtime.rig_sent.get(car) {
+                    None => {
+                        for packet in vehicle_assets::rig_packets_with_parts(self.server_tick, *handle, *wheels, detached) {
+                            rig_bytes += packet.len();
+                            let _ = try_queue_packet(&tx, packet, &self.io);
+                        }
+                        runtime.rig_sent.insert(*car, self.server_tick);
+                        continue;
+                    }
+                    Some(&last) => frame.changed || self.server_tick.wrapping_sub(last) >= snapshot_builder::COLD_VEHICLE_REFRESH_TICKS,
+                };
+                if due {
+                    for packet in &frame.packets {
+                        rig_bytes += packet.len();
+                        let _ = try_queue_packet(&tx, packet.clone(), &self.io);
+                    }
+                    runtime.rig_sent.insert(*car, self.server_tick);
+                }
+            }
+            self.snapshot_stats.rig_bytes_per_client.record(rig_bytes as f32);
         }
         for selection in selections {
             self.note_selection(selection);
@@ -8211,6 +8252,7 @@ mod tests {
             spawn_protection_ends_at_tick: 0,
             respawn_at_ms: None,
             snapshot_interest: Default::default(),
+            rig_sent: HashMap::new(),
             visible_batteries: HashSet::new(),
             battery_full_resync_pending: true,
             energy_gate: crate::energy_stream::EnergySendGate::default(),

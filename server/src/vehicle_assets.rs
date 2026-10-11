@@ -386,22 +386,58 @@ fn paginate<'a>(base: usize, groups: impl Iterator<Item = &'a ([f32; 3], [f32; 4
 /// pose changed since it was last sent -- as many datagrams as that takes --
 /// so a part never lingers drawn on the car after it left it, and moving
 /// pieces are never stale. Unchanged groups are resent one page per tick,
-/// round-robin, for loss recovery and late joiners.
-#[derive(Default)]
-pub struct RigStream { sent: std::collections::HashMap<Vec<u16>, [u32; 7]> }
+/// round-robin, for loss recovery. The server sends a client a car's frame
+/// only when it changed or for a periodic refresh, and the whole rig
+/// (`rig_packets_with_parts`) when the car enters its interest.
+pub struct RigStream {
+    sent: std::collections::HashMap<Vec<u16>, [u32; 7]>,
+    /// The wheels as last framed (bits), to tell an unchanged rig.
+    wheels: Option<[[u32; 4]; 4]>,
+}
+
+/// One car's rig this tick (`RigStream::frame`).
+pub struct RigFrame {
+    /// The wheels and the detached groups that changed, plus one refresh page.
+    pub packets: Vec<Vec<u8>>,
+    /// Anything differs from last tick: the wheels, or a detached group.
+    pub changed: bool,
+}
+
 impl RigStream {
     pub fn packets(&mut self, tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<Vec<u8>> {
+        self.frame(tick, handle, wheels, detached).packets
+    }
+
+    /// This tick's packets, and whether the rig changed since the last frame
+    /// (a client that has the car's rig needs nothing more until it does,
+    /// but for a refresh against loss).
+    pub fn frame(&mut self, tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> RigFrame {
+        let wheel_bits = wheels.map(|w| w.map(f32::to_bits));
+        let wheels_changed = self.wheels != Some(wheel_bits);
+        self.wheels = Some(wheel_bits);
         let groups = group_detached(detached);
-        if groups.is_empty() { self.sent.clear(); return vec![rig_packet(tick, handle, wheels)]; }
+        if groups.is_empty() {
+            let changed = wheels_changed || !self.sent.is_empty();
+            self.sent.clear();
+            return RigFrame { packets: vec![rig_packet(tick, handle, wheels)], changed };
+        }
         let key = |g: &([f32; 3], [f32; 4], Vec<u16>)| { let mut k = [0u32; 7]; for (i, v) in g.0.iter().chain(&g.1).enumerate() { k[i] = v.to_bits(); } k };
         let (changed, unchanged): (Vec<_>, Vec<_>) = groups.iter().partition(|g| self.sent.get(&g.2) != Some(&key(g)));
+        let any_changed = wheels_changed || !changed.is_empty() || self.sent.len() != groups.len();
         self.sent = groups.iter().map(|g| (g.2.clone(), key(g))).collect();
         let base = rig_packet(tick, handle, wheels).len();
         let mut pages = paginate(base, changed.into_iter());
         let refresh = paginate(base, unchanged.into_iter());
         if !refresh.is_empty() { pages.push(refresh[tick as usize % refresh.len()].clone()); }
         let pages = &pages[..pages.len().min(255)];
-        pages.iter().enumerate().map(|(i, page)| rig_packet_with_groups(tick, handle, wheels, page, i, pages.len())).collect()
+        let packets = pages.iter().enumerate().map(|(i, page)| rig_packet_with_groups(tick, handle, wheels, page, i, pages.len())).collect();
+        RigFrame { packets, changed: any_changed }
+    }
+}
+
+impl Default for RigStream {
+    fn default() -> Self {
+        Self { sent: Default::default(), wheels: None }
     }
 }
 
@@ -420,4 +456,32 @@ pub fn rig_packet(tick: u32, handle: u8, wheels: [[f32; 4]; 4]) -> Vec<u8> {
         bytes.push(wheel[3] as u8);
     }
     bytes
+}
+
+#[cfg(test)]
+mod rig_frame_tests {
+    use super::*;
+
+    /// A client keeps a car's last rig, so the server sends a car's frame
+    /// only when something in it changed (or for a refresh): a parked car
+    /// must read unchanged, and any wheel or detached-group change, a group
+    /// appearing, moving or going, must read changed.
+    #[test]
+    fn a_rig_frame_says_whether_anything_changed() {
+        let wheels = [[0.5, -0.2, 1.1, 1.0]; 4];
+        let mut stream = RigStream::default();
+        assert!(stream.frame(1, 3, wheels, &[]).changed, "the first frame is news");
+        assert!(!stream.frame(2, 3, wheels, &[]).changed, "a parked car is not");
+        let mut moved = wheels;
+        moved[2][1] = -0.21;
+        assert!(stream.frame(3, 3, moved, &[]).changed, "a wheel moved");
+        assert!(!stream.frame(4, 3, moved, &[]).changed);
+        let part = (7u16, [1.0, 0.2, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        assert!(stream.frame(5, 3, moved, &[part]).changed, "a part came off");
+        assert!(!stream.frame(6, 3, moved, &[part]).changed, "and lies still");
+        let fallen = (7u16, [1.0, 0.1, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        assert!(stream.frame(7, 3, moved, &[fallen]).changed, "it moved");
+        assert!(stream.frame(8, 3, moved, &[]).changed, "it went (a reset)");
+        assert!(!stream.frame(9, 3, moved, &[]).changed);
+    }
 }
