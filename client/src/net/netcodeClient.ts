@@ -133,9 +133,27 @@ export class NetcodeClient {
   private vehicleRigs = new Map<number, VehicleRigPacket>();
   /** Detached parts per vehicle handle, merged across rig pages. */
   private vehicleDetached = new Map<number, Map<number, VehicleRigPacket['detached'][number]>>();
+  /** Per vehicle handle, its detached parts from the city's per-player stream (wire 4). */
+  private vehicleDebris = new Map<number, VehicleRigPacket['detached']>();
   private attachVehicleAsset(state: VehicleStateMeters): void {
     state.customVehicle = this.customVehicles.get(state.id);
-    state.customRig = this.vehicleRigs.get(state.id);
+    const rig = this.vehicleRigs.get(state.id);
+    const debris = this.vehicleDebris.get(state.id);
+    state.customRig = rig && debris ? { ...rig, detached: debris } : rig;
+  }
+
+  /**
+   * Wire 4: a car's detached parts this frame (the per-player stream carries
+   * them as bodies; its rig packets carry the wheels). Empty: none.
+   */
+  setVehicleDebris(handle: number, parts: VehicleRigPacket['detached']): void {
+    if (parts.length === 0) {
+      if (!this.vehicleDebris.delete(handle)) return;
+    } else {
+      this.vehicleDebris.set(handle, parts);
+    }
+    const vehicle = this.vehicles.get(handle);
+    if (vehicle) this.attachVehicleAsset(vehicle);
   }
 
   private static readonly VEHICLE_STALE_TICKS = 180;

@@ -36,6 +36,8 @@ const stubCore = (): PerPlayerCore & { ingested: number } => ({
   render_tick: () => 0,
   stats_json: () => '{}',
   hash_mismatches: () => 0,
+  vehicle_groups_version: () => 0,
+  vehicle_groups: () => new Float32Array(),
 });
 
 describe('per-player stream stats', () => {
@@ -85,5 +87,47 @@ describe('per-player bodies at rest', () => {
     frame = rest(200, 2.0);
     client.samplePresentation(33);
     expect(repaints()).toBe(1);
+  });
+});
+
+describe('per-player car debris', () => {
+  // Wire 4 streams a car's broken-off parts as bodies placing each group's
+  // centre of mass; the car draws each part through the map from its car
+  // frame: translation = position - R * centre.
+  it('hands each car its detached parts as car-frame maps', () => {
+    let version = 1;
+    let groups = Float32Array.from([0x8000 + 3, 1, /* body */ 2, /* centre */ 0.5, 0, 1, /* members */ 2, 2, 5]);
+    // Body 2 of car 3 at (10, 1, -4), turned 90 degrees about y.
+    const s = Math.SQRT1_2;
+    const poses = Float32Array.from([0x8000 + 3, 2, 10, 1, -4, 0, s, 0, s, 0]);
+    const core = {
+      ...stubCore(),
+      advance: () => 300,
+      started: () => true,
+      body_poses: () => poses,
+      vehicle_groups_version: () => version,
+      vehicle_groups: () => groups,
+    };
+    const client = new PerPlayerCityClient(tinyManifest(), () => {}, core);
+    const seen: Array<[number, Array<{ part: number; position: number[]; rotation: number[] }>]> = [];
+    client.setVehicleDebrisListener((handle, parts) => seen.push([handle, parts]));
+    client.samplePresentation(0);
+    expect(seen).toHaveLength(1);
+    const [handle, parts] = seen[0];
+    expect(handle).toBe(3);
+    expect(parts.map((p) => p.part)).toEqual([2, 5]);
+    // R * (0.5, 0, 1) for 90 degrees about y is (1, 0, -0.5).
+    for (const p of parts) {
+      expect(p.position[0]).toBeCloseTo(9, 5);
+      expect(p.position[1]).toBeCloseTo(1, 5);
+      expect(p.position[2]).toBeCloseTo(-3.5, 5);
+      expect(p.rotation).toEqual([0, Math.fround(s), 0, Math.fround(s)]);
+    }
+    // Its groups gone (a reset): the car is told its parts are back on it.
+    version = 2;
+    groups = new Float32Array();
+    seen.length = 0;
+    client.samplePresentation(16);
+    expect(seen).toEqual([[3, []]]);
   });
 });

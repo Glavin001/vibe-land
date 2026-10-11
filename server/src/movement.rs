@@ -151,6 +151,23 @@ impl PhysicsArena {
         }
     }
 
+    /// Detached parts of a destructible vehicle, with the rigid body each is
+    /// on (named by its lowest part), its centre of mass and velocities.
+    pub fn vehicle_detached_bodies(&mut self, id:u32) -> Vec<vibe_land_destruction::per_player::VehicleDetachedPart> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => {
+                let v = |p: vibe_land_physx_bridge::FfiVec3| [p.x, p.y, p.z];
+                arena.vehicle_detached_bodies(id).into_iter().map(|p| vibe_land_destruction::per_player::VehicleDetachedPart {
+                    part: p.part_index as u16, body: p.body as u16, position: v(p.position),
+                    rotation: [p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w],
+                    com: v(p.com), linear_velocity: v(p.linear_velocity), angular_velocity: v(p.angular_velocity),
+                }).collect()
+            }
+            _ => { let _ = id; Vec::new() }
+        }
+    }
+
     /// World centre of one part of a destructible vehicle.
     pub fn vehicle_part_center(&self, id:u32, part:u32) -> Option<[f32;3]> {
         match &self.backend {

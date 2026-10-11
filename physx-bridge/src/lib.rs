@@ -1727,6 +1727,14 @@ impl World {
                 rotation: Quat { x: p.rotation.x, y: p.rotation.y, z: p.rotation.z, w: p.rotation.w } }).collect())
     }
 
+    /// Detached parts with the rigid body each is on, its centre of mass and
+    /// its velocities.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_detached_vehicle_bodies(&mut self, entity_id: u32)
+        -> Result<Vec<FfiVehicleDetachedBody>, BridgeError> {
+        self.inner.pin_mut().native_detached_vehicle_bodies(entity_id).map_err(operation_error)
+    }
+
     /// Debug readback of a registered vehicle: every hull's actual world pose,
     /// owning actor and filter, and each owning actor's mass frame.
     #[cfg(feature = "native-destruction")]
@@ -2108,7 +2116,7 @@ fn operation_error(error: cxx::Exception) -> BridgeError {
 
 #[cfg(feature = "gpu")]
 /// The stress solve report types (World::native_stress_solve_report), named by diagnostics.
-pub use ffi::{FfiChunkCrushEvent, FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3};
+pub use ffi::{FfiChunkCrushEvent, FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3, FfiVehicleDetachedBody};
 
 #[cfg(feature = "gpu")]
 #[cxx::bridge(namespace = "vibe_land::physx_bridge")]
@@ -2244,6 +2252,20 @@ mod ffi {
         part_index: u32,
         position: FfiVec3,
         rotation: FfiQuat,
+    }
+
+    /// A detached vehicle part and the rigid body it is on.
+    struct FfiVehicleDetachedBody {
+        part_index: u32,
+        /// The lowest part on the same rigid body.
+        body: u32,
+        /// The part's map from authored actor-frame geometry to world.
+        position: FfiVec3,
+        rotation: FfiQuat,
+        /// The body's world centre of mass and velocities.
+        com: FfiVec3,
+        linear_velocity: FfiVec3,
+        angular_velocity: FfiVec3,
     }
 
     /// One registered vehicle hull as PhysX has it now (debug readback).
@@ -3047,6 +3069,7 @@ mod ffi {
         fn native_pose_vehicle_parts(self: Pin<&mut World>, entity_id: u32,
             poses: &[FfiVehiclePartPose], exclude_mask: u32) -> Result<u32>;
         fn native_detached_vehicle_parts(self: Pin<&mut World>, entity_id: u32) -> Result<Vec<FfiVehiclePartPose>>;
+        fn native_detached_vehicle_bodies(self: Pin<&mut World>, entity_id: u32) -> Result<Vec<FfiVehicleDetachedBody>>;
         fn native_vehicle_debug(self: Pin<&mut World>, entity_id: u32) -> Result<FfiVehicleDebug>;
         fn native_set_stress_solve_report(self: Pin<&mut World>, passes: u32) -> Result<bool>;
         fn native_stress_solve_report(self: Pin<&mut World>) -> Result<FfiStressSolveReport>;

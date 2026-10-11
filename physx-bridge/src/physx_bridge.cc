@@ -4193,6 +4193,13 @@ public:
     return native().detached_vehicle_parts(*record.vehicle);
   }
 
+  rust::Vec<FfiVehicleDetachedBody> native_detached_vehicle_bodies(std::uint32_t entity_id) {
+    require(!step_in_flight_, "vehicle part poses must be read between steps");
+    auto &record=find(entity_id);
+    require(record.vehicle && record.vehicle_compound_installed,"vehicle compound is not prepared");
+    return native().detached_vehicle_bodies(*record.vehicle);
+  }
+
   FfiVehicleDebug native_vehicle_debug(std::uint32_t entity_id) {
     require(!step_in_flight_, "vehicle debug state must be read between steps");
     auto &record=find(entity_id);
@@ -4785,6 +4792,10 @@ void World::native_register_vehicle(std::uint32_t entity_id, std::uint32_t struc
 
 rust::Vec<FfiVehiclePartPose> World::native_detached_vehicle_parts(std::uint32_t entity_id) {
   return impl_->native_detached_vehicle_parts(entity_id);
+}
+
+rust::Vec<FfiVehicleDetachedBody> World::native_detached_vehicle_bodies(std::uint32_t entity_id) {
+  return impl_->native_detached_vehicle_bodies(entity_id);
 }
 
 bool World::native_set_stress_solve_report(std::uint32_t passes) {

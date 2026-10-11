@@ -19,6 +19,7 @@ namespace vibe_land::physx_bridge {
 struct FfiVec3;
 struct FfiVehicleFracturePart;
 struct FfiVehiclePartPose;
+struct FfiVehicleDetachedBody;
 struct FfiVehicleDebug;
 struct FfiStressSolveReport;
 struct FfiPose;
@@ -98,6 +99,9 @@ public:
   /// World transforms, from each part's authored actor-frame pose, of the
   /// parts whose hulls have left the vehicle's carrier (detached fragments).
   rust::Vec<FfiVehiclePartPose> detached_vehicle_parts(const physx::native::NativeVehicle &vehicle) const;
+  /// The same parts with the rigid body each is on (named by its lowest part),
+  /// that body's world centre of mass and its velocities. Readback only.
+  rust::Vec<FfiVehicleDetachedBody> detached_vehicle_bodies(const physx::native::NativeVehicle &vehicle) const;
   /// Debug readback: every hull's world pose, owner and filter; owners' mass frames.
   FfiVehicleDebug vehicle_debug(const physx::native::NativeVehicle &vehicle) const;
   /// Refresh functional state from accepted shape owners, before Vehicle2 runs.

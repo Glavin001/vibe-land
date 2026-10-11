@@ -163,6 +163,27 @@ impl PerPlayerClient {
         self.inner.render_tick()
     }
 
+    /// A count that changes whenever any car's detached groups do.
+    pub fn vehicle_groups_version(&self) -> u32 {
+        self.inner.vehicle_groups().1
+    }
+
+    /// Every car's detached groups: per car its body-key structure and group
+    /// count, then per group its body, centre of mass in the car frame
+    /// (x, y, z), member count and members. All exact in f32.
+    pub fn vehicle_groups(&self) -> Vec<f32> {
+        let (cars, _) = self.inner.vehicle_groups();
+        let mut out = Vec::new();
+        for (&structure, groups) in cars {
+            out.extend_from_slice(&[structure as f32, groups.len() as f32]);
+            for g in groups {
+                out.extend_from_slice(&[g.body as f32, g.centre.x, g.centre.y, g.centre.z, g.members.len() as f32]);
+                out.extend(g.members.iter().map(|&m| m as f32));
+            }
+        }
+        out
+    }
+
     /// The structure-hash disagreements so far (`stats_json`'s
     /// hashMismatches), read every frame without building the JSON.
     pub fn hash_mismatches(&self) -> u32 {

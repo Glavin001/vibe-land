@@ -389,6 +389,26 @@ fn paginate<'a>(base: usize, groups: impl Iterator<Item = &'a ([f32; 3], [f32; 4
 /// round-robin, for loss recovery. The server sends a client a car's frame
 /// only when it changed or for a periodic refresh, and the whole rig
 /// (`rig_packets_with_parts`) when the car enters its interest.
+/// Each part of a car as the per-player stream needs it for its detached
+/// groups: mass, centre of mass (actor frame, the frame the detached maps
+/// take) and the farthest hull point from that centre.
+pub fn per_player_part_models(geometry: &PreparedGeometry) -> Vec<vibe_land_destruction::per_player::VehiclePartModel> {
+    geometry
+        .parts
+        .iter()
+        .map(|part| {
+            let c = part.mass_properties.center.map(|v| v as f32);
+            let reach = part
+                .shapes
+                .iter()
+                .flat_map(|shape| shape.vertices.iter().map(move |v| std::array::from_fn::<f32, 3, _>(|k| part.position[k] + shape.position[k] + v[k])))
+                .map(|p| ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt())
+                .fold(0.0f32, f32::max);
+            vibe_land_destruction::per_player::VehiclePartModel { mass: part.mass as f32, centre: c, reach }
+        })
+        .collect()
+}
+
 pub struct RigStream {
     sent: std::collections::HashMap<Vec<u16>, [u32; 7]>,
     /// The wheels as last framed (bits), to tell an unchanged rig.

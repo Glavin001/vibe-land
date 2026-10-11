@@ -1352,6 +1352,9 @@ struct MatchState {
     bombardment: garage_bombardment::Bombardment,
     /// Detached-part streams of custom vehicles, by vehicle id.
     rig_streams: HashMap<u32, vehicle_assets::RigStream>,
+    /// Each car's detached parts as read this tick (wire 4 reads them for its
+    /// debris bodies before the snapshot does): (tick, id -> parts).
+    detached_parts: (u32, HashMap<u32, Vec<(u16, [f32; 3], [f32; 4])>>),
     custom_vehicles: HashMap<u32, Arc<vehicle_assets::DrivableVehicle>>,
     /// The city's destructible cars (city_fleet), respawned on a city reset.
     fleet: Option<Arc<city_fleet::Fleet>>,
@@ -3764,6 +3767,7 @@ async fn run_match_loop(
         garage,
         bombardment: Default::default(),
         rig_streams: HashMap::new(),
+        detached_parts: (u32::MAX, HashMap::new()),
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -5999,7 +6003,7 @@ impl MatchState {
         // 60 Hz: destruction step + reliable topology/baseline broadcast
         // (byte-identical for every client — encode once, clone the buffer).
         let city_step_started = std::time::Instant::now();
-        let (reliable, staged) = if observer_pipeline_enabled() {
+        let (mut reliable, staged) = if observer_pipeline_enabled() {
             city.step_stage(
                 self.server_tick,
                 dt,
@@ -6019,6 +6023,27 @@ impl MatchState {
         };
         let city_step_wall_ms = city_step_started.elapsed().as_secs_f32() * 1000.0;
         city.record_tick_sample(city_step_wall_ms);
+        // Wire 4: the cars' detached parts are bodies of the per-player
+        // stream (predicted, error-driven, under each client's budget), not
+        // rig-packet poses. Read once; the snapshot reuses them.
+        if staged.is_none() && city.is_per_player() {
+            let mut cars = Vec::new();
+            let mut read = HashMap::new();
+            let mut ids: Vec<u32> = self.custom_vehicles.keys().copied().collect();
+            ids.sort_unstable();
+            for id in ids {
+                let Some(&handle) = self.vehicle_handles.get(&id) else { continue };
+                if !city.per_player_vehicle_registered(handle, id) {
+                    let parts = vehicle_assets::per_player_part_models(&self.custom_vehicles[&id].geometry);
+                    city.per_player_register_vehicle(handle, id, parts);
+                }
+                let bodies = self.arena.vehicle_detached_bodies(id);
+                read.insert(id, bodies.iter().map(|p| (p.part, p.position, p.rotation)).collect());
+                cars.push((handle, bodies));
+            }
+            self.detached_parts = (self.server_tick, read);
+            reliable.extend(city.per_player_ingest_vehicles(self.server_tick, &cars));
+        }
         // A staged tick's datagrams do not exist yet — its live-lane ingest
         // runs at flush, which drains them there.
         let v3_datagrams = if staged.is_some() {
@@ -7518,16 +7543,22 @@ impl MatchState {
         // just entered the interest of, built when first needed).
         let mut vehicle_rigs: Vec<(u32, vehicle_assets::RigFrame, u8, [[f32; 4]; 4], Vec<(u16, [f32; 3], [f32; 4])>)> = Vec::new();
         let mut vehicle_extents: HashMap<u32, ([f32; 3], [f32; 3])> = HashMap::new();
+        let per_player_debris = self.city.as_ref().is_some_and(|city| city.is_per_player());
         for (id, asset) in &self.custom_vehicles {
             let Some(&handle) = self.vehicle_handles.get(id) else { continue };
             let Some(wheels) = self.arena.vehicle_rig(*id, asset.geometry.neutral_jounce) else { continue };
-            let detached = self.arena.vehicle_detached_parts(*id);
+            let detached = match self.detached_parts.1.get(id).filter(|_| self.detached_parts.0 == self.server_tick) {
+                Some(parts) => parts.clone(),
+                None => self.arena.vehicle_detached_parts(*id),
+            };
             // Each detached pose is its piece's authored car frame, so it
             // lies within a car length of the piece: close enough for interest.
             for (_, p, _) in &detached {
                 let e = vehicle_extents.entry(*id).or_insert((*p, *p));
                 for k in 0..3 { e.0[k] = e.0[k].min(p[k]); e.1[k] = e.1[k].max(p[k]); }
             }
+            // Wire 4 streams the detached parts itself: the rig is the wheels.
+            let detached = if per_player_debris { Vec::new() } else { detached };
             let frame = self.rig_streams.entry(*id).or_default().frame(self.server_tick, handle, wheels, &detached);
             vehicle_rigs.push((*id, frame, handle, wheels, detached));
         }

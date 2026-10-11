@@ -28,6 +28,16 @@ export const PER_PLAYER_SERIAL_BIT = 1 << 19;
 /** Serials for removed chunks' one-chunk islands (never a body id). */
 const REMOVED_SERIAL_BIT = 1 << 18;
 
+/** Body keys of car debris: this + the car's handle (perplayer::wire). */
+export const VEHICLE_STRUCTURE_BASE = 0x8000;
+
+/** One detached part of a car: the map from its car-frame geometry to the world. */
+export interface VehicleDebrisPart {
+  part: number;
+  position: [number, number, number];
+  rotation: [number, number, number, number];
+}
+
 export function perPlayerBodyKey(structure: number, body: number): number {
   return (0x8000_0000 | (structure << 20) | PER_PLAYER_SERIAL_BIT | body) >>> 0;
 }
@@ -44,6 +54,8 @@ export interface PerPlayerCore {
   render_tick(): number;
   stats_json(): string;
   hash_mismatches(): number;
+  vehicle_groups_version(): number;
+  vehicle_groups(): Float32Array;
 }
 
 /** Flatten a manifest the way the core's constructor reads it. */
@@ -124,6 +136,11 @@ export class PerPlayerCityClient extends CityClient {
   private readonly resyncGate: { open: boolean; gated: number };
   private hashMismatchesSeen = 0;
   private lastHashResyncMs = Number.NEGATIVE_INFINITY;
+  /** Cars' detached groups (the core's, per body-key structure), and their version. */
+  private vehicleGroups = new Map<number, Map<number, { centre: [number, number, number]; members: number[] }>>();
+  private vehicleGroupsVersion = -1;
+  /** Where each car's detached parts go each frame (the car renderer's rig). */
+  private vehicleDebrisListener: ((handle: number, parts: VehicleDebrisPart[]) => void) | null = null;
 
   constructor(manifest: LoadedCityManifest, sendUpstream: (bytes: Uint8Array) => void, core: PerPlayerCore) {
     // CityClient's v2 checks (topology gaps, settle and migration faults)
@@ -194,9 +211,12 @@ export class PerPlayerCityClient extends CityClient {
       for (let b = 0; b < count; b += 1) poseOf.set(keys[b], b * 10);
       this.applyChanges(changes, poses, poseOf);
     }
+    this.presentVehicleDebris(poses);
     const live = new Set<number>();
     const topology = this.topology as CityTopology;
     for (let i = 0; i < poses.length; i += 10) {
+      // Cars' detached groups are drawn by their cars (presentVehicleDebris).
+      if (poses[i] >= VEHICLE_STRUCTURE_BASE) continue;
       const key = keys[i / 10];
       const restsFrom = poses[i + 9];
       const settled = restsFrom !== 0;
@@ -218,6 +238,63 @@ export class PerPlayerCityClient extends CityClient {
     }
     this.live = live;
     return live;
+  }
+
+  /** Each frame, every car's detached parts (wire 4 streams them as bodies). */
+  setVehicleDebrisListener(listener: ((handle: number, parts: VehicleDebrisPart[]) => void) | null): void {
+    this.vehicleDebrisListener = listener;
+  }
+
+  /**
+   * Each car's detached parts this frame, from its groups' drawn poses: a
+   * group's keyframes place its centre of mass, and every part of it maps
+   * from the car frame through the group's rotation about that centre.
+   */
+  private presentVehicleDebris(poses: Float32Array): void {
+    const version = this.core.vehicle_groups_version();
+    if (version !== this.vehicleGroupsVersion) {
+      this.vehicleGroupsVersion = version;
+      const flat = this.core.vehicle_groups();
+      const before = new Set(this.vehicleGroups.keys());
+      this.vehicleGroups = new Map();
+      for (let at = 0; at < flat.length;) {
+        const structure = flat[at++];
+        const count = flat[at++];
+        const groups = new Map<number, { centre: [number, number, number]; members: number[] }>();
+        for (let g = 0; g < count; g += 1) {
+          const body = flat[at];
+          const centre: [number, number, number] = [flat[at + 1], flat[at + 2], flat[at + 3]];
+          const n = flat[at + 4];
+          groups.set(body, { centre, members: Array.from(flat.subarray(at + 5, at + 5 + n)) });
+          at += 5 + n;
+        }
+        this.vehicleGroups.set(structure, groups);
+        before.delete(structure);
+      }
+      // A car with no detached groups any more: its parts are back on it.
+      for (const structure of before) this.vehicleDebrisListener?.(structure - VEHICLE_STRUCTURE_BASE, []);
+    }
+    if (!this.vehicleDebrisListener || this.vehicleGroups.size === 0) return;
+    const debris = new Map<number, VehicleDebrisPart[]>();
+    for (const structure of this.vehicleGroups.keys()) debris.set(structure, []);
+    for (let i = 0; i < poses.length; i += 10) {
+      const structure = poses[i];
+      if (structure < VEHICLE_STRUCTURE_BASE) continue;
+      const group = this.vehicleGroups.get(structure)?.get(poses[i + 1]);
+      if (!group) continue;
+      const [qx, qy, qz, qw] = [poses[i + 5], poses[i + 6], poses[i + 7], poses[i + 8]];
+      // translation = position - R * centre
+      const [cx, cy, cz] = group.centre;
+      const tx = 2 * (qy * cz - qz * cy), ty = 2 * (qz * cx - qx * cz), tz = 2 * (qx * cy - qy * cx);
+      const rx = cx + qw * tx + (qy * tz - qz * ty);
+      const ry = cy + qw * ty + (qz * tx - qx * tz);
+      const rz = cz + qw * tz + (qx * ty - qy * tx);
+      const position: [number, number, number] = [poses[i + 2] - rx, poses[i + 3] - ry, poses[i + 4] - rz];
+      const rotation: [number, number, number, number] = [qx, qy, qz, qw];
+      const list = debris.get(structure)!;
+      for (const part of group.members) list.push({ part, position, rotation });
+    }
+    for (const [structure, parts] of debris) this.vehicleDebrisListener(structure - VEHICLE_STRUCTURE_BASE, parts);
   }
 
   private applyChanges(flat: Uint32Array, poses: Float32Array, poseOf: Map<number, number>): void {

@@ -536,6 +536,15 @@ pub fn decode_keyframes_with(
     physics: Physics,
     baseline: &mut dyn FnMut(BodyKey, u32) -> Option<Keyframe>,
 ) -> Result<(KeyframePacket, u32), Truncated> {
+    decode_keyframes_ending(bytes, physics, baseline).map(|(packet, missing, _)| (packet, missing))
+}
+
+/// `decode_keyframes_with`, and where the packet's records end.
+fn decode_keyframes_ending(
+    bytes: &[u8],
+    physics: Physics,
+    baseline: &mut dyn FnMut(BodyKey, u32) -> Option<Keyframe>,
+) -> Result<(KeyframePacket, u32, usize), Truncated> {
     let mut r = Reader::new(bytes);
     if r.u8()? != PKT_PP_KEYFRAMES {
         return Err(Truncated);
@@ -595,7 +604,7 @@ pub fn decode_keyframes_with(
             None => missing += 1,
         }
     }
-    Ok((KeyframePacket { server_tick, ordinal, records }, missing))
+    Ok((KeyframePacket { server_tick, ordinal, records }, missing, r.at))
 }
 
 /// Decode a packet of absolute records (no baselines needed).
@@ -614,12 +623,40 @@ pub enum Event {
     Wake { tick: u32, key: BodyKey },
     /// The structure hash both ends compare (gate G1).
     Hash { tick: u32, structure: u32, hash: u64 },
+    /// A car's detached parts as bodies from `tick` on (`VEHICLE_STRUCTURE_BASE`
+    /// + the car's handle): every group, replacing the last list. Unlike a
+    /// structure's, a car's groups are the physics' own (its fracture asset
+    /// is not the client's), so they are stated, not derived.
+    VehicleGroups { tick: u32, structure: u32, groups: Vec<VehicleGroup> },
+}
+
+/// Body keys of car debris: `VEHICLE_STRUCTURE_BASE` + the car's handle.
+pub const VEHICLE_STRUCTURE_BASE: u32 = 0x8000;
+
+pub fn is_vehicle_structure(structure: u32) -> bool {
+    structure >= VEHICLE_STRUCTURE_BASE
+}
+
+/// One group of a car's detached parts: a body named by its lowest part.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VehicleGroup {
+    pub body: u32,
+    /// Its parts, ascending.
+    pub members: Vec<u32>,
+    /// Its centre of mass in the car's authored frame: the body's keyframes
+    /// place this point, and each part's authored geometry maps to the world
+    /// through the body's rotation about it.
+    pub centre: Vec3,
 }
 
 impl Event {
     pub fn tick(&self) -> u32 {
         match self {
-            Event::Fracture { tick, .. } | Event::Settle { tick, .. } | Event::Wake { tick, .. } | Event::Hash { tick, .. } => *tick,
+            Event::Fracture { tick, .. }
+            | Event::Settle { tick, .. }
+            | Event::Wake { tick, .. }
+            | Event::Hash { tick, .. }
+            | Event::VehicleGroups { tick, .. } => *tick,
         }
     }
 }
@@ -686,9 +723,39 @@ pub fn encode_events(seq: u32, events: &[Event]) -> Vec<u8> {
                 w.varint(u64::from(*structure));
                 w.u64(*hash);
             }
+            Event::VehicleGroups { tick, structure, groups } => {
+                w.u8(4);
+                w.u32(*tick);
+                write_vehicle_groups(&mut w, *structure, groups);
+            }
         }
     }
     w.out
+}
+
+fn write_vehicle_groups(w: &mut Writer, structure: u32, groups: &[VehicleGroup]) {
+    w.varint(u64::from(structure));
+    w.varint(groups.len() as u64);
+    for g in groups {
+        w.varint(u64::from(g.body));
+        gaps(w, &g.members);
+        for v in g.centre.to_array() {
+            w.f32(v);
+        }
+    }
+}
+
+fn read_vehicle_groups(r: &mut Reader) -> Result<(u32, Vec<VehicleGroup>), Truncated> {
+    let structure = r.varint()? as u32;
+    let n = r.varint()? as usize;
+    let mut groups = Vec::with_capacity(n.min(4096));
+    for _ in 0..n {
+        let body = r.varint()? as u32;
+        let members = read_gaps(r)?;
+        let centre = Vec3::new(r.f32()?, r.f32()?, r.f32()?);
+        groups.push(VehicleGroup { body, members, centre });
+    }
+    Ok((structure, groups))
 }
 
 pub fn decode_events(bytes: &[u8]) -> Result<(u32, Vec<Event>), Truncated> {
@@ -721,6 +788,10 @@ pub fn decode_events(bytes: &[u8]) -> Result<(u32, Vec<Event>), Truncated> {
             }
             2 => Event::Wake { tick, key: BodyKey { structure: r.varint()? as u32, body: r.varint()? as u32 } },
             3 => Event::Hash { tick, structure: r.varint()? as u32, hash: r.u64()? },
+            4 => {
+                let (structure, groups) = read_vehicle_groups(&mut r)?;
+                Event::VehicleGroups { tick, structure, groups }
+            }
             _ => return Err(Truncated),
         });
     }
@@ -746,6 +817,9 @@ pub struct Bootstrap {
     pub settled: Vec<(BodyKey, Vec3, Quat)>,
     /// Awake bodies: their keyframe.
     pub awake: Vec<(BodyKey, Keyframe)>,
+    /// Every car's detached groups (`Event::VehicleGroups`), after the
+    /// keyframes and only when there are any.
+    pub vehicles: Vec<(u32, Vec<VehicleGroup>)>,
 }
 
 fn bits_rle(w: &mut Writer, words: &[u64]) {
@@ -806,6 +880,14 @@ pub fn encode_bootstrap(b: &Bootstrap) -> Vec<u8> {
     };
     // Absolute records only: physics is not consulted.
     w.out.extend_from_slice(&encode_keyframes(&packet, Physics::at_hz(60, -9.81))[1..]);
+    // Cars' detached groups, only when there are any (a bootstrap without
+    // them is byte for byte what it was before cars streamed here).
+    if !b.vehicles.is_empty() {
+        w.varint(b.vehicles.len() as u64);
+        for (structure, groups) in &b.vehicles {
+            write_vehicle_groups(&mut w, *structure, groups);
+        }
+    }
     w.out
 }
 
@@ -837,13 +919,21 @@ pub fn decode_bootstrap(bytes: &[u8]) -> Result<Bootstrap, Truncated> {
     }
     let mut rest = vec![PKT_PP_KEYFRAMES];
     rest.extend_from_slice(&bytes[r.at..]);
-    let keyframes = decode_keyframes(&rest, Physics::at_hz(60, -9.81))?;
+    let (keyframes, _, end) = decode_keyframes_ending(&rest, Physics::at_hz(60, -9.81), &mut |_, _| None)?;
+    let mut vehicles = Vec::new();
+    if end < rest.len() {
+        let mut v = Reader::new(&rest[end..]);
+        for _ in 0..v.varint()? {
+            vehicles.push(read_vehicle_groups(&mut v)?);
+        }
+    }
     Ok(Bootstrap {
         tick,
         next_event_seq,
         structures,
         settled,
         awake: keyframes.records.into_iter().map(|r| (r.key, r.keyframe)).collect(),
+        vehicles,
     })
 }
 
@@ -1027,6 +1117,35 @@ mod tests {
         assert_eq!(decode_ack(&encode_ack(5, 0b1011, Some(42))).unwrap(), (5, 0b1011, Some(42)));
     }
 
+    /// A car's groups round-trip exactly (members and centres), as an event
+    /// and in a bootstrap; a bootstrap without cars ends where it did.
+    #[test]
+    fn car_groups_round_trip_as_events_and_in_a_bootstrap() {
+        let groups = vec![
+            VehicleGroup { body: 3, members: vec![3, 4, 9, 200], centre: Vec3::new(0.25, -0.125, 1.0625) },
+            VehicleGroup { body: 17, members: vec![17], centre: Vec3::new(-0.7, 0.3, -1.9) },
+        ];
+        let structure = VEHICLE_STRUCTURE_BASE + 2;
+        let events = vec![Event::VehicleGroups { tick: 77, structure, groups: groups.clone() }, Event::Hash { tick: 78, structure: 1, hash: 5 }];
+        assert_eq!(decode_events(&encode_events(3, &events)).unwrap().1, events);
+        let mut b = Bootstrap {
+            tick: 80,
+            next_event_seq: 4,
+            structures: vec![],
+            settled: vec![],
+            awake: vec![(BodyKey { structure, body: 3 }, kf(80, Mode::Ballistic))],
+            vehicles: vec![],
+        };
+        let without = encode_bootstrap(&b);
+        assert!(decode_bootstrap(&without).unwrap().vehicles.is_empty());
+        b.vehicles = vec![(structure, groups)];
+        let with = encode_bootstrap(&b);
+        assert_eq!(&with[..without.len()], &without[..], "cars are appended, nothing before them changes");
+        let back = decode_bootstrap(&with).unwrap();
+        assert_eq!(back.vehicles, b.vehicles);
+        assert_eq!(back.awake.len(), 1);
+    }
+
     #[test]
     fn a_bootstrap_of_an_intact_city_is_tiny() {
         let b = Bootstrap {
@@ -1035,6 +1154,7 @@ mod tests {
             structures: (0..16).map(|s| BootstrapStructure { structure: s, alive_bonds: vec![u64::MAX; 150], removed_chunks: vec![0; 50] }).collect(),
             settled: vec![(BodyKey { structure: 1, body: 5 }, Vec3::ONE, Quat::IDENTITY)],
             awake: vec![(BodyKey { structure: 2, body: 9 }, kf(10, Mode::Ballistic))],
+            vehicles: vec![],
         };
         let bytes = encode_bootstrap(&b);
         assert!(bytes.len() < 16 * 24 + 80, "{} bytes", bytes.len());

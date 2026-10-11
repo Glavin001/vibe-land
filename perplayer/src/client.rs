@@ -28,7 +28,7 @@ use glam::{Quat, Vec3};
 use crate::predict::{predict, predict_velocity, Keyframe, Mode, Physics};
 use crate::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use crate::wire::{
-    KeyframeRecord,
+    is_vehicle_structure, KeyframeRecord, VehicleGroup,
     decode_bootstrap, decode_events, decode_keyframes_with, BodyKey, Event, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS,
     PKT_PP_KEYFRAMES,
 };
@@ -91,6 +91,15 @@ impl BodyTrack {
         if self.keyframes.first().map_or(true, |k| k.tick != spawn.tick) {
             self.keyframes.insert(0, spawn);
         }
+        self.settled = None;
+        self.correction = None;
+    }
+
+    /// A new version of the body from `tick` (a car group whose parts
+    /// changed): only keyframes from then on describe it.
+    pub fn begin(&mut self, tick: u32) {
+        self.incarnation = tick;
+        self.keyframes.retain(|k| k.tick >= tick);
         self.settled = None;
         self.correction = None;
     }
@@ -468,6 +477,10 @@ pub struct Client {
     applied_tick: HashMap<u32, u32>,
     /// Keyframes for bodies whose creating fracture had not arrived.
     held: Vec<KeyframeRecord>,
+    /// Per car (its body-key structure), its detached groups as last applied
+    /// (`Event::VehicleGroups`), and a count of changes to them.
+    vehicles: BTreeMap<u32, Vec<VehicleGroup>>,
+    vehicles_version: u32,
 }
 
 /// How long a held keyframe waits for its fracture event, ticks.
@@ -498,6 +511,30 @@ impl Client {
             render: f32::MIN,
             applied_tick: HashMap::new(),
             held: Vec::new(),
+            vehicles: BTreeMap::new(),
+            vehicles_version: 0,
+        }
+    }
+
+    /// Every car's detached groups as drawn now, and a count that changes
+    /// whenever they do.
+    pub fn vehicle_groups(&self) -> (&BTreeMap<u32, Vec<VehicleGroup>>, u32) {
+        (&self.vehicles, self.vehicles_version)
+    }
+
+    fn has_body(&self, key: BodyKey) -> bool {
+        if is_vehicle_structure(key.structure) {
+            self.vehicles.get(&key.structure).is_some_and(|groups| groups.iter().any(|g| g.body == key.body))
+        } else {
+            self.structures.get(&key.structure).is_some_and(|cs| cs.state.members(key.body).is_some())
+        }
+    }
+
+    /// Whether `event` makes or remakes bodies of `structure`.
+    fn makes_bodies(event: &Event, structure: u32) -> Option<u32> {
+        match event {
+            Event::Fracture { tick, structure: s, .. } | Event::VehicleGroups { tick, structure: s, .. } if *s == structure => Some(*tick),
+            _ => None,
         }
     }
 
@@ -508,14 +545,19 @@ impl Client {
         let structure = record.key.structure;
         let Some(born) = record.incarnation else {
             // An id this client's structure has no body for yet: the
-            // fracture that makes it has not been applied.
-            return self.structures.get(&structure).is_some_and(|cs| cs.state.members(record.key.body).is_none())
-                && self.pending_fracture(structure).is_none();
+            // fracture (or car groups) that makes it has not been applied.
+            let known = self.structures.contains_key(&structure) || is_vehicle_structure(structure);
+            return known && !self.has_body(record.key) && self.pending_fracture(structure).is_none();
         };
         if born <= self.applied_tick.get(&structure).copied().unwrap_or(0) {
             return false;
         }
-        !self.pending.values().flatten().any(|e| matches!(e, Event::Fracture { tick, structure: s, .. } if *tick == born && *s == structure))
+        // A car group's new version waits for its groups to apply: drawn
+        // earlier, the old version would glide toward the new one's centre.
+        if is_vehicle_structure(structure) {
+            return true;
+        }
+        !self.pending.values().flatten().any(|e| Self::makes_bodies(e, structure) == Some(born))
     }
 
     /// The earliest fracture received for `structure` but not yet applied.
@@ -523,10 +565,7 @@ impl Client {
         self.pending
             .values()
             .flatten()
-            .filter_map(|e| match e {
-                Event::Fracture { tick, structure: s, .. } if *s == structure => Some(*tick),
-                _ => None,
-            })
+            .filter_map(|e| Self::makes_bodies(e, structure))
             .min()
     }
 
@@ -595,6 +634,15 @@ impl Client {
                     for &id in self.structures.keys() {
                         self.applied_tick.insert(id, boot.tick);
                     }
+                    // Cars' groups as of the bootstrap.
+                    for &structure in self.vehicles.keys() {
+                        self.applied_tick.insert(structure, boot.tick);
+                    }
+                    self.vehicles = boot.vehicles.iter().cloned().collect();
+                    for (structure, _) in &boot.vehicles {
+                        self.applied_tick.insert(*structure, boot.tick);
+                    }
+                    self.vehicles_version = self.vehicles_version.wrapping_add(1);
                     self.held.retain(|r| r.incarnation.is_some_and(|b| b > boot.tick));
                     self.clock.observe(boot.tick, arrival_ms);
                     for s in &boot.structures {
@@ -764,6 +812,29 @@ impl Client {
                     }
                 }
             }
+            Event::VehicleGroups { tick, structure, groups } => {
+                let applied = self.applied_tick.entry(structure).or_insert(0);
+                *applied = (*applied).max(tick);
+                let old = self.vehicles.remove(&structure).unwrap_or_default();
+                for group in &old {
+                    if !groups.iter().any(|g| g.body == group.body) {
+                        self.bodies.remove(&BodyKey { structure, body: group.body });
+                    }
+                }
+                // A group new, or with other parts, is a new body from `tick`.
+                for group in &groups {
+                    if old.iter().any(|g| g.body == group.body && g.members == group.members) {
+                        continue;
+                    }
+                    if let Some(track) = self.bodies.get_mut(&BodyKey { structure, body: group.body }) {
+                        track.begin(tick);
+                    }
+                }
+                if !groups.is_empty() {
+                    self.vehicles.insert(structure, groups);
+                }
+                self.vehicles_version = self.vehicles_version.wrapping_add(1);
+            }
         }
         let _ = r;
     }
@@ -798,14 +869,23 @@ impl Client {
     /// settled again between two frames rests from a new tick).
     pub fn body_poses(&self) -> Vec<(BodyKey, Vec3, Quat, Option<u32>)> {
         let mut out = Vec::new();
+        let mut draw = |key: BodyKey| {
+            let posed = |t: &&BodyTrack| !is_vehicle_structure(key.structure) || !t.keyframes().is_empty() || t.settled().is_some();
+            if let Some(track) = self.bodies.get(&key).filter(posed) {
+                let (p, q) = track.pose_at(self.render, self.physics);
+                let settled = track.settled().map(|(t, _, _)| t).filter(|&t| self.render >= t as f32);
+                out.push((key, p, q, settled));
+            }
+        };
         for (&structure, cs) in &self.structures {
             for &id in cs.state.bodies().keys() {
-                let key = BodyKey { structure, body: id };
-                if let Some(track) = self.bodies.get(&key) {
-                    let (p, q) = track.pose_at(self.render, self.physics);
-                    let settled = track.settled().map(|(t, _, _)| t).filter(|&t| self.render >= t as f32);
-                    out.push((key, p, q, settled));
-                }
+                draw(BodyKey { structure, body: id });
+            }
+        }
+        // Cars' detached groups (a group not yet keyframed rides its car).
+        for (&structure, groups) in &self.vehicles {
+            for group in groups {
+                draw(BodyKey { structure, body: group.body });
             }
         }
         out
@@ -941,6 +1021,7 @@ mod tests {
             structures: vec![],
             settled: vec![],
             awake: vec![],
+            vehicles: vec![],
         });
         client.ingest(&boot, 0.0);
         // A fracture at tick 110 and the new body's first keyframe.
@@ -995,7 +1076,7 @@ mod tests {
             vec![(0, 1), (2, 3)],
         );
         let mut client = Client::new(vec![def.clone()], physics(), 60, 5.0);
-        let boot = crate::wire::encode_bootstrap(&crate::wire::Bootstrap { tick: 100, next_event_seq: 0, structures: vec![], settled: vec![], awake: vec![] });
+        let boot = crate::wire::encode_bootstrap(&crate::wire::Bootstrap { tick: 100, next_event_seq: 0, structures: vec![], settled: vec![], awake: vec![], vehicles: vec![] });
         client.ingest(&boot, 0.0);
         client.ingest(&encode_keyframes(&KeyframePacket { server_tick: 110, ordinal: 0, records: vec![] }, physics()), 1.0);
         client.advance(1000.0);

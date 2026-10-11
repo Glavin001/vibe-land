@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <numeric>
+#include <unordered_map>
 #include <dlfcn.h>
 
 using namespace physx;
@@ -1101,6 +1102,46 @@ rust::Vec<FfiVehiclePartPose> NativeDestruction::detached_vehicle_parts(
     const PxTransform world=actor->getGlobalPose()*hull.shape->getLocalPose()*hull.rest.getInverse();
     out.push_back(FfiVehiclePartPose{hull.part,native_ffi(world.p),FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w}});
   }
+#else
+  PX_UNUSED(vehicle);
+#endif
+  return out;
+}
+
+rust::Vec<FfiVehicleDetachedBody> NativeDestruction::detached_vehicle_bodies(
+    const physx::native::NativeVehicle &vehicle) const {
+  rust::Vec<FfiVehicleDetachedBody> out;
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  const State &s=*state_;
+  auto binding=std::find_if(s.vehicles.begin(),s.vehicles.end(),[&](const State::VehicleBinding &b){return b.vehicle==&vehicle;});
+  native_require(binding!=s.vehicles.end(),"vehicle is not registered for native destruction");
+  const auto *carrier=vehicle.actor();
+  std::vector<bool> seen(binding->count,false);
+  std::vector<const PxRigidActor *> actors;
+  for(const auto &hull:binding->hulls) {
+    if(seen[hull.part]) continue;
+    seen[hull.part]=true; // the first hull of a part stands for its rigid chunk
+    const auto *actor=hull.shape->getActor();
+    if(!actor || actor==carrier) continue;
+    const PxTransform pose=actor->getGlobalPose();
+    const PxTransform world=pose*hull.shape->getLocalPose()*hull.rest.getInverse();
+    PxVec3 com=pose.p,linear(0.0f),angular(0.0f);
+    if(const auto *body=actor->is<PxRigidBody>()) {
+      com=pose.transform(body->getCMassLocalPose().p);
+      linear=body->getLinearVelocity();
+      angular=body->getAngularVelocity();
+    }
+    actors.push_back(actor);
+    out.push_back(FfiVehicleDetachedBody{hull.part,hull.part,native_ffi(world.p),
+        FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w},native_ffi(com),native_ffi(linear),native_ffi(angular)});
+  }
+  // A body is named by the lowest part on it.
+  std::unordered_map<const PxRigidActor *,std::uint32_t> lowest;
+  for(std::size_t i=0;i<out.size();++i) {
+    auto [it,fresh]=lowest.emplace(actors[i],out[i].part_index);
+    if(!fresh && out[i].part_index<it->second) it->second=out[i].part_index;
+  }
+  for(std::size_t i=0;i<out.size();++i) out[i].body=lowest[actors[i]];
 #else
   PX_UNUSED(vehicle);
 #endif

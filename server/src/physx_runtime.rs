@@ -1719,6 +1719,16 @@ impl PhysxPhysicsArena {
         }
     }
 
+    /// Detached parts of the destructible car, with the rigid body each is on.
+    #[cfg(feature = "native-destruction")]
+    pub fn vehicle_detached_bodies(&mut self, id: u32) -> Vec<bridge::FfiVehicleDetachedBody> {
+        let entity = NS_VEHICLE | (id & ID_MASK);
+        match self.garage_destruction.iter().find(|g| g.entity == entity) {
+            Some(garage) => garage.detached_bodies(&mut self.world),
+            None => Vec::new(),
+        }
+    }
+
     /// World centre of one part of the destructible car (its primary hull).
     #[cfg(feature = "native-destruction")]
     pub fn vehicle_part_center(&self, id: u32, part: u32) -> Option<[f32; 3]> {

@@ -36,7 +36,7 @@ use vibe_land_perplayer::predict::{Keyframe, Mode, Physics};
 use vibe_land_perplayer::structure::{StructureDef, StructureState, ANCHORED, REMOVED};
 use vibe_land_perplayer::wire::{
     encode_bootstrap, encode_events, encode_prepared, quantised, BodyKey, Bootstrap, BootstrapStructure, Event,
-    KeyframeRecord, PreparedRecord, POSITION_STEPS,
+    KeyframeRecord, PreparedRecord, VehicleGroup, POSITION_STEPS, VEHICLE_STRUCTURE_BASE,
 };
 use vibe_netcode::destruction_backend::{DestructionTickOutput, FractureBatch};
 
@@ -667,6 +667,40 @@ pub struct PerPlayer {
     statics_built: bool,
     /// `send_threads` workers, made on first use.
     workers: Option<std::sync::Arc<rayon::ThreadPool>>,
+    /// Cars whose detached parts stream as bodies, by body-key structure
+    /// (`register_vehicle`).
+    vehicles: BTreeMap<u32, VehicleModel>,
+}
+
+/// One part of a car, as its detached groups need it.
+#[derive(Clone, Copy, Debug)]
+pub struct VehiclePartModel {
+    pub mass: f32,
+    /// Its centre of mass in the car's authored frame.
+    pub centre: [f32; 3],
+    /// The farthest point of its hull from that centre, m.
+    pub reach: f32,
+}
+
+/// A detached part of a car, with the rigid body it is on.
+#[derive(Clone, Copy, Debug)]
+pub struct VehicleDetachedPart {
+    pub part: u16,
+    /// The lowest part on the same body.
+    pub body: u16,
+    /// The map from the part's authored car-frame geometry to the world.
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    /// The body's world centre of mass and velocities.
+    pub com: [f32; 3],
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+}
+
+struct VehicleModel {
+    parts: Vec<VehiclePartModel>,
+    /// The groups as last stated to clients (`Event::VehicleGroups`).
+    groups: Vec<VehicleGroup>,
 }
 
 use crate::netlab::perceptual::{StaticBox, STATIC_CELL};
@@ -923,6 +957,144 @@ impl PerPlayer {
 
     /// The config a send runs with: the evaluation cap shared out of the
     /// per-send budget.
+    /// Stream `handle`'s car: its detached parts become bodies of structure
+    /// `VEHICLE_STRUCTURE_BASE + handle` (`ingest_vehicles`).
+    pub fn register_vehicle(&mut self, handle: u8, parts: Vec<VehiclePartModel>) {
+        self.vehicles.insert(VEHICLE_STRUCTURE_BASE + u32::from(handle), VehicleModel { parts, groups: Vec::new() });
+    }
+
+    /// This tick's detached parts of every registered car, each with the
+    /// rigid body it is on (named by its lowest part). Each body is a group;
+    /// its truth is the physics' own state of it: centre of mass, rotation
+    /// and velocities, classified as every body's is. A change of groups is
+    /// stated to every client (`Event::VehicleGroups`).
+    pub fn ingest_vehicles(&mut self, tick: u32, cars: &[(u8, Vec<VehicleDetachedPart>)]) -> Vec<Outgoing> {
+        let mut events: Vec<Event> = Vec::new();
+        let mut touched: Vec<BodyKey> = Vec::new();
+        for (handle, detached) in cars {
+            let structure = VEHICLE_STRUCTURE_BASE + u32::from(*handle);
+            let Some(model) = self.vehicles.get(&structure) else { continue };
+            // The body's state, from the part that names it; then its members.
+            let mut bodies: BTreeMap<u32, (&VehicleDetachedPart, Vec<u32>)> = BTreeMap::new();
+            for part in detached.iter().filter(|p| usize::from(p.part) < model.parts.len() && p.body <= p.part) {
+                let entry = bodies.entry(u32::from(part.body)).or_insert((part, Vec::new()));
+                if part.part == part.body {
+                    entry.0 = part;
+                }
+                entry.1.push(u32::from(part.part));
+            }
+            let previous_groups = std::mem::take(&mut self.vehicles.get_mut(&structure).expect("registered").groups);
+            let model = &self.vehicles[&structure];
+            let mut groups: Vec<(VehicleGroup, &VehicleDetachedPart, f32)> = bodies
+                .into_iter()
+                .map(|(body, (state, mut members))| {
+                    members.sort_unstable();
+                    members.dedup();
+                    // The centre of mass in the car's frame: fixed while the
+                    // body keeps its parts (its mass frame does not change).
+                    let rotation = Quat::from_array(state.rotation).normalize();
+                    let centre = match previous_groups.iter().find(|p| p.body == body && p.members == members) {
+                        Some(p) => p.centre,
+                        None => rotation.conjugate() * (Vec3::from_array(state.com) - Vec3::from_array(state.position)),
+                    };
+                    let reach = members
+                        .iter()
+                        .map(|&i| (Vec3::from_array(model.parts[i as usize].centre) - centre).length() + model.parts[i as usize].reach)
+                        .fold(0.0f32, f32::max);
+                    (VehicleGroup { body, members, centre }, state, reach)
+                })
+                .collect();
+            groups.sort_by_key(|g| g.0.body);
+            let kept = |g: &VehicleGroup| previous_groups.iter().any(|p| p.body == g.body && p.members == g.members);
+            for (group, state, reach) in &groups {
+                let key = BodyKey { structure, body: group.body };
+                let same = kept(group);
+                let previous = if same { self.truth.get(&key).copied() } else { None };
+                let history = if same { self.truth.history(&key) } else { None };
+                let snapshot = BodySnapshotInput {
+                    body_entity: 0,
+                    position: state.com,
+                    rotation: Quat::from_array(state.rotation).normalize().to_array(),
+                    linear_velocity: state.linear_velocity,
+                    angular_velocity: state.angular_velocity,
+                    contacts: 0,
+                    flags: 0,
+                };
+                let (mut truth, continuous, _) =
+                    classify(tick, key, &snapshot, previous, history, &self.config, self.physics, &self.states, &self.defs, &self.floors);
+                truth.radius = *reach;
+                // A group that kept its id but not its parts is a new version.
+                truth.born = if same { previous.map_or(0, |p| p.born) } else if previous_groups.iter().any(|p| p.body == group.body) { tick } else { 0 };
+                let slot = self.truth.slot(key) as usize;
+                push_history(&mut self.truth.slots[slot].history, truth.keyframe, continuous && same);
+                if truth.contact_tick == tick && tick > 0 {
+                    self.fresh_contacts.push(key);
+                    self.contacts_stale.insert(key);
+                }
+                if self.truth.insert(key, truth).is_none() {
+                    self.shapes_new.insert(key);
+                    self.order_new.insert(key);
+                }
+            }
+            let now: Vec<VehicleGroup> = groups.into_iter().map(|g| g.0).collect();
+            if now != previous_groups {
+                for gone in previous_groups.iter().filter(|p| !now.iter().any(|g| g.body == p.body)) {
+                    let key = BodyKey { structure, body: gone.body };
+                    self.truth.remove(&key);
+                    self.contacts_stale.insert(key);
+                    for cs in self.clients.values_mut() {
+                        cs.believed.remove(&key);
+                        cs.acked.remove(&key);
+                        cs.unsent.remove(&key);
+                        cs.over_since.remove(&key);
+                    }
+                }
+                for group in now.iter().filter(|g| !previous_groups.iter().any(|p| p.body == g.body && p.members == g.members)) {
+                    let key = BodyKey { structure, body: group.body };
+                    touched.push(key);
+                    // Each client draws it as a new body from this tick.
+                    for cs in self.clients.values_mut() {
+                        if let Some(track) = cs.believed.get_mut(&key) {
+                            track.begin(tick);
+                        }
+                        cs.unsent.insert(key);
+                        cs.over_since.remove(&key);
+                    }
+                }
+                events.push(Event::VehicleGroups { tick, structure, groups: now.clone() });
+            }
+            self.vehicles.get_mut(&structure).expect("registered").groups = now;
+        }
+        self.publish(tick, &events, touched)
+    }
+
+    /// An events packet for every client (its sequence next), with the
+    /// bodies it changes marked for late-delivery repair and datagram copies
+    /// queued (decision D6).
+    fn publish(&mut self, tick: u32, events: &[Event], touched: Vec<BodyKey>) -> Vec<Outgoing> {
+        if events.is_empty() {
+            return Vec::new();
+        }
+        let packet = encode_events(self.event_seq, events);
+        if !touched.is_empty() {
+            for cs in self.clients.values_mut() {
+                cs.event_marks.push_back((self.event_seq, tick, touched.clone()));
+                // Bounded: a client that never acks events keeps no more
+                // than a few seconds of them.
+                while cs.event_marks.len() > EVENT_MARKS_MAX {
+                    cs.event_marks.pop_front();
+                }
+            }
+        }
+        self.event_seq += 1;
+        if self.config.event_copies > 0 && packet.len() <= self.config.max_datagram {
+            for cs in self.clients.values_mut() {
+                cs.event_copies.push_back((packet.clone(), self.config.event_copies));
+            }
+        }
+        vec![Outgoing::reliable(packet)]
+    }
+
     /// The worker pool, when `send_threads` asks for more than one.
     fn workers(&mut self) -> Option<std::sync::Arc<rayon::ThreadPool>> {
         let threads = self.config.send_threads as usize;
@@ -1004,6 +1176,7 @@ impl PerPlayer {
             statics_dirty: FxHashSet::default(),
             statics_built: false,
             workers: None,
+            vehicles: BTreeMap::new(),
         };
         // A capture that starts mid-match: derive the structure from the
         // ledger's bonds and islands, as a joining client would from bits.
@@ -1195,12 +1368,15 @@ impl ReplicationStrategy for PerPlayer {
 
     fn join(&mut self, client: u64, tick: u32) -> Vec<Outgoing> {
         let mut state = ClientState::default();
+        let vehicles: Vec<(u32, Vec<VehicleGroup>)> =
+            self.vehicles.iter().filter(|(_, m)| !m.groups.is_empty()).map(|(&s, m)| (s, m.groups.clone())).collect();
         let mut boot = Bootstrap {
             tick,
             next_event_seq: self.event_seq,
             structures: Vec::new(),
             settled: Vec::new(),
             awake: Vec::new(),
+            vehicles,
         };
         for (&id, s) in &self.states {
             boot.structures.push(BootstrapStructure {
@@ -1585,27 +1761,7 @@ impl ReplicationStrategy for PerPlayer {
                 events.push(Event::Hash { tick, structure, hash: state.hash() });
             }
         }
-        if events.is_empty() {
-            return Vec::new();
-        }
-        let packet = encode_events(self.event_seq, &events);
-        if !touched.is_empty() {
-            for cs in self.clients.values_mut() {
-                cs.event_marks.push_back((self.event_seq, tick, touched.clone()));
-                // Bounded: a client that never acks events keeps no more
-                // than a few seconds of them.
-                while cs.event_marks.len() > EVENT_MARKS_MAX {
-                    cs.event_marks.pop_front();
-                }
-            }
-        }
-        self.event_seq += 1;
-        if self.config.event_copies > 0 && packet.len() <= self.config.max_datagram {
-            for cs in self.clients.values_mut() {
-                cs.event_copies.push_back((packet.clone(), self.config.event_copies));
-            }
-        }
-        vec![Outgoing::reliable(packet)]
+        self.publish(tick, &events, touched)
     }
 
     fn begin_send(&mut self, tick: u32) {
@@ -2651,6 +2807,13 @@ mod sunk_tests {
 }
 
 #[cfg(test)]
+mod fracture_scale_tests_support {
+    pub fn block_manifest(nx: u32, ny: u32, nz: u32) -> crate::manifest::DestructionManifest {
+        super::fracture_scale_tests::block(nx, ny, nz)
+    }
+}
+
+#[cfg(test)]
 mod fracture_scale_tests {
     use super::*;
     use crate::manifest::{BondDef, ChunkDef, ChunkGeometry, StructureManifest};
@@ -2659,7 +2822,7 @@ mod fracture_scale_tests {
 
     /// A standing block `nx` x `ny` x `nz` of 1 m chunks, the bottom layer
     /// supports, each chunk bonded to its six neighbours.
-    fn block(nx: u32, ny: u32, nz: u32) -> DestructionManifest {
+    pub(super) fn block(nx: u32, ny: u32, nz: u32) -> DestructionManifest {
         let id = |x: u32, y: u32, z: u32| (y * nz + z) * nx + x;
         let mut chunks = Vec::new();
         for y in 0..ny {
@@ -2928,5 +3091,140 @@ mod fracture_scale_tests {
         assert!(large < 1.5 * small + 0.02, "structure size: {large:.3} ms vs {small:.3} ms");
         // Nor what lies about (it was 5.5x for 5x the bodies).
         assert!(crowded < 2.0 * large + 0.01, "bodies: {crowded:.3} ms vs {large:.3} ms");
+    }
+}
+
+#[cfg(test)]
+mod vehicle_tests {
+    use super::*;
+    use crate::replication::{ClientView, SendBudget};
+    use crate::topology::CityLedger;
+    use crate::types::Camera;
+    use vibe_land_perplayer::client::Client;
+    use vibe_land_perplayer::predict::Physics;
+
+    /// A car's parts that break off are bodies of the per-player stream: two
+    /// parts come off together, fly and spin, then split. Groups follow the
+    /// body each part is on, never its pose's bits. The client gets
+    /// their groups at their tick and draws each where the physics has it
+    /// (within a fraction of the tolerance, seen from 6 m), from keyframes
+    /// sent only when its drawing would drift: free flight is predicted.
+    #[test]
+    fn a_cars_broken_parts_are_drawn_where_the_physics_has_them() {
+        let manifest = super::fracture_scale_tests_support::block_manifest(2, 2, 2);
+        let mut pp = PerPlayer::new(&manifest, CityLedger::from_manifest(&manifest), PerPlayerConfig::validated(60));
+        pp.add_client(1);
+        let boot = pp.join(1, 0);
+        // Parts 0..4 of a car (handle 7): 2 and 3 break off; their centres in
+        // the car frame, 2 kg and 1 kg.
+        let parts = vec![
+            VehiclePartModel { mass: 50.0, centre: [0.0, 0.5, 0.0], reach: 1.0 },
+            VehiclePartModel { mass: 10.0, centre: [0.0, 0.5, 1.0], reach: 0.5 },
+            VehiclePartModel { mass: 2.0, centre: [0.8, 0.4, 1.2], reach: 0.2 },
+            VehiclePartModel { mass: 1.0, centre: [0.8, 0.4, 1.5], reach: 0.15 },
+        ];
+        pp.register_vehicle(7, parts.clone());
+        let structure = VEHICLE_STRUCTURE_BASE + 7;
+        let physics = Physics::at_hz(60, PerPlayerConfig::validated(60).gravity_y);
+        let mut client = Client::new(structure_defs(&manifest), physics, 60, PerPlayerConfig::validated(60).delay_ticks);
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        for packet in &boot {
+            client.ingest(&packet.bytes, ms(0));
+        }
+        let camera = Camera { eye: Vec3::new(6.0, 3.0, 0.0), direction: Vec3::new(-1.0, -0.3, 0.2).normalize(), fov_degrees: 70.0 };
+        // The physics' truth: each body's map (rotation R, translation t from
+        // the car frame), integrated as PhysX does (velocity, then position).
+        let g = Vec3::new(0.0, physics.gravity.y, 0.0);
+        // A body: members, centre of mass (world), R, v, w; it spins about its
+        // centre of mass, and its map's translation is com - R * centre.
+        let centre_of = |members: &[u16]| {
+            let (m, w) = members.iter().fold((0.0f32, Vec3::ZERO), |(m, w), &i| (m + parts[i as usize].mass, w + Vec3::from_array(parts[i as usize].centre) * parts[i as usize].mass));
+            w / m
+        };
+        let mut bodies: Vec<(Vec<u16>, Vec3, Quat, Vec3, Vec3)> = Vec::new();
+        let mut truth_at: Vec<(u32, BodyKey, Vec3, Quat)> = Vec::new();
+        let (mut keyframes, mut ticks_flying, mut checked) = (0u64, 0u64, 0u32);
+        for tick in 1..=150u32 {
+            if tick == 20 {
+                let members = vec![2, 3];
+                let com = Quat::IDENTITY * centre_of(&members) + Vec3::new(0.0, 2.0, 0.0);
+                bodies.push((members, com, Quat::IDENTITY, Vec3::new(1.5, 4.0, -0.5), Vec3::new(0.0, 2.0, 1.0)));
+            }
+            if tick == 70 {
+                // The pair splits: each part leaves from where it is, part 3
+                // with its own velocity.
+                let (_, com, r, v, w) = bodies[0].clone();
+                let t = com - r * centre_of(&[2, 3]);
+                bodies[0] = (vec![2], r * centre_of(&[2]) + t, r, v, w);
+                bodies.push((vec![3], r * centre_of(&[3]) + t, r, v + Vec3::new(0.0, 1.0, 2.0), w * -1.0));
+            }
+            for b in &mut bodies {
+                b.3 += g * physics.dt;
+                b.1 += b.3 * physics.dt;
+                b.2 = (Quat::from_scaled_axis(b.4 * physics.dt) * b.2).normalize();
+            }
+            // Each part's map as PhysX composes it (actor pose * shape local
+            // * rest^-1): the same body's parts differ in their low bits,
+            // differently each tick, so the body each is on names its group.
+            let detached: Vec<VehicleDetachedPart> = bodies
+                .iter()
+                .flat_map(|(m, com, r, v, w)| {
+                    let t = *com - *r * centre_of(m);
+                    m.iter().map(move |&p| VehicleDetachedPart {
+                        part: p,
+                        body: m[0],
+                        position: (t + Vec3::splat(((tick * 7 + u32::from(p)) % 3) as f32 * 2e-7)).to_array(),
+                        rotation: r.to_array(),
+                        com: com.to_array(),
+                        linear_velocity: v.to_array(),
+                        angular_velocity: w.to_array(),
+                    })
+                })
+                .collect();
+            ticks_flying += u64::from(!bodies.is_empty());
+            pp.ingest_tick(tick, &[], &DestructionTickOutput::default());
+            for packet in pp.ingest_vehicles(tick, &[(7, detached)]) {
+                client.ingest(&packet.bytes, ms(tick));
+            }
+            for (members, com, r, _, _) in &bodies {
+                truth_at.push((tick, BodyKey { structure, body: u32::from(members[0]) }, *com, *r));
+            }
+            pp.begin_send(tick);
+            let before = pp.stats.keyframes_sent;
+            let send = pp.client_send(1, &ClientView { camera }, tick, Some(SendBudget::Full));
+            keyframes += pp.stats.keyframes_sent - before;
+            for packet in send.packets {
+                client.ingest(&packet.bytes, ms(tick) + 30.0);
+            }
+            let Some(r) = client.advance(ms(tick) + 33.0) else { continue };
+            // What the client draws now against the truth at that tick.
+            for (key, p, q, _) in client.body_poses().into_iter().filter(|b| b.0.structure == structure) {
+                // The truth at the drawn moment, between its ticks as the
+                // predictor interpolates the physics' steps.
+                let at = r.floor() as u32;
+                // Not across the split (the body's parts, so its centre, change).
+                if at + 1 == 70 {
+                    continue;
+                }
+                let (Some(&(_, _, a, aq)), Some(&(_, _, b, bq))) = (
+                    truth_at.iter().find(|(t, k, _, _)| *t == at && *k == key),
+                    truth_at.iter().find(|(t, k, _, _)| *t == at + 1 && *k == key),
+                ) else {
+                    continue;
+                };
+                let (tp, tq) = (a.lerp(b, r.fract()), aq.slerp(bq, r.fract()));
+                checked += 1;
+                let px = (p - tp).length() * 935.0 / 6.0;
+                let angle = 2.0 * q.dot(tq).abs().min(1.0).acos();
+                assert!(px < 1.5, "tick {at} {key:?}: drawn {px:.2} px off");
+                assert!(angle < 0.02, "tick {at} {key:?}: drawn {angle:.4} rad off");
+            }
+        }
+        let (groups, _) = client.vehicle_groups();
+        assert_eq!(groups[&structure].iter().map(|g| (g.body, g.members.clone())).collect::<Vec<_>>(), vec![(2, vec![2]), (3, vec![3])]);
+        assert!(checked > 100, "{checked} drawn poses checked");
+        // Prediction carries free flight: far fewer keyframes than ticks.
+        assert!(keyframes * 3 < ticks_flying, "{keyframes} keyframes over {ticks_flying} body-ticks in flight");
+        eprintln!("car debris: {keyframes} keyframes over {ticks_flying} body-ticks; {checked} drawn poses within tolerance");
     }
 }

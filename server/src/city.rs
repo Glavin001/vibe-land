@@ -669,6 +669,8 @@ struct PerPlayerLive {
     strategy: PerPlayer,
     /// Reliable events this tick's ingest produced, for every client.
     staged_reliable: Vec<Vec<u8>>,
+    /// Cars whose debris this stream carries: handle -> vehicle id.
+    vehicles: HashMap<u8, u32>,
 }
 
 /// The live per-player configuration: the defaults, plus
@@ -701,6 +703,7 @@ impl PerPlayerLive {
         Self {
             strategy: PerPlayer::new(manifest, ledger, per_player_config(sim_hz)),
             staged_reliable: Vec::new(),
+            vehicles: HashMap::new(),
         }
     }
 
@@ -1721,6 +1724,33 @@ impl CityRuntime {
         self.total_sent_bytes += bytes as u64;
         self.total_sent_records += records;
         sends
+    }
+
+    /// Wire 4: whether car `id`'s debris is streamed under `handle`.
+    pub fn per_player_vehicle_registered(&self, handle: u8, id: u32) -> bool {
+        self.per_player.as_ref().is_some_and(|pp| pp.vehicles.get(&handle) == Some(&id))
+    }
+
+    /// Wire 4: stream car `id`'s detached parts (under `handle`) as bodies.
+    pub fn per_player_register_vehicle(&mut self, handle: u8, id: u32, parts: Vec<vibe_land_destruction::per_player::VehiclePartModel>) {
+        if let Some(pp) = self.per_player.as_mut() {
+            pp.strategy.register_vehicle(handle, parts);
+            pp.vehicles.insert(handle, id);
+        }
+    }
+
+    /// Wire 4: this tick's detached parts of the registered cars, as
+    /// `PerPlayer::ingest_vehicles` takes them; their reliable events.
+    pub fn per_player_ingest_vehicles(&mut self, sim_tick: u32, cars: &[(u8, Vec<vibe_land_destruction::per_player::VehicleDetachedPart>)]) -> Vec<Vec<u8>> {
+        let Some(pp) = self.per_player.as_mut() else {
+            return Vec::new();
+        };
+        let packets: Vec<Vec<u8>> = pp.strategy.ingest_vehicles(sim_tick, cars).into_iter().map(|p| p.bytes).collect();
+        let bytes: usize = packets.iter().map(Vec::len).sum();
+        self.sent_packets += packets.len() as u64;
+        self.sent_bytes += bytes as u64;
+        self.total_sent_bytes += bytes as u64;
+        packets
     }
 
     /// Wire 4: a client's datagram acks (`PKT_PP_ACK`).
