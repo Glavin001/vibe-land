@@ -108,7 +108,7 @@ async function join(at) {
   const [x, y, z] = at;
   // A fresh page, then the city camera drop at the join point (the native
   // QA joins with the same drop).
-  await page.goto(`${CLIENT}/city`);
+  await page.goto(`${CLIENT}/city${process.env.QA_QUERY ? `?${process.env.QA_QUERY}` : ''}`);
   for (let i = 0; i < 60 && !(await page.evaluate(() => !!window.__VIBE_E2E__)); i++) await sleep(500);
   await page.mouse.click(640, 360);
   for (let i = 0; i < 120; i++) {

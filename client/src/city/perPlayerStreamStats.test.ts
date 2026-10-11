@@ -39,6 +39,7 @@ const stubCore = (): PerPlayerCore & { ingested: number } => ({
   vehicle_groups_version: () => 0,
   vehicle_groups: () => new Float32Array(),
   set_vehicle_parts: () => {},
+  advance_vehicles: () => {},
 });
 
 describe('per-player stream stats', () => {

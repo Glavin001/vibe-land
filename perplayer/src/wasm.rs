@@ -80,6 +80,14 @@ impl PerPlayerClient {
         self.inner.advance(now_ms).unwrap_or(f32::NAN)
     }
 
+    /// Advance the car clock (the tick the client draws cars at, never
+    /// back): cars' groups apply and are drawn at it.
+    pub fn advance_vehicles(&mut self, tick: f32) {
+        if tick.is_finite() {
+            self.inner.advance_vehicles(tick);
+        }
+    }
+
     pub fn started(&self) -> bool {
         self.inner.started()
     }

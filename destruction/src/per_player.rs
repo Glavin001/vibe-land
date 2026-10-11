@@ -115,6 +115,10 @@ pub struct PerPlayerConfig {
     pub horizon_ticks: f32,
     /// The client's playout delay (`perplayer::client::RenderClock`).
     pub delay_ticks: f32,
+    /// How far behind now the client draws cars, and so their groups (its
+    /// car clock, `Client::advance_vehicles`): the car interpolation delay's
+    /// baseline, two snapshot intervals at 60 Hz snapshots.
+    pub vehicle_delay_ticks: f32,
     pub hash_interval_ticks: u32,
     /// An empty keyframe packet at least this often, for the clock and acks.
     pub heartbeat_sends: u32,
@@ -184,6 +188,7 @@ impl PerPlayerConfig {
             "tolerance_px" => self.tolerance_px = f as f32,
             "horizon_ticks" => self.horizon_ticks = f as f32,
             "delay_ticks" => self.delay_ticks = f as f32,
+            "vehicle_delay_ticks" => self.vehicle_delay_ticks = f as f32,
             "ceiling_bytes" => self.ceiling_bytes = f as usize,
             "send_hz" => self.send_interval_ticks = (self.sim_hz as f64 / f).round().max(1.0) as u32,
             "heartbeat_sends" => self.heartbeat_sends = f as u32,
@@ -222,6 +227,7 @@ impl PerPlayerConfig {
             pane: (1920, 1080),
             horizon_ticks: 6.0,
             delay_ticks: 5.0,
+            vehicle_delay_ticks: 2.0,
             hash_interval_ticks: 120,
             heartbeat_sends: 6,
             max_datagram: 1_150,
@@ -2057,6 +2063,10 @@ fn send_for(
     // `tick - delay + one-way latency`.
     let latency_ticks = cs.rtt_ms * 0.5 / 1000.0 * config.sim_hz as f32;
     let arrival_render = r - config.delay_ticks + latency_ticks;
+    // Cars' groups are drawn on the car clock.
+    let arrival_at = |key: &BodyKey| {
+        if is_vehicle_structure(key.structure) { r - config.vehicle_delay_ticks + latency_ticks } else { arrival_render }
+    };
     struct Candidate {
         key: BodyKey,
         bytes: usize,
@@ -2294,8 +2304,8 @@ fn send_for(
                 // either way.
                 let ms_per_tick = 1000.0 / config.sim_hz as f32;
                 let late = |lands: f32| (lands - truth.contact_tick as f32).max(0.0) * ms_per_tick;
-                let late_now = late(arrival_render);
-                let late_wait = late(arrival_render + config.send_interval_ticks as f32);
+                let late_now = late(arrival_at(key));
+                let late_wait = late(arrival_at(key) + config.send_interval_ticks as f32);
                 let p = |ms: f32| model.penalty(ArtifactClass::ContactTiming, f64::from(ms), 1.0) as f32;
                 p(late_wait) - p(late_now)
             }
@@ -2481,7 +2491,7 @@ fn send_for(
             // The client derives the floor from the body at the decoded
             // pose; the truth's is that to within the quantisation.
             let decoded = Keyframe { floor_drop: record.keyframe.floor_drop, ..prepared.decoded(physics) };
-            cs.believed.entry(record.key).or_default().add(decoded, arrival_render, physics);
+            cs.believed.entry(record.key).or_default().add(decoded, arrival_at(&record.key), physics);
             cs.unsent.remove(&record.key);
             carried.push((record.key, decoded));
             stats.keyframes_sent += 1;
@@ -3241,6 +3251,183 @@ mod vehicle_tests {
         // Prediction carries free flight: far fewer keyframes than ticks.
         assert!(keyframes * 3 < ticks_flying, "{keyframes} keyframes over {ticks_flying} body-ticks in flight");
         eprintln!("car debris: {keyframes} keyframes over {ticks_flying} body-ticks; {checked} drawn poses within tolerance");
+    }
+
+    /// A flying pair of car parts splits, and the new pieces' first
+    /// keyframes are lost for a few ticks. Both pieces stay drawn from the
+    /// moment the split applies, starting from the pair's motion (as a
+    /// building's fragments spawn from their parent), never snapping back
+    /// onto the car: drawn every frame, each moving no further between
+    /// frames than its speed carries it.
+    #[test]
+    fn a_split_cars_pieces_stay_drawn_while_their_keyframes_are_late() {
+        let manifest = super::fracture_scale_tests_support::block_manifest(2, 2, 2);
+        let config = PerPlayerConfig::validated(60);
+        let mut pp = PerPlayer::new(&manifest, CityLedger::from_manifest(&manifest), config.clone());
+        pp.add_client(1);
+        let boot = pp.join(1, 0);
+        let parts = vec![
+            VehiclePartModel { mass: 50.0, centre: [0.0, 0.5, 0.0], reach: 1.0, points: vec![] },
+            VehiclePartModel { mass: 10.0, centre: [0.0, 0.5, 1.0], reach: 0.5, points: vec![] },
+            VehiclePartModel { mass: 2.0, centre: [0.8, 0.4, 1.2], reach: 0.2, points: vec![] },
+            VehiclePartModel { mass: 1.0, centre: [0.8, 0.4, 1.5], reach: 0.15, points: vec![] },
+        ];
+        pp.register_vehicle(7, parts.clone());
+        let structure = VEHICLE_STRUCTURE_BASE + 7;
+        let physics = Physics::at_hz(60, config.gravity_y);
+        let mut client = Client::new(structure_defs(&manifest), physics, 60, config.delay_ticks);
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        for packet in &boot {
+            client.ingest(&packet.bytes, ms(0));
+        }
+        let camera = Camera { eye: Vec3::new(6.0, 3.0, 0.0), direction: Vec3::new(-1.0, -0.3, 0.2).normalize(), fov_degrees: 70.0 };
+        let g = Vec3::new(0.0, physics.gravity.y, 0.0);
+        let centre_of = |members: &[u16]| {
+            let (m, w) = members.iter().fold((0.0f32, Vec3::ZERO), |(m, w), &i| (m + parts[i as usize].mass, w + Vec3::from_array(parts[i as usize].centre) * parts[i as usize].mass));
+            w / m
+        };
+        let mut bodies: Vec<(Vec<u16>, Vec3, Quat, Vec3, Vec3)> = Vec::new();
+        let mut last: std::collections::BTreeMap<u32, (f32, Vec3)> = Default::default();
+        let (mut frames, mut worst_speed, mut truth_speed) = (0u32, 0.0f32, 0.0f32);
+        let mut delayed = Vec::new();
+        for tick in 1..=120u32 {
+            if tick == 20 {
+                let members = vec![2, 3];
+                bodies.push((members.clone(), centre_of(&members) + Vec3::new(0.0, 3.0, 0.0), Quat::IDENTITY, Vec3::new(1.5, 4.0, -0.5), Vec3::new(0.0, 2.0, 1.0)));
+            }
+            if tick == 50 {
+                let (_, com, r, v, w) = bodies[0].clone();
+                let t = com - r * centre_of(&[2, 3]);
+                bodies[0] = (vec![2], r * centre_of(&[2]) + t, r, v, w);
+                bodies.push((vec![3], r * centre_of(&[3]) + t, r, v + Vec3::new(0.0, 0.5, 1.0), w));
+            }
+            for b in &mut bodies {
+                b.3 += g * physics.dt;
+                b.1 += b.3 * physics.dt;
+                b.2 = (Quat::from_scaled_axis(b.4 * physics.dt) * b.2).normalize();
+                // Its centre's speed (it spins about its centre of mass).
+                truth_speed = truth_speed.max(b.3.length());
+            }
+            let detached: Vec<VehicleDetachedPart> = bodies
+                .iter()
+                .flat_map(|(m, com, r, v, w)| {
+                    let t = *com - *r * centre_of(m);
+                    m.iter().map(move |&p| VehicleDetachedPart { part: p, body: m[0], position: t.to_array(), rotation: r.to_array(), com: com.to_array(), linear_velocity: v.to_array(), angular_velocity: w.to_array() })
+                })
+                .collect();
+            pp.ingest_tick(tick, &[], &DestructionTickOutput::default());
+            for packet in pp.ingest_vehicles(tick, &[(7, detached)]) {
+                client.ingest(&packet.bytes, ms(tick));
+            }
+            pp.begin_send(tick);
+            let send = pp.client_send(1, &ClientView { camera }, tick, Some(SendBudget::Full));
+            // The keyframes sent just after the split are lost; those of the
+            // ticks before it arrive late, together, as the split applies
+            // (the pair is mid-correction when it splits).
+            if (42..50).contains(&tick) {
+                delayed.extend(send.packets);
+            } else if !(50..56).contains(&tick) {
+                for packet in send.packets {
+                    client.ingest(&packet.bytes, ms(tick) + 30.0);
+                }
+            }
+            if tick == 54 {
+                for packet in delayed.drain(..) {
+                    client.ingest(&packet.bytes, ms(tick) + 30.0);
+                }
+            }
+            let Some(r) = client.advance(ms(tick) + 33.0) else { continue };
+            if r < 21.0 {
+                continue;
+            }
+            let (groups, _) = client.vehicle_groups();
+            let expected = groups.get(&structure).map_or(0, Vec::len);
+            let drawn: Vec<_> = client.body_poses().into_iter().filter(|b| b.0.structure == structure).collect();
+            assert_eq!(drawn.len(), expected, "tick {tick} (drawing {r:.1}): {} of {expected} pieces drawn", drawn.len());
+            for (key, p, _, _) in drawn {
+                if let Some((r0, prev)) = last.insert(key.body, (r, p)).filter(|&(r0, _)| r > r0) {
+                    worst_speed = worst_speed.max((p - prev).length() / ((r - r0) * physics.dt));
+                }
+                frames += 1;
+            }
+        }
+        assert!(frames > 100, "{frames} drawn frames");
+        // Never faster than the fastest piece truly moves, plus the 1.1 m/s
+        // the split adds (which the late keyframe brings in): a snap back
+        // onto the car, or a jump, would be metres in a tick.
+        eprintln!("split pieces: drawn up to {worst_speed:.2} m/s, truth up to {truth_speed:.2} m/s");
+        assert!(worst_speed <= truth_speed + 1.12, "a piece drawn moving {worst_speed:.2} m/s, the fastest truly {truth_speed:.2} m/s");
+    }
+
+    /// A part leaves a car moving at 15 m/s. Cars are drawn on the car clock,
+    /// 3.4 ticks nearer now than the per-player render tick (measured live:
+    /// 1.4 against 4.8 ticks behind the newest snapshot). Its group applies
+    /// and is drawn on the car clock too, so it leaves the car where the car
+    /// is drawn: within the tolerance of the truth at that tick, not
+    /// 15 m/s x 3.4 ticks (0.85 m) behind it.
+    #[test]
+    fn a_part_leaves_a_moving_car_where_the_car_is_drawn() {
+        let manifest = super::fracture_scale_tests_support::block_manifest(2, 2, 2);
+        let config = PerPlayerConfig::validated(60);
+        let mut pp = PerPlayer::new(&manifest, CityLedger::from_manifest(&manifest), config.clone());
+        pp.add_client(1);
+        let boot = pp.join(1, 0);
+        let parts = vec![
+            VehiclePartModel { mass: 50.0, centre: [0.0, 0.5, 0.0], reach: 1.0, points: vec![] },
+            VehiclePartModel { mass: 2.0, centre: [0.8, 0.4, 1.2], reach: 0.3, points: vec![] },
+        ];
+        pp.register_vehicle(7, parts.clone());
+        let structure = VEHICLE_STRUCTURE_BASE + 7;
+        let physics = Physics::at_hz(60, config.gravity_y);
+        let mut client = Client::new(structure_defs(&manifest), physics, 60, config.delay_ticks);
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        for packet in &boot {
+            client.ingest(&packet.bytes, ms(0));
+        }
+        let camera = Camera { eye: Vec3::new(30.0, 3.0, 6.0), direction: Vec3::new(0.0, -0.3, -1.0).normalize(), fov_degrees: 70.0 };
+        let car_lead = 3.4f32;
+        let centre = Vec3::from_array(parts[1].centre);
+        let g = Vec3::new(0.0, physics.gravity.y, 0.0);
+        // The car drives along x at 15 m/s; part 1 rides it until tick 20.
+        let car_at = |tick: f32| Vec3::new(15.0 * tick / 60.0, 0.0, 0.0);
+        let mut truth: Vec<(u32, Vec3)> = Vec::new();
+        let (mut com, mut v) = (car_at(20.0) + centre, Vec3::new(15.0, 2.0, 0.0));
+        let mut checked = 0u32;
+        let mut worst = 0.0f32;
+        for tick in 1..=120u32 {
+            let detached = if tick >= 20 {
+                if tick > 20 {
+                    v += g * physics.dt;
+                    com += v * physics.dt;
+                }
+                vec![VehicleDetachedPart { part: 1, body: 1, position: (com - centre).to_array(), rotation: [0.0, 0.0, 0.0, 1.0], com: com.to_array(), linear_velocity: v.to_array(), angular_velocity: [0.0; 3] }]
+            } else {
+                Vec::new()
+            };
+            // Where the part is: on the car, then flying.
+            truth.push((tick, if tick >= 20 { com } else { car_at(tick as f32) + centre }));
+            pp.ingest_tick(tick, &[], &DestructionTickOutput::default());
+            for packet in pp.ingest_vehicles(tick, &[(7, detached)]) {
+                client.ingest(&packet.bytes, ms(tick));
+            }
+            pp.begin_send(tick);
+            for packet in pp.client_send(1, &ClientView { camera }, tick, Some(SendBudget::Full)).packets {
+                client.ingest(&packet.bytes, ms(tick) + 30.0);
+            }
+            let Some(r) = client.advance(ms(tick) + 33.0) else { continue };
+            let car_r = r + car_lead;
+            client.advance_vehicles(car_r);
+            for (_, p, _, _) in client.body_poses().into_iter().filter(|b| b.0.structure == structure) {
+                let at = car_r.floor() as u32;
+                let (Some(&(_, a)), Some(&(_, b))) = (truth.iter().find(|t| t.0 == at), truth.iter().find(|t| t.0 == at + 1)) else { continue };
+                let off = (p - a.lerp(b, car_r.fract())).length();
+                worst = worst.max(off);
+                checked += 1;
+            }
+        }
+        assert!(checked > 50, "{checked} drawn poses checked");
+        // 1.5 px at the 30 m it is seen from (935 px focal).
+        assert!(worst * 935.0 / 30.0 < 1.5, "drawn up to {worst:.3} m from where its car is drawn");
     }
 
     /// A car part's packets are lost while it falls and lands; later ones

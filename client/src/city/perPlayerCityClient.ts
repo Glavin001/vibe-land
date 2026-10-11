@@ -57,6 +57,7 @@ export interface PerPlayerCore {
   vehicle_groups_version(): number;
   vehicle_groups(): Float32Array;
   set_vehicle_parts(structure: number, flat: Float32Array): void;
+  advance_vehicles(tick: number): void;
 }
 
 /** A car part's hull shapes in its authored frame (vehicle metadata.json `parts`). */
@@ -198,6 +199,8 @@ export class PerPlayerCityClient extends CityClient {
     const r = this.core.advance(nowMs);
     if (Number.isNaN(r) || !this.core.started()) return this.live;
     this.renderTick = r;
+    // Cars' groups on the clock their cars are drawn at.
+    if (this.vehicleClock) this.core.advance_vehicles(this.vehicleClock());
     // The core's structure hash disagreed with the server's: ask for a fresh
     // bootstrap, at most once per 3 s while it keeps disagreeing.
     const mismatches = this.core.hash_mismatches();
@@ -264,6 +267,17 @@ export class PerPlayerCityClient extends CityClient {
       }
     }
     this.core.set_vehicle_parts(VEHICLE_STRUCTURE_BASE + handle, new Float32Array(flat));
+  }
+
+  private vehicleClock: (() => number) | null = null;
+
+  /**
+   * The tick cars are drawn at (the car clock), read each frame: their
+   * detached groups apply and are drawn at it, so a part leaves its car
+   * where the car is drawn. Unset, they follow the per-player render tick.
+   */
+  setVehicleClock(clock: (() => number) | null): void {
+    this.vehicleClock = clock;
   }
 
   /** Each frame, every car's detached parts (wire 4 streams them as bodies). */

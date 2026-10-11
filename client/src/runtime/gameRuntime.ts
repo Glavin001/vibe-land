@@ -4,6 +4,7 @@ import {VehiclePresentationPredictor, extrapolateVehicle, vehicleProxy, type Veh
 import type { CityCameraDropCmd } from '../net/protocol';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { loadVehicleMetadata } from '../vehicles/vehicleStream';
+import { DetachBlend } from '../vehicles/detachBlend';
 import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
@@ -33,7 +34,7 @@ import {
   type ShotFiredPacket,
   type VehicleStateMeters,
 } from '../net/protocol';
-import { netPlayerStateToMeters } from '../net/protocol';
+import { netPlayerStateToMeters, SERVER_TICK_US } from '../net/protocol';
 import type { SemanticInputState } from '../input/types';
 import { PredictionManager } from '../physics/predictionManager';
 import { VehiclePredictionManager } from '../physics/vehiclePredictionManager';
@@ -1202,7 +1203,28 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         await initPerPlayerWasm();
         const perPlayer = new PerPlayerCityClient(manifest, sendUpstream, createPerPlayerCore(manifest, 60));
         // Cars' broken-off parts are bodies of this stream; their cars draw them.
-        perPlayer.setVehicleDebrisListener((handle, parts) => client.setVehicleDebris(handle, parts));
+        // The driven car is drawn ahead of them: its parts blend out of it.
+        // Parts already off a car when its driving starts are not blended.
+        const detachBlend = new DetachBlend();
+        let blendCar: number | null = null;
+        perPlayer.setVehicleDebrisListener((handle, parts) => {
+          if (handle !== client.getLocalDrivenVehicleId()) {
+            if (handle === blendCar) blendCar = null;
+            client.setVehicleDebris(handle, parts);
+            return;
+          }
+          const first = blendCar !== handle;
+          if (first) {
+            detachBlend.reset();
+            blendCar = handle;
+          }
+          client.setVehicleDebris(handle, detachBlend.apply(performance.now(), first ? null : this.drivenVehiclePose(false), parts));
+        });
+        // On the clock other cars are drawn at (?carClock=0: the per-player
+        // render tick, for comparison).
+        if (new URLSearchParams(globalThis.location?.search ?? '').get('carClock') !== '0') {
+          perPlayer.setVehicleClock(() => client.getRenderTimeUs() / SERVER_TICK_US);
+        }
         // Their hulls, so a part between keyframes rests on the ground as the
         // server models it.
         client.setVehicleAssetListener((handle, vehicle) => {
@@ -2350,6 +2372,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
+    return this.drivenVehiclePose(true);
+  }
+
+  /** The driven car as drawn this frame; `present` records it as presented. */
+  private drivenVehiclePose(present: boolean): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
     if (this.thinAuthoritative) {
       const vehicleId = this.client?.getLocalDrivenVehicleId();
       if (vehicleId == null || !this.client) return null;
@@ -2357,7 +2384,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       // snapshot; over a network its proxy prediction masks the round trip.
       const predicted=this.thinVehiclePredictor.vehicleId===vehicleId&&!this.client.presentsImmediately
         ?this.thinVehiclePredictor.pose(this.authoritativeInputBundler.remainderSec()):null;
-      if(predicted){this.thinVehiclePredictor.presented(performance.now());return predicted;}
+      if(predicted){if(present)this.thinVehiclePredictor.presented(performance.now());return predicted;}
       // Before the first owning snapshot, use bounded collision-aware extrapolation.
       const renderTimeUs = this.client.getDynamicBodyRenderTimeUs();
       const sample = this.client.sampleRemoteVehicle(vehicleId, renderTimeUs);

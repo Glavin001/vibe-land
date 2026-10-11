@@ -491,6 +491,12 @@ pub struct Client {
     /// Per car, each part's hull points in the car frame (`set_vehicle_parts`):
     /// the floor of its groups' keyframes.
     vehicle_parts: BTreeMap<u32, Vec<Vec<Vec3>>>,
+    /// The car clock (`advance_vehicles`): cars' groups apply and are drawn
+    /// at this tick, the tick their cars are drawn at. None until driven:
+    /// then they follow the render tick.
+    vehicle_render: Option<f32>,
+    /// Events packets of car groups (by sequence), applied on the car clock.
+    vehicle_events: BTreeMap<u32, Vec<Event>>,
 }
 
 /// How long a held keyframe waits for its fracture event, ticks.
@@ -524,6 +530,67 @@ impl Client {
             vehicles: BTreeMap::new(),
             vehicles_version: 0,
             vehicle_parts: BTreeMap::new(),
+            vehicle_render: None,
+            vehicle_events: BTreeMap::new(),
+        }
+    }
+
+    /// The tick `structure`'s bodies are drawn at: a car's groups on the car
+    /// clock, every other body at the render tick.
+    fn draw_tick(&self, structure: u32) -> f32 {
+        match self.vehicle_render {
+            Some(r) if is_vehicle_structure(structure) => r,
+            _ => self.render,
+        }
+    }
+
+    /// Advance the car clock to `tick` (never back): the tick the client
+    /// draws cars at. Car groups apply when it reaches them, and are drawn
+    /// at it, so a part leaves its car where the car is drawn.
+    pub fn advance_vehicles(&mut self, tick: f32) {
+        let r = self.vehicle_render.map_or(tick, |v| v.max(tick));
+        self.vehicle_render = Some(r);
+        self.apply_vehicle_events(r);
+        self.add_held(true);
+    }
+
+    /// Apply the car-group events packets the tick `r` has reached, in order.
+    fn apply_vehicle_events(&mut self, r: f32) {
+        while let Some(entry) = self.vehicle_events.first_entry() {
+            if entry.get().first().is_some_and(|e| e.tick() as f32 > r) {
+                break;
+            }
+            for event in entry.remove() {
+                if (event.tick() as f32) + 1.0 < r {
+                    self.stats.events_late += 1;
+                }
+                self.apply(event, r);
+            }
+        }
+    }
+
+    /// Held keyframes whose body this client now knows: those of cars'
+    /// groups (`vehicles`) or of every other body.
+    fn add_held(&mut self, vehicles: bool) {
+        if self.held.iter().all(|h| is_vehicle_structure(h.key.structure) != vehicles) {
+            return;
+        }
+        let held = std::mem::take(&mut self.held);
+        for record in held {
+            if is_vehicle_structure(record.key.structure) != vehicles {
+                self.held.push(record);
+                continue;
+            }
+            let r = self.draw_tick(record.key.structure);
+            if self.unborn(&record) {
+                if (record.keyframe.tick as f32) + HOLD_TICKS < r {
+                    self.stats.held_dropped += 1;
+                } else {
+                    self.held.push(record);
+                }
+            } else {
+                self.add_keyframe(&record, r);
+            }
         }
     }
 
@@ -610,6 +677,7 @@ impl Client {
     fn pending_fracture(&self, structure: u32) -> Option<u32> {
         self.pending
             .values()
+            .chain(self.vehicle_events.values())
             .flatten()
             .filter_map(|e| Self::makes_bodies(e, structure))
             .min()
@@ -644,6 +712,10 @@ impl Client {
                     let render = self.render.max(self.clock.render_tick(arrival_ms).unwrap_or(f32::MIN));
                     for record in packet.records {
                         self.stats.keyframes += 1;
+                        let render = match self.vehicle_render {
+                            Some(v) if is_vehicle_structure(record.key.structure) => v,
+                            _ => render,
+                        };
                         if (record.keyframe.tick as f32) < render {
                             self.stats.late_keyframes += 1;
                         }
@@ -665,8 +737,15 @@ impl Client {
             },
             Some(&PKT_PP_EVENTS) => match decode_events(bytes) {
                 Ok((seq, events)) => {
-                    if seq >= self.next_seq {
-                        self.pending.entry(seq).or_insert(events);
+                    if seq >= self.next_seq && !self.pending.contains_key(&seq) {
+                        // A car's groups apply on the car clock; their place
+                        // in the sequence holds nothing back.
+                        if !events.is_empty() && events.iter().all(|e| matches!(e, Event::VehicleGroups { .. })) {
+                            self.vehicle_events.insert(seq, events);
+                            self.pending.insert(seq, Vec::new());
+                        } else {
+                            self.pending.insert(seq, events);
+                        }
                     }
                 }
                 Err(_) => self.stats.decode_errors += 1,
@@ -726,6 +805,7 @@ impl Client {
                         }
                     }
                     self.pending.retain(|&seq, _| seq >= boot.next_event_seq);
+                    self.vehicle_events.retain(|&seq, _| seq >= boot.next_event_seq);
                     self.next_seq = boot.next_event_seq;
                     for (&id, cs) in &self.structures {
                         for node in 0..cs.def.node_count() {
@@ -784,21 +864,12 @@ impl Client {
                 self.apply(event, r);
             }
         }
-        // Held keyframes whose body this client now knows.
-        if !self.held.is_empty() {
-            let held = std::mem::take(&mut self.held);
-            for record in held {
-                if self.unborn(&record) {
-                    if (record.keyframe.tick as f32) + HOLD_TICKS < r {
-                        self.stats.held_dropped += 1;
-                    } else {
-                        self.held.push(record);
-                    }
-                } else {
-                    self.add_keyframe(&record, r);
-                }
-            }
+        // Without a car clock, cars' groups follow the render tick.
+        if self.vehicle_render.is_none() {
+            self.apply_vehicle_events(r);
+            self.add_held(true);
         }
+        self.add_held(false);
         Some(r)
     }
 
@@ -858,20 +929,44 @@ impl Client {
                 let applied = self.applied_tick.entry(structure).or_insert(0);
                 *applied = (*applied).max(tick);
                 let old = self.vehicles.remove(&structure).unwrap_or_default();
+                // A group new, or with other parts, is a new body from `tick`.
+                // One split from a drawn group starts from its motion then, as
+                // a building's fragments spawn from their parent: same
+                // rotation (both map the car frame), its own centre carried
+                // on the parent's spin. One straight off the car rides the
+                // car until its first keyframe.
+                let at = tick as f32;
+                let mut spawns: Vec<(u32, Option<Keyframe>)> = Vec::new();
+                for group in &groups {
+                    if old.iter().any(|g| g.body == group.body && g.members == group.members) {
+                        continue;
+                    }
+                    let parent = group.members.iter().find_map(|m| old.iter().find(|g| g.members.binary_search(m).is_ok()));
+                    let spawn = parent.and_then(|pg| {
+                        let track = self.bodies.get(&BodyKey { structure, body: pg.body }).filter(|t| !t.keyframes().is_empty())?;
+                        let (p, q) = track.pose_at(at, self.physics);
+                        let (v, w) = track.velocity_at(at, self.physics);
+                        let arm = q * (group.centre - pg.centre);
+                        Some(Keyframe { tick, position: p + arm, rotation: q, linear_velocity: v + w.cross(arm), angular_velocity: w, mode: Mode::Ballistic, decel: 0.0, floor_drop: None })
+                    });
+                    spawns.push((group.body, spawn));
+                }
                 for group in &old {
                     if !groups.iter().any(|g| g.body == group.body) {
                         self.bodies.remove(&BodyKey { structure, body: group.body });
                     }
                 }
-                // A group new, or with other parts, is a new body from `tick`.
                 let mut changed = Vec::new();
-                for group in &groups {
-                    if old.iter().any(|g| g.body == group.body && g.members == group.members) {
-                        continue;
-                    }
-                    changed.push(group.body);
-                    if let Some(track) = self.bodies.get_mut(&BodyKey { structure, body: group.body }) {
-                        track.begin(tick);
+                for (body, spawn) in spawns {
+                    changed.push(body);
+                    let key = BodyKey { structure, body };
+                    match spawn {
+                        Some(spawn) => self.bodies.entry(key).or_default().restart(spawn),
+                        None => {
+                            if let Some(track) = self.bodies.get_mut(&key) {
+                                track.begin(tick);
+                            }
+                        }
                     }
                 }
                 if !groups.is_empty() {
@@ -917,8 +1012,9 @@ impl Client {
         let mut draw = |key: BodyKey| {
             let posed = |t: &&BodyTrack| !is_vehicle_structure(key.structure) || !t.keyframes().is_empty() || t.settled().is_some();
             if let Some(track) = self.bodies.get(&key).filter(posed) {
-                let (p, q) = track.pose_at(self.render, self.physics);
-                let settled = track.settled().map(|(t, _, _)| t).filter(|&t| self.render >= t as f32);
+                let r = self.draw_tick(key.structure);
+                let (p, q) = track.pose_at(r, self.physics);
+                let settled = track.settled().map(|(t, _, _)| t).filter(|&t| r >= t as f32);
                 out.push((key, p, q, settled));
             }
         };
