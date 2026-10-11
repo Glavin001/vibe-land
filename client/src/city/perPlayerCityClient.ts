@@ -82,7 +82,9 @@ export function perPlayerCoreArgs(manifest: LoadedCityManifest['manifest']): {
         c.nodeIndex * NODE_STRIDE,
       );
     }
-    nodes.push(...table);
+    // Element by element: a spread passes every value as an argument, and a
+    // structure of tens of thousands of chunks overflows the stack.
+    for (let k = 0; k < table.length; k += 1) nodes.push(table[k]);
     // A JSON manifest (tapes) carries bond objects with their indices; the
     // binary one the live server sends carries only endpoint arrays, indexed
     // by position (manifestBinary.ts). Without them every chunk derives as

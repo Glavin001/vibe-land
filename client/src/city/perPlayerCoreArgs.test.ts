@@ -36,4 +36,24 @@ describe('perPlayerCoreArgs', () => {
     expect(Array.from(binary.bonds)).toEqual(Array.from(json.bonds));
     expect(Array.from(binary.nodes)).toEqual(Array.from(json.nodes));
   });
+
+  // Vibe Town is one structure of 51,921 chunks. Spreading its node table
+  // into push() passed ~571,000 arguments and overflowed the stack, so the
+  // city disabled itself and the page sat at "Loading the city" (2026-10-11).
+  it('flattens a structure of tens of thousands of chunks', () => {
+    const n = 60_000;
+    const big = {
+      structureId: 7,
+      worldPosition: [0, 0, 0],
+      worldRotation: [0, 0, 0, 1],
+      chunks: Array.from({ length: n }, (_, i) => chunk(i, i * 0.1, i === 0)),
+      bondCount: n - 1,
+      bondNode0: Uint32Array.from({ length: n - 1 }, (_, i) => i),
+      bondNode1: Uint32Array.from({ length: n - 1 }, (_, i) => i + 1),
+    };
+    const args = perPlayerCoreArgs({ structures: [big] } as unknown as Manifest);
+    expect(Array.from(args.nodeCounts)).toEqual([n]);
+    expect(args.nodes.length).toBe(n * 11);
+    expect(args.bonds.length).toBe((n - 1) * 2);
+  });
 });
