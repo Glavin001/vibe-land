@@ -785,7 +785,16 @@ impl PerPlayer {
             let state = states.get_mut(&id).unwrap();
             let broken: Vec<u32> = (0..def.bonds.len() as u32).filter(|&b| !this.ledger_bond_alive(id, b)).collect();
             state.apply(def, &broken, &[]);
-            let removed = this.removed_nodes(id, state);
+            // Removed: on a body only because bonds broke, and on no island.
+            // An object authored loose (a body in the intact structure: a
+            // bench, a planter) is awaiting the island the physics' first
+            // tick promotes, not crushed.
+            let authored = StructureState::new(def);
+            let removed: Vec<u32> = this
+                .removed_nodes(id, state)
+                .into_iter()
+                .filter(|&n| matches!(authored.body_of(n), ANCHORED | REMOVED))
+                .collect();
             let crushed = state.apply(def, &[], &removed);
             let mut mirror = IslandMirror::of(&this.ledger, id);
             mirror.pending = crushed.moved_chunks;
@@ -904,7 +913,20 @@ impl PerPlayer {
                     let min = island.nodes[0];
                     self.serial_body.insert((structure, serial), min);
                     if state.members(min) != Some(island.nodes.as_slice()) {
-                        mirror.mismatched.insert(serial);
+                        if mirror.mismatched.insert(serial) {
+                            // What the derivation disagrees with, once per
+                            // island as it starts (the counter only counts).
+                            let derived = state.members(min).map(<[u32]>::to_vec);
+                            let only_island: Vec<u32> = island.nodes.iter().copied().filter(|n| derived.as_ref().map_or(true, |d| d.binary_search(n).is_err())).take(8).collect();
+                            let only_derived: Vec<u32> = derived.iter().flatten().copied().filter(|n| island.nodes.binary_search(n).is_err()).take(8).collect();
+                            let bodies: Vec<u32> = island.nodes.iter().map(|&n| state.body_of(n)).take(8).collect();
+                            tracing::warn!(
+                                structure, serial, lowest = min, island_chunks = island.nodes.len(),
+                                derived_chunks = derived.as_ref().map_or(0, Vec::len),
+                                ?only_island, ?only_derived, ?bodies,
+                                "per-player derivation disagrees with a physics island"
+                            );
+                        }
                     } else {
                         mirror.mismatched.remove(&serial);
                     }
@@ -2604,6 +2626,45 @@ mod fracture_scale_tests {
         assert_eq!(pp.stats.fractures, u64::from(ticks));
         assert_eq!(pp.stats.derive_mismatches, 0, "the derivation agrees with the promotions");
         spent.as_secs_f64() * 1000.0 / f64::from(measured)
+    }
+
+    /// An object authored loose (no support in its own component, like
+    /// Vibe Town's benches and planters) is a body awaiting its island when
+    /// the match starts, not chunks the physics crushed: the physics
+    /// promotes it on its first tick. Marked removed, it vanished for every
+    /// wire-4 client and the derive check disagreed from the first tick on
+    /// (live session 2026-10-11: 8 objects, 234 chunks).
+    #[test]
+    fn an_object_authored_loose_is_a_body_awaiting_its_island_not_crushed() {
+        let mut manifest = block(3, 3, 3);
+        // A loose 2-chunk bench beside the block: bonded to itself only.
+        let structure = &mut manifest.structures[0];
+        let first = structure.chunks.len() as u32;
+        for (i, x) in [5.0f32, 6.0].into_iter().enumerate() {
+            let mut chunk = structure.chunks[1].clone();
+            chunk.node_index = first + i as u32;
+            chunk.centroid = [x, 0.5, 0.0];
+            chunk.support = false;
+            chunk.mass = 1.0;
+            structure.chunks.push(chunk);
+        }
+        let bond = structure.bonds.len() as u32;
+        structure.bonds.push(BondDef { bond_index: bond, node0: first, node1: first + 1, centroid: [5.5, 0.5, 0.0], normal: [1.0, 0.0, 0.0], area: 1.0, material: 0 });
+        let mut pp = PerPlayer::new(&manifest, CityLedger::from_manifest(&manifest), PerPlayerConfig::validated(60));
+        assert_eq!(pp.states[&0].body_of(first), first, "a body named by its lowest chunk, not removed");
+        // The physics' first tick promotes it, with no bond broken.
+        let promotion = IslandPromotion {
+            structure_id: 0,
+            island_id: 1,
+            chunks: vec![ids::chunk_id(0, first), ids::chunk_id(0, first + 1)],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        let batch = FractureBatch { structure_id: 0, promoted_islands: vec![promotion], ..Default::default() };
+        pp.ingest_tick(1, &[], &DestructionTickOutput { batches: vec![batch], ..Default::default() });
+        assert_eq!(pp.stats.derive_mismatches, 0);
+        assert_eq!(pp.states[&0].members(first), Some(&[first, first + 1][..]));
+        assert!(!pp.states[&0].is_removed(first));
     }
 
     /// The island mirror follows the ledger exactly, the derive check counts

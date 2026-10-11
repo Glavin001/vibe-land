@@ -24,6 +24,8 @@ rustc-hash = "2.1"
 # The per-player netcode's worker pool (`PerPlayerConfig::send_threads`):
 # one persistent pool, work-stealing across clients of uneven cost.
 rayon = "1.10"
+# Diagnostics the match server logs (per-player derive-check disagreements).
+tracing = "0.1"
 # parry's convex hull, for a hull chunk's centre of mass (variants.rs
 # `collider_mass_offset`). Already in the tree through vibe-netcode; the same
 # features, so nothing new is compiled.

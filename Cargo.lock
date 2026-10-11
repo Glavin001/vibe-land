@@ -3126,6 +3126,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tracing",
  "vibe-land-perplayer",
  "vibe-land-physx-bridge",
  "vibe-netcode",
