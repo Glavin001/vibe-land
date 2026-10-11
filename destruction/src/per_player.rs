@@ -256,6 +256,9 @@ struct Truth {
     /// The fracture that made this version of a body whose id outlived it
     /// (0: none to name; a new id needs none).
     born: u32,
+    /// This send's `TruthAhead` (`begin_send`; None for a settled body, or
+    /// before the first send).
+    ahead: Option<TruthAhead>,
 }
 
 /// How long a body's records name the fracture that made it (ticks): long
@@ -381,7 +384,14 @@ pub struct PerPlayer {
     /// membership, and the bodies with a recent contact (`begin_send`).
     order: Vec<BodyKey>,
     in_order: FxHashSet<BodyKey>,
-    recent_contacts: Vec<BodyKey>,
+    /// Every body with a contact, the freshest first (contact tick
+    /// descending, then key): kept in order as contacts arrive, since a new
+    /// contact is always newer than every one listed. `recent` is the
+    /// prefix within the window sends look back over.
+    contacts: Vec<(u32, BodyKey)>,
+    recent: usize,
+    /// Bodies with a contact since the last send.
+    fresh_contacts: Vec<BodyKey>,
     config: PerPlayerConfig,
     model: PerceptualModel,
     physics: Physics,
@@ -406,6 +416,10 @@ pub struct PerPlayer {
     /// truth, and structures a fracture changed (membership changes
     /// nowhere else). Until the first send, every body.
     shapes_new: FxHashSet<BodyKey>,
+    /// Per body, its chunk boxes for the floor its keyframes carry
+    /// (`StructureState::floor_boxes`; None where none derives), until a
+    /// fracture changes its membership.
+    floors: FxHashMap<BodyKey, Option<Vec<(Vec3, Vec3)>>>,
     shapes_dirty: FxHashSet<u32>,
     shapes_built: bool,
     /// Standing chunk boxes by G4's grid cell (`PerPlayerConfig::solid_gate`),
@@ -416,8 +430,8 @@ pub struct PerPlayer {
     static_cells_of: FxHashMap<u32, Vec<(i32, i32, i32)>>,
     statics_dirty: FxHashSet<u32>,
     statics_built: bool,
-    /// Per awake body, this send: `TruthAhead`.
-    ahead: FxHashMap<BodyKey, TruthAhead>,
+    /// `send_threads` workers, made on first use.
+    workers: Option<std::sync::Arc<rayon::ThreadPool>>,
 }
 
 use crate::netlab::perceptual::{StaticBox, STATIC_CELL};
@@ -522,9 +536,28 @@ fn could_touch_solid(shape: &BodyShape, position: Vec3, statics: Option<&FxHashM
     false
 }
 
+/// `TruthAhead` of a truth's keyframe (the depth only with a shape).
+fn truth_ahead(
+    keyframe: &Keyframe,
+    shape: Option<&BodyShape>,
+    solids: Option<&FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>>,
+    horizon_ticks: f32,
+    frame_ticks: f32,
+    physics: Physics,
+) -> TruthAhead {
+    let ahead = vibe_land_perplayer::predict::predict(keyframe, horizon_ticks, physics);
+    let (t1, tq1) = vibe_land_perplayer::predict::predict(keyframe, frame_ticks, physics);
+    TruthAhead {
+        ahead,
+        step: t1 - keyframe.position,
+        turn: 2.0 * keyframe.rotation.dot(tq1).abs().min(1.0).acos(),
+        solid: shape.map_or(0.0, |shape| solid_depth(shape, keyframe.position, keyframe.rotation, solids)),
+    }
+}
+
 /// What every client's evaluation of a body needs from its truth alone,
 /// computed once per send (`PerPlayer::begin_send`), not once per client.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct TruthAhead {
     /// The truth predicted a horizon ahead (its own mode).
     ahead: (Vec3, Quat),
@@ -565,6 +598,23 @@ impl PerPlayer {
 
     /// The config a send runs with: the evaluation cap shared out of the
     /// per-send budget.
+    /// The worker pool, when `send_threads` asks for more than one.
+    fn workers(&mut self) -> Option<std::sync::Arc<rayon::ThreadPool>> {
+        let threads = self.config.send_threads as usize;
+        if threads <= 1 {
+            return None;
+        }
+        if self.workers.is_none() {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .thread_name(|i| format!("per-player-{i}"))
+                .build()
+                .expect("per-player worker pool");
+            self.workers = Some(std::sync::Arc::new(pool));
+        }
+        self.workers.clone()
+    }
+
     fn effective_config(&self) -> PerPlayerConfig {
         let mut config = self.config;
         if config.eval_cap > 0 && config.eval_budget > 0 {
@@ -609,7 +659,9 @@ impl PerPlayer {
             now_tick: 0,
             order: Vec::new(),
             in_order: FxHashSet::default(),
-            recent_contacts: Vec::new(),
+            contacts: Vec::new(),
+            recent: 0,
+            fresh_contacts: Vec::new(),
             history: FxHashMap::default(),
             event_seq: 0,
             clients: BTreeMap::new(),
@@ -617,13 +669,14 @@ impl PerPlayer {
             stats: PerPlayerStats::default(),
             shapes: FxHashMap::default(),
             shapes_new: FxHashSet::default(),
+            floors: FxHashMap::default(),
             shapes_dirty: FxHashSet::default(),
             shapes_built: false,
             statics: FxHashMap::default(),
             static_cells_of: FxHashMap::default(),
             statics_dirty: FxHashSet::default(),
             statics_built: false,
-            ahead: FxHashMap::default(),
+            workers: None,
         };
         // A capture that starts mid-match: derive the structure from the
         // ledger's bonds and islands, as a joining client would from bits.
@@ -652,6 +705,7 @@ impl PerPlayer {
                             settled: island.settled,
                             contact_tick: 0,
                             born: 0,
+                            ahead: None,
                         },
                     );
                 }
@@ -759,10 +813,9 @@ impl PerPlayer {
         // past, which for a body that just landed is a fall; predicting a
         // fall from here draws it sinking into what holds it up.
         let g_y = self.physics.gravity.y;
-        let steps: Vec<&Keyframe> = history.iter().rev().take(2).collect();
-        let mut supported = steps.len() == 2;
+        let mut supported = history.len() >= 2;
         let mut later = now;
-        for earlier in steps {
+        for earlier in history.iter().rev().take(2) {
             if later.tick != earlier.tick + 1 {
                 supported = false;
                 break;
@@ -849,6 +902,7 @@ impl ReplicationStrategy for PerPlayer {
 
     fn ingest_tick(&mut self, tick: u32, active: &[BodySnapshotInput], output: &DestructionTickOutput) -> Vec<Outgoing> {
         self.tick = tick;
+        let pool = self.workers();
         let mut events: Vec<Event> = Vec::new();
         // The bodies this tick's events change: re-sent to a client that
         // received the events after its drawing had passed them.
@@ -898,6 +952,9 @@ impl ReplicationStrategy for PerPlayer {
             self.statics_dirty.insert(structure);
             self.shapes_dirty.insert(structure);
             self.stats.removed_chunks += removed.len() as u64;
+            for id in change.changed_bodies.iter().chain(&change.retired_bodies) {
+                self.floors.remove(&BodyKey { structure, body: *id });
+            }
             events.push(Event::Fracture { tick, structure, broken_bonds: broken, removed_chunks: removed });
             for id in &change.retired_bodies {
                 self.truth.remove(&BodyKey { structure, body: *id });
@@ -963,7 +1020,7 @@ impl ReplicationStrategy for PerPlayer {
                 // lowest chunk) needs its version named: a new id is one the
                 // client simply does not have yet.
                 let born = if id == parent { tick } else { 0 };
-                if self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0, born }).is_none() {
+                if self.truth.insert(key, Truth { keyframe, radius, settled, contact_tick: 0, born , ahead: None }).is_none() {
                     self.shapes_new.insert(key);
                 }
                 touched.push(key);
@@ -993,18 +1050,14 @@ impl ReplicationStrategy for PerPlayer {
                     cs.over_since.remove(&BodyKey { structure, body: id });
                 }
             };
-            let mut models: Vec<&mut ClientState> = self.clients.values_mut().collect();
-            let threads = (self.config.send_threads.max(1) as usize).min(models.len().max(1));
-            if threads <= 1 {
-                models.into_iter().for_each(update);
-            } else {
-                let per = models.len().div_ceil(threads);
-                std::thread::scope(|scope| {
-                    for part in models.chunks_mut(per) {
-                        let update = &update;
-                        scope.spawn(move || part.iter_mut().for_each(|cs| update(cs)));
-                    }
-                });
+            let workers = pool.clone().filter(|_| self.clients.len() > 1);
+            let models: Vec<&mut ClientState> = self.clients.values_mut().collect();
+            match workers {
+                Some(pool) => pool.install(|| {
+                    use rayon::prelude::*;
+                    models.into_par_iter().for_each(update)
+                }),
+                None => models.into_iter().for_each(update),
             }
             self.states.insert(structure, state);
             self.refresh_serials(structure);
@@ -1013,6 +1066,7 @@ impl ReplicationStrategy for PerPlayer {
         // function of its snapshot and its history so far, so it runs on
         // `send_threads` workers (byte-identical to one); the history and
         // truth are then updated in order.
+        let workers = pool;
         let work: Vec<(BodyKey, &BodySnapshotInput)> = active
             .iter()
             .filter_map(|snapshot| {
@@ -1021,7 +1075,7 @@ impl ReplicationStrategy for PerPlayer {
                 Some((BodyKey { structure, body }, snapshot))
             })
             .collect();
-        let classify = |&(key, snapshot): &(BodyKey, &BodySnapshotInput)| -> (BodyKey, Truth, bool) {
+        let classify = |&(key, snapshot): &(BodyKey, &BodySnapshotInput)| -> (BodyKey, Truth, bool, Option<Option<Vec<(Vec3, Vec3)>>>) {
             let previous = self.truth.get(&key).copied();
             let radius = previous.map_or(0.5, |p| p.radius);
             let mut keyframe = Keyframe {
@@ -1046,22 +1100,27 @@ impl ReplicationStrategy for PerPlayer {
             let (mode, decel) = self.mode_of(history, &keyframe, radius);
             keyframe.mode = mode;
             keyframe.decel = decel;
+            let mut derived = None;
             if let (Some(state), Some(def)) = (self.states.get(&key.structure), self.defs.get(&key.structure)) {
-                keyframe.floor_drop = state.floor_drop(def, key.body, keyframe.position, keyframe.rotation);
+                let boxes = match self.floors.get(&key) {
+                    Some(boxes) => boxes.as_deref(),
+                    None => derived.insert(state.floor_boxes(def, key.body)).as_deref(),
+                };
+                keyframe.floor_drop = boxes.map(|b| StructureState::floor_drop_of(b, keyframe.position, keyframe.rotation));
             }
-            (key, Truth { keyframe, radius, settled: false, contact_tick, born: previous.map_or(0, |p| p.born) }, continuous)
+            (key, Truth { keyframe, radius, settled: false, contact_tick, born: previous.map_or(0, |p| p.born), ahead: None }, continuous, derived)
         };
-        let threads = (self.config.send_threads.max(1) as usize).min(work.len().max(1));
-        let classified: Vec<(BodyKey, Truth, bool)> = if threads <= 1 || work.len() < 256 {
-            work.iter().map(classify).collect()
-        } else {
-            let per = work.len().div_ceil(threads);
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = work.chunks(per).map(|part| scope.spawn(|| part.iter().map(classify).collect::<Vec<_>>())).collect();
-                handles.into_iter().flat_map(|h| h.join().expect("per-player ingest worker")).collect()
-            })
+        let classified: Vec<(BodyKey, Truth, bool, Option<Option<Vec<(Vec3, Vec3)>>>)> = match workers.filter(|_| work.len() >= 256) {
+            Some(pool) => pool.install(|| {
+                use rayon::prelude::*;
+                work.par_iter().with_min_len(64).map(classify).collect()
+            }),
+            None => work.iter().map(classify).collect(),
         };
-        for (key, truth, continuous) in classified {
+        for (key, truth, continuous, derived) in classified {
+            if let Some(boxes) = derived {
+                self.floors.insert(key, boxes);
+            }
             let history = self.history.entry(key).or_default();
             if !continuous {
                 history.clear();
@@ -1069,6 +1128,9 @@ impl ReplicationStrategy for PerPlayer {
             history.push_back(truth.keyframe);
             while history.len() > BACKTEST_TICKS as usize + 1 {
                 history.pop_front();
+            }
+            if truth.contact_tick == tick && tick > 0 {
+                self.fresh_contacts.push(key);
             }
             if self.truth.insert(key, truth).is_none() {
                 self.shapes_new.insert(key);
@@ -1228,56 +1290,64 @@ impl ReplicationStrategy for PerPlayer {
         }
         // What every client's evaluation needs from each truth alone, once.
         {
+            let pool = if self.truth.len() >= 1024 { self.workers() } else { None };
             let config = self.effective_config();
             let physics = self.physics;
             let frame_ticks = config.sim_hz as f32 / FRAMES_PER_SECOND;
             let gated = config.ground_gate || config.solid_gate;
             let solids = config.solid_gate.then_some(&self.statics);
-            self.ahead.clear();
-            for (key, truth) in &self.truth {
-                if truth.settled {
-                    continue;
+            let shapes = &self.shapes;
+            let fill = |(key, truth): (&BodyKey, &mut Truth)| {
+                truth.ahead = (!truth.settled).then(|| {
+                    let shape = shapes.get(key).filter(|_| gated);
+                    truth_ahead(&truth.keyframe, shape, solids, config.horizon_ticks, frame_ticks, physics)
+                });
+            };
+            match pool {
+                Some(pool) => {
+                    let mut all: Vec<(&BodyKey, &mut Truth)> = self.truth.iter_mut().collect();
+                    pool.install(|| {
+                        use rayon::prelude::*;
+                        all.par_iter_mut().with_min_len(256).for_each(|(k, t)| fill((k, t)));
+                    });
                 }
-                let ahead = vibe_land_perplayer::predict::predict(&truth.keyframe, config.horizon_ticks, physics);
-                let (t1, tq1) = vibe_land_perplayer::predict::predict(&truth.keyframe, frame_ticks, physics);
-                let solid = match self.shapes.get(key) {
-                    Some(shape) if gated => solid_depth(shape, truth.keyframe.position, truth.keyframe.rotation, solids),
-                    _ => 0.0,
-                };
-                self.ahead.insert(
-                    *key,
-                    TruthAhead {
-                        ahead,
-                        step: t1 - truth.keyframe.position,
-                        turn: 2.0 * truth.keyframe.rotation.dot(tq1).abs().min(1.0).acos(),
-                        solid,
-                    },
-                );
+                None => self.truth.iter_mut().for_each(fill),
             }
+        }
+        // The contacts since the last send go in front of the rest (all
+        // older), which drop out when their body is gone or has had a newer
+        // contact (listed again in front).
+        {
+            let truth = &self.truth;
+            let mut fresh: Vec<(u32, BodyKey)> = self
+                .fresh_contacts
+                .drain(..)
+                .filter_map(|key| truth.get(&key).filter(|t| t.contact_tick > 0).map(|t| (t.contact_tick, key)))
+                .collect();
+            fresh.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            fresh.dedup();
+            fresh.extend(self.contacts.iter().filter(|&&(at, key)| truth.get(&key).is_some_and(|t| t.contact_tick == at)));
+            self.contacts = fresh;
         }
         let cap = self.effective_config().eval_cap;
         // The body order sends slice (insertion order, new bodies sorted
         // in), and the bodies with a contact recent enough that a slice may
         // not have reached them yet. Only needed past the evaluation cap.
         if cap == 0 || self.truth.len() <= cap {
+            self.recent = 0;
             return;
         }
         let window = (self.truth.len().div_ceil((cap / 2).max(1)) as u32 * self.config.send_interval_ticks.max(1)).max(1);
+        // Freshest first: sends take them in this order, up to a share of
+        // the evaluation cap.
+        self.recent = self.contacts.partition_point(|&(at, _)| at + window >= tick);
         let mut fresh: Vec<BodyKey> = Vec::new();
-        self.recent_contacts.clear();
-        for (key, truth) in &self.truth {
+        for key in self.truth.keys() {
             if !self.in_order.contains(key) {
                 fresh.push(*key);
             }
-            if truth.contact_tick > 0 && truth.contact_tick + window >= tick {
-                self.recent_contacts.push(*key);
-            }
         }
         fresh.sort_unstable();
-        // Freshest first: sends take them in this order, up to a share of
-        // the evaluation cap.
-        let truth = &self.truth;
-        self.recent_contacts.sort_unstable_by(|a, b| truth[b].contact_tick.cmp(&truth[a].contact_tick).then(a.cmp(b)));
         self.in_order.extend(fresh.iter().copied());
         self.order.extend(fresh);
         if self.order.len() > self.truth.len() + self.truth.len() / 4 {
@@ -1304,41 +1374,35 @@ impl ReplicationStrategy for PerPlayer {
     fn client_send(&mut self, client: u64, view: &ClientView, tick: u32, budget: Option<SendBudget>) -> ClientSend {
         let config = self.effective_config();
         let Some(cs) = self.clients.get_mut(&client) else { return ClientSend::default() };
-        send_for(config, self.physics, &self.truth, &self.shapes, &self.statics, &self.ahead, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
+        send_for(config, self.physics, &self.truth, &self.shapes, &self.statics, &self.order, &self.contacts[..self.recent], &self.model, cs, view, tick, budget, &mut self.stats)
     }
 
     fn client_sends(&mut self, requests: &[SendRequest]) -> Vec<ClientSend> {
-        let threads = self.config.send_threads.max(1) as usize;
-        if threads == 1 || requests.len() < 2 {
+        let workers = if requests.len() >= 2 { self.workers() } else { None };
+        let Some(pool) = workers else {
             return requests.iter().map(|r| self.client_send(r.client, &r.view, r.tick, r.budget)).collect();
-        }
+        };
         // Each client's state is its own: hand disjoint sets to workers.
         let config = self.effective_config();
         let index: HashMap<u64, usize> = requests.iter().enumerate().map(|(i, r)| (r.client, i)).collect();
         let mut jobs: Vec<(usize, &mut ClientState)> =
             self.clients.iter_mut().filter_map(|(id, cs)| index.get(id).map(|&i| (i, cs))).collect();
         jobs.sort_by_key(|j| j.0);
-        let (physics, truth, model, shapes, statics, ahead) = (self.physics, &self.truth, &self.model, &self.shapes, &self.statics, &self.ahead);
-        let (order, recent) = (&self.order[..], &self.recent_contacts[..]);
-        let per = jobs.len().div_ceil(threads).max(1);
-        let parts: Vec<(Vec<(usize, ClientSend)>, PerPlayerStats)> = std::thread::scope(|scope| {
-            let handles: Vec<_> = jobs
-                .chunks_mut(per)
-                .map(|part| {
-                    scope.spawn(move || {
-                        let mut stats = PerPlayerStats::default();
-                        let sends = part
-                            .iter_mut()
-                            .map(|(i, cs)| {
-                                let r = &requests[*i];
-                                (*i, send_for(config, physics, truth, shapes, statics, ahead, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats))
-                            })
-                            .collect();
-                        (sends, stats)
-                    })
+        let (physics, truth, model, shapes, statics) = (self.physics, &self.truth, &self.model, &self.shapes, &self.statics);
+        let (order, recent) = (&self.order[..], &self.contacts[..self.recent]);
+        // One client per task: costs vary a lot between clients (what each
+        // sees), and the pool steals work rather than waiting on the
+        // slowest fixed share.
+        let parts: Vec<(Vec<(usize, ClientSend)>, PerPlayerStats)> = pool.install(|| {
+            use rayon::prelude::*;
+            jobs.into_par_iter()
+                .map(|(i, cs)| {
+                    let r = &requests[i];
+                    let mut stats = PerPlayerStats::default();
+                    let send = send_for(config, physics, truth, shapes, statics, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats);
+                    (vec![(i, send)], stats)
                 })
-                .collect();
-            handles.into_iter().map(|h| h.join().expect("per-player send worker")).collect()
+                .collect()
         });
         let mut out: Vec<ClientSend> = (0..requests.len()).map(|_| ClientSend::default()).collect();
         for (sends, stats) in parts {
@@ -1411,9 +1475,8 @@ fn send_for(
     truths: &FxHashMap<BodyKey, Truth>,
     shapes: &FxHashMap<BodyKey, BodyShape>,
     statics: &FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>,
-    aheads: &FxHashMap<BodyKey, TruthAhead>,
     order: &[BodyKey],
-    recent_contacts: &[BodyKey],
+    recent_contacts: &[(u32, BodyKey)],
     model: &PerceptualModel,
     cs: &mut ClientState,
     view: &ClientView,
@@ -1516,7 +1579,7 @@ fn send_for(
         }
         // Freshest contacts first (begin_send's order), at most half the
         // cap: piles in constant contact would otherwise be every body.
-        for key in recent_contacts {
+        for (_, key) in recent_contacts {
             if counts[0] as usize >= config.eval_cap / 4 {
                 break;
             }
@@ -1564,18 +1627,8 @@ fn send_for(
         let truth = &truths[key];
         // The truth's share, computed once per send for every client (or
         // here, when this send had no begin_send: tests).
-        let truth_ahead = aheads.get(key).copied().unwrap_or_else(|| {
-            let ahead = vibe_land_perplayer::predict::predict(&truth.keyframe, config.horizon_ticks, physics);
-            let (t1, tq1) = vibe_land_perplayer::predict::predict(&truth.keyframe, frame_ticks, physics);
-            TruthAhead {
-                ahead,
-                step: t1 - truth.keyframe.position,
-                turn: 2.0 * truth.keyframe.rotation.dot(tq1).abs().min(1.0).acos(),
-                solid: match shapes.get(key) {
-                    Some(shape) if gated => solid_depth(shape, truth.keyframe.position, truth.keyframe.rotation, solids),
-                    _ => 0.0,
-                },
-            }
+        let truth_ahead = truth.ahead.unwrap_or_else(|| {
+            truth_ahead(&truth.keyframe, shapes.get(key).filter(|_| gated), solids, config.horizon_ticks, frame_ticks, physics)
         });
         // The client's drawing of it now, predicted once.
         let track = entry.filter(|t| !t.keyframes().is_empty());
@@ -1920,7 +1973,7 @@ mod tests {
         let off_still = Vec3::new(0.0, 0.0, 8.0);
         let mut truths: FxHashMap<BodyKey, Truth> = FxHashMap::default();
         for (key, rest) in [(still, rest_still), (sliding, rest_sliding)] {
-            truths.insert(key, Truth { keyframe: keyframe(tick, rest, Vec3::ZERO, Mode::Resting), radius: 0.5, settled: false, contact_tick: 0, born: 0 });
+            truths.insert(key, Truth { keyframe: keyframe(tick, rest, Vec3::ZERO, Mode::Resting), radius: 0.5, settled: false, contact_tick: 0, born: 0 , ahead: None });
         }
         let mut cs = ClientState { rtt_ms: 60.0, ..Default::default() };
         let mut drawn_still = BodyTrack::default();
@@ -1940,7 +1993,6 @@ mod tests {
             config,
             physics,
             &truths,
-            &FxHashMap::default(),
             &FxHashMap::default(),
             &FxHashMap::default(),
             &order,
@@ -2001,7 +2053,7 @@ mod drawn_near_tests {
         let mid_truth = Vec3::new(-2.0, 0.5, -30.0);
         let far_truth = Vec3::new(2.0, 0.5, 90.0);
         for (key, at) in [(mid, mid_truth), (near_drawn, far_truth)] {
-            truths.insert(key, Truth { keyframe: still(tick, at), radius: 0.5, settled: false, contact_tick: 0, born: 0 });
+            truths.insert(key, Truth { keyframe: still(tick, at), radius: 0.5, settled: false, contact_tick: 0, born: 0 , ahead: None });
         }
         let mut cs = ClientState { rtt_ms: 60.0, ..Default::default() };
         let mut drawn_mid = BodyTrack::default();
@@ -2016,7 +2068,6 @@ mod drawn_near_tests {
             config,
             physics,
             &truths,
-            &FxHashMap::default(),
             &FxHashMap::default(),
             &FxHashMap::default(),
             &[mid, near_drawn],
@@ -2074,7 +2125,7 @@ mod age_tests {
         let mut truths: FxHashMap<BodyKey, Truth> = FxHashMap::default();
         let mut cs = ClientState { rtt_ms: 60.0, ..Default::default() };
         let old_at = Vec3::new(0.0, 0.5, -15.0);
-        truths.insert(old, Truth { keyframe: still(start, old_at), radius: 0.5, settled: false, contact_tick: 0, born: 0 });
+        truths.insert(old, Truth { keyframe: still(start, old_at), radius: 0.5, settled: false, contact_tick: 0, born: 0 , ahead: None });
         let mut drawn = BodyTrack::default();
         // Drawn half a metre off now, sliding sideways at 10 m/s.
         let v = Vec3::new(10.0, 0.0, 0.0);
@@ -2091,7 +2142,7 @@ mod age_tests {
             // A fresh error: drawn 3 m off, 20 m away (larger on screen).
             let fresh = BodyKey { structure: 2, body: i };
             let at = Vec3::new(-4.0 + 0.1 * i as f32, 0.5, -20.0);
-            truths.insert(fresh, Truth { keyframe: still(tick, at), radius: 0.5, settled: false, contact_tick: 0, born: 0 });
+            truths.insert(fresh, Truth { keyframe: still(tick, at), radius: 0.5, settled: false, contact_tick: 0, born: 0 , ahead: None });
             let mut track = BodyTrack::default();
             track.restart(still(tick - 30, at + Vec3::new(3.0, 0.0, 0.0)));
             cs.believed.insert(fresh, track);
@@ -2104,7 +2155,6 @@ mod age_tests {
                 config,
                 physics,
                 &truths,
-                &FxHashMap::default(),
                 &FxHashMap::default(),
                 &FxHashMap::default(),
                 &order,

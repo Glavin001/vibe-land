@@ -21,6 +21,9 @@ vibe-land-perplayer = { path = "../perplayer" }
 # Fast, deterministic hashing for the per-player maps keyed by body (100k
 # bodies are hashed several times a tick).
 rustc-hash = "2.1"
+# The per-player netcode's worker pool (`PerPlayerConfig::send_threads`):
+# one persistent pool, work-stealing across clients of uneven cost.
+rayon = "1.10"
 # parry's convex hull, for a hull chunk's centre of mass (variants.rs
 # `collider_mass_offset`). Already in the tree through vibe-netcode; the same
 # features, so nothing new is compiled.
