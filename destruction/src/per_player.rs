@@ -1505,7 +1505,17 @@ fn send_for(
     let frame_ticks = config.sim_hz as f32 / FRAMES_PER_SECOND;
     let gated = config.ground_gate || config.solid_gate;
     let solids = config.solid_gate.then_some(statics);
-    for key in &evaluate {
+    // This client's tracks of every body to evaluate, fetched first: each
+    // is a chain of cache misses (table, entry, keyframes) in a model too
+    // large to stay cached, and fetched in a tight loop of independent
+    // lookups the misses overlap instead of following one another.
+    let entries: Vec<Option<&BodyTrack>> = evaluate.iter().map(|key| cs.believed.get(key)).collect();
+    let mut touched = 0u32;
+    for track in entries.iter().flatten() {
+        touched = touched.wrapping_add(track.keyframes().last().map_or(0, |k| k.tick));
+    }
+    std::hint::black_box(touched);
+    for (key, &entry) in evaluate.iter().zip(&entries) {
         let truth = &truths[key];
         // The truth's share, computed once per send for every client (or
         // here, when this send had no begin_send: tests).
@@ -1523,7 +1533,6 @@ fn send_for(
             }
         });
         // The client's drawing of it now, predicted once.
-        let entry = cs.believed.get(key);
         let track = entry.filter(|t| !t.keyframes().is_empty());
         let drawn = track.map(|t| t.pose_at(r, physics));
         // Gate G4 first: drawn sunk into the ground (and, with solid_gate,
