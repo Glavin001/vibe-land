@@ -568,7 +568,11 @@ export class VehiclesRenderer {
           vehicleMeshGroup.userData.geometryHash = vs.customVehicle.geometryHash;
           this.customVisuals.set(id, visual);
           // Native part index -> visual ids, for drawing parts that break off.
-          loadVehicleMetadata(resolveMultiplayerBackend().httpOrigin, vs.customVehicle.geometryHash)
+          // Resolved in the chain: without a page origin (tests, workers) the
+          // car draws whole rather than throwing out of the frame.
+          const geometryHash = vs.customVehicle.geometryHash;
+          Promise.resolve()
+            .then(() => loadVehicleMetadata(resolveMultiplayerBackend().httpOrigin, geometryHash))
             .then(m => { if (Array.isArray(m?.parts)) visual.setFractureGroups(m.parts.map((p: {visualIds: string[]}) => p.visualIds)); })
             .catch(() => {});
         } else vehicleMeshGroup = createVehicleMesh(id, vehicleType);
