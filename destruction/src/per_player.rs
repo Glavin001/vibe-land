@@ -1495,16 +1495,19 @@ fn send_for(
             }
         });
         // The client's drawing of it now, predicted once.
-        let track = cs.believed.get(key).filter(|t| !t.keyframes().is_empty());
+        let entry = cs.believed.get(key);
+        let track = entry.filter(|t| !t.keyframes().is_empty());
         let drawn = track.map(|t| t.pose_at(r, physics));
         // Gate G4 first: drawn sunk into the ground (and, with solid_gate,
         // the standing structures) deeper than the truth.
-        let sunk = gated
-            && shapes.get(key).zip(drawn).is_some_and(|(shape, (p, q))| {
-                could_touch_solid(shape, p, solids)
-                    && solid_depth(shape, p, q, solids) - truth_ahead.solid.max(0.0) > crate::netlab::perceptual::G4_TOLERANCE_M
-            });
-        let required = cs.unsent.contains(key) || sunk;
+        let sunk = || {
+            gated
+                && shapes.get(key).zip(drawn).is_some_and(|(shape, (p, q))| {
+                    could_touch_solid(shape, p, solids)
+                        && solid_depth(shape, p, q, solids) - truth_ahead.solid.max(0.0) > crate::netlab::perceptual::G4_TOLERANCE_M
+                })
+        };
+        let required = cs.unsent.contains(key) || sunk();
         let distance = (truth.keyframe.position - camera.eye).length().max(0.5);
         // In view: pixels at its depth. Behind or beside: half weight at
         // its distance -- never culled. This scales the keyframe's grid: the
@@ -1525,8 +1528,9 @@ fn send_for(
             Some((d_scale, d_weight)) if d_weight == truth_weight => (d_scale.max(px_per_m), d_weight),
             _ => (px_per_m, truth_weight),
         };
-        // The drawn motion against the truth's, one frame's step on screen.
-        let motion_px = match (track, drawn) {
+        // The drawn motion against the truth's, one frame's step on screen
+        // (worked out only where it is used).
+        let motion = || match (track, drawn) {
             (Some(track), Some((p0, q0))) if config.motion_cost || config.age_priority => {
                 let (p1, q1) = track.pose_at(r + frame_ticks, physics);
                 let drawn_turn = 2.0 * q0.dot(q1).abs().min(1.0).acos();
@@ -1534,7 +1538,8 @@ fn send_for(
             }
             _ => 0.0,
         };
-        let motion_gain = if config.motion_cost && motion_px >= config.tolerance_px {
+        let motion_px = if config.motion_cost { Some(motion()) } else { None };
+        let motion_gain = if let Some(motion_px) = motion_px.filter(|&m| m >= config.tolerance_px) {
             let frames = config.send_interval_ticks as f32 * FRAMES_PER_SECOND / config.sim_hz as f32;
             model.penalty(ArtifactClass::Pop, f64::from(motion_px), f64::from(weight)) as f32 * frames
         } else {
@@ -1578,7 +1583,7 @@ fn send_for(
                 && x.abs() <= config.pane.0 as f32 * 0.5 + radius_px
                 && y.abs() <= config.pane.1 as f32 * 0.5 + radius_px
         };
-        let contact_gain = match cs.believed.get(key).and_then(|t| t.newest()) {
+        let contact_gain = match track.and_then(|t| t.newest()) {
             Some(newest)
                 if config.contacts
                     && truth.contact_tick > newest.tick
@@ -1613,7 +1618,7 @@ fn send_for(
         // Against the newest keyframe this client acked (when it still
         // keeps it), if that is smaller than absolute.
         let keyframe = Keyframe { tick, ..truth.keyframe };
-        let incarnation = cs.believed.get(key).map_or(0, BodyTrack::incarnation);
+        let incarnation = entry.map_or(0, BodyTrack::incarnation);
         let baseline = cs
             .acked
             .get(key)
@@ -1663,6 +1668,7 @@ fn send_for(
                 let mut per_s = 0.0;
                 if visible {
                     per_s += model.penalty(ArtifactClass::ScreenError, f64::from(error_px), 1.0) as f32;
+                    let motion_px = motion_px.unwrap_or_else(motion);
                     if motion_px >= config.tolerance_px {
                         per_s += model.penalty(ArtifactClass::Pop, f64::from(motion_px), 1.0) as f32 * FRAMES_PER_SECOND;
                     }
@@ -1678,8 +1684,14 @@ fn send_for(
         let priority = if required { f32::MAX } else { gain.max(1e-9) / bytes as f32 };
         candidates.push(Candidate { key: *key, bytes, priority, rank: rank_of.get(key).copied().unwrap_or(0), distance, record });
     }
-    candidates.sort_by(|a, b| b.priority.total_cmp(&a.priority).then(a.rank.cmp(&b.rank)).then(a.key.cmp(&b.key)));
-    let candidate_keys: Vec<BodyKey> = candidates.iter().map(|c| c.key).collect();
+    // Ranked by index: a candidate carries its prepared record, too large
+    // to move about while sorting.
+    let mut ranked: Vec<u32> = (0..candidates.len() as u32).collect();
+    ranked.sort_unstable_by(|&a, &b| {
+        let (a, b) = (&candidates[a as usize], &candidates[b as usize]);
+        b.priority.total_cmp(&a.priority).then(a.rank.cmp(&b.rank)).then(a.key.cmp(&b.key))
+    });
+    let candidate_keys: Vec<BodyKey> = ranked.iter().map(|&i| candidates[i as usize].key).collect();
     // Event copies go first, out of the same allowance (they are what the
     // poses mean).
     let mut out = ClientSend::default();
@@ -1704,7 +1716,7 @@ fn send_for(
     // The datagrams' own headers count too: records are packed in this
     // order, a new datagram starting whenever the next one does not fit.
     let mut room = 0usize;
-    for c in &candidates {
+    for c in ranked.iter().map(|&i| &candidates[i as usize]) {
         let header = if c.bytes > room { DATAGRAM_HEADER } else { 0 };
         if used + header + c.bytes > allowance && c.priority < f32::MAX {
             continue;
