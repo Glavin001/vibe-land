@@ -212,6 +212,27 @@ const world = player.world;
 if (!world) throw new Error('the tape has no game stream (a v1 city-only tape)');
 const client = world.client;
 const city = player.client;
+// The city client's own cost per frame (its presentation step) and for its
+// packets: what a browser frame pays for the city stream, apart from this
+// stage's recorders.
+const cityFrameMs: number[] = [];
+let cityPacketMs = 0;
+{
+  const clock = () => Number(process.hrtime.bigint()) / 1e6;
+  const sample = city.samplePresentation.bind(city);
+  city.samplePresentation = (nowMs: number) => {
+    const started = clock();
+    const out = sample(nowMs);
+    cityFrameMs.push(clock() - started);
+    return out;
+  };
+  const handle = city.handlePacket.bind(city);
+  city.handlePacket = (bytes: Uint8Array) => {
+    const started = clock();
+    handle(bytes);
+    cityPacketMs += clock() - started;
+  };
+}
 
 const recordedFrames = raw.frames ? Float64Array.from(raw.frames.times, (t: number) => t + originMs) : null;
 const startMs = player.originMs;
@@ -584,6 +605,12 @@ const stats = {
   sharedPoses: { entities: entityPoses !== null, city: cityPoses !== null },
   chunkFrames: chunkStream?.frames ?? 0,
   clientCpuMs: +clientMs.toFixed(1),
+  cityFrameMs: (() => {
+    const sorted = [...cityFrameMs].sort((x, y) => x - y);
+    const mean = sorted.reduce((a, v) => a + v, 0) / Math.max(1, sorted.length);
+    return { frames: sorted.length, mean: +mean.toFixed(4), p99: +(sorted[Math.floor(sorted.length * 0.99)] ?? 0).toFixed(4), max: +(sorted[sorted.length - 1] ?? 0).toFixed(3) };
+  })(),
+  cityPacketMs: +cityPacketMs.toFixed(1),
   // Snapshots applied as the newest, and those that arrived after a newer
   // one (dropped whole by clients before the late-snapshot change, applied
   // per entity since).

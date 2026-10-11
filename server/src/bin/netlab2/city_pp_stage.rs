@@ -149,6 +149,9 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
     let (mut frames_ahead, mut max_ahead) = (0u64, f32::MIN);
     let mut live_keys: HashMap<u32, ()> = HashMap::new();
     let started = std::time::Instant::now();
+    // The client core's own work per frame (what the browser runs as
+    // WASM): packets in, the render clock, poses, changed chunk slots.
+    let mut core_ms: Vec<f64> = Vec::new();
     // NETLAB2_PP_TRACE=structure:node (diagnosis): that chunk's body and its
     // keyframes every frame, for client c01 (NETLAB2_PP_TRACE_CLIENT=cNN).
     let trace: Option<(u32, u32)> = std::env::var("NETLAB2_PP_TRACE").ok().and_then(|v| {
@@ -156,6 +159,8 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
         Some((a.parse().ok()?, b.parse().ok()?))
     });
     while t <= end_ms {
+        let frame_started = std::time::Instant::now();
+        let mut core = std::time::Duration::ZERO;
         while packet < tape.packets.len() && tape.packets[packet].t_ms <= t {
             let p = &tape.packets[packet];
             client.ingest(&p.bytes, p.t_ms);
@@ -165,6 +170,7 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
             t += FRAME_MS;
             continue;
         };
+        core += frame_started.elapsed();
         let ahead = render - sim_tick_at(t) as f32;
         if ahead > 0.0 {
             frames_ahead += 1;
@@ -185,7 +191,10 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
         }
         // Dynamic bodies at the render tick.
         let mut now_live: HashMap<u32, ()> = HashMap::new();
-        for (key, p, q, _) in client.body_poses() {
+        let poses_started = std::time::Instant::now();
+        let poses = client.body_poses();
+        core += poses_started.elapsed();
+        for (key, p, q, _) in poses {
             let entity = body_entity(key);
             let index = index_for(entity, &mut index_of, &mut free);
             body_entries.push((index, entity, [p.x, p.y, p.z, q.x, q.y, q.z, q.w]));
@@ -196,6 +205,7 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
         // another body.
         live_keys = now_live;
         // Records whose body changed.
+        let slots_started = std::time::Instant::now();
         let changes = client.drain_slot_changes();
         let all = frames == 0;
         let slots: Vec<(u32, u32)> = if all {
@@ -215,6 +225,8 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
             let l: Vec3 = local;
             slot_entries.push((slot, index, [l.x, l.y, l.z, q.x, q.y, q.z, q.w]));
         }
+        core += slots_started.elapsed();
+        core_ms.push(core.as_secs_f64() * 1000.0);
         if let Some((ts, tn)) = trace {
             if dir.ends_with(std::env::var("NETLAB2_PP_TRACE_CLIENT").unwrap_or_else(|_| "c01".into())) {
                 let body = client.chunk_body(ts, tn);
@@ -234,12 +246,20 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
     }
     writer.out.flush()?;
     let s = &client.stats;
+    let mut sorted = core_ms.clone();
+    sorted.sort_by(f64::total_cmp);
+    let core_stats = serde_json::json!({
+        "mean": core_ms.iter().sum::<f64>() / core_ms.len().max(1) as f64,
+        "p99": sorted.get(sorted.len() * 99 / 100).copied().unwrap_or(0.0),
+        "max": sorted.last().copied().unwrap_or(0.0),
+    });
     std::fs::write(
         dir.join("client-stats.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "label": "per-player",
             "framesSampled": frames,
             "clientCpuMs": started.elapsed().as_secs_f64() * 1000.0,
+            "coreMsPerFrame": core_stats,
             "city": {
                 "hashChecks": s.hash_checks,
                 "hashMismatches": s.hash_mismatches,
