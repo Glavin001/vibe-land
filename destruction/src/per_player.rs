@@ -410,6 +410,8 @@ pub struct PerPlayer {
     static_cells_of: FxHashMap<u32, Vec<(i32, i32, i32)>>,
     statics_dirty: FxHashSet<u32>,
     statics_built: bool,
+    /// Per awake body, this send: `TruthAhead`.
+    ahead: FxHashMap<BodyKey, TruthAhead>,
 }
 
 use crate::netlab::perceptual::{StaticBox, STATIC_CELL};
@@ -418,7 +420,7 @@ use crate::netlab::perceptual::{StaticBox, STATIC_CELL};
 /// pose: the ground (y = 0) and, given, the standing boxes (negative: clear).
 fn solid_depth(shape: &BodyShape, position: Vec3, rotation: Quat, statics: Option<&FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>>) -> f32 {
     let mut deepest = f32::NEG_INFINITY;
-    for &(offset, r) in &shape.1 {
+    for &(offset, r) in &shape.chunks {
         let c = position + rotation * offset;
         let mut d = r - c.y;
         if let Some(cells) = statics {
@@ -436,7 +438,54 @@ fn solid_depth(shape: &BodyShape, position: Vec3, rotation: Quat, statics: Optio
 
 /// A body's chunks as G4 sees them: offset from the centre of mass, and the
 /// inscribed sphere's radius (the smallest half extent).
-type BodyShape = (usize, Vec<(Vec3, f32)>);
+struct BodyShape {
+    members: usize,
+    chunks: Vec<(Vec3, f32)>,
+    /// The radius about the centre of mass that holds every chunk sphere.
+    extent: f32,
+}
+
+/// Whether any chunk sphere of `shape` at `position` could touch the ground
+/// or a standing box: false proves `solid_depth` is at most 0 (every chunk
+/// sphere clear), which no gate can fire on. Exact, and far cheaper than
+/// the depth itself for the bodies in the air or away from any structure.
+fn could_touch_solid(shape: &BodyShape, position: Vec3, statics: Option<&FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>>) -> bool {
+    if position.y - shape.extent <= 0.0 {
+        return true;
+    }
+    let Some(cells) = statics else { return false };
+    // The cells the chunk centres can be in (solid_depth looks only there).
+    let lo = ((position - Vec3::splat(shape.extent)) / STATIC_CELL).floor();
+    let hi = ((position + Vec3::splat(shape.extent)) / STATIC_CELL).floor();
+    let count = (hi - lo + Vec3::ONE).element_product();
+    if count > shape.chunks.len() as f32 {
+        // More cells than chunks: the depth itself is cheaper to ask.
+        return true;
+    }
+    for x in lo.x as i32..=hi.x as i32 {
+        for y in lo.y as i32..=hi.y as i32 {
+            for z in lo.z as i32..=hi.z as i32 {
+                if cells.get(&(x, y, z)).is_some_and(|list| !list.is_empty()) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// What every client's evaluation of a body needs from its truth alone,
+/// computed once per send (`PerPlayer::begin_send`), not once per client.
+#[derive(Clone, Copy)]
+struct TruthAhead {
+    /// The truth predicted a horizon ahead (its own mode).
+    ahead: (Vec3, Quat),
+    /// Its predicted step over one drawn frame, and the turn in it.
+    step: Vec3,
+    turn: f32,
+    /// Its depth in solid geometry (the gates), when a gate is on.
+    solid: f32,
+}
 
 
 impl PerPlayer {
@@ -523,6 +572,7 @@ impl PerPlayer {
             static_cells_of: FxHashMap::default(),
             statics_dirty: FxHashSet::default(),
             statics_built: false,
+            ahead: FxHashMap::default(),
         };
         // A capture that starts mid-match: derive the structure from the
         // ledger's bonds and islands, as a joining client would from bits.
@@ -1096,12 +1146,43 @@ impl ReplicationStrategy for PerPlayer {
             for key in truth.keys() {
                 let (Some(def), Some(state)) = (defs.get(&key.structure), states.get(&key.structure)) else { continue };
                 let Some(members) = state.members(key.body) else { continue };
-                if self.shapes.get(key).is_some_and(|s| s.0 == members.len()) || def.half_extents.len() != def.rest.len() {
+                if self.shapes.get(key).is_some_and(|s| s.members == members.len()) || def.half_extents.len() != def.rest.len() {
                     continue;
                 }
                 let com = state.centre_of_mass(def, key.body);
-                let chunks = members.iter().map(|&n| (def.rest[n as usize] - com, def.half_extents[n as usize].min_element())).collect();
-                self.shapes.insert(*key, (members.len(), chunks));
+                let chunks: Vec<(Vec3, f32)> =
+                    members.iter().map(|&n| (def.rest[n as usize] - com, def.half_extents[n as usize].min_element())).collect();
+                let extent = chunks.iter().map(|&(o, r)| o.length() + r).fold(0.0f32, f32::max);
+                self.shapes.insert(*key, BodyShape { members: members.len(), chunks, extent });
+            }
+        }
+        // What every client's evaluation needs from each truth alone, once.
+        {
+            let config = self.effective_config();
+            let physics = self.physics;
+            let frame_ticks = config.sim_hz as f32 / FRAMES_PER_SECOND;
+            let gated = config.ground_gate || config.solid_gate;
+            let solids = config.solid_gate.then_some(&self.statics);
+            self.ahead.clear();
+            for (key, truth) in &self.truth {
+                if truth.settled {
+                    continue;
+                }
+                let ahead = vibe_land_perplayer::predict::predict(&truth.keyframe, config.horizon_ticks, physics);
+                let (t1, tq1) = vibe_land_perplayer::predict::predict(&truth.keyframe, frame_ticks, physics);
+                let solid = match self.shapes.get(key) {
+                    Some(shape) if gated => solid_depth(shape, truth.keyframe.position, truth.keyframe.rotation, solids),
+                    _ => 0.0,
+                };
+                self.ahead.insert(
+                    *key,
+                    TruthAhead {
+                        ahead,
+                        step: t1 - truth.keyframe.position,
+                        turn: 2.0 * truth.keyframe.rotation.dot(tq1).abs().min(1.0).acos(),
+                        solid,
+                    },
+                );
             }
         }
         let cap = self.effective_config().eval_cap;
@@ -1153,7 +1234,7 @@ impl ReplicationStrategy for PerPlayer {
     fn client_send(&mut self, client: u64, view: &ClientView, tick: u32, budget: Option<SendBudget>) -> ClientSend {
         let config = self.effective_config();
         let Some(cs) = self.clients.get_mut(&client) else { return ClientSend::default() };
-        send_for(config, self.physics, &self.truth, &self.shapes, &self.statics, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
+        send_for(config, self.physics, &self.truth, &self.shapes, &self.statics, &self.ahead, &self.order, &self.recent_contacts, &self.model, cs, view, tick, budget, &mut self.stats)
     }
 
     fn client_sends(&mut self, requests: &[SendRequest]) -> Vec<ClientSend> {
@@ -1167,7 +1248,7 @@ impl ReplicationStrategy for PerPlayer {
         let mut jobs: Vec<(usize, &mut ClientState)> =
             self.clients.iter_mut().filter_map(|(id, cs)| index.get(id).map(|&i| (i, cs))).collect();
         jobs.sort_by_key(|j| j.0);
-        let (physics, truth, model, shapes, statics) = (self.physics, &self.truth, &self.model, &self.shapes, &self.statics);
+        let (physics, truth, model, shapes, statics, ahead) = (self.physics, &self.truth, &self.model, &self.shapes, &self.statics, &self.ahead);
         let (order, recent) = (&self.order[..], &self.recent_contacts[..]);
         let per = jobs.len().div_ceil(threads).max(1);
         let parts: Vec<(Vec<(usize, ClientSend)>, PerPlayerStats)> = std::thread::scope(|scope| {
@@ -1180,7 +1261,7 @@ impl ReplicationStrategy for PerPlayer {
                             .iter_mut()
                             .map(|(i, cs)| {
                                 let r = &requests[*i];
-                                (*i, send_for(config, physics, truth, shapes, statics, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats))
+                                (*i, send_for(config, physics, truth, shapes, statics, ahead, order, recent, model, cs, &r.view, r.tick, r.budget, &mut stats))
                             })
                             .collect();
                         (sends, stats)
@@ -1260,6 +1341,7 @@ fn send_for(
     truths: &FxHashMap<BodyKey, Truth>,
     shapes: &FxHashMap<BodyKey, BodyShape>,
     statics: &FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>,
+    aheads: &FxHashMap<BodyKey, TruthAhead>,
     order: &[BodyKey],
     recent_contacts: &[BodyKey],
     model: &PerceptualModel,
@@ -1392,16 +1474,35 @@ fn send_for(
     }
     evaluate.extend(waiting.iter().map(|&(_, k)| k));
     stats.evaluated += evaluate.len() as u64;
+    let frame_ticks = config.sim_hz as f32 / FRAMES_PER_SECOND;
+    let gated = config.ground_gate || config.solid_gate;
+    let solids = config.solid_gate.then_some(statics);
     for key in &evaluate {
         let truth = &truths[key];
+        // The truth's share, computed once per send for every client (or
+        // here, when this send had no begin_send: tests).
+        let truth_ahead = aheads.get(key).copied().unwrap_or_else(|| {
+            let ahead = vibe_land_perplayer::predict::predict(&truth.keyframe, config.horizon_ticks, physics);
+            let (t1, tq1) = vibe_land_perplayer::predict::predict(&truth.keyframe, frame_ticks, physics);
+            TruthAhead {
+                ahead,
+                step: t1 - truth.keyframe.position,
+                turn: 2.0 * truth.keyframe.rotation.dot(tq1).abs().min(1.0).acos(),
+                solid: match shapes.get(key) {
+                    Some(shape) if gated => solid_depth(shape, truth.keyframe.position, truth.keyframe.rotation, solids),
+                    _ => 0.0,
+                },
+            }
+        });
+        // The client's drawing of it now, predicted once.
+        let track = cs.believed.get(key).filter(|t| !t.keyframes().is_empty());
+        let drawn = track.map(|t| t.pose_at(r, physics));
         // Gate G4 first: drawn sunk into the ground (and, with solid_gate,
         // the standing structures) deeper than the truth.
-        let solids = config.solid_gate.then_some(statics);
-        let sunk = (config.ground_gate || config.solid_gate)
-            && shapes.get(key).zip(cs.believed.get(key).filter(|t| !t.keyframes().is_empty())).is_some_and(|(shape, track)| {
-                let (p, q) = track.pose_at(r, physics);
-                solid_depth(shape, p, q, solids) - solid_depth(shape, truth.keyframe.position, truth.keyframe.rotation, solids).max(0.0)
-                    > crate::netlab::perceptual::G4_TOLERANCE_M
+        let sunk = gated
+            && shapes.get(key).zip(drawn).is_some_and(|(shape, (p, q))| {
+                could_touch_solid(shape, p, solids)
+                    && solid_depth(shape, p, q, solids) - truth_ahead.solid.max(0.0) > crate::netlab::perceptual::G4_TOLERANCE_M
             });
         let required = cs.unsent.contains(key) || sunk;
         let distance = (truth.keyframe.position - camera.eye).length().max(0.5);
@@ -1418,26 +1519,18 @@ fn send_for(
         // (the scorer projects both): in view if either is, at the nearer
         // of the two. A body drawn in front of a player whose truth is
         // behind them is in plain view.
-        let drawn_now = cs
-            .believed
-            .get(key)
-            .filter(|t| config.drawn_view && !t.keyframes().is_empty())
-            .map(|t| t.pose_at(r, physics));
+        let drawn_now = drawn.filter(|_| config.drawn_view);
         let (error_px_per_m, weight) = match drawn_now.map(|(p, _)| scale_at(p)) {
             Some((d_scale, d_weight)) if d_weight > truth_weight => (d_scale, d_weight),
             Some((d_scale, d_weight)) if d_weight == truth_weight => (d_scale.max(px_per_m), d_weight),
             _ => (px_per_m, truth_weight),
         };
         // The drawn motion against the truth's, one frame's step on screen.
-        let motion_px = match cs.believed.get(key) {
-            Some(track) if (config.motion_cost || config.age_priority) && !track.keyframes().is_empty() => {
-                let frame_ticks = config.sim_hz as f32 / FRAMES_PER_SECOND;
-                let (p0, q0) = track.pose_at(r, physics);
+        let motion_px = match (track, drawn) {
+            (Some(track), Some((p0, q0))) if config.motion_cost || config.age_priority => {
                 let (p1, q1) = track.pose_at(r + frame_ticks, physics);
-                let (t1, tq1) = vibe_land_perplayer::predict::predict(&truth.keyframe, frame_ticks, physics);
                 let drawn_turn = 2.0 * q0.dot(q1).abs().min(1.0).acos();
-                let true_turn = 2.0 * truth.keyframe.rotation.dot(tq1).abs().min(1.0).acos();
-                (((p1 - p0) - (t1 - truth.keyframe.position)).length() + truth.radius * (drawn_turn - true_turn).abs()) * error_px_per_m
+                (((p1 - p0) - truth_ahead.step).length() + truth.radius * (drawn_turn - truth_ahead.turn).abs()) * error_px_per_m
             }
             _ => 0.0,
         };
@@ -1447,8 +1540,8 @@ fn send_for(
         } else {
             0.0
         };
-        let error_px = match cs.believed.get(key) {
-            Some(track) if !track.keyframes().is_empty() => {
+        let error_px = match (track, drawn) {
+            (Some(track), Some(drawn)) => {
                 // Now, and a horizon ahead: the client's drawing then
                 // against the server's best prediction of the truth then
                 // (the keyframe's own mode). Raw velocity gaps would count
@@ -1457,11 +1550,8 @@ fn send_for(
                     let angle = 2.0 * q.dot(tq).abs().min(1.0).acos();
                     (p - tp).length() + truth.radius * angle.min(1.0)
                 };
-                let now = gap(track.pose_at(r, physics), (truth.keyframe.position, truth.keyframe.rotation));
-                let ahead = gap(
-                    track.pose_at(r + config.horizon_ticks, physics),
-                    vibe_land_perplayer::predict::predict(&truth.keyframe, config.horizon_ticks, physics),
-                );
+                let now = gap(drawn, (truth.keyframe.position, truth.keyframe.rotation));
+                let ahead = gap(track.pose_at(r + config.horizon_ticks, physics), truth_ahead.ahead);
                 let _ = horizon_s;
                 now.max(ahead) * error_px_per_m
             }
@@ -1758,6 +1848,7 @@ mod tests {
             &truths,
             &FxHashMap::default(),
             &FxHashMap::default(),
+            &FxHashMap::default(),
             &order,
             &[],
             &model,
@@ -1830,6 +1921,7 @@ mod drawn_near_tests {
             config,
             physics,
             &truths,
+            &FxHashMap::default(),
             &FxHashMap::default(),
             &FxHashMap::default(),
             &[mid, near_drawn],
@@ -1916,6 +2008,7 @@ mod age_tests {
                 config,
                 physics,
                 &truths,
+                &FxHashMap::default(),
                 &FxHashMap::default(),
                 &FxHashMap::default(),
                 &order,
