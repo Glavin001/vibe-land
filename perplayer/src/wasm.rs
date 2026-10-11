@@ -90,7 +90,9 @@ impl PerPlayerClient {
         let poses = self.inner.body_poses();
         let mut out = Vec::with_capacity(poses.len() * 10);
         for (key, p, q, settled) in poses {
-            out.extend_from_slice(&[key.structure as f32, key.body as f32, p.x, p.y, p.z, q.x, q.y, q.z, q.w, f32::from(u8::from(settled))]);
+            // Last: 0 while it moves; at rest, 1 + the tick it settled at.
+            let rest = settled.map_or(0.0, |t| t as f32 + 1.0);
+            out.extend_from_slice(&[key.structure as f32, key.body as f32, p.x, p.y, p.z, q.x, q.y, q.z, q.w, rest]);
         }
         out
     }
@@ -159,6 +161,12 @@ impl PerPlayerClient {
 
     pub fn render_tick(&self) -> f32 {
         self.inner.render_tick()
+    }
+
+    /// The structure-hash disagreements so far (`stats_json`'s
+    /// hashMismatches), read every frame without building the JSON.
+    pub fn hash_mismatches(&self) -> u32 {
+        self.inner.stats.hash_mismatches as u32
     }
 
     pub fn stats_json(&self) -> String {

@@ -43,6 +43,7 @@ export interface PerPlayerCore {
   ack(): Uint32Array;
   render_tick(): number;
   stats_json(): string;
+  hash_mismatches(): number;
 }
 
 /** Flatten a manifest the way the core's constructor reads it. */
@@ -115,7 +116,8 @@ export class PerPlayerCityClient extends CityClient {
   private renderTick = -1;
   private epoch = 0;
   private live: Set<number> = new Set();
-  private settled: Set<number> = new Set();
+  /** Bodies drawn at rest, and the settle each rests from (1 + its tick). */
+  private settled: Map<number, number> = new Map();
   private repaint: Set<number> = new Set();
   private repaintEverything = false;
   /** Lets `requestResync` (and the core's own hash check) through; counts what it kept back. */
@@ -174,26 +176,39 @@ export class PerPlayerCityClient extends CityClient {
     this.renderTick = r;
     // The core's structure hash disagreed with the server's: ask for a fresh
     // bootstrap, at most once per 3 s while it keeps disagreeing.
-    const mismatches = (JSON.parse(this.core.stats_json()) as { hashMismatches?: number }).hashMismatches ?? 0;
+    const mismatches = this.core.hash_mismatches();
     if (mismatches > this.hashMismatchesSeen && nowMs - this.lastHashResyncMs >= 3000) {
       this.hashMismatchesSeen = mismatches;
       this.lastHashResyncMs = nowMs;
       this.requestResync();
     }
     const poses = this.core.body_poses();
-    const poseOf = new Map<number, number>();
-    for (let i = 0; i < poses.length; i += 10) poseOf.set(perPlayerBodyKey(poses[i], poses[i + 1]), i);
-    this.applyChanges(this.core.drain_changes(), poses, poseOf);
+    // Each body's key, once; the key -> pose index map only when the
+    // structure changed this frame (the only reader).
+    const count = poses.length / 10;
+    const keys = new Uint32Array(count);
+    for (let b = 0; b < count; b += 1) keys[b] = perPlayerBodyKey(poses[b * 10], poses[b * 10 + 1]);
+    const changes = this.core.drain_changes();
+    if (changes.length > 0) {
+      const poseOf = new Map<number, number>();
+      for (let b = 0; b < count; b += 1) poseOf.set(keys[b], b * 10);
+      this.applyChanges(changes, poses, poseOf);
+    }
     const live = new Set<number>();
     const topology = this.topology as CityTopology;
     for (let i = 0; i < poses.length; i += 10) {
-      const key = perPlayerBodyKey(poses[i], poses[i + 1]);
-      topology.updateBodyPose(key, [poses[i + 2], poses[i + 3], poses[i + 4]], [poses[i + 5], poses[i + 6], poses[i + 7], poses[i + 8]], 'presented');
-      const settled = poses[i + 9] !== 0;
+      const key = keys[i / 10];
+      const restsFrom = poses[i + 9];
+      const settled = restsFrom !== 0;
+      // A body already written at rest from this settle holds that pose. A
+      // new settle (woken and settled again between frames) is a new pose.
+      if (settled && this.settled.get(key) === restsFrom) continue;
+      // Fresh arrays, handed over: the topology keeps them as they are.
+      topology.updateBodyPose(key, [poses[i + 2], poses[i + 3], poses[i + 4]], [poses[i + 5], poses[i + 6], poses[i + 7], poses[i + 8]], 'presented', true);
       if (settled) {
         // One last write when it comes to rest, then nothing.
-        if (!this.settled.has(key)) {
-          this.settled.add(key);
+        if (this.settled.get(key) !== restsFrom) {
+          this.settled.set(key, restsFrom);
           this.repaint.add(key);
         }
       } else {

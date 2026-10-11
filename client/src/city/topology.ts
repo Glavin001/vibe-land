@@ -913,6 +913,8 @@ export class CityTopology {
     position: Vec3,
     rotation: Quat,
     source: BodyPoseSource = 'raw',
+    /** The caller hands over arrays nothing else holds: kept, not copied. */
+    owned = false,
   ): void {
     const body = this.bodies.get(key);
     if (!body) return;
@@ -935,11 +937,12 @@ export class CityTopology {
         if (jump > this.poseJumpMaxM) this.poseJumpMaxM = jump;
       }
     } else if (source === 'presented') {
-      const jump = Math.hypot(
-        position[0] - body.position[0],
-        position[1] - body.position[1],
-        position[2] - body.position[2],
-      );
+      // Every live body, every frame: a plain square root (Math.hypot's
+      // overflow care is slow in V8, and positions are metres).
+      const dx = position[0] - body.position[0];
+      const dy = position[1] - body.position[1];
+      const dz = position[2] - body.position[2];
+      const jump = Math.sqrt(dx * dx + dy * dy + dz * dz);
       // 1 m in one frame is 60 m/s, which no piece of falling masonry reaches;
       // the interpolator is supposed to make this impossible.
       if (jump > 1) {
@@ -959,8 +962,8 @@ export class CityTopology {
         }
       }
     }
-    body.position = vClone(position);
-    body.rotation = [...rotation] as Quat;
+    body.position = owned ? position : vClone(position);
+    body.rotation = owned ? rotation : ([...rotation] as Quat);
   }
 
   /**

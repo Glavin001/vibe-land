@@ -793,15 +793,17 @@ impl Client {
         }
     }
 
-    /// Every live dynamic body and its drawn pose at the render tick.
-    pub fn body_poses(&self) -> Vec<(BodyKey, Vec3, Quat, bool)> {
+    /// Every live dynamic body and its drawn pose at the render tick, with
+    /// the tick it settled at when it is drawn at rest (a body woken and
+    /// settled again between two frames rests from a new tick).
+    pub fn body_poses(&self) -> Vec<(BodyKey, Vec3, Quat, Option<u32>)> {
         let mut out = Vec::new();
         for (&structure, cs) in &self.structures {
             for &id in cs.state.bodies().keys() {
                 let key = BodyKey { structure, body: id };
                 if let Some(track) = self.bodies.get(&key) {
                     let (p, q) = track.pose_at(self.render, self.physics);
-                    let settled = track.settled().is_some_and(|(t, _, _)| self.render >= t as f32);
+                    let settled = track.settled().map(|(t, _, _)| t).filter(|&t| self.render >= t as f32);
                     out.push((key, p, q, settled));
                 }
             }

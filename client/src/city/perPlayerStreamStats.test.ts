@@ -35,6 +35,7 @@ const stubCore = (): PerPlayerCore & { ingested: number } => ({
   ack: () => new Uint32Array(),
   render_tick: () => 0,
   stats_json: () => '{}',
+  hash_mismatches: () => 0,
 });
 
 describe('per-player stream stats', () => {
@@ -56,5 +57,33 @@ describe('per-player stream stats', () => {
     const stats = client.stats();
     expect(stats.datagramsReceived).toBe(10);
     expect(stats.bytesReceived).toBe(10 * 200 + 60);
+  });
+});
+
+describe('per-player bodies at rest', () => {
+  // A settled body is written once and then left alone; but a body woken
+  // and settled again between two frames rests at a new pose from a new
+  // tick, and must be written and repainted again (it was left drawn where
+  // it first settled).
+  it('repaints a body that settles again at a new pose, and only then', () => {
+    let frame: number[] = [];
+    const core = {
+      ...stubCore(),
+      advance: () => 300,
+      started: () => true,
+      body_poses: () => Float32Array.from(frame),
+      hash_mismatches: () => 0,
+    };
+    const client = new PerPlayerCityClient(tinyManifest(), () => {}, core);
+    const repaints = () => client.drainRepaint().bodies.length;
+    const rest = (tick: number, x: number) => [0, 1, x, 0.5, 0, 0, 0, 0, 1, tick + 1];
+    frame = rest(100, 1.0);
+    client.samplePresentation(0);
+    expect(repaints()).toBe(1);
+    client.samplePresentation(16);
+    expect(repaints()).toBe(0);
+    frame = rest(200, 2.0);
+    client.samplePresentation(33);
+    expect(repaints()).toBe(1);
   });
 });
