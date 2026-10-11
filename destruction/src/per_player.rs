@@ -427,19 +427,61 @@ use crate::netlab::perceptual::{StaticBox, STATIC_CELL};
 fn solid_depth(shape: &BodyShape, position: Vec3, rotation: Quat, statics: Option<&FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>>) -> f32 {
     let mut deepest = f32::NEG_INFINITY;
     for &(offset, r) in &shape.chunks {
-        let c = position + rotation * offset;
-        let mut d = r - c.y;
-        if let Some(cells) = statics {
-            let cell = (c / STATIC_CELL).floor();
-            if let Some(list) = cells.get(&(cell.x as i32, cell.y as i32, cell.z as i32)) {
-                for (_, b) in list {
-                    d = d.max(b.sphere_depth(c, r));
-                }
-            }
-        }
-        deepest = deepest.max(d);
+        deepest = deepest.max(chunk_depth(position + rotation * offset, r, statics));
     }
     deepest
+}
+
+/// One chunk sphere's depth (`solid_depth`): the ground, and the standing
+/// boxes in its centre's cell.
+fn chunk_depth(c: Vec3, r: f32, statics: Option<&FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>>) -> f32 {
+    let mut d = r - c.y;
+    if let Some(cells) = statics {
+        let cell = (c / STATIC_CELL).floor();
+        if let Some(list) = cells.get(&(cell.x as i32, cell.y as i32, cell.z as i32)) {
+            for (_, b) in list {
+                d = d.max(b.sphere_depth(c, r));
+            }
+        }
+    }
+    d
+}
+
+/// Float slack on the bound in `sunk_deeper`, m: far above the rounding of
+/// positions a few km from the origin (f32 ulp 0.5 mm at 4 km).
+const SUNK_BOUND_SLACK_M: f32 = 0.005;
+
+/// Gate G4's test, `solid_depth(drawn) - truth_depth.max(0) > G4_TOLERANCE_M`,
+/// without looking up the chunks that cannot fire it. A chunk whose centre
+/// stays in the truth's cell is tested against the same boxes, and each of
+/// its depth terms moves no more than its centre does (a distance, or the
+/// ground height): drawn within `G4_TOLERANCE_M` of the truth, it is no
+/// deeper than the truth's deepest chunk plus that. Only the others are
+/// looked up. The depth is the deepest chunk's, so it is over the tolerance
+/// exactly when one chunk is (rounding is monotone).
+fn sunk_deeper(
+    shape: &BodyShape,
+    drawn: (Vec3, Quat),
+    truth: (Vec3, Quat),
+    truth_depth: f32,
+    statics: Option<&FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>>>,
+) -> bool {
+    let floor = truth_depth.max(0.0);
+    for &(offset, r) in &shape.chunks {
+        let c = drawn.0 + drawn.1 * offset;
+        if statics.is_some() {
+            let t = truth.0 + truth.1 * offset;
+            if (c / STATIC_CELL).floor() == (t / STATIC_CELL).floor()
+                && (c - t).length() <= crate::netlab::perceptual::G4_TOLERANCE_M - SUNK_BOUND_SLACK_M
+            {
+                continue;
+            }
+        }
+        if chunk_depth(c, r, statics) - floor > crate::netlab::perceptual::G4_TOLERANCE_M {
+            return true;
+        }
+    }
+    false
 }
 
 /// A body's chunks as G4 sees them: offset from the centre of mass, and the
@@ -1544,7 +1586,7 @@ fn send_for(
             gated
                 && shapes.get(key).zip(drawn).is_some_and(|(shape, (p, q))| {
                     could_touch_solid(shape, p, solids)
-                        && solid_depth(shape, p, q, solids) - truth_ahead.solid.max(0.0) > crate::netlab::perceptual::G4_TOLERANCE_M
+                        && sunk_deeper(shape, (p, q), (truth.keyframe.position, truth.keyframe.rotation), truth_ahead.solid, solids)
                 })
         };
         let required = cs.unsent.contains(key) || sunk();
@@ -2099,5 +2141,68 @@ mod knob_tests {
         assert_eq!(c.tolerance_px, 2.0);
         assert!(c.apply_knobs("no_such=1").is_err());
         assert!(c.apply_knobs("age_priority").is_err());
+    }
+}
+
+#[cfg(test)]
+mod sunk_tests {
+    use super::*;
+
+    /// The bounded G4 test is the full one: drawn poses from on the truth
+    /// to well past the tolerance, around tilted boxes, across cell
+    /// boundaries and on the ground, for one-chunk and many-chunk bodies.
+    #[test]
+    fn the_bounded_g4_test_answers_as_the_full_depth_does() {
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut rand = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let mut statics: FxHashMap<(i32, i32, i32), Vec<(u32, StaticBox)>> = FxHashMap::default();
+        for i in 0..60 {
+            let b = StaticBox {
+                position: Vec3::new(rand() * 24.0 - 12.0, rand() * 6.0, rand() * 24.0 - 12.0),
+                rotation: Quat::from_rotation_y(rand() * 0.6) * Quat::from_rotation_x(rand() * 0.2),
+                half_extents: Vec3::new(0.2 + rand(), 0.2 + rand(), 0.2 + rand()),
+            };
+            let r = b.half_extents.length();
+            let lo = ((b.position - Vec3::splat(r)) / STATIC_CELL).floor();
+            let hi = ((b.position + Vec3::splat(r)) / STATIC_CELL).floor();
+            for x in lo.x as i32..=hi.x as i32 {
+                for y in lo.y as i32..=hi.y as i32 {
+                    for z in lo.z as i32..=hi.z as i32 {
+                        statics.entry((x, y, z)).or_default().push((i, b));
+                    }
+                }
+            }
+        }
+        let (mut fired, mut checked) = (0, 0);
+        for case in 0..20_000 {
+            let chunks: Vec<(Vec3, f32)> = (0..if case % 3 == 0 { 12 } else { 1 })
+                .map(|_| (Vec3::new(rand() - 0.5, rand() - 0.5, rand() - 0.5) * 3.0, 0.1 + rand() * 0.4))
+                .collect();
+            let extent = chunks.iter().map(|&(o, r)| o.length() + r).fold(0.0f32, f32::max);
+            let shape = BodyShape { members: chunks.len(), chunks, extent };
+            let truth = (
+                Vec3::new(rand() * 24.0 - 12.0, rand() * 5.0 - 0.3, rand() * 24.0 - 12.0),
+                Quat::from_euler(glam::EulerRot::XYZ, rand() * 6.3, rand() * 6.3, rand() * 6.3),
+            );
+            let size = [0.0, 0.01, 0.04, 0.045, 0.06, 0.3, 2.0][case % 7];
+            let drawn = (
+                truth.0 + Vec3::new(rand() - 0.5, rand() - 0.5, rand() - 0.5) * size,
+                (Quat::from_rotation_z((rand() - 0.5) * size) * truth.1).normalize(),
+            );
+            for solids in [Some(&statics), None] {
+                let truth_depth = solid_depth(&shape, truth.0, truth.1, solids);
+                let full = solid_depth(&shape, drawn.0, drawn.1, solids) - truth_depth.max(0.0) > crate::netlab::perceptual::G4_TOLERANCE_M;
+                assert_eq!(sunk_deeper(&shape, drawn, truth, truth_depth, solids), full, "case {case}");
+                fired += usize::from(full);
+                checked += 1;
+            }
+        }
+        // Both answers occur often enough to mean something.
+        assert!(fired > 1_000 && checked - fired > 20_000, "{fired} of {checked}");
     }
 }
