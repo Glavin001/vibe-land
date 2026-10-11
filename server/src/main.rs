@@ -5747,6 +5747,11 @@ impl MatchState {
         let send_interval_s = f64::from(city.send_interval_ticks().max(1)) / f64::from(SIM_HZ);
         let ceiling = city.per_player_ceiling_bytes();
         let mut drops = 0u64;
+        // Every client's plan first (each link is its own), then one batched
+        // send (`send_threads` run the clients at once), then each result
+        // onto its link.
+        let mut requests: Vec<(u64, vibe_land_destruction::types::Camera, SendBudget)> = Vec::new();
+        let mut plans: Vec<(u32, link_rate::SendPlan)> = Vec::new();
         for (player_id, camera) in cameras {
             let client = u64::from(player_id);
             let plan = match self.players.get_mut(&player_id) {
@@ -5766,7 +5771,11 @@ impl MatchState {
                 }
                 link_rate::SendPlan::Skip => SendBudget::Skip,
             };
-            let send = city.per_player_send(client, camera, tick, budget);
+            requests.push((client, camera, budget));
+            plans.push((player_id, plan));
+        }
+        let sends = city.per_player_sends(&requests, tick);
+        for ((player_id, plan), send) in plans.into_iter().zip(sends) {
             let bytes: usize = send.packets.iter().map(|packet| packet.bytes.len()).sum();
             let Some(runtime) = self.players.get_mut(&player_id) else {
                 continue;

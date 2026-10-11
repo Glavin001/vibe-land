@@ -675,8 +675,14 @@ struct PerPlayerLive {
 /// `VIBE_CITY_PP_KNOBS` (comma-separated `name=value`, the lab's `pp.*`
 /// knob names, e.g. `age_priority=1,drawn_view=1,send_threads=8`). A bad
 /// list is logged and ignored: the defaults run.
+///
+/// Live, the per-tick work runs on half the cores (at most 8;
+/// `send_threads=1` runs it on the tick's own thread): what a tick waits on
+/// is its wall time, and the output is the same on any number of threads.
+/// The lab keeps one, so its CPU costs compare run to run.
 fn per_player_config(sim_hz: u32) -> PerPlayerConfig {
     let mut config = PerPlayerConfig::validated(sim_hz);
+    config.send_threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 8)) as u32;
     if let Ok(list) = std::env::var("VIBE_CITY_PP_KNOBS") {
         let mut tuned = config;
         match tuned.apply_knobs(&list) {
@@ -1687,6 +1693,34 @@ impl CityRuntime {
         self.total_sent_bytes += bytes as u64;
         self.total_sent_records += records;
         send
+    }
+
+    /// Wire 4: every client's keyframe datagrams this send, each under its
+    /// budget, in one batch (`send_threads` run them at once).
+    pub fn per_player_sends(&mut self, requests: &[(u64, Camera, SendBudget)], sim_tick: u32) -> Vec<ClientSend> {
+        let Some(pp) = self.per_player.as_mut() else {
+            return requests.iter().map(|_| ClientSend::default()).collect();
+        };
+        let before = pp.strategy.stats.keyframes_sent;
+        let batch: Vec<vibe_land_destruction::replication::SendRequest> = requests
+            .iter()
+            .map(|&(client, camera, budget)| vibe_land_destruction::replication::SendRequest {
+                client,
+                view: ClientView { camera },
+                tick: sim_tick,
+                budget: Some(budget),
+            })
+            .collect();
+        let sends = pp.strategy.client_sends(&batch);
+        let records = pp.strategy.stats.keyframes_sent - before;
+        let packets: usize = sends.iter().map(|s| s.packets.len()).sum();
+        let bytes: usize = sends.iter().flat_map(|s| &s.packets).map(|packet| packet.bytes.len()).sum();
+        self.sent_packets += packets as u64;
+        self.sent_bytes += bytes as u64;
+        self.sent_records += records;
+        self.total_sent_bytes += bytes as u64;
+        self.total_sent_records += records;
+        sends
     }
 
     /// Wire 4: a client's datagram acks (`PKT_PP_ACK`).
