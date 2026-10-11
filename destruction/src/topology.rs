@@ -173,8 +173,18 @@ impl CityLedger {
             // the ledger is what bootstraps late joiners and resyncs, so a
             // stale list here becomes corrupt membership (and a corrupt
             // centre of mass) on every client that ever resynchronises.
+            // (Membership by bitset: a promotion of k nodes would otherwise
+            // cost k per node of every island.)
+            let words = nodes.last().map_or(0, |&n| n as usize / 64 + 1);
+            let mut joining = vec![0u64; words];
+            for &n in &nodes {
+                joining[n as usize / 64] |= 1 << (n % 64);
+            }
+            let joins = |n: u32| joining.get(n as usize / 64).is_some_and(|w| w & (1 << (n % 64)) != 0);
             for island in structure.islands.values_mut() {
-                island.nodes.retain(|node| !nodes.contains(node));
+                if island.nodes.iter().any(|&n| joins(n)) {
+                    island.nodes.retain(|&node| !joins(node));
+                }
             }
             structure.islands.insert(
                 promotion.island_id,
