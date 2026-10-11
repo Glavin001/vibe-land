@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {VehiclePresentationPredictor,extrapolateVehicle,moveVehicle,vehicleProxy,type Sweep,type VehicleProxy,type VehiclePredictionEvent} from './vehiclePresentation';
 import {VehicleInterpolator,type VehicleSample} from '../net/interpolation';
-import {BTN_JUMP,type InputCmd} from '../net/protocol';
+import {BTN_JUMP,INPUT_BUNDLE_MAX_FRAMES,type InputCmd} from '../net/protocol';
 import {defaultConfiguration} from '../vehicles/configuration.mjs';
 const proxy:VehicleProxy={half:[.7,.2,1.2],wheels:[[-.9,-.25,1.2],[.9,-.25,1.2],[-.9,-.25,-1.2],[.9,-.25,-1.2]],radius:.4,wheelbase:2.4,acceleration:6,speed:30,grip:1.4,braking:1,lock:.5,response:1};
 const state=(patch:Partial<VehicleSample>={}):VehicleSample=>({serverTimeUs:0,position:[0,.652,0],quaternion:[0,0,0,1],linearVelocity:[0,0,0],angularVelocity:[0,0,0],wheelData:[0,0,0,0],driverPlayerId:1,flags:0,...patch});
@@ -51,6 +51,15 @@ describe('collision-aware Vehicle2 presentation',()=>{
     driver.observe(1,state({serverTimeUs:1000,position:[100,100,100]}),65534,proxy,61);
     expect(driver.pose()).toEqual(reconciled);expect(driver.resendWindow().map(i=>i.seq)).toEqual([0,1]);
     driver.record(2,[input(2)]);expect(driver.pose()).toBeNull();
+  });
+  it('resends every unacked input when paced, up to a datagram',()=>{
+    const driver=new VehiclePresentationPredictor(sweep);driver.observe(1,state(),0,proxy,0);
+    driver.record(1,Array.from({length:8},(_,i)=>input(i+1)));
+    expect(driver.resendWindow().map(i=>i.seq)).toEqual([6,7,8]);
+    expect(driver.resendWindow(true).map(i=>i.seq)).toEqual([1,2,3,4,5,6,7,8]);
+    driver.record(1,Array.from({length:INPUT_BUNDLE_MAX_FRAMES},(_,i)=>input(i+9)));
+    const all=driver.resendWindow(true);
+    expect(all.length).toBe(INPUT_BUNDLE_MAX_FRAMES);expect(all[all.length-1].seq).toBe(INPUT_BUNDLE_MAX_FRAMES+8);
   });
   it('records actual reconciliation once and input presentation only after a render-facing read',()=>{
     const events:VehiclePredictionEvent[]=[];

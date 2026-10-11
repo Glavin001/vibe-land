@@ -41,6 +41,7 @@ mod tick_recorder;
 mod flight_recorder;
 mod invariants;
 mod snapshot_builder;
+mod vehicle_input_pacing;
 mod voxel_world;
 
 use std::{
@@ -187,6 +188,14 @@ fn chunks_block_shots() -> bool {
 fn vehicle_tape() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("VIBE_VEHICLE_TAPE").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// `VIBE_VEHICLE_INPUT_PACING=1`: a driver's inputs are queued in order,
+/// never collapsed, and the client paces them to a jitter-derived queue depth
+/// the server reports (`vehicle_input_pacing`). Off by default.
+fn vehicle_input_pacing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VIBE_VEHICLE_INPUT_PACING").is_ok_and(|v| !v.is_empty() && v != "0"))
 }
 
 /// Frames of each driven car's tape kept (two minutes at 60 Hz).
@@ -743,6 +752,11 @@ struct MatchNetworkSnapshot {
     vehicle_input_starved: u64,
     #[serde(default)]
     vehicle_inputs_collapsed: u64,
+    /// Inputs a driven car never applied (gaps in the applied sequence),
+    /// whatever dropped them: collapsed, rejected as overtaken, or lost.
+    /// Comparable with vehicle input pacing on and off.
+    #[serde(default)]
+    vehicle_inputs_skipped: u64,
     snapshot_bytes_per_tick: SummaryStatsSnapshot,
     snapshot_players_per_client: SummaryStatsSnapshot,
     snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot,
@@ -1303,6 +1317,8 @@ struct PlayerRuntime {
     battery_full_resync_pending: bool,
     /// When this player's own energy is next worth sending.
     energy_gate: energy_stream::EnergySendGate,
+    /// Input arrival lateness, for the paced vehicle queue's target depth.
+    input_jitter: vehicle_input_pacing::ArrivalJitter,
 }
 
 type DynamicBodyMetaRuntime = snapshot_builder::BodyMeta;
@@ -1389,6 +1405,7 @@ struct MatchState {
     /// Driven-car input pipeline counters (`MatchNetworkStats`).
     vehicle_input_starved: u64,
     vehicle_inputs_collapsed: u64,
+    vehicle_inputs_skipped: u64,
     /// `VIBE_VEHICLE_TAPE=1`: per driven car, this tick's applied input
     /// (tick, input, queue depth before it, driver), then each tick's frame
     /// of input and post-step state (`/city-vehicle-tape`).
@@ -3826,6 +3843,7 @@ async fn run_match_loop(
         detached_parts: (u32::MAX, HashMap::new()),
         vehicle_input_starved: 0,
         vehicle_inputs_collapsed: 0,
+        vehicle_inputs_skipped: 0,
         vehicle_tape_inputs: HashMap::new(),
         vehicle_tapes: HashMap::new(),
     };
@@ -4209,6 +4227,7 @@ impl MatchState {
                 let _ = reply.send(serde_json::json!({
                     "car": car, "handle": self.vehicle_handles.get(&car).copied(), "vehicle": vehicle, "frames": frames,
                     "inputStarved": self.vehicle_input_starved, "inputsCollapsed": self.vehicle_inputs_collapsed,
+                    "inputsSkipped": self.vehicle_inputs_skipped,
                 }));
             }
             MatchEvent::GarageDebug {car,reply} => {
@@ -4301,6 +4320,7 @@ impl MatchState {
                         visible_batteries: HashSet::new(),
                         battery_full_resync_pending: true,
                         energy_gate: crate::energy_stream::EnergySendGate::default(),
+                        input_jitter: Default::default(),
                     },
                 );
                 self.activate_spawn_protection(conn.player_id);
@@ -4446,6 +4466,7 @@ impl MatchState {
                     return;
                 };
                 let is_dead = self.arena.player_is_dead(player_id);
+                let in_vehicle = self.arena.is_player_in_vehicle(player_id);
                 match packet {
                     ClientPacket::InputBundle(cmds) => {
                         // Track inter-arrival timing for jitter measurement
@@ -4463,7 +4484,7 @@ impl MatchState {
                         if runtime.bundle_sizes.len() > 60 {
                             runtime.bundle_sizes.pop_front();
                         }
-                        enqueue_inputs(runtime, cmds);
+                        receive_inputs(runtime, cmds, vehicle_input_pacing(), in_vehicle, self.server_tick);
                     }
                     ClientPacket::Fire(cmd) => {
                         if is_dead {
@@ -4805,12 +4826,17 @@ impl MatchState {
                         break;
                     }
                     let depth = runtime.pending_inputs.len();
-                    let input = take_input_for_tick_with_vehicle_catchup(runtime, in_vehicle);
+                    let previous = runtime.last_ack_input_seq;
+                    let collapse = in_vehicle && !vehicle_input_pacing();
+                    let input = take_input_for_tick_with_vehicle_catchup(runtime, collapse);
                     if in_vehicle {
                         if depth == 0 {
                             self.vehicle_input_starved += 1;
-                        } else if depth >= VEHICLE_INPUT_CATCHUP_THRESHOLD {
+                        } else if collapse && depth >= VEHICLE_INPUT_CATCHUP_THRESHOLD {
                             self.vehicle_inputs_collapsed += (depth - 1) as u64;
+                        }
+                        if depth > 0 {
+                            self.vehicle_inputs_skipped += inputs_skipped(previous, input.seq);
                         }
                         if vehicle_tape() {
                             if let Some(vehicle) = self.arena.player_vehicle_id(player_id) {
@@ -6591,6 +6617,7 @@ impl MatchState {
                 rig_bytes_per_client: self.snapshot_stats.rig_bytes_per_client.snapshot(),
                 vehicle_input_starved: self.vehicle_input_starved,
                 vehicle_inputs_collapsed: self.vehicle_inputs_collapsed,
+                vehicle_inputs_skipped: self.vehicle_inputs_skipped,
                 snapshot_bytes_per_tick: self.snapshot_stats.bytes_per_tick.snapshot(),
                 snapshot_players_per_client: self.snapshot_stats.players_per_client.snapshot(),
                 snapshot_dynamic_bodies_per_client: self
@@ -7808,7 +7835,7 @@ impl MatchState {
                     None
                 },
             };
-            let Some((packet, selection)) = snapshot_builder::build_recipient_snapshot(
+            let Some((mut packet, selection)) = snapshot_builder::build_recipient_snapshot(
                 &world,
                 &recipient,
                 &mut runtime.snapshot_interest,
@@ -7817,6 +7844,11 @@ impl MatchState {
             ) else {
                 continue;
             };
+            if vehicle_input_pacing() && self.arena.is_player_in_vehicle(recipient_id) {
+                if let (ServerPacket::SnapshotV2(snapshot), Some(target)) = (&mut packet, runtime.input_jitter.target()) {
+                    snapshot.input_queue = Some((runtime.pending_inputs.len().min(u8::MAX as usize) as u8, target));
+                }
+            }
             let tx = runtime.tx.clone();
             let encoded = encode_server_packet(&packet);
             snapshot_bytes_this_tick += encoded.len();
@@ -7988,6 +8020,16 @@ fn take_input_for_tick_with_vehicle_catchup(
     take_input_for_tick(runtime)
 }
 
+/// Inputs between the last applied (`previous`) and the one applied now that
+/// were never applied: 0 when `applied` is the next in sequence.
+fn inputs_skipped(previous: u16, applied: u16) -> u64 {
+    if seq_is_newer(applied, previous) {
+        applied.wrapping_sub(previous) as u64 - 1
+    } else {
+        0
+    }
+}
+
 fn clear_runtime_inputs_for_vehicle_entry(runtime: &mut PlayerRuntime) {
     let ack_seq = runtime
         .last_received_input_seq
@@ -8002,6 +8044,27 @@ fn clear_runtime_inputs_for_vehicle_entry(runtime: &mut PlayerRuntime) {
         yaw: runtime.last_applied_input.yaw,
         pitch: runtime.last_applied_input.pitch,
     };
+}
+
+/// A client's input bundle reached the server before simulating `tick`. With
+/// vehicle pacing on, every input's lateness is measured, and a driver's are
+/// queued in order against the last applied (`vehicle_input_pacing`).
+fn receive_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>, pacing: bool, in_vehicle: bool, tick: u32) {
+    if !pacing {
+        return enqueue_inputs(runtime, cmds);
+    }
+    for cmd in &cmds {
+        runtime.input_jitter.observe(cmd.seq, tick);
+    }
+    if !in_vehicle {
+        return enqueue_inputs(runtime, cmds);
+    }
+    for cmd in cmds {
+        if runtime.last_received_input_seq.map_or(true, |last| seq_is_newer(cmd.seq, last)) {
+            runtime.last_received_input_seq = Some(cmd.seq);
+        }
+        vehicle_input_pacing::enqueue_ordered(&mut runtime.pending_inputs, runtime.last_ack_input_seq, cmd, MAX_PENDING_INPUTS);
+    }
 }
 
 fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
@@ -8279,7 +8342,7 @@ impl SpacetimeVerifier {
 mod tests {
     use super::{
         classify_outbound_delivery, clear_runtime_inputs_for_vehicle_entry,
-        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, is_snapshot_packet_kind,
+        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, inputs_skipped, receive_inputs, is_snapshot_packet_kind,
         parse_respawn_delay_ms, periodic_refresh_due, rifle_damage, server_build_profile,
         strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
         take_input_for_tick_with_vehicle_catchup, try_queue_packet, HitZone, InputCmd,
@@ -8446,7 +8509,76 @@ mod tests {
             visible_batteries: HashSet::new(),
             battery_full_resync_pending: true,
             energy_gate: crate::energy_stream::EnergySendGate::default(),
+            input_jitter: Default::default(),
         }
+    }
+
+    /// A driver's packets, each the newest three inputs (the client's resend
+    /// window), arrive per tick as `arrivals`; returns the input applied each
+    /// tick. Tick 1 is a burst after a delay, as LTE and uneven frames give.
+    fn drive_vehicle_ticks(runtime: &mut PlayerRuntime, arrivals: &[Vec<Vec<u16>>], pacing: bool) -> Vec<u16> {
+        let mut applied = Vec::new();
+        for (tick, packets) in arrivals.iter().enumerate() {
+            for packet in packets {
+                receive_inputs(runtime, packet.iter().map(|&seq| input(seq)).collect(), pacing, true, tick as u32);
+            }
+            applied.push(take_input_for_tick_with_vehicle_catchup(runtime, !pacing).seq);
+        }
+        applied
+    }
+
+    #[test]
+    fn a_driven_cars_burst_of_inputs_is_applied_in_order_not_collapsed() {
+        let mut runtime = runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        // Inputs 1..=5, one a frame. Packet 1 arrives on time; 2-5 are held
+        // up and arrive together, overtaking each other.
+        let arrivals = vec![
+            vec![vec![1]],
+            vec![],
+            vec![vec![1, 2, 3], vec![1, 2], vec![2, 3, 4], vec![3, 4, 5]],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        ];
+        // The driver predicted each input applied once, in order. Input 1
+        // repeats while 2 is late (nothing else to apply), then 2..5 follow.
+        assert_eq!(drive_vehicle_ticks(&mut runtime, &arrivals, true), [1, 1, 2, 3, 4, 5, 5]);
+        // Shipping (pacing off) collapses the backlog: 2, 3 and 4 are never
+        // applied and 5 is applied for four ticks. Unchanged while off.
+        let mut runtime = super::tests::runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        assert_eq!(drive_vehicle_ticks(&mut runtime, &arrivals, false), [1, 1, 5, 5, 5, 5, 5]);
+    }
+
+    #[test]
+    fn skipped_inputs_are_the_gap_in_the_applied_sequence() {
+        assert_eq!(inputs_skipped(10, 11), 0);
+        assert_eq!(inputs_skipped(10, 14), 3); // a backlog of 4 collapsed to its newest
+        assert_eq!(inputs_skipped(0xfffe, 1), 2); // across the wrap
+        assert_eq!(inputs_skipped(10, 10), 0); // a repeat is starvation, not a skip
+    }
+
+    #[test]
+    fn a_paced_driver_accepts_an_overtaken_input_and_on_foot_is_unchanged() {
+        // Packets of one or two inputs (loss can leave a single copy of an
+        // input): 4 overtakes 3 while the queue still holds 2.
+        let arrivals = vec![vec![vec![1, 2]], vec![vec![4]], vec![vec![3]], vec![vec![5]], vec![]];
+        let mut runtime = runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        assert_eq!(drive_vehicle_ticks(&mut runtime, &arrivals, true), [1, 2, 3, 4, 5]);
+        // Shipping rejects 3 as older than the newest received.
+        let mut runtime = super::tests::runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        assert_eq!(drive_vehicle_ticks(&mut runtime, &arrivals, false), [1, 2, 4, 5, 5]);
+        // On foot, pacing only measures: the queue is the shipping one.
+        let mut runtime = super::tests::runtime();
+        receive_inputs(&mut runtime, vec![input(1), input(3)], true, false, 0);
+        receive_inputs(&mut runtime, vec![input(2)], true, false, 1);
+        assert_eq!(runtime.pending_inputs.iter().map(|c| c.seq).collect::<Vec<_>>(), [1, 3]);
+        // But it measures: 1 arrived with 3, two ticks later than 3 was.
+        assert_eq!(runtime.input_jitter.target(), Some(2));
     }
 
     fn input(seq: u16) -> InputCmd {

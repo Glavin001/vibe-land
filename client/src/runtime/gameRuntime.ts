@@ -44,6 +44,7 @@ import { CosmeticPhysicsWorld } from './cosmeticPhysicsWorld';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from './vehicleDebug';
 import { FixedInputBundler } from './fixedInputBundler';
+import { inputClockRate } from './inputPacing';
 import { ThinAuthoritativePredictor } from '../physics/thinAuthoritativePredictor';
 import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
 import { fetchSessionConfig, type SessionConfigResponse } from '../net/webTransportClient';
@@ -1621,15 +1622,17 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   submitInput(frameDeltaSec: number, input: SemanticInputState): void {
     if (this.thinAuthoritative) {
-      const cmds = this.authoritativeInputBundler.produce(frameDeltaSec, input);
       const driven=this.client?.getLocalDrivenVehicleId();
+      // Server vehicle input pacing: hold its queue at the jitter target.
+      const paced=driven!=null?this.client?.vehicleInputQueue??null:null;
+      const cmds = this.authoritativeInputBundler.produce(frameDeltaSec*inputClockRate(paced), input);
       if(driven!=null) {
         this.thinVehiclePredictor.record(driven,cmds);
         this.cityColliders?.sync();
         this.thinVehiclePredictor.update(frameDeltaSec,performance.now());
       } else if(this.thinVehiclePredictor.vehicleId!==null) this.thinVehiclePredictor.reset();
       if (cmds.length > 0) {
-        const redundant=driven!=null?this.thinVehiclePredictor.resendWindow():[];
+        const redundant=driven!=null?this.thinVehiclePredictor.resendWindow(paced!==null):[];
         this.sendInputs(redundant.length?redundant:cmds);
       }
       const client = this.client;

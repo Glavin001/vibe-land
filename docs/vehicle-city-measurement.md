@@ -108,3 +108,65 @@ do not help:
 The tape now records each step's released chunks (`released`), and the replay
 drops a chunk's collider when a snapshot from its release tick reaches the
 client. So the next recorded drives give a fair A/B with fractures.
+
+## Vehicle input pacing (opt-in, `VIBE_VEHICLE_INPUT_PACING=1`)
+
+The fix for the largest error above: a jitter buffer whose depth the client
+steers, as Overwatch paces its command buffer (Tim Ford, "Overwatch Gameplay
+Architecture and Netcode", GDC 2017).
+
+- **Server** (`server/src/vehicle_input_pacing.rs`):
+  - A driver's inputs are queued in sequence order against the last one
+    applied. A packet overtaken by a later one still lands in its place.
+  - The queue is never collapsed.
+  - Each input's lateness (arrival tick minus sequence) is measured. The
+    server reports a target depth: the spread of lateness from its least to
+    its 95th percentile over the last 120 inputs.
+  - Each snapshot to a driver carries depth and target (section tag 0xE8
+    after the removals; 3 bytes). Absent otherwise, so other snapshots are
+    byte for byte unchanged.
+- **Client** (`client/src/runtime/inputPacing.ts`):
+  - The fixed-rate input clock runs at `1 + (target - depth) / 60` over a
+    1 s time constant, well above the worst round trip.
+  - It resends every unacked input, up to what one QUIC datagram carries
+    (`INPUT_BUNDLE_MAX_FRAMES`, 115).
+  - Without a report, nothing changes.
+- **Counter:** `vehicle_inputs_skipped` (gaps in the applied sequence)
+  compares both pipelines. `vehicle_inputs_collapsed` counts the shipping
+  collapse only.
+
+The pipeline was chosen by simulation (`client/netlab/vehicle/inputPipeline.ts`,
+the real `FixedInputBundler`, the server's queue rules, links from
+`netemProfiles.json`). These are mispredicted ticks a minute and input delay
+in ticks (production to application, p50/p95), as means over 3 seeds × 10 min:
+
+| Link | Display | Shipping | Paced |
+|---|---|---|---|
+| loopback | 60 Hz vsync | 0.2, 0.9/1.4 | 0.2, 2.3/2.9 |
+| loopback | 60 Hz, 2% 80 ms hitches | 341, 1.0/1.8 | 0.2, 4.4/5.7 |
+| loopback | headless (25±15 ms, 3% 150 ms) | 618, 1.3/2.5 | 55, 6.2/10.4 |
+| wifi-bad | 60 Hz vsync | 238, 3.9/4.4 | 0.5, 6.0/6.8 |
+| lte | 60 Hz vsync | 1,533, 6.3/7.5 | 0.9, 10.0/11.0 |
+| lte | 60 Hz hitches | 1,762, 6.3/7.7 | 1.7, 11.1/12.9 |
+| lte | headless | 2,371, 6.4/8.3 | 57, 12.9/18.0 |
+| poor-mobile | 60 Hz vsync | 1,764, 9.7/11.1 | 1.3, 13.9/14.7 |
+
+The simulation's headless loopback shipping figure (618 a minute) matches the
+live clean wall course (585-686 starved plus 300-336 collapsed, counted
+differently), which calibrates it.
+
+**The cost.** Pacing adds about 1.4-4 ticks of input delay. That is the
+queue holding the jitter. The driver's own car is predicted locally, so
+steering responds the same. The delay shows in when the server, and
+everyone else, sees the input.
+
+**Not yet measured live** (the GPU was reserved for another session). Next:
+`vehicle-measure.mjs` on the wall and street courses, clean and LTE, pacing
+on vs off, reading `skippedPerMin` and `starvedPerMin`.
+
+Tests:
+- `vehicle_input_pacing::tests`;
+- `a_driven_cars_burst_of_inputs_is_applied_in_order_not_collapsed`, which
+  reproduces the shipping collapse;
+- `netlab/vehicle/inputPipeline.test.ts`, whose shipping case asserts the
+  bug and whose paced case gates the fix.

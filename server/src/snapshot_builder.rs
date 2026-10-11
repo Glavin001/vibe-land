@@ -1155,6 +1155,8 @@ pub fn build_recipient_snapshot(
         server_wall_us: world.server_wall_us,
         compact_self,
         removals,
+        // Set by the caller for a driver while input pacing is on.
+        input_queue: None,
     });
     Some((packet, selection))
 }

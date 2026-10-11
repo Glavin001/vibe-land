@@ -255,6 +255,11 @@ export class NetcodeClient {
   private newestSnapshotServerUs = -Infinity;
   private minRemoteInterpolationDelayMs = 0;
   latestServerTick = 0;
+  /**
+   * The newest snapshot's report of this driver's vehicle input queue
+   * (server VIBE_VEHICLE_INPUT_PACING), or null: not driving, or not paced.
+   */
+  vehicleInputQueue: { depth: number; target: number } | null = null;
   rttMs = 0;
   localPlayerHp = 100;
   /** Smoothed between the server's rate-limited energy messages. */
@@ -819,6 +824,7 @@ export class NetcodeClient {
     source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct',
   ): void {
     this.latestServerTick = packet.serverTick;
+    this.vehicleInputQueue = packet.inputQueue ?? null;
     const arrivedUs = this.nowMs() * 1000;
     this.serverClock.observe(packet.serverTimeUs, arrivedUs, packet.serverWallUs);
     this.adoptAdaptiveDelays(arrivedUs, packet.serverTimeUs);
@@ -1932,6 +1938,7 @@ export class NetcodeClient {
     this.playerId = 0;
     this.newestSnapshotServerUs = -Infinity;
     this.latestServerTick = 0;
+    this.vehicleInputQueue = null;
     this.baselineInterpolationDelayMs = 100;
     this.playerRenderClock.setTargetDelayMs(this.baselineInterpolationDelayMs);
     this.playerRenderClock.reset();

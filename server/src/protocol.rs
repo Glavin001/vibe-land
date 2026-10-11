@@ -245,7 +245,9 @@ pub struct SnapshotV2Packet {
     /// client uses: no support, or a support that is not moving (the client
     /// reads only the support velocity). Never set together with `removals`,
     /// whose section follows the trailer: a 12-byte block is detected by the
-    /// bytes left after the entities, which the section would add to.
+    /// bytes left after the entities, which the section would add to. The
+    /// 3-byte `input_queue` section may go with it: 12 + 4 + 3 = 19 left,
+    /// under the 27 that would read as a support block.
     pub compact_self: bool,
     /// Entities this recipient's stream has stopped carrying (retired by the
     /// server, or out of its interest), each restated in a few consecutive
@@ -253,7 +255,17 @@ pub struct SnapshotV2Packet {
     /// [`SNAPSHOT_V2_REMOVALS_TAG`], count, entries), which clients that
     /// predate it never read.
     pub removals: Vec<SnapshotRemoval>,
+    /// The recipient's vehicle input queue as the server holds it this tick:
+    /// (depth, target depth), the target from the measured jitter of its
+    /// input arrivals. Sent to a driver while vehicle input pacing is on
+    /// (`VIBE_VEHICLE_INPUT_PACING`), whose client then paces its inputs to
+    /// keep the queue at the target. A section after the removals (tag
+    /// [`SNAPSHOT_V2_INPUT_QUEUE_TAG`], depth, target) older clients never read.
+    pub input_queue: Option<(u8, u8)>,
 }
+
+/// First byte of the input-queue section (after the removals, when any).
+pub const SNAPSHOT_V2_INPUT_QUEUE_TAG: u8 = 0xE8;
 
 /// One entry of the SnapshotV2 removals section: `handle` is a dynamic body's
 /// handle, or `0x8000 | vehicle handle` (the convention of the self state's
@@ -811,6 +823,11 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                     out.put_u8(removal.age_ticks);
                 }
             }
+            if let Some((depth, target)) = pkt.input_queue {
+                out.put_u8(SNAPSHOT_V2_INPUT_QUEUE_TAG);
+                out.put_u8(depth);
+                out.put_u8(target);
+            }
         }
     }
     out.to_vec()
@@ -1319,6 +1336,37 @@ mod tests {
         assert_eq!(encoded.len(), 23 + 33 + entities + SNAPSHOT_V2_TRAILER_BYTES);
         let tail = &encoded[encoded.len() - 4..];
         assert_eq!(u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn snapshot_v2_input_queue_section_is_last_and_keeps_the_compact_self_state() {
+        let queue = |compact_self, removals: Vec<SnapshotRemoval>| {
+            encode_server_packet(&ServerPacket::SnapshotV2(SnapshotV2Packet {
+                compact_self,
+                removals,
+                input_queue: Some((5, 3)),
+                ..SnapshotV2Packet::default()
+            }))
+        };
+        let compact = queue(true, vec![]);
+        // The client reads a support block only with 27 or more bytes after
+        // the entities (decodeSnapshotV2Packet).
+        let after_entities = SNAPSHOT_V2_COMPACT_SELF_PLAYER_BYTES + SNAPSHOT_V2_TRAILER_BYTES + 3;
+        assert!(after_entities < 27);
+        assert_eq!(compact.len(), 23 + after_entities);
+        assert_eq!(&compact[compact.len() - 3..], &[SNAPSHOT_V2_INPUT_QUEUE_TAG, 5, 3]);
+        let with_removals = queue(true, vec![SnapshotRemoval { handle: 7, age_ticks: 1 }]);
+        assert_eq!(
+            with_removals.len(),
+            23 + 33 + SNAPSHOT_V2_TRAILER_BYTES + 2 + SNAPSHOT_V2_REMOVAL_BYTES + 3
+        );
+        assert_eq!(&with_removals[with_removals.len() - 3..], &[SNAPSHOT_V2_INPUT_QUEUE_TAG, 5, 3]);
+        // Absent, the packet is byte for byte what it was.
+        let plain = encode_server_packet(&ServerPacket::SnapshotV2(SnapshotV2Packet {
+            compact_self: true,
+            ..SnapshotV2Packet::default()
+        }));
+        assert_eq!(plain[..], compact[..compact.len() - 3]);
     }
 
     #[test]

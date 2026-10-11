@@ -1,5 +1,5 @@
 import {Quaternion, Vector3} from 'three';
-import {BTN_JUMP, SERVER_TICK_US, type InputCmd, type VehicleStateMeters} from '../net/protocol';
+import {BTN_JUMP, INPUT_BUNDLE_MAX_FRAMES, SERVER_TICK_US, type InputCmd, type VehicleStateMeters} from '../net/protocol';
 import type {VehicleSample} from '../net/interpolation';
 import {resolveDrivingSetup, resolveVehicleGeometry} from '../vehicles/configuration.mjs';
 import {getSharedVehicleDefinition} from '../wasm/sharedVehicleDefinitions';
@@ -254,7 +254,8 @@ export class VehiclePresentationPredictor {
   debug(now:number) {return {stalled:this.stalled,pending:this.pending.length,ack:this.ack??0,latestSeq:this.latestSeq,
     correction:this.offset.length(),replayError:this.replayError,replayMs:this.replayMs,
     snapshotAge:this.base?Math.max(0,now-this.observedAt):-1};}
-  resendWindow():InputCmd[]{return this.pending.slice(-3);}
+  /** Inputs to send: the newest three, or every unacked one (up to a datagram) when the server paces vehicle inputs. */
+  resendWindow(all=false):InputCmd[]{return this.pending.slice(all?-INPUT_BUNDLE_MAX_FRAMES:-3);}
   get vehicleId():number|null{return this.id;}
   get pendingCount():number{return this.pending.length;}
 }

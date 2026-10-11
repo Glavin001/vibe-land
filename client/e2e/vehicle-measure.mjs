@@ -221,6 +221,7 @@ const report = {
     inputToDrawnMs: { n: presented.length, p50: r3(q(presented, 0.5)), p95: r3(q(presented, 0.95)) },
     serverInputs: { starvedPerMin: r3((stat(after, 'vehicle_input_starved') - stat(before, 'vehicle_input_starved')) / minutes),
       collapsedPerMin: r3((stat(after, 'vehicle_inputs_collapsed') - stat(before, 'vehicle_inputs_collapsed')) / minutes),
+      skippedPerMin: r3((stat(after, 'vehicle_inputs_skipped') - stat(before, 'vehicle_inputs_skipped')) / minutes),
       meanQueueDepth: r3(tape.frames.reduce((a, f) => a + f.depth, 0) / Math.max(1, tape.frames.length)) },
   },
   observer: score(observer.frames, (f) => f.carTick),
