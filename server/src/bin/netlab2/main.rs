@@ -37,6 +37,7 @@ mod city_clips;
 mod city_pairs;
 mod city_fairness;
 mod city_lab;
+mod city_live;
 mod city_perceptual;
 mod city_study;
 mod city_pp_stage;
@@ -247,6 +248,9 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
                 // Read once, from the environment, by the encoder itself.
                 std::env::set_var("VIBE_CITY_MAX_EVAL", value);
             }
+            // Lab settings (`lab.*`) and the per-player stream's (`pp.*`)
+            // are not the encoder's.
+            other if other.starts_with("lab.") || other.starts_with("pp.") => {}
             other => die(&format!("unknown knob {other}; see docs/netlab-v2.md")),
         }
     }
@@ -557,6 +561,7 @@ fn main() {
         "city-clips" => city_clips::cmd_city_clips(&args),
         "city-study" => city_study::cmd_city_study(&args),
         "city-pairs" => city_pairs::cmd_city_pairs(&args),
+        "city-live" => city_live::cmd_city_live(&args),
         "matrix" => report::cmd_matrix(&args),
         "compare" => report::cmd_compare(&args),
         "profiles" => {

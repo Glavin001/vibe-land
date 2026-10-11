@@ -142,6 +142,11 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
     let end_ms = tape.packets.last().map_or(0.0, |p| p.t_ms);
     let mut t = first_ms;
     let mut frames = 0u64;
+    // Gate G7: frames showing a moment the server had not simulated yet when
+    // they were drawn (the server's own tick timeline): no data can exist
+    // for them, so they are prediction alone. A healthy render clock stays
+    // its playout delay plus the path's latency behind.
+    let (mut frames_ahead, mut max_ahead) = (0u64, f32::MIN);
     let mut live_keys: HashMap<u32, ()> = HashMap::new();
     let started = std::time::Instant::now();
     // NETLAB2_PP_TRACE=structure:node (diagnosis): that chunk's body and its
@@ -160,6 +165,11 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
             t += FRAME_MS;
             continue;
         };
+        let ahead = render - sim_tick_at(t) as f32;
+        if ahead > 0.0 {
+            frames_ahead += 1;
+        }
+        max_ahead = max_ahead.max(ahead);
         if !client.started() {
             t += FRAME_MS;
             continue;
@@ -243,6 +253,8 @@ pub fn run(dir: &Path, manifest: &DestructionManifest, config: PerPlayerConfig, 
                 "heldDropped": s.held_dropped,
                 "decodeErrors": s.decode_errors,
                 "bootstraps": s.bootstraps,
+                "framesAheadOfServer": frames_ahead,
+                "maxTicksAheadOfServer": max_ahead,
             }
         }))?,
     )?;

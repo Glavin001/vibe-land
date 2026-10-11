@@ -39,7 +39,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TARGET = os.environ.get("CARGO_TARGET_DIR", "/Users/glavin/Development/vibe-land/target/nds")
 BASELINE = os.path.join(ROOT, "scripts", "netlab", "ci-baseline.json")
-GATE_COUNTS = ("g1_hash_mismatches", "g2_events_early", "g3_clients_over", "g4_solid_frames", "g5_resurrection_frames")
+GATE_COUNTS = ("g1_hash_mismatches", "g2_events_early", "g3_clients_over", "g4_solid_frames", "g5_resurrection_frames", "g7_frames_ahead_of_data")
 
 
 def sh(cmd, **kw):

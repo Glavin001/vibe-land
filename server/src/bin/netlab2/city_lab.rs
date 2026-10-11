@@ -384,8 +384,41 @@ pub struct CityRun {
     pub server_cost: ServerCost,
 }
 
+/// Windows of simulation seconds (from, to) in which the lab's server runs at
+/// `rate` of real time (`--server-rate`): it loses ticks there and does not
+/// catch up, as a live server does when ticks overrun their budget. None:
+/// every tick on time (every run before this option).
+static SERVER_RATE: std::sync::OnceLock<Vec<(f64, f64, f64)>> = std::sync::OnceLock::new();
+
 fn tick_ms(tick: u32, first: u32, hz: u32) -> f64 {
-    ORIGIN_MS + (f64::from(tick) - f64::from(first)) * 1000.0 / f64::from(hz)
+    let windows = SERVER_RATE.get().map_or(&[][..], Vec::as_slice);
+    if windows.is_empty() {
+        // Exactly the ideal pace's arithmetic: runs without the option stay
+        // byte-identical.
+        return ORIGIN_MS + (f64::from(tick) - f64::from(first)) * 1000.0 / f64::from(hz);
+    }
+    let sim_s = (f64::from(tick) - f64::from(first)) / f64::from(hz);
+    let mut slow_s = 0.0;
+    for &(from, to, rate) in windows {
+        // The part of the window the simulation has run through takes 1/rate
+        // as long in wall time.
+        slow_s += (sim_s.min(to) - from).max(0.0) * (1.0 / rate - 1.0);
+    }
+    ORIGIN_MS + (sim_s + slow_s) * 1000.0
+}
+
+/// `--server-rate from:to:rate[,from:to:rate...]` (simulation seconds; rate in
+/// (0, 1]).
+fn parse_server_rate(text: &str) -> Vec<(f64, f64, f64)> {
+    text.split(',')
+        .map(|w| {
+            let parts: Vec<f64> = w.split(':').map(|x| x.trim().parse().unwrap_or_else(|_| die(&format!("--server-rate {w}: from:to:rate")))).collect();
+            if parts.len() != 3 || !(parts[2] > 0.0 && parts[2] <= 1.0) || parts[1] <= parts[0] {
+                die(&format!("--server-rate {w}: from:to:rate, from < to, 0 < rate <= 1"));
+            }
+            (parts[0], parts[1], parts[2])
+        })
+        .collect()
 }
 
 /// The server stage and links: writes each client's tape and timeline.
@@ -704,6 +737,13 @@ pub struct Gates {
     pub g2_events_applied: u64,
     pub g2_events_early: u64,
     pub g2_events_late: u64,
+    /// G7: client frames showing a moment the server had not simulated yet
+    /// when they were drawn (prediction alone: no data can exist for them),
+    /// and the furthest ahead any client drew, ticks. Measured in the
+    /// per-player client stage against the server's tick timeline; v2's TS
+    /// client stage does not report it (0).
+    pub g7_frames_ahead_of_data: u64,
+    pub g7_worst_ticks_ahead: f64,
     /// G5: visible body-frames where a body the truth has at rest moved.
     pub g5_resurrection_frames: u64,
     /// Corrections onto the settle pose (not a G5 failure; scored as pops).
@@ -827,6 +867,10 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
             gates.g2_events_applied += n("eventsApplied");
             gates.g2_events_early += n("eventsAppliedEarly");
             gates.g2_events_late += n("eventsLate");
+            gates.g7_frames_ahead_of_data += n("framesAheadOfServer");
+            if let Some(ahead) = stats["city"]["maxTicksAheadOfServer"].as_f64() {
+                gates.g7_worst_ticks_ahead = if gates.g7_frames_ahead_of_data == 0 && gates.g7_worst_ticks_ahead == 0.0 { ahead } else { gates.g7_worst_ticks_ahead.max(ahead) };
+            }
         }
         if let Some(p) = &card.perceptual {
             gates.g5_resurrection_frames += p.g5_resurrection_frames;
@@ -839,7 +883,8 @@ pub fn score_city(capture: &CityCapture, run: &CityRun, out: &Path) -> std::io::
         && gates.g3_clients_over == 0
         && gates.g2_events_early == 0
         && gates.g5_resurrection_frames == 0
-        && gates.g4_solid_frames == 0;
+        && gates.g4_solid_frames == 0
+        && gates.g7_frames_ahead_of_data == 0;
     let n = cards.len().max(1) as f64;
     let qs: Vec<f64> = cards.iter().filter_map(|c| c.perceptual.as_ref().map(|p| p.q)).collect();
     let penalties: Vec<f64> = cards.iter().filter_map(|c| c.perceptual.as_ref().map(|p| p.penalty_per_minute)).collect();
@@ -963,6 +1008,11 @@ fn card_markdown(card: &CityCard) -> String {
         md,
         "G2: {} events applied, {} before the drawing reached their tick, {} after it passed. G5: {} body-frames moved while at rest ({} more were corrections onto the rest pose). G4: {} body-frames inside solid geometry (worst {:.1} cm).",
         g.g2_events_applied, g.g2_events_early, g.g2_events_late, g.g5_resurrection_frames, g.g5_settle_snap_frames, g.g4_solid_frames, g.g4_worst_cm
+    );
+    let _ = writeln!(
+        md,
+        "G7: {} client frames showed a moment the server had not simulated yet (closest to the server: {:.1} ticks; positive is ahead).",
+        g.g7_frames_ahead_of_data, g.g7_worst_ticks_ahead
     );
     if let Some(f) = &card.fairness {
         let _ = writeln!(
@@ -1128,7 +1178,11 @@ fn read_run(capture: &CityCapture, spec: CitySpec, out: &Path) -> std::io::Resul
 pub fn cmd_city(args: &Args) {
     let (capture, label) = open_capture(args);
     let out = args.path("out");
-    let spec = city_spec(args, &capture, label);
+    let mut spec = city_spec(args, &capture, label);
+    if let Some(rate) = args.get("server-rate") {
+        SERVER_RATE.set(parse_server_rate(rate)).expect("server rate set once");
+        spec.knobs.insert("lab.server_rate".into(), rate.to_string());
+    }
     if args.get("rescore").is_some() {
         let run = read_run(&capture, spec, &out).unwrap_or_else(|e| die(&format!("--rescore: {e}")));
         let card = score_city(&capture, &run, &out).unwrap_or_else(|e| die(&e.to_string()));
