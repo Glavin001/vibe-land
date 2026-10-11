@@ -2926,9 +2926,7 @@ mod fracture_scale_tests {
         let crowded = knock_pieces_off(40, 32, 40, 2_000, 100);
         println!("ingest per fracture tick: 6,600 chunks {small:.3} ms, 51,200 chunks {large:.3} ms, with 2,000 bodies {crowded:.3} ms");
         assert!(large < 1.5 * small + 0.02, "structure size: {large:.3} ms vs {small:.3} ms");
-        // Still one pass over the debris's islands per fracture (the derive
-        // check, the crushed-chunk test): linear in the bodies lying about,
-        // never worse (it was 5.5x for 5x before).
-        assert!(crowded < 5.0 * large, "bodies: {crowded:.3} ms vs {large:.3} ms");
+        // Nor what lies about (it was 5.5x for 5x the bodies).
+        assert!(crowded < 2.0 * large + 0.01, "bodies: {crowded:.3} ms vs {large:.3} ms");
     }
 }

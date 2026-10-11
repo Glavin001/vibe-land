@@ -42,6 +42,39 @@ struct LedgerStructure {
     /// Bit `i` set = bond index `i` alive.
     alive_bonds: Vec<u8>,
     islands: HashMap<u32, LedgerIsland>,
+    /// Per node, the islands listing it (one, unless a stream put it on
+    /// two): a promotion drains only those, not every island. Derived from
+    /// `islands`, so never serialised; rebuilt when missing.
+    #[serde(skip)]
+    holders: rustc_hash::FxHashMap<u32, Vec<u32>>,
+    #[serde(skip)]
+    indexed: bool,
+}
+
+impl LedgerStructure {
+    fn index(&mut self) {
+        if self.indexed {
+            return;
+        }
+        self.holders.clear();
+        for (&serial, island) in &self.islands {
+            for &n in &island.nodes {
+                self.holders.entry(n).or_default().push(serial);
+            }
+        }
+        self.indexed = true;
+    }
+
+    fn unlist(&mut self, node: u32, serial: u32) {
+        if let Some(list) = self.holders.get_mut(&node) {
+            if let Some(at) = list.iter().position(|&s| s == serial) {
+                list.swap_remove(at);
+            }
+            if list.is_empty() {
+                self.holders.remove(&node);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -67,6 +100,8 @@ impl CityLedger {
                         bond_count,
                         alive_bonds,
                         islands: HashMap::new(),
+                        holders: Default::default(),
+                        indexed: true,
                     },
                 )
             })
@@ -149,6 +184,7 @@ impl CityLedger {
         let Some(structure) = self.structures.get_mut(&batch.structure_id) else {
             return;
         };
+        structure.index();
         for &bond_id in &batch.broken_bond_ids {
             let (_, bond_index) = ids::bond_id_parts(bond_id);
             if bond_index < structure.bond_count {
@@ -173,20 +209,35 @@ impl CityLedger {
             // the ledger is what bootstraps late joiners and resyncs, so a
             // stale list here becomes corrupt membership (and a corrupt
             // centre of mass) on every client that ever resynchronises.
-            // (Membership by bitset: a promotion of k nodes would otherwise
-            // cost k per node of every island.)
+            // (Only the islands listing one of them are drained, by the
+            // holders index; membership by bitset.)
             let words = nodes.last().map_or(0, |&n| n as usize / 64 + 1);
             let mut joining = vec![0u64; words];
             for &n in &nodes {
                 joining[n as usize / 64] |= 1 << (n % 64);
             }
             let joins = |n: u32| joining.get(n as usize / 64).is_some_and(|w| w & (1 << (n % 64)) != 0);
-            for island in structure.islands.values_mut() {
-                if island.nodes.iter().any(|&n| joins(n)) {
-                    island.nodes.retain(|&node| !joins(node));
+            let mut drained: Vec<u32> = nodes.iter().filter_map(|n| structure.holders.get(n)).flatten().copied().collect();
+            drained.sort_unstable();
+            drained.dedup();
+            for serial in drained {
+                let Some(island) = structure.islands.get_mut(&serial) else { continue };
+                let mut left: Vec<u32> = Vec::new();
+                island.nodes.retain(|&node| {
+                    let joining = joins(node);
+                    if joining {
+                        left.push(node);
+                    }
+                    !joining
+                });
+                for node in left {
+                    structure.unlist(node, serial);
                 }
             }
-            structure.islands.insert(
+            for &n in &nodes {
+                structure.holders.entry(n).or_default().push(promotion.island_id);
+            }
+            let replaced = structure.islands.insert(
                 promotion.island_id,
                 LedgerIsland {
                     nodes,
@@ -199,6 +250,12 @@ impl CityLedger {
                     settled: false,
                 },
             );
+            // An island the promotion's id replaces leaves its other nodes.
+            if let Some(old) = replaced {
+                for node in old.nodes {
+                    structure.unlist(node, promotion.island_id);
+                }
+            }
         }
         // Chunks physics moved between existing islands, with no promotion.
         // Same staleness consequence as above if skipped -- which it was: the
@@ -208,18 +265,27 @@ impl CityLedger {
         for migration in &batch.migrations {
             let node = ids::chunk_id_parts(migration.chunk_id).1;
             if let Some(source) = structure.islands.get_mut(&migration.from_island_id) {
+                let before = source.nodes.len();
                 source.nodes.retain(|&existing| existing != node);
+                if source.nodes.len() != before {
+                    structure.unlist(node, migration.from_island_id);
+                }
             }
             if let Some(destination) = structure.islands.get_mut(&migration.to_island_id) {
                 // Keep ascending order: bootstrap gap-encodes node lists, so
                 // an out-of-order insert would corrupt the wire encoding.
                 if let Err(index) = destination.nodes.binary_search(&node) {
                     destination.nodes.insert(index, node);
+                    structure.holders.entry(node).or_default().push(migration.to_island_id);
                 }
             }
         }
         for &retired in &batch.retired_island_ids {
-            structure.islands.remove(&retired);
+            if let Some(island) = structure.islands.remove(&retired) {
+                for node in island.nodes {
+                    structure.unlist(node, retired);
+                }
+            }
         }
     }
 
@@ -273,9 +339,11 @@ impl CityLedger {
         &mut self,
         structure_id: u32,
     ) -> Option<&mut HashMap<u32, LedgerIsland>> {
-        self.structures
-            .get_mut(&structure_id)
-            .map(|structure| &mut structure.islands)
+        self.structures.get_mut(&structure_id).map(|structure| {
+            // Whatever the caller changes, the index is rebuilt from it.
+            structure.indexed = false;
+            &mut structure.islands
+        })
     }
 
     pub fn update_island_motion(
@@ -620,6 +688,94 @@ mod tests {
         )
         .expect("city");
         DestructionManifest::from_city(&city)
+    }
+
+    /// The islands a batch leaves, as the ledger computed them before it
+    /// kept an index: every island scanned for every promoted node.
+    fn apply_by_scan(islands: &mut HashMap<u32, Vec<u32>>, batch: &FractureBatch) {
+        for promotion in &batch.promoted_islands {
+            let mut nodes: Vec<u32> = promotion.chunks.iter().map(|&c| ids::chunk_id_parts(c).1).collect();
+            nodes.sort_unstable();
+            for island in islands.values_mut() {
+                island.retain(|n| !nodes.contains(n));
+            }
+            islands.insert(promotion.island_id, nodes);
+        }
+        for migration in &batch.migrations {
+            let node = ids::chunk_id_parts(migration.chunk_id).1;
+            if let Some(source) = islands.get_mut(&migration.from_island_id) {
+                source.retain(|&n| n != node);
+            }
+            if let Some(destination) = islands.get_mut(&migration.to_island_id) {
+                if let Err(at) = destination.binary_search(&node) {
+                    destination.insert(at, node);
+                }
+            }
+        }
+        for retired in &batch.retired_island_ids {
+            islands.remove(retired);
+        }
+    }
+
+    /// Random promotions (of any chunks, reusing ids), migrations (some to
+    /// islands that do not exist) and retirements: the indexed ledger leaves
+    /// exactly the islands the full scan did, and its index lists exactly
+    /// each node's islands -- also after a round trip through serde.
+    #[test]
+    fn the_island_index_drains_what_a_full_scan_drained() {
+        use vibe_netcode::destruction_backend::ShapeMigration;
+        let manifest = manifest();
+        let mut seed = 0x0dd_ba11_5eed_u64;
+        let mut rand = move |m: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % u64::from(m.max(1))) as u32
+        };
+        for round in 0..20 {
+            let mut ledger = CityLedger::from_manifest(&manifest);
+            let mut reference: HashMap<u32, Vec<u32>> = HashMap::new();
+            for step in 0..80 {
+                let mut batch = FractureBatch { structure_id: 0, ..Default::default() };
+                for _ in 0..rand(3) {
+                    batch.promoted_islands.push(IslandPromotion {
+                        structure_id: 0,
+                        island_id: 1 + rand(12),
+                        chunks: (0..1 + rand(3)).map(|_| ids::chunk_id(0, rand(40))).collect(),
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        ..Default::default()
+                    });
+                }
+                for _ in 0..rand(3) {
+                    batch.migrations.push(ShapeMigration { chunk_id: ids::chunk_id(0, rand(40)), from_island_id: 1 + rand(12), to_island_id: 1 + rand(14) });
+                }
+                if rand(5) == 0 {
+                    batch.retired_island_ids.push(1 + rand(12));
+                }
+                ledger.apply_batch(&batch);
+                apply_by_scan(&mut reference, &batch);
+                if step % 17 == 0 {
+                    let text = serde_json::to_string(&ledger).unwrap();
+                    ledger = serde_json::from_str(&text).unwrap();
+                }
+                let structure = &ledger.structures[&0];
+                let got: HashMap<u32, Vec<u32>> = structure.islands.iter().map(|(&k, i)| (k, i.nodes.clone())).collect();
+                assert_eq!(got, reference, "round {round} step {step}");
+                if structure.indexed {
+                    let mut want: rustc_hash::FxHashMap<u32, Vec<u32>> = Default::default();
+                    for (&serial, nodes) in &reference {
+                        for &n in nodes {
+                            want.entry(n).or_default().push(serial);
+                        }
+                    }
+                    let mut have = structure.holders.clone();
+                    for list in have.values_mut().chain(want.values_mut()) {
+                        list.sort_unstable();
+                    }
+                    assert_eq!(have, want, "round {round} step {step}");
+                }
+            }
+        }
     }
 
     #[test]
