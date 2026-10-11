@@ -38,7 +38,7 @@ use vibe_land_perplayer::wire::{
     encode_bootstrap, encode_events, encode_prepared, quantised, BodyKey, Bootstrap, BootstrapStructure, Event,
     KeyframeRecord, PreparedRecord, POSITION_STEPS,
 };
-use vibe_netcode::destruction_backend::DestructionTickOutput;
+use vibe_netcode::destruction_backend::{DestructionTickOutput, FractureBatch};
 
 use crate::encoder::BodySnapshotInput;
 use crate::ids;
@@ -406,9 +406,8 @@ pub struct PerPlayer {
     chunk_radius: BTreeMap<u32, Vec<f32>>,
     ledger: CityLedger,
     serial_body: FxHashMap<(u32, u32), u32>,
-    /// Each structure's serials in `serial_body` (a refresh replaces only
-    /// its own).
-    serials_of: FxHashMap<u32, Vec<u32>>,
+    /// Each structure's islands as last seen (`IslandMirror`).
+    mirrors: FxHashMap<u32, IslandMirror>,
     truth: FxHashMap<BodyKey, Truth>,
     /// Each awake body's last `BACKTEST_TICKS` + 1 truth states, for the
     /// mode backtest.
@@ -545,6 +544,96 @@ fn could_touch_solid(shape: &BodyShape, position: Vec3, statics: Option<&FxHashM
     false
 }
 
+/// One structure's physics islands as this strategy last saw them: which
+/// island each chunk is on, each island's chunks, the islands the
+/// derivation disagrees with (the derive check), and the chunks that may be
+/// on a dynamic body yet on no island (what `removed_nodes` looks for).
+/// Kept per fracture batch from what the batch can have changed, so a
+/// fracture's bookkeeping follows the fracture, not the debris about.
+#[derive(Default)]
+struct IslandMirror {
+    /// Per chunk, the islands holding it (one, unless the physics' own
+    /// stream put it on two).
+    islands_with: FxHashMap<u32, Vec<u32>>,
+    nodes_of: FxHashMap<u32, Vec<u32>>,
+    mismatched: FxHashSet<u32>,
+    /// Chunks the last crush pass moved: possibly dynamic and on no island.
+    pending: Vec<u32>,
+}
+
+impl IslandMirror {
+    fn of(ledger: &CityLedger, structure: u32) -> Self {
+        let mut mirror = Self::default();
+        let mut serials: Vec<u32> = ledger.structure_islands(structure).into_iter().flatten().map(|(&s, _)| s).collect();
+        serials.sort_unstable();
+        for serial in serials {
+            let nodes = &ledger.island(structure, serial).expect("listed").nodes;
+            for &n in nodes {
+                mirror.islands_with.entry(n).or_default().push(serial);
+            }
+            mirror.nodes_of.insert(serial, nodes.clone());
+        }
+        mirror
+    }
+
+    fn on_island(&self, node: u32) -> bool {
+        self.islands_with.get(&node).is_some_and(|s| !s.is_empty())
+    }
+
+    /// Follow `batch` (already applied to `ledger`): returns the islands it
+    /// may have changed or removed, and the chunks it left on no island.
+    fn follow(&mut self, ledger: &CityLedger, structure: u32, batch: &FractureBatch) -> (Vec<u32>, Vec<u32>) {
+        let mut touched: FxHashSet<u32> = FxHashSet::default();
+        for promotion in &batch.promoted_islands {
+            touched.insert(promotion.island_id);
+            for &chunk in &promotion.chunks {
+                if let Some(from) = self.islands_with.get(&ids::chunk_id_parts(chunk).1) {
+                    touched.extend(from.iter().copied());
+                }
+            }
+        }
+        for migration in &batch.migrations {
+            touched.insert(migration.from_island_id);
+            touched.insert(migration.to_island_id);
+        }
+        touched.extend(batch.retired_island_ids.iter().copied());
+        let mut touched: Vec<u32> = touched.into_iter().collect();
+        touched.sort_unstable();
+        let mut left: Vec<u32> = Vec::new();
+        for &serial in &touched {
+            for n in self.nodes_of.remove(&serial).unwrap_or_default() {
+                if let Some(list) = self.islands_with.get_mut(&n) {
+                    list.retain(|&s| s != serial);
+                    if list.is_empty() {
+                        self.islands_with.remove(&n);
+                        left.push(n);
+                    }
+                }
+            }
+        }
+        for &serial in &touched {
+            if let Some(island) = ledger.island(structure, serial) {
+                for &n in &island.nodes {
+                    self.islands_with.entry(n).or_default().push(serial);
+                }
+                self.nodes_of.insert(serial, island.nodes.clone());
+            }
+        }
+        left.retain(|&n| !self.on_island(n));
+        (touched, left)
+    }
+
+    /// The islands whose lowest chunk is `node`.
+    fn islands_lowest(&self, node: u32) -> impl Iterator<Item = u32> + '_ {
+        self.islands_with
+            .get(&node)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(move |s| self.nodes_of.get(s).and_then(|n| n.first()) == Some(&node))
+    }
+}
+
 /// `TruthAhead` of a truth's keyframe (the depth only with a shape).
 fn truth_ahead(
     keyframe: &Keyframe,
@@ -664,7 +753,7 @@ impl PerPlayer {
             chunk_radius,
             ledger,
             serial_body: FxHashMap::default(),
-            serials_of: FxHashMap::default(),
+            mirrors: FxHashMap::default(),
             truth: FxHashMap::default(),
             now_tick: 0,
             order: Vec::new(),
@@ -697,7 +786,10 @@ impl PerPlayer {
             let broken: Vec<u32> = (0..def.bonds.len() as u32).filter(|&b| !this.ledger_bond_alive(id, b)).collect();
             state.apply(def, &broken, &[]);
             let removed = this.removed_nodes(id, state);
-            state.apply(def, &[], &removed);
+            let crushed = state.apply(def, &[], &removed);
+            let mut mirror = IslandMirror::of(&this.ledger, id);
+            mirror.pending = crushed.moved_chunks;
+            this.mirrors.insert(id, mirror);
             for (_, island) in this.ledger.structure_islands(id).into_iter().flatten() {
                 if let Some(&min) = island.nodes.first() {
                     let key = BodyKey { structure: id, body: min };
@@ -737,6 +829,24 @@ impl PerPlayer {
         self.ledger.bond_alive(structure, bond)
     }
 
+    /// `removed_nodes` among `candidates`: the chunks a batch can have left
+    /// dynamic and on no island (those it took off an island, those it made
+    /// dynamic, and those the last crush pass made dynamic). Every other
+    /// chunk is as it was after the last batch, when none was both.
+    fn removed_among(&self, structure: u32, state: &StructureState, candidates: impl IntoIterator<Item = u32>) -> Vec<u32> {
+        let mirror = &self.mirrors[&structure];
+        let mut off: Vec<u32> = candidates
+            .into_iter()
+            .filter(|&n| {
+                let body = state.body_of(n);
+                body != ANCHORED && body != REMOVED && !mirror.on_island(n)
+            })
+            .collect();
+        off.sort_unstable();
+        off.dedup();
+        off
+    }
+
     /// Nodes on a dynamic derived body that are on no physics island: the
     /// physics removed them without breaking their bonds.
     fn removed_nodes(&self, structure: u32, state: &StructureState) -> Vec<u32> {
@@ -772,26 +882,40 @@ impl PerPlayer {
     fn refresh_serials_all(&mut self) {
         let ids: Vec<u32> = self.defs.keys().copied().collect();
         for id in ids {
-            self.refresh_serials(id);
+            let serials: Vec<u32> = self.ledger.structure_islands(id).into_iter().flatten().map(|(&s, _)| s).collect();
+            self.refresh_serials(id, &serials, &[]);
         }
     }
 
-    /// Map the physics' island serials to derived body ids, and count any
-    /// island the derivation disagrees with.
-    fn refresh_serials(&mut self, structure: u32) {
+    /// Map the physics' island serials to derived body ids, and count the
+    /// islands the derivation disagrees with (every island, each refresh:
+    /// `derive_mismatches`). Only `serials` (islands a batch may have
+    /// changed or removed) and the islands whose lowest chunk names one of
+    /// `bodies` (bodies whose members changed) can have changed since.
+    fn refresh_serials(&mut self, structure: u32, serials: &[u32], bodies: &[u32]) {
         let state = &self.states[&structure];
-        let serials = self.serials_of.entry(structure).or_default();
-        for serial in serials.drain(..) {
-            self.serial_body.remove(&(structure, serial));
-        }
-        for (&serial, island) in self.ledger.structure_islands(structure).into_iter().flatten() {
-            let Some(&min) = island.nodes.first() else { continue };
-            if state.members(min) != Some(island.nodes.as_slice()) {
-                self.stats.derive_mismatches += 1;
+        let mirror = self.mirrors.entry(structure).or_default();
+        let mut check: Vec<u32> = serials.to_vec();
+        check.extend(bodies.iter().flat_map(|&b| mirror.islands_lowest(b)));
+        for serial in check {
+            let island = self.ledger.island(structure, serial).filter(|i| !i.nodes.is_empty());
+            match island {
+                Some(island) => {
+                    let min = island.nodes[0];
+                    self.serial_body.insert((structure, serial), min);
+                    if state.members(min) != Some(island.nodes.as_slice()) {
+                        mirror.mismatched.insert(serial);
+                    } else {
+                        mirror.mismatched.remove(&serial);
+                    }
+                }
+                None => {
+                    self.serial_body.remove(&(structure, serial));
+                    mirror.mismatched.remove(&serial);
+                }
             }
-            self.serial_body.insert((structure, serial), min);
-            serials.push(serial);
         }
+        self.stats.derive_mismatches += mirror.mismatched.len() as u64;
     }
 
     /// How the client should predict a body from its state now: whichever
@@ -933,6 +1057,10 @@ impl ReplicationStrategy for PerPlayer {
         self.now_tick = tick;
         for batch in &output.batches {
             self.ledger.apply_batch(batch);
+            let (islands_touched, left_islands) = match self.mirrors.get_mut(&batch.structure_id) {
+                Some(mirror) => mirror.follow(&self.ledger, batch.structure_id, batch),
+                None => (Vec::new(), Vec::new()),
+            };
             let structure = batch.structure_id;
             let Some(def) = self.defs.get(&structure) else { continue };
             let broken: Vec<u32> = batch
@@ -968,7 +1096,8 @@ impl ReplicationStrategy for PerPlayer {
                 }
             }
             let mut change = state.apply(def, &broken, &[]);
-            let removed = self.removed_nodes(structure, &state);
+            let pending = self.mirrors.get_mut(&structure).map(|m| std::mem::take(&mut m.pending)).unwrap_or_default();
+            let removed = self.removed_among(structure, &state, left_islands.iter().chain(&change.moved_chunks).chain(&pending).copied());
             if !removed.is_empty() {
                 // The crush pass's parents: unchanged by the break pass (a
                 // body it changed maps to its own parent, kept above), so
@@ -982,6 +1111,9 @@ impl ReplicationStrategy for PerPlayer {
                     }
                 }
                 let more = state.apply(def, &[], &removed);
+                if let Some(mirror) = self.mirrors.get_mut(&structure) {
+                    mirror.pending = more.moved_chunks.clone();
+                }
                 change.changed_bodies.extend(more.changed_bodies);
                 change.retired_bodies.extend(more.retired_bodies);
                 change.moved_chunks.extend(more.moved_chunks);
@@ -997,7 +1129,7 @@ impl ReplicationStrategy for PerPlayer {
             }
             if broken.is_empty() && removed.is_empty() {
                 self.states.insert(structure, state);
-                self.refresh_serials(structure);
+                self.refresh_serials(structure, &islands_touched, &[]);
                 continue;
             }
             self.stats.fractures += 1;
@@ -1017,17 +1149,14 @@ impl ReplicationStrategy for PerPlayer {
             // ledger. A body the physics did not promote this tick (asleep,
             // re-keyed) is where its chunks were: its parent's frame moved to
             // its own centre of mass.
-            let spawned: FxHashSet<u32> = change.parent_of.iter().map(|&(id, _)| id).collect();
-            let islands: FxHashMap<u32, (Vec3, Quat, Vec3, Vec3, bool)> = self
-                .ledger
-                .structure_islands(structure)
-                .into_iter()
-                .flatten()
-                .filter_map(|(_, i)| {
-                    i.nodes
-                        .first()
-                        .filter(|min| spawned.contains(min))
-                        .map(|&min| (min, (i.pose.position, i.pose.rotation, i.linear_velocity, i.angular_velocity, i.settled)))
+            let mirror = &self.mirrors[&structure];
+            let islands: FxHashMap<u32, (Vec3, Quat, Vec3, Vec3, bool)> = change
+                .parent_of
+                .iter()
+                .flat_map(|&(id, _)| mirror.islands_lowest(id))
+                .filter_map(|serial| self.ledger.island(structure, serial))
+                .filter_map(|i| {
+                    i.nodes.first().map(|&min| (min, (i.pose.position, i.pose.rotation, i.linear_velocity, i.angular_velocity, i.settled)))
                 })
                 .collect();
             for &(id, parent) in &change.parent_of {
@@ -1109,7 +1238,10 @@ impl ReplicationStrategy for PerPlayer {
                     cs.over_since.remove(&BodyKey { structure, body: id });
                 }
             };
-            let workers = pool.clone().filter(|_| self.clients.len() > 1);
+            // Workers only for enough work to pay for waking them (each
+            // client's update is a few predictions per split parent).
+            let work = self.clients.len() * (needed.len() + change.parent_of.len());
+            let workers = pool.clone().filter(|_| self.clients.len() > 1 && work >= 1024);
             let models: Vec<&mut ClientState> = self.clients.values_mut().collect();
             match workers {
                 Some(pool) => pool.install(|| {
@@ -1118,8 +1250,9 @@ impl ReplicationStrategy for PerPlayer {
                 }),
                 None => models.into_iter().for_each(update),
             }
+            let bodies: Vec<u32> = change.changed_bodies.iter().chain(&change.retired_bodies).copied().collect();
             self.states.insert(structure, state);
-            self.refresh_serials(structure);
+            self.refresh_serials(structure, &islands_touched, &bodies);
         }
         // Each awake body's keyframe, mode, floor and contact: a pure
         // function of its snapshot and its history so far, so it runs on
@@ -1133,7 +1266,7 @@ impl ReplicationStrategy for PerPlayer {
             Some((BodyKey { structure, body }, snapshot))
         }
         let key_of = |snapshot| keyed(serial_body, snapshot);
-        let work: Vec<(BodyKey, &BodySnapshotInput)> = match workers.as_ref().filter(|_| active.len() >= 1024) {
+        let work: Vec<(BodyKey, &BodySnapshotInput)> = match workers.as_ref().filter(|_| active.len() >= 16_384) {
             Some(pool) => pool.install(|| {
                 use rayon::prelude::*;
                 active.par_iter().with_min_len(256).filter_map(key_of).collect()
@@ -1175,7 +1308,7 @@ impl ReplicationStrategy for PerPlayer {
             }
             (key, Truth { keyframe, radius, settled: false, contact_tick, born: previous.map_or(0, |p| p.born), ahead: None }, continuous, derived)
         };
-        let classified: Vec<(BodyKey, Truth, bool, Option<Option<Vec<(Vec3, Vec3)>>>)> = match workers.filter(|_| work.len() >= 256) {
+        let classified: Vec<(BodyKey, Truth, bool, Option<Option<Vec<(Vec3, Vec3)>>>)> = match workers.filter(|_| work.len() >= 2_048) {
             Some(pool) => pool.install(|| {
                 use rayon::prelude::*;
                 work.par_iter().with_min_len(64).map(classify).collect()
@@ -1369,7 +1502,7 @@ impl ReplicationStrategy for PerPlayer {
         }
         // What every client's evaluation needs from each truth alone, once.
         {
-            let pool = if self.truth.len() >= 1024 { self.workers() } else { None };
+            let pool = if self.truth.len() >= 2_048 { self.workers() } else { None };
             let config = self.effective_config();
             let physics = self.physics;
             let frame_ticks = config.sim_hz as f32 / FRAMES_PER_SECOND;
@@ -2471,6 +2604,87 @@ mod fracture_scale_tests {
         assert_eq!(pp.stats.fractures, u64::from(ticks));
         assert_eq!(pp.stats.derive_mismatches, 0, "the derivation agrees with the promotions");
         spent.as_secs_f64() * 1000.0 / f64::from(measured)
+    }
+
+    /// The island mirror follows the ledger exactly, the derive check counts
+    /// what a full recount does, and every chunk on a dynamic body yet on no
+    /// island is one the next crush pass will look at: random breaks,
+    /// promotions of any chunks, migrations (some to islands that do not
+    /// exist) and retirements, batch after batch.
+    #[test]
+    fn the_island_mirror_and_crush_candidates_match_a_full_recount() {
+        use vibe_netcode::destruction_backend::ShapeMigration;
+        let (nx, ny, nz) = (6, 6, 5);
+        let manifest = block(nx, ny, nz);
+        let n = nx * ny * nz;
+        let mut seed = 0x51ed_270b_c0ffee11u64;
+        let mut rand = move |m: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % u64::from(m.max(1))) as u32
+        };
+        for _ in 0..12 {
+            let mut pp = PerPlayer::new(&manifest, CityLedger::from_manifest(&manifest), PerPlayerConfig::validated(60));
+            let mut next_serial = 1u32;
+            for tick in 1..60u32 {
+                let bonds = manifest.structures[0].bonds.len() as u32;
+                let mut batch = FractureBatch { structure_id: 0, ..Default::default() };
+                batch.broken_bond_ids = (0..rand(6)).map(|_| ids::bond_id(0, rand(bonds))).collect();
+                // Promote a derived body as it is now, or a random handful.
+                for _ in 0..rand(3) {
+                    let state = &pp.states[&0];
+                    let bodies: Vec<&Vec<u32>> = state.bodies().values().collect();
+                    let chunks: Vec<u32> = if !bodies.is_empty() && rand(2) == 0 {
+                        bodies[rand(bodies.len() as u32) as usize].clone()
+                    } else {
+                        (0..1 + rand(5)).map(|_| rand(n)).collect()
+                    };
+                    batch.promoted_islands.push(IslandPromotion {
+                        structure_id: 0,
+                        island_id: next_serial,
+                        chunks: chunks.iter().map(|&c| ids::chunk_id(0, c)).collect(),
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        ..Default::default()
+                    });
+                    next_serial += 1;
+                }
+                for _ in 0..rand(3) {
+                    batch.migrations.push(ShapeMigration {
+                        chunk_id: ids::chunk_id(0, rand(n)),
+                        from_island_id: 1 + rand(next_serial),
+                        to_island_id: 1 + rand(next_serial + 3),
+                    });
+                }
+                if rand(4) == 0 {
+                    batch.retired_island_ids.push(1 + rand(next_serial));
+                }
+                pp.ingest_tick(tick, &[], &DestructionTickOutput { batches: vec![batch], ..Default::default() });
+
+                let (ledger, state, mirror) = (&pp.ledger, &pp.states[&0], &pp.mirrors[&0]);
+                let mut index: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
+                let mut mismatched = 0;
+                for (&serial, island) in ledger.structure_islands(0).into_iter().flatten() {
+                    for &c in &island.nodes {
+                        index.entry(c).or_default().push(serial);
+                    }
+                    assert_eq!(mirror.nodes_of.get(&serial), Some(&island.nodes), "tick {tick}: island {serial}");
+                    if let Some(&min) = island.nodes.first() {
+                        mismatched += usize::from(state.members(min) != Some(island.nodes.as_slice()));
+                        assert_eq!(pp.serial_body.get(&(0, serial)), Some(&min));
+                    }
+                }
+                let mut mirrored = mirror.islands_with.clone();
+                for list in mirrored.values_mut().chain(index.values_mut()) {
+                    list.sort_unstable();
+                }
+                assert_eq!(mirrored, index, "tick {tick}");
+                assert_eq!(mirror.mismatched.len(), mismatched, "tick {tick}");
+                for c in pp.removed_nodes(0, state) {
+                    assert!(mirror.pending.contains(&c), "tick {tick}: chunk {c} is dynamic on no island, unlisted");
+                }
+            }
+        }
     }
 
     /// A fracture's server-side cost follows what it breaks, not the size of
