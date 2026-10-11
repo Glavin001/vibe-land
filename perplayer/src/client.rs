@@ -355,6 +355,24 @@ pub fn parent_states<S: std::hash::BuildHasher>(
 /// from its parent's drawn state (`v + w x r` for a moving parent, the
 /// authored pose for a standing one). The client and the server's model of
 /// each client both call this, so they spawn alike.
+/// A body resting where it was authored (its chunks at their rest poses),
+/// at `tick`: how a body with no keyframe yet is drawn -- one split off a
+/// standing structure, or an object authored loose before its first.
+pub fn authored_rest(def: &StructureDef, state: &StructureState, body: u32, tick: u32) -> Keyframe {
+    let com = state.centre_of_mass(def, body);
+    let rest = Keyframe {
+        tick,
+        position: def.world_position + def.world_rotation * com,
+        rotation: def.world_rotation,
+        linear_velocity: Vec3::ZERO,
+        angular_velocity: Vec3::ZERO,
+        mode: Mode::Resting,
+        decel: 0.0,
+        floor_drop: None,
+    };
+    Keyframe { floor_drop: state.floor_drop(def, body, rest.position, rest.rotation), ..rest }
+}
+
 pub fn apply_spawns<S: std::hash::BuildHasher>(
     def: &StructureDef,
     state: &StructureState,
@@ -604,6 +622,18 @@ impl Client {
                             kf.floor_drop = cs.state.floor_drop(&cs.def, key.body, kf.position, kf.rotation);
                         }
                         self.bodies.entry(key).or_default().add(kf, f32::MIN, self.physics);
+                    }
+                    // A body the server has no pose for yet rests where it
+                    // was authored until its first keyframe.
+                    for (&structure, cs) in &self.structures {
+                        for &id in cs.state.bodies().keys() {
+                            let key = BodyKey { structure, body: id };
+                            if !self.bodies.contains_key(&key) {
+                                let mut track = BodyTrack::default();
+                                track.restart(authored_rest(&cs.def, &cs.state, id, boot.tick));
+                                self.bodies.insert(key, track);
+                            }
+                        }
                     }
                     self.pending.retain(|&seq, _| seq >= boot.next_event_seq);
                     self.next_seq = boot.next_event_seq;
@@ -941,5 +971,36 @@ mod tests {
         assert_eq!(client.chunk_body(3, 4), Some(3));
         assert_ne!(client.chunk_local(3, 4), before);
         assert!(client.drain_slot_changes().contains(&(3, 4)), "a re-offset member is reported");
+    }
+
+    /// An object authored loose (a bench: no support in its own component)
+    /// is a body from the start, and until its first keyframe it is drawn
+    /// resting where it was authored, not at the origin (the live Vibe
+    /// Town session drew each bench and planter teleport on its first
+    /// keyframe).
+    #[test]
+    fn a_body_with_no_keyframe_yet_rests_where_it_was_authored() {
+        // Chunks 0-1 stand on a support; chunks 2-3 are a loose bench.
+        let rest: Vec<Vec3> = vec![Vec3::ZERO, Vec3::Y, Vec3::new(4.0, 0.5, 0.0), Vec3::new(5.0, 0.5, 0.0)];
+        let def = StructureDef::new(
+            3,
+            Vec3::new(10.0, 0.0, -2.0),
+            Quat::from_rotation_y(0.5),
+            rest.clone(),
+            rest,
+            vec![0.0, 1.0, 1.0, 1.0],
+            vec![true, false, false, false],
+            vec![(0, 1), (2, 3)],
+        );
+        let mut client = Client::new(vec![def.clone()], physics(), 60, 5.0);
+        let boot = crate::wire::encode_bootstrap(&crate::wire::Bootstrap { tick: 100, next_event_seq: 0, structures: vec![], settled: vec![], awake: vec![] });
+        client.ingest(&boot, 0.0);
+        client.ingest(&encode_keyframes(&KeyframePacket { server_tick: 110, ordinal: 0, records: vec![] }, physics()), 1.0);
+        client.advance(1000.0);
+        let bench = BodyKey { structure: 3, body: 2 };
+        let (_, p, q, _) = *client.body_poses().iter().find(|b| b.0 == bench).expect("the bench is drawn");
+        let authored = def.world_position + def.world_rotation * Vec3::new(4.5, 0.5, 0.0);
+        assert!((p - authored).length() < 1e-5, "{p} vs {authored}");
+        assert!(q.dot(def.world_rotation).abs() > 0.99999);
     }
 }

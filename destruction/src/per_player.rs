@@ -1065,6 +1065,19 @@ impl ReplicationStrategy for PerPlayer {
             }
             state.believed.insert(*key, track);
         }
+        // As the client draws a body it has no pose for (one the physics has
+        // not promoted yet): resting where it was authored.
+        for (&id, s) in &self.states {
+            let def = &self.defs[&id];
+            for &body in s.bodies().keys() {
+                let key = BodyKey { structure: id, body };
+                if !state.believed.contains_key(&key) {
+                    let mut track = BodyTrack::default();
+                    track.restart(vibe_land_perplayer::client::authored_rest(def, s, body, tick));
+                    state.believed.insert(key, track);
+                }
+            }
+        }
         self.clients.insert(client, state);
         vec![Outgoing::reliable(encode_bootstrap(&boot))]
     }
