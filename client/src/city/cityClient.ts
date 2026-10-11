@@ -1694,16 +1694,29 @@ export class CityClient {
   private lastLive: ReadonlySet<number> = new Set();
 
   /** Route one raw server packet (kind 119-122). */
-  handlePacket(bytes: Uint8Array): void {
-    if (bytes.length === 0) {
-      return;
-    }
+  /**
+   * Count a received city packet in the stream's bandwidth (the overlay's
+   * "city stream") and, when it came as a datagram, in `datagramsReceived`.
+   * A subclass that routes its own packets elsewhere calls this too.
+   */
+  protected countPacket(bytes: Uint8Array, datagram: boolean): void {
     this.bytesReceived += bytes.length;
     const now = performance.now();
     this.bytesWindow.push({ at: now, bytes: bytes.length });
     while (this.bytesWindow.length > 0 && now - this.bytesWindow[0].at > 2000) {
       this.bytesWindow.shift();
     }
+    if (datagram) {
+      this.datagramsReceived += 1;
+    }
+  }
+
+  handlePacket(bytes: Uint8Array): void {
+    if (bytes.length === 0) {
+      return;
+    }
+    this.countPacket(bytes, false);
+    const now = performance.now();
     switch (bytes[0]) {
       case PKT_CITY_CHUNKS:
         // A v3 match never ranks poses per client; any stray v2 datagram

@@ -151,6 +151,9 @@ export class PerPlayerCityClient extends CityClient {
   override handlePacket(bytes: Uint8Array): void {
     const kind = bytes[0];
     if (kind === PKT_PP_KEYFRAMES || kind === PKT_PP_EVENTS || kind === PKT_PP_BOOTSTRAP) {
+      // Keyframes always come as datagrams (events and the bootstrap on the
+      // reliable stream, events copies aside).
+      this.countPacket(bytes, kind === PKT_PP_KEYFRAMES);
       this.core.ingest(bytes, performance.now());
       return;
     }
