@@ -605,6 +605,7 @@ export class VehiclesRenderer {
           position: [vPos[0], vPos[1], vPos[2]], quaternion: [vQuat[0], vQuat[1], vQuat[2], vQuat[3]],
           // The server tick other players' cars are drawn at this frame (GameWorld).
           drawTick: (globalThis as { __VIBE_CAR_TICK__?: number }).__VIBE_CAR_TICK__ ?? null,
+          drivenTick: (globalThis as { __VIBE_DRIVEN_TICK__?: number | null }).__VIBE_DRIVEN_TICK__ ?? null,
           rigTick: vs.customRig?.serverTick ?? null, detached: vs.customRig?.detached?.length ?? 0,
           fractureGroups: custom.hasFractureGroups(), drawnLoose: custom.drawnLooseParts(4096),
           rigDetached: vs.customRig?.detached?.slice(0, 4096).map(d => ({ part: d.part, position: d.position, rotation: d.rotation })) ?? [] });

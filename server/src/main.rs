@@ -182,6 +182,16 @@ fn chunks_block_shots() -> bool {
     })
 }
 
+/// `VIBE_VEHICLE_TAPE=1`: record every driven car's per-tick input and state
+/// for the vehicle netcode replay (`/city-vehicle-tape`). Measurement only.
+fn vehicle_tape() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VIBE_VEHICLE_TAPE").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// Frames of each driven car's tape kept (two minutes at 60 Hz).
+const VEHICLE_TAPE_FRAMES: usize = 7_200;
+
 /// City wire 4: other players' cars, chassis and wheels, are bodies of the
 /// per-player stream rather than every-tick snapshot records and rig
 /// packets (`VIBE_PP_CARS=0` turns it off). Wire 4 only.
@@ -726,6 +736,13 @@ struct MatchNetworkSnapshot {
     snapshot_bytes_per_client: SummaryStatsSnapshot,
     #[serde(default)]
     rig_bytes_per_client: SummaryStatsSnapshot,
+    /// Driven-car ticks whose input queue was empty (the last input repeated)
+    /// and inputs dropped by collapsing a backlog to its newest: each is a
+    /// tick the driver's prediction applied an input the server did not.
+    #[serde(default)]
+    vehicle_input_starved: u64,
+    #[serde(default)]
+    vehicle_inputs_collapsed: u64,
     snapshot_bytes_per_tick: SummaryStatsSnapshot,
     snapshot_players_per_client: SummaryStatsSnapshot,
     snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot,
@@ -1187,6 +1204,8 @@ enum MatchEvent {
     /// Re-apply a recorded city event (`vl repro`): meteor, shot, demolish, reset.
     ReplayEvent { event: serde_json::Value, reply: tokio::sync::oneshot::Sender<Result<String, String>> },
     GarageDebug { car: u32, reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, (StatusCode, String)>> },
+    /// `VIBE_VEHICLE_TAPE=1`: a car's recorded drive (`record_vehicle_tapes`).
+    VehicleTape { car: u32, reply: tokio::sync::oneshot::Sender<serde_json::Value> },
     GarageBombardment { request: garage_bombardment::Request, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
     TuneGarageVehicle {
         expected_asset_hash: String,
@@ -1229,6 +1248,7 @@ impl MatchEvent {
             MatchEvent::ReplayEvent { .. } => "replay_event",
             MatchEvent::CurrentTick { .. } => "current_tick",
             MatchEvent::GarageDebug { .. } => "garage_debug",
+            MatchEvent::VehicleTape { .. } => "vehicle_tape",
             MatchEvent::GarageBombardment { .. } => "garage_bombardment",
             MatchEvent::TuneGarageVehicle { .. } => "tune_garage_vehicle",
             MatchEvent::PublishVehicle { .. } => "publish_vehicle",
@@ -1366,6 +1386,14 @@ struct MatchState {
     /// Each car's detached parts as read this tick (wire 4 reads them for its
     /// debris bodies before the snapshot does): (tick, id -> parts).
     detached_parts: (u32, HashMap<u32, Vec<(u16, [f32; 3], [f32; 4])>>),
+    /// Driven-car input pipeline counters (`MatchNetworkStats`).
+    vehicle_input_starved: u64,
+    vehicle_inputs_collapsed: u64,
+    /// `VIBE_VEHICLE_TAPE=1`: per driven car, this tick's applied input
+    /// (tick, input, queue depth before it, driver), then each tick's frame
+    /// of input and post-step state (`/city-vehicle-tape`).
+    vehicle_tape_inputs: HashMap<u32, (u32, InputCmd, usize, u32)>,
+    vehicle_tapes: HashMap<u32, std::collections::VecDeque<serde_json::Value>>,
     custom_vehicles: HashMap<u32, Arc<vehicle_assets::DrivableVehicle>>,
     /// The city's destructible cars (city_fleet), respawned on a city reset.
     fleet: Option<Arc<city_fleet::Fleet>>,
@@ -1696,6 +1724,7 @@ pub async fn main() -> Result<()> {
         .route("/city-demolish/:match_id", post(city_demolish_handler))
         .route("/city-meteor/:match_id", post(city_meteor_handler))
         .route("/city-vehicle-debug/:match_id", get(city_vehicle_debug_handler))
+        .route("/city-vehicle-tape/:match_id", get(city_vehicle_tape_handler))
         .route("/match-stats/:match_id/ticks", get(recent_ticks_handler))
         .route("/match-stats/:match_id/replay-event", post(replay_event_handler))
         .route("/match-stats/:match_id/tick", get(current_tick_handler))
@@ -2903,6 +2932,22 @@ async fn city_vehicle_debug_handler(
         .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The city has ended.".into()))?.map(Json)
 }
 
+/// A city car's recorded drive (`VIBE_VEHICLE_TAPE=1`): per tick its applied
+/// input and state after the step, for the vehicle netcode replay.
+async fn city_vehicle_tape_handler(
+    State(state): State<SharedAppState>, Path(match_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<GarageDebugQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !city::is_city_match(&match_id) { return Err((StatusCode::BAD_REQUEST, "not a city match".into())); }
+    let handle = find_match(&state, &match_id).await.ok_or((StatusCode::NOT_FOUND, "The city is not running.".into()))?;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::VehicleTape { car: city_fleet::FIRST_ID + query.car.unwrap_or(0), reply })
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The city has ended.".into()))?;
+    tokio::time::timeout(Duration::from_secs(5), response).await
+        .map_err(|_| (StatusCode::GATEWAY_TIMEOUT, "Tape readback timed out.".into()))?
+        .map(Json).map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The city has ended.".into()))
+}
+
 /// The tick flight recorder's recent records (`tick_recorder`), one JSON
 /// object per line in the session-capture format, oldest first: what
 /// `scripts/vl perf explain` reads for a live server's steady state.
@@ -3779,6 +3824,10 @@ async fn run_match_loop(
         bombardment: Default::default(),
         rig_streams: HashMap::new(),
         detached_parts: (u32::MAX, HashMap::new()),
+        vehicle_input_starved: 0,
+        vehicle_inputs_collapsed: 0,
+        vehicle_tape_inputs: HashMap::new(),
+        vehicle_tapes: HashMap::new(),
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -4153,6 +4202,14 @@ impl MatchState {
                 if self.tick_recorder.is_some() {
                     flight_recorder::write_bundle(dir, self.repro_bundle("report", &reason));
                 }
+            }
+            MatchEvent::VehicleTape { car, reply } => {
+                let frames: Vec<serde_json::Value> = self.vehicle_tapes.get(&car).map(|t| t.iter().cloned().collect()).unwrap_or_default();
+                let vehicle = self.custom_vehicles.get(&car).map(|v| serde_json::to_value(&v.vehicle).unwrap_or_default());
+                let _ = reply.send(serde_json::json!({
+                    "car": car, "handle": self.vehicle_handles.get(&car).copied(), "vehicle": vehicle, "frames": frames,
+                    "inputStarved": self.vehicle_input_starved, "inputsCollapsed": self.vehicle_inputs_collapsed,
+                }));
             }
             MatchEvent::GarageDebug {car,reply} => {
                 if !reply.is_closed() {
@@ -4747,9 +4804,21 @@ impl MatchState {
                     if index > 0 && runtime.pending_inputs.is_empty() {
                         break;
                     }
-                    applied.push(take_input_for_tick_with_vehicle_catchup(
-                        runtime, in_vehicle,
-                    ));
+                    let depth = runtime.pending_inputs.len();
+                    let input = take_input_for_tick_with_vehicle_catchup(runtime, in_vehicle);
+                    if in_vehicle {
+                        if depth == 0 {
+                            self.vehicle_input_starved += 1;
+                        } else if depth >= VEHICLE_INPUT_CATCHUP_THRESHOLD {
+                            self.vehicle_inputs_collapsed += (depth - 1) as u64;
+                        }
+                        if vehicle_tape() {
+                            if let Some(vehicle) = self.arena.player_vehicle_id(player_id) {
+                                self.vehicle_tape_inputs.insert(vehicle, (self.server_tick, input.clone(), depth, player_id));
+                            }
+                        }
+                    }
+                    applied.push(input);
                 }
             }
             if applied.is_empty() {
@@ -6520,6 +6589,8 @@ impl MatchState {
                     .load(Ordering::Relaxed),
                 snapshot_bytes_per_client: self.snapshot_stats.bytes_per_client.snapshot(),
                 rig_bytes_per_client: self.snapshot_stats.rig_bytes_per_client.snapshot(),
+                vehicle_input_starved: self.vehicle_input_starved,
+                vehicle_inputs_collapsed: self.vehicle_inputs_collapsed,
                 snapshot_bytes_per_tick: self.snapshot_stats.bytes_per_tick.snapshot(),
                 snapshot_players_per_client: self.snapshot_stats.players_per_client.snapshot(),
                 snapshot_dynamic_bodies_per_client: self
@@ -7587,7 +7658,40 @@ impl MatchState {
         }
     }
 
+    /// `VIBE_VEHICLE_TAPE=1`: this tick's frame for each driven car, its
+    /// applied input and its state after the step, in the vehicle replay's
+    /// format (client/netlab/vehicle/replay.ts) plus the queue depth.
+    fn record_vehicle_tapes(&mut self) {
+        if !vehicle_tape() || self.vehicle_tape_inputs.is_empty() {
+            return;
+        }
+        let custom = &self.custom_vehicles;
+        let states = self.arena.vehicle_stream_states(|id| Some(custom.get(&id).map_or(0.0, |v| v.geometry.neutral_jounce)));
+        // The city's chunks released this step: a replay drops their
+        // colliders when a client would have learned of it.
+        let released: Vec<[u32; 2]> = self.city.as_ref().map_or_else(Vec::new, |c| c.released_chunks().iter().map(|&(s, n)| [s, n]).collect());
+        for (vehicle, (tick, input, depth, player)) in self.vehicle_tape_inputs.drain() {
+            let Some(s) = states.iter().find(|s| s.id == vehicle) else { continue };
+            let tape = self.vehicle_tapes.entry(vehicle).or_default();
+            tape.push_back(serde_json::json!({
+                "tick": tick,
+                "depth": depth,
+                "input": {"seq": input.seq, "clientTick": tick, "moveX": input.move_x, "moveY": input.move_y,
+                    "buttons": input.buttons, "yaw": input.yaw, "pitch": input.pitch},
+                "sample": {"serverTimeUs": f64::from(tick) * f64::from(1_000_000 / SIM_HZ as u32),
+                    "position": s.position, "quaternion": s.rotation, "linearVelocity": s.linear_velocity,
+                    "angularVelocity": s.angular_velocity, "wheelData": [0, 0, 0, 0], "driverPlayerId": player, "flags": 0},
+                "wheels": s.wheels,
+                "released": released,
+            }));
+            while tape.len() > VEHICLE_TAPE_FRAMES {
+                tape.pop_front();
+            }
+        }
+    }
+
     fn broadcast_snapshot(&mut self) {
+        self.record_vehicle_tapes();
         let snapshot_started = Instant::now();
         // Per car: (id, this tick's frame, the whole rig for a client the car
         // just entered the interest of, built when first needed).

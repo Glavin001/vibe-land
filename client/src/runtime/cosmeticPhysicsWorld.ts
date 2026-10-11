@@ -35,6 +35,15 @@ export class CosmeticPhysicsWorld {
     return hit.length === 4 ? {fraction:hit[0],normal:[hit[1],hit[2],hit[3]]} : null;
   }
 
+  /** Keyed fixed shapes (a city's standing chunks): vehicles/cityColliders.ts. */
+  setStaticShapes(keys: Uint32Array, poses: Float32Array, counts: Uint32Array, data: Float32Array): number {
+    return this.sim.setStaticShapes(keys, poses, counts, data);
+  }
+
+  removeStaticShapes(keys: Uint32Array): void {
+    this.sim.removeStaticShapes(keys);
+  }
+
   dispose(): void {
     this.accumulatorSec = 0;
     this.activeRagdollBodyIds.clear();

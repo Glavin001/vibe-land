@@ -194,6 +194,11 @@ export class CityTopology {
    */
   private slotChanges: number[] = [];
   private readonly slotChanged: Uint8Array;
+  /** The same changes for a second reader (the vehicle colliders). */
+  private collisionChanges: number[] = [];
+  private readonly collisionChanged: Uint8Array;
+  /** Bumped when every slot may have changed (reset, bootstrap). */
+  private collisionEpochValue = 0;
   /**
    * Manifest rest offset per chunk, in its structure's frame.
    *
@@ -319,6 +324,7 @@ export class CityTopology {
     this.localPos = new Float32Array(total * 3);
     this.localRot = new Float32Array(total * 4);
     this.slotChanged = new Uint8Array(total);
+    this.collisionChanged = new Uint8Array(total);
     this.restPos = new Float32Array(total * 3);
     this.restMass = new Float32Array(total);
     this.restMassCentre = new Float32Array(total * 3);
@@ -336,6 +342,7 @@ export class CityTopology {
 
   /** Reset every chunk to its intact support body with manifest rest poses. */
   reset(): void {
+    this.collisionEpochValue += 1;
     this.bodies.clear();
     this.aliveBonds.clear();
     this.brokenBonds = 0;
@@ -430,6 +437,34 @@ export class CityTopology {
       this.slotChanged[slot] = 1;
       this.slotChanges.push(slot);
     }
+    if (this.collisionChanged[slot] === 0) {
+      this.collisionChanged[slot] = 1;
+      this.collisionChanges.push(slot);
+    }
+  }
+
+  /** Slots whose body changed since the vehicle colliders last looked. */
+  drainCollisionChanges(): number[] {
+    const out = this.collisionChanges;
+    if (out.length === 0) return out;
+    for (const slot of out) this.collisionChanged[slot] = 0;
+    this.collisionChanges = [];
+    return out;
+  }
+
+  /** Changes when every slot may have changed: look at all of them again. */
+  collisionEpoch(): number {
+    return this.collisionEpochValue;
+  }
+
+  /** Whether the chunk in `slot` is part of its structure's standing (support) body. */
+  isStanding(slot: number): boolean {
+    return this.bodies.get(this.chunkBody[slot])?.islandSerial === SUPPORT_SERIAL;
+  }
+
+  /** How many chunk slots there are. */
+  slotCount(): number {
+    return this.slotStructure.length;
   }
 
   /** Slots whose (body, offset) changed since the last call; each at most once. */
@@ -1422,6 +1457,7 @@ export class CityTopology {
    * invariant holds).
    */
   applyBootstrap(message: BootstrapMessage): void {
+    this.collisionEpochValue += 1;
     this.reset();
     this.lastTopoSeq = message.topoSeq;
     this.needsResync = false;
@@ -1545,6 +1581,7 @@ export class CityTopology {
    * position both sides already agree on, it does not move the position.
    */
   applyStructureBootstrap(message: BootstrapMessage): void {
+    this.collisionEpochValue += 1;
     // What this client knows the server retired, before the rebuild forgets it.
     const retiredBefore = new Set<number>();
     for (const structureMessage of message.structures) {

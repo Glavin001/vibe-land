@@ -5,6 +5,7 @@ import type { CityCameraDropCmd } from '../net/protocol';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { loadVehicleMetadata, type WheelPose } from '../vehicles/vehicleStream';
 import { DetachBlend } from '../vehicles/detachBlend';
+import { CityVehicleColliders } from '../vehicles/cityColliders';
 import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
@@ -316,6 +317,8 @@ export interface GameRuntimeClient {
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null;
   /** The driven car's wheels drawn with its predicted pose (null: draw the server's rig). */
   getDrivenVehicleWheels(): WheelPose[] | null;
+  /** The server tick the driven car is drawn at (its prediction), or null. */
+  getDrivenVehiclePredictedTick(): number | null;
   getDrivenVehicleId(): number | null;
   getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   isInVehicle(): boolean;
@@ -579,6 +582,9 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract reconcileVehicle(vehicleState: NetVehicleState, ackInputSeq: number): void;
   abstract getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null;
   getDrivenVehicleWheels(): WheelPose[] | null {
+    return null;
+  }
+  getDrivenVehiclePredictedTick(): number | null {
     return null;
   }
   abstract getDrivenVehicleId(): number | null;
@@ -1066,6 +1072,8 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   });
   private sim: WasmSimWorldInstance | null = null;
   private cosmeticWorld: CosmeticPhysicsWorld | null = null;
+  /** The city's standing chunks in `cosmeticWorld` for the driven car's prediction. */
+  private cityColliders: CityVehicleColliders | null = null;
   private prediction: PredictionManager | null = null;
   private vehiclePrediction: VehiclePredictionManager | null = null;
   private dynamicBodiesPrediction: DynamicBodyPredictionManager | null = null;
@@ -1255,6 +1263,16 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         console.info('[city] body poses from the in-process pose feed');
       }
       this.cityClient = cityClient;
+      // The standing city as the driven car's prediction collides with it,
+      // opt-in (?cityColliders=1): measured worse than flat ground in Vibe
+      // Town, whose roadside obstacles a car breaks through
+      // (docs/vehicle-city-measurement.md).
+      if (this.cosmeticWorld && new URLSearchParams(globalThis.location?.search ?? '').get('cityColliders') === '1') {
+        const started = performance.now();
+        this.cityColliders = new CityVehicleColliders(this.cosmeticWorld, manifest.manifest, cityClient.topology);
+        this.cityColliders.sync();
+        console.info(`[city] ${this.cityColliders.count} chunk colliders for vehicle prediction in ${(performance.now() - started).toFixed(0)} ms`);
+      }
       cityTapeRecorder.describe(
         { matchId: this.matchId, manifestHash: manifest.hashHex, wireVersion, simHz: 60 },
         () => cityClient.requestResync(),
@@ -1607,6 +1625,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       const driven=this.client?.getLocalDrivenVehicleId();
       if(driven!=null) {
         this.thinVehiclePredictor.record(driven,cmds);
+        this.cityColliders?.sync();
         this.thinVehiclePredictor.update(frameDeltaSec,performance.now());
       } else if(this.thinVehiclePredictor.vehicleId!==null) this.thinVehiclePredictor.reset();
       if (cmds.length > 0) {
@@ -2378,6 +2397,14 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       if(!this.client?.vehicles.has(id))this.vehicleProxies.delete(id);
     }
     return proxy;
+  }
+
+  override getDrivenVehiclePredictedTick(): number | null {
+    if (!this.thinAuthoritative || !this.client || this.client.presentsImmediately) return null;
+    const id = this.client.getLocalDrivenVehicleId();
+    if (id == null || this.thinVehiclePredictor.vehicleId !== id) return null;
+    const us = this.thinVehiclePredictor.predictedTimeUs(this.authoritativeInputBundler.remainderSec());
+    return us == null ? null : us / SERVER_TICK_US;
   }
 
   override getDrivenVehicleWheels(): WheelPose[] | null {

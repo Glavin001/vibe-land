@@ -19,8 +19,10 @@ describe('collision-aware Vehicle2 presentation',()=>{
     const landed=extrapolateVehicle(state({position:[0,2,0],linearVelocity:[0,-18,12]}),.25,proxy,sweep);
     expect(landed.position[1]).toBeCloseTo(.652,3);expect(landed.linearVelocity[1]).toBe(0);
     expect(landed.position[2]).toBeCloseTo(3);
+    // The chassis (half width 0.7) stops at the wall at x = 10; wheels act
+    // only through the suspension, as Vehicle2's do, so they do not.
     const hit=moveVehicle([0,.652,0],[0,0,0,1],[20,0,5],proxy,sweep);
-    expect(hit.position[0]).toBeLessThanOrEqual(8.71);expect(hit.position[2]).toBeCloseTo(5);
+    expect(hit.position[0]).toBeLessThanOrEqual(10-.7-.002+1e-6);expect(hit.position[0]).toBeGreaterThan(9.2);expect(hit.position[2]).toBeCloseTo(5);
   });
   it('preserves Vehicle2 rest height within the suspension support margin',()=>{
     const rest=state({position:[0,.675,0]});

@@ -1243,6 +1243,10 @@ pub struct CityRuntime {
     /// it, and the last tick's summary.
     stress_report: Option<(u32, bool)>,
     stress_summary: Option<crate::session_capture::StressSolveSummary>,
+    /// Chunks that left their island this step, as (structure, node): every
+    /// chunk of a promoted island, and every chunk migrated off the support
+    /// island (0). For the vehicle tape (`released_chunks`).
+    released: Vec<(u32, u32)>,
     encoder: ChunkStreamEncoder,
     pub manifest: Arc<DestructionManifest>,
     send_interval_ticks: u32,
@@ -1347,6 +1351,7 @@ impl CityRuntime {
             backend,
             stress_report: None,
             stress_summary: None,
+            released: Vec::new(),
             encoder,
             manifest,
             send_interval_ticks: config.send_interval_ticks,
@@ -1753,6 +1758,11 @@ impl CityRuntime {
         self.sent_bytes += bytes as u64;
         self.total_sent_bytes += bytes as u64;
         packets
+    }
+
+    /// Chunks that left their island in the last step (structure, node).
+    pub fn released_chunks(&self) -> &[(u32, u32)] {
+        &self.released
     }
 
     /// Wire 4: this tick's cars (chassis and wheels) for the stream.
@@ -2327,6 +2337,13 @@ impl CityRuntime {
                 self.stress_summary = read_stress_summary(&mut self.stress_report, world);
                 match post_step_result {
                     Ok(output) => {
+                        self.released.clear();
+                        for batch in &output.batches {
+                            for promotion in &batch.promoted_islands {
+                                self.released.extend(promotion.chunks.iter().map(|&n| (promotion.structure_id, n)));
+                            }
+                            self.released.extend(batch.migrations.iter().filter(|m| m.from_island_id == 0).map(|m| (batch.structure_id, m.chunk_id)));
+                        }
                         // Timed, as the Physx arm's ingest is: this was the
                         // one child of the native step with no span, and at
                         // 19k awake bodies it was the largest one.

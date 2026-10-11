@@ -51,6 +51,12 @@ export function moveVehicle(position:V3, rotation:Q4, delta:V3, proxy:VehiclePro
       // Guard descending contact vertically; retain authoritative travel up a ramp.
       if(hit && hit.normal[1]>.45) {
         hit=remaining.y<0?{fraction:hit.fraction,normal:[0,1,0]}:null;
+      } else if(hit && i>0) {
+        // Nor does a wheel stop the car sideways: Vehicle2's wheels act only
+        // through the suspension (road queries along it); the chassis is what
+        // collides. A wheel sphere is wider than its tyre, and would stop a car
+        // the server lets scrape past a kerb or a wall.
+        hit=null;
       }
       if(hit && Number.isFinite(hit.fraction) && hit.fraction>=0 && hit.fraction<=1
         && v(hit.normal).dot(remaining)<-1e-5
@@ -238,6 +244,12 @@ export class VehiclePresentationPredictor {
     const steer=(motion.steering-this.steering)*this.proxy.lock;
     const spin=speed/Math.max(1e-3,this.proxy.radius)*ahead;
     return rig.wheels.map((w,i)=>({...w,steeringRad:i<2?w.steeringRad+steer:w.steeringRad,rotationRad:w.rotationRad+spin}));
+  }
+  /** The server time (us) `pose(renderLeadSec)` draws the car at: the acked
+   * state plus the inputs replayed since, plus the render lead. */
+  predictedTimeUs(renderLeadSec=0):number|null {
+    if(!this.raw)return null;
+    return this.raw.serverTimeUs+(renderLeadSec>0&&!this.stalled?Math.min(DT,renderLeadSec):0)*1e6;
   }
   debug(now:number) {return {stalled:this.stalled,pending:this.pending.length,ack:this.ack??0,latestSeq:this.latestSeq,
     correction:this.offset.length(),replayError:this.replayError,replayMs:this.replayMs,
