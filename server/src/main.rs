@@ -4828,6 +4828,9 @@ impl MatchState {
                     let depth = runtime.pending_inputs.len();
                     let previous = runtime.last_ack_input_seq;
                     let collapse = in_vehicle && !vehicle_input_pacing();
+                    if in_vehicle && vehicle_input_pacing() && index == 0 {
+                        drop_stale_vehicle_inputs(runtime);
+                    }
                     let input = take_input_for_tick_with_vehicle_catchup(runtime, collapse);
                     if in_vehicle {
                         if depth == 0 {
@@ -8020,6 +8023,14 @@ fn take_input_for_tick_with_vehicle_catchup(
     take_input_for_tick(runtime)
 }
 
+/// Pacing: before a driven tick, drop the oldest queued inputs beyond what the
+/// queue needs (owner's choice, 2026-10-11).
+fn drop_stale_vehicle_inputs(runtime: &mut PlayerRuntime) {
+    if let Some(target) = runtime.input_jitter.target() {
+        vehicle_input_pacing::drop_stale(&mut runtime.pending_inputs, target as usize);
+    }
+}
+
 /// Inputs between the last applied (`previous`) and the one applied now that
 /// were never applied: 0 when `applied` is the next in sequence.
 fn inputs_skipped(previous: u16, applied: u16) -> u64 {
@@ -8053,8 +8064,11 @@ fn receive_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>, pacing: bool
     if !pacing {
         return enqueue_inputs(runtime, cmds);
     }
-    for cmd in &cmds {
-        runtime.input_jitter.observe(cmd.seq, tick);
+    // One sample a packet: its newest input's lateness is the network's
+    // delay variation. Its older inputs are resends repairing earlier loss;
+    // after an outage they are all late by the outage, one event, not jitter.
+    if let Some(newest) = cmds.iter().map(|c| c.seq).reduce(|a, b| if seq_is_newer(b, a) { b } else { a }) {
+        runtime.input_jitter.observe(newest, tick);
     }
     if !in_vehicle {
         return enqueue_inputs(runtime, cmds);
@@ -8342,7 +8356,7 @@ impl SpacetimeVerifier {
 mod tests {
     use super::{
         classify_outbound_delivery, clear_runtime_inputs_for_vehicle_entry,
-        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, inputs_skipped, receive_inputs, is_snapshot_packet_kind,
+        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, inputs_skipped, receive_inputs, drop_stale_vehicle_inputs, vehicle_input_pacing, is_snapshot_packet_kind,
         parse_respawn_delay_ms, periodic_refresh_due, rifle_damage, server_build_profile,
         strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
         take_input_for_tick_with_vehicle_catchup, try_queue_packet, HitZone, InputCmd,
@@ -8516,6 +8530,12 @@ mod tests {
     /// A driver's packets, each the newest three inputs (the client's resend
     /// window), arrive per tick as `arrivals`; returns the input applied each
     /// tick. Tick 1 is a burst after a delay, as LTE and uneven frames give.
+    /// One driven tick with pacing on, as the match loop runs it.
+    fn paced_vehicle_tick(runtime: &mut PlayerRuntime) -> InputCmd {
+        drop_stale_vehicle_inputs(runtime);
+        take_input_for_tick_with_vehicle_catchup(runtime, false)
+    }
+
     fn drive_vehicle_ticks(runtime: &mut PlayerRuntime, arrivals: &[Vec<Vec<u16>>], pacing: bool) -> Vec<u16> {
         let mut applied = Vec::new();
         for (tick, packets) in arrivals.iter().enumerate() {
@@ -8552,6 +8572,62 @@ mod tests {
         assert_eq!(drive_vehicle_ticks(&mut runtime, &arrivals, false), [1, 1, 5, 5, 5, 5, 5]);
     }
 
+    /// Steady inputs one a tick for `steady` ticks, then nothing for
+    /// `outage` ticks, then every unacked input in one bundle (the paced
+    /// client resends all), then steady again. Returns the inputs applied
+    /// from the bundle's tick on, and the runtime.
+    fn outage(steady: u16, outage: u16, after: u16) -> (Vec<u16>, PlayerRuntime) {
+        let mut runtime = runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        let mut tick = 0u32;
+        for seq in 1..=steady {
+            receive_inputs(&mut runtime, vec![input(seq)], true, true, tick);
+            paced_vehicle_tick(&mut runtime);
+            tick += 1;
+        }
+        for _ in 0..outage {
+            paced_vehicle_tick(&mut runtime);
+            tick += 1;
+        }
+        let backlog: Vec<InputCmd> = (steady + 1..=steady + outage).map(input).collect();
+        receive_inputs(&mut runtime, backlog, true, true, tick);
+        let mut applied = Vec::new();
+        for seq in steady + outage + 1..=steady + outage + after {
+            if seq > steady + outage + 1 {
+                receive_inputs(&mut runtime, vec![input(seq - 1)], true, true, tick);
+            }
+            applied.push(paced_vehicle_tick(&mut runtime).seq);
+            tick += 1;
+        }
+        (applied, runtime)
+    }
+
+    #[test]
+    fn an_outage_is_not_jitter() {
+        // A 2 s outage (120 ticks) delivers its inputs in one bundle. The
+        // first of them is 120 ticks late, but that is one event, not
+        // network jitter: the queue target must not grow to absorb it.
+        let (_, runtime) = outage(200, 120, 10);
+        assert!(runtime.input_jitter.target().unwrap() <= 1, "target {:?}", runtime.input_jitter.target());
+    }
+
+    #[test]
+    fn a_stale_backlog_beyond_the_target_is_dropped() {
+        // Owner's choice (2026-10-11): after an outage, keep only what the
+        // queue needs and drop the older inputs: one correction, then normal
+        // latency, rather than applying two seconds of inputs two seconds late.
+        let (applied, runtime) = outage(200, 120, 10);
+        let target = runtime.input_jitter.target().unwrap() as usize;
+        // The first tick after the bundle already applies an input at most
+        // target + margin + 1 behind the newest received.
+        assert!(
+            320 - applied[0] as usize <= target + vehicle_input_pacing::STALE_MARGIN_INPUTS + 1,
+            "applied {} of 320, target {target}",
+            applied[0]
+        );
+        assert!(runtime.pending_inputs.len() <= target + vehicle_input_pacing::STALE_MARGIN_INPUTS);
+    }
+
     #[test]
     fn skipped_inputs_are_the_gap_in_the_applied_sequence() {
         assert_eq!(inputs_skipped(10, 11), 0);
@@ -8577,8 +8653,9 @@ mod tests {
         receive_inputs(&mut runtime, vec![input(1), input(3)], true, false, 0);
         receive_inputs(&mut runtime, vec![input(2)], true, false, 1);
         assert_eq!(runtime.pending_inputs.iter().map(|c| c.seq).collect::<Vec<_>>(), [1, 3]);
-        // But it measures: 1 arrived with 3, two ticks later than 3 was.
-        assert_eq!(runtime.input_jitter.target(), Some(2));
+        // But it measures, a sample a packet (its newest input): [1, 3] is
+        // one sample, and 2 is older than 3. No spread yet.
+        assert_eq!(runtime.input_jitter.target(), Some(0));
     }
 
     fn input(seq: u16) -> InputCmd {

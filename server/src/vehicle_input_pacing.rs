@@ -14,7 +14,9 @@
 //! - accepts any input newer than the last it applied, in sequence order, so
 //!   a packet overtaken by a later one still lands in its place
 //!   ([`enqueue_ordered`]); the client resends every unacked input;
-//! - never collapses the queue;
+//! - never collapses the queue to its newest, but drops backlog beyond the
+//!   target plus [`STALE_MARGIN_INPUTS`] ([`drop_stale`]: after an outage,
+//!   one correction rather than seconds of latency);
 //! - measures each input's lateness (arrival tick against sequence) and
 //!   reports a target depth: the spread of lateness from its least to its
 //!   95th percentile ([`ArrivalJitter`]). A queue that deep absorbs 95% of the
@@ -22,9 +24,13 @@
 //!   (WebRTC NetEq). The quantile matches the client's render clock. The
 //!   client's input clock runs at its own rate (and, pacing, deliberately
 //!   off real time), so lateness is taken after removing that rate, the
-//!   linear trend of arrival against sequence (clock skew removal: Moon,
-//!   Skelly and Towsley, "Estimation and removal of clock skew from network
-//!   delay measurements", IEEE INFOCOM 1999). Without it, pacing's own drift
+//!   linear trend of arrival against sequence, fitted as a lower bound
+//!   (clock skew removal: Moon, Skelly and Towsley, "Estimation and removal
+//!   of clock skew from network delay measurements", IEEE INFOCOM 1999), so
+//!   late arrivals cannot tilt it. Lateness is sampled once a packet, by its
+//!   newest input: the network's delay variation, as RTP measures it (RFC
+//!   3550) and WebRTC NetEq sizes its buffer. A resend's older inputs are
+//!   late from earlier loss; after an outage, all by the outage, one event. Without it, pacing's own drift
 //!   read as jitter, raised the target and paced harder: live, the queue grew
 //!   from 5 to 18 inputs in 12 s.
 //!
@@ -44,6 +50,11 @@ pub const TARGET_QUANTILE: f32 = 0.95;
 /// Inputs whose lateness sets the target: two seconds at 60 Hz, the window
 /// simulated.
 pub const JITTER_WINDOW: usize = 120;
+
+/// The most the client's bounded clock correction closes within its time
+/// constant: 5% (the bound) x 60 Hz x 1 s (client/src/runtime/inputPacing.ts).
+/// A queue deeper than the target by more than this is backlog to drop.
+pub const STALE_MARGIN_INPUTS: usize = 3;
 
 /// Input lateness, and the queue depth that absorbs its jitter.
 #[derive(Debug, Default)]
@@ -79,21 +90,11 @@ impl ArrivalJitter {
         if n == 0 {
             return None;
         }
-        // Ticks per input: the least-squares slope of arrival on sequence
-        // (1 when the client's clock runs at the server's). Estimated over a
-        // full window only: on a few inputs a line fits their jitter too.
+        // Ticks per input (1 when the client's clock runs at the server's).
+        // Estimated over a full window only: on a few inputs a line fits
+        // their jitter too.
         let (x0, y0) = self.arrivals[0];
-        let mean = |f: fn(&(i64, i64)) -> i64, origin: i64| {
-            self.arrivals.iter().map(|a| (f(a) - origin) as f64).sum::<f64>() / n as f64
-        };
-        let (mx, my) = (mean(|a| a.0, x0), mean(|a| a.1, y0));
-        let (mut sxy, mut sxx) = (0.0, 0.0);
-        for &(x, y) in &self.arrivals {
-            let (dx, dy) = ((x - x0) as f64 - mx, (y - y0) as f64 - my);
-            sxy += dx * dy;
-            sxx += dx * dx;
-        }
-        let slope = if n == JITTER_WINDOW && sxx > 0.0 { sxy / sxx } else { 1.0 };
+        let slope = if n == JITTER_WINDOW { lower_bound_slope(&self.arrivals) } else { 1.0 };
         let mut lateness: Vec<f64> =
             self.arrivals.iter().map(|&(x, y)| (y - y0) as f64 - slope * (x - x0) as f64).collect();
         lateness.sort_unstable_by(f64::total_cmp);
@@ -103,6 +104,46 @@ impl ArrivalJitter {
         let spread = (lateness[at] - lateness[0]).round();
         Some(spread.clamp(0.0, u8::MAX as f64) as u8)
     }
+}
+
+/// Before a tick applies one input, drop the oldest queued beyond
+/// `target + STALE_MARGIN_INPUTS + 1`: backlog (after an outage, a stall)
+/// the client's bounded clock correction would take longer than its time
+/// constant to drain, and every later input would wait behind. One
+/// correction for the driver instead of seconds of added latency.
+pub fn drop_stale(queue: &mut VecDeque<InputCmd>, target: usize) {
+    let keep = target + STALE_MARGIN_INPUTS + 1;
+    while queue.len() > keep {
+        queue.pop_front();
+    }
+}
+
+/// Clock skew by Moon, Skelly and Towsley's linear program: the line under
+/// every (sequence, arrival) point with the least total distance to them,
+/// which lies on the edge of their lower convex hull spanning the mean
+/// sequence. Late arrivals lie above it and cannot tilt it, as they tilt a
+/// least-squares fit. `points` in sequence order; mirrored by
+/// `lowerBoundSlope` (client/netlab/vehicle/inputPipeline.ts).
+fn lower_bound_slope(points: &VecDeque<(i64, i64)>) -> f64 {
+    let mut hull: Vec<(i64, i64)> = Vec::with_capacity(points.len());
+    for &p in points {
+        while hull.len() >= 2 {
+            let (a, b) = (hull[hull.len() - 2], hull[hull.len() - 1]);
+            // Drop b unless the turn a-b-p is counterclockwise (b below a-p).
+            if (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0) <= 0 {
+                hull.pop();
+            } else {
+                break;
+            }
+        }
+        hull.push(p);
+    }
+    if hull.len() < 2 {
+        return 1.0;
+    }
+    let mean = points.iter().map(|p| p.0 as f64).sum::<f64>() / points.len() as f64;
+    let edge = hull.windows(2).find(|w| w[1].0 as f64 >= mean).unwrap_or(&hull[hull.len() - 2..]);
+    (edge[1].1 - edge[0].1) as f64 / (edge[1].0 - edge[0].0) as f64
 }
 
 /// Queue `cmd` in sequence order unless it is not newer than `last_applied`
@@ -147,10 +188,9 @@ mod tests {
         values
     }
 
-    /// The true spread is 9. The clock-rate fit over 120 inputs carries a
-    /// standard error of about sd(jitter) / (sd(seq) sqrt(n)) = 2.9 / (34.6 x
-    /// 11) = 0.008 ticks per input: under half a tick across the window, so
-    /// the target is the spread or one more.
+    /// The true spread is 9. The clock-rate fit, a line under the points,
+    /// rests on the earliest arrivals, whose own spread tilts it by at most
+    /// a tick across the window: the target is the spread or one more.
     const SPREAD_9: std::ops::RangeInclusive<u8> = 9..=10;
 
     fn cmd(seq: u16) -> InputCmd {
@@ -258,6 +298,22 @@ mod tests {
             jitter.observe(i as u16, 100 + (i as f32 / 0.95) as u32);
         }
         assert!(jitter.target().unwrap() <= 1, "drift read as jitter: {:?}", jitter.target());
+    }
+
+    #[test]
+    fn late_arrivals_cannot_tilt_the_clock_rate_fit() {
+        // Five inputs very late at the start of the window (the tail of an
+        // outage) and steady arrivals after: no jitter but those five, too
+        // few to reach the 95th percentile. A least-squares fit tilts toward
+        // them and turns the steady arrivals into spread; the lower bound
+        // (Moon et al.) lies under every point and cannot be tilted by late
+        // ones.
+        let mut jitter = ArrivalJitter::default();
+        for i in 0..120u32 {
+            let late = if i < 5 { 100 - 20 * i } else { 0 };
+            jitter.observe(i as u16, 1000 + i + late);
+        }
+        assert!(jitter.target().unwrap() <= 1, "target {:?}", jitter.target());
     }
 
     #[test]

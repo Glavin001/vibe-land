@@ -209,3 +209,85 @@ Tests:
   reproduces the shipping collapse;
 - `netlab/vehicle/inputPipeline.test.ts`, whose shipping case asserts the
   bug and whose paced case gates the fix.
+
+## Input pacing under realistic conditions (scenario suite)
+
+`client/netlab/vehicle/inputPipelineScenarios.test.ts` drives the pipeline
+through the conditions players meet:
+- steady LTE and Wi-Fi;
+- burst loss (Gilbert-Elliott) and duplication;
+- route changes;
+- latency spikes and outages;
+- a stalled tab and a server running behind;
+- clock skew and display rates;
+- ten-minute drives and the 16-bit sequence wrap.
+
+It scores what a driver experiences:
+
+- **Effective corrections:** ticks whose applied controls differ from a
+  perfect pipeline's. Repeating or skipping unchanged controls changes
+  nothing. Controls change every 370 ms on average, as on the live courses.
+- **Delay, and whether controls freeze or change speed.**
+- **Recovery after the event.**
+
+Every gate comes from the design:
+- the ±5% bound;
+- the queue bound (target + 3 + the tick an input is applied in);
+- at most the 5% of ticks the target's quantile leaves uncovered;
+- never more corrections than shipping, plus one for each one-off event;
+- recovery by the end of the event + a round trip + the 2 s jitter window
+  + the 1 s time constant.
+
+Two meta-tests check that the gates fail the version committed before them.
+
+### Owner decisions, 2026-10-11
+
+1. **After an outage, drop the stale backlog.** The server keeps target + 3
+   inputs and drops older ones: one correction for the driver instead of
+   seconds of latency. The 3 is what the bounded clock closes in its time
+   constant: 5% × 60 Hz × 1 s.
+2. **Bound the input clock's correction to ±5%.** The driver's own car moves
+   at that rate, and about 5% is the Weber fraction for speed (McKee 1981).
+3. **Follow the server's simulation rate when it runs behind.** During a
+   collapse at 30 Hz the world moves in slow motion. The driver's input clock
+   runs at the rate the client measures, so the car moves with the world.
+
+### Estimator changes the scenarios forced
+
+- **Lateness is sampled once per packet, by its newest input.** This is the
+  network's delay variation, as RTP measures it (RFC 3550) and WebRTC NetEq
+  sizes its buffer. Sampled per input, a 2 s outage's resent inputs filled
+  the whole window and inflated the target to 2 s.
+- **The clock rate is fitted as a lower bound** (Moon, Skelly and Towsley
+  1999), not by least squares. Five late samples at the start of the window
+  tilted the least-squares line and raised the target from 0 to 14.
+
+### Results
+
+Three seeds each; five-minute drives for the steady links. Corrections are
+effective corrections a minute; delay is in ticks, production to
+application.
+
+| Scenario | Shipping (corrections, delay p50) | Paced as of b0b3e846 (corrections, controls frozen, clock range) | Paced now (corrections, delay p50, clock range, worst delay) |
+|---|---|---|---|
+| LTE | 67.7, 6.3 | 0.0, 0 ms, 0.95-1.07 | 0.0, 9.6, 0.95-1.05, 11 |
+| Burst loss | 8.0, 3.9 | 2.3, 0 ms, 0.82-1.12 | 3.9, 4.7, 0.95-1.05, 8 |
+| Lossy Wi-Fi | 13.6, 2.5 | 0.5, 0 ms, 0.83-1.07 | 0.7, 4.6, 0.95-1.05, 8 |
+| 2 s outage | 60.3, 6.3 | 0.0, **1,027 ms**, 0.00-2.03 | 1.0, 9.6, 0.95-1.05, 12 |
+| 5 s outage | 62.3, 6.3 | 1.0, **1,072 ms**, 0.00-2.93 | 1.0, 9.7, 0.95-1.05, 12 |
+| 3 s spike to 300 ms | 71.0, 6.4 | 0.0, 0 ms, 0.75-1.23 | 2.0, 9.7, 0.95-1.05, 27 |
+| 3 s stalled tab | 70.7, 6.3 | 5.0, **693 ms**, 0.00-3.87 | 3.7, 9.8, 0.95-1.05, 73 |
+| Server at 30 Hz for 10 s | 72.7, 6.3 | 0.0, 0 ms, 0.40-1.07 | 2.3, 9.6, 0.95-1.05 of the server's rate, 38 |
+
+**What the decisions cost.** Paced now makes 1-2 more corrections per
+one-off event than b0b3e846: the stale drop the owner chose. In return,
+controls never freeze or change speed visibly, and latency recovers within
+seconds instead of up to 39 s. Under burst loss it makes 3.9 corrections a
+minute against b0b3e846's 2.3, because b0b3e846 kept every late input. Both
+are far below shipping.
+
+**Known behaviour.** A stalled tab makes the client skip the stalled input
+time (its catch-up cap). The server sees a step in lateness, and the 2 s
+window holds it, so the target sits about 1.6 ticks high for those
+seconds. Inputs made just before the stall wait for the client to resume
+(worst delay 73 ticks); nothing can send them sooner.

@@ -1625,7 +1625,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       const driven=this.client?.getLocalDrivenVehicleId();
       // Server vehicle input pacing: hold its queue at the jitter target.
       const paced=driven!=null?this.client?.vehicleInputQueue??null:null;
-      const cmds = this.authoritativeInputBundler.produce(frameDeltaSec*inputClockRate(paced), input);
+      const cmds = this.authoritativeInputBundler.produce(frameDeltaSec*inputClockRate(paced,this.client?.serverClock.getRate()??1), input);
       if(driven!=null) {
         this.thinVehiclePredictor.setPaced(paced!==null);
         this.thinVehiclePredictor.record(driven,cmds);
