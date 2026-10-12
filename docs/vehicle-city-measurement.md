@@ -291,3 +291,49 @@ time (its catch-up cap). The server sees a step in lateness, and the 2 s
 window holds it, so the target sits about 1.6 ticks high for those
 seconds. Inputs made just before the stall wait for the client to resume
 (worst delay 73 ticks); nothing can send them sooner.
+
+## Live A/B: pacing off vs on (2026-10-12, build 6f8ec6ea)
+
+Setup:
+- wall course, car 13, Vibe Town;
+- clean link and in-process LTE, seeds 1-3 each;
+- one server per mode (`VIBE_VEHICLE_INPUT_PACING` unset vs 1);
+- 12 runs in 6.4 minutes.
+
+Each cell is the range over the three seeds.
+
+| | Clean, off | Clean, on | LTE, off | LTE, on |
+|---|---|---|---|---|
+| Queue empty a minute | 601-640 | 66-136 | 1,270-1,440 | 53-89 |
+| Collapsed a minute | 269-391 | 0 | 787-1,090 | 0 |
+| Skipped a minute | 361-482 | 0-39 | 1,170-1,350 | 24-92 |
+| Mean queue depth | 1.6-1.7 | 4.8-6.5 | 1.3-1.4 | 6.5-11.4 |
+| Hard corrections a minute | 100-226 | 0-33 | 194-468 | 47-106 |
+| Correction p95 | 0.26-0.39 m | 0.10-0.21 m | 0.56-1.11 m | 0.30-0.42 m |
+| Input-to-drawn p95 | 27-32 ms | 29-30 ms | 29-42 ms | 27-31 ms |
+| Driver error p95, away from impacts | 0.43-0.54 m | 0.33-0.51 m | 0.60-0.70 m | 0.61-0.68 m |
+| Driver error p95, 30 ticks after an impact | 0.31-0.40 m | 0.16-0.64 m | 0.59-1.27 m | **1.65-4.0 m** |
+| Observer error p95 | 1-2 cm | 1-4 cm | 1-4 cm | 1-2 cm |
+
+**What it shows.**
+
+- The pipeline works live: almost no starvation, no collapse, two to five
+  times fewer hard corrections, and corrections half the size.
+- The input-to-drawn latency is unchanged, which confirms the replay fix.
+
+**The regression: impacts on LTE.**
+
+- The driver's car is drawn ahead of the server by the round trip plus the
+  paced queue: 6.5-11.4 more inputs than shipping on LTE, about 0.1-0.2 s.
+- The prediction has no city colliders (`?cityColliders=1` is opt-in), so
+  on a wall hit it drives on for that whole horizon before the server's stop
+  arrives. That is speed × horizon, about 10 m/s × 0.35 s, or 3-4 m.
+- Shipping draws less far ahead: by acking the newest input whenever it
+  collapses, it leaves fewer inputs to replay.
+- On the clean link the queue is shallower and the effect stays within the
+  shipping range.
+
+**Unjudged frames, explained.** About 60% of driver frames are not judged
+in both modes. They are the frames before the course (getting in, 3 s of
+settling), which precede the tape (`tapeFrom`). Every course frame is
+judged; `frames.json` shows `drivenTick` below the tape's first tick.
