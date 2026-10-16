@@ -1,21 +1,26 @@
 // The parts that broke off a car, drawn as what they are: rigid bodies of
-// their own, in world space, at the pose the physics gives each body.
+// their own, at the world pose the physics gives each body.
 //
 // A body (a native fracture part) carries one or more visual parts at their
-// authored offsets, so a visual part's world matrix is
-//   body pose * actor * part.matrix
+// authored offsets, so a loose visual part is drawn at
+//   W = body pose * actor * part.matrix
 // where `actor` is the car visual's own placement in the physics actor frame
-// (VehicleVisual's actor-space group transform). That is written once when a
-// body's pose changes, never per frame and never through the car's pose: a
-// piece at rest costs nothing however the car moves.
+// (VehicleVisual's actor-space group transform). W is computed once when a
+// body's pose changes, never per frame.
 //
-// Each loose part has one instance, here; its instance on the car is hidden
-// (LiveAssembly.hidePart), so no part is ever drawn twice. The batches mirror
-// the car's (same geometry and material), so they share its shaders.
+// A loose part keeps its one instance in the car's batch (no extra draw call,
+// never drawn twice), marked loose so the suspension no longer poses it
+// (LiveAssembly.markLoose). How the batch draws a world matrix depends on it:
+//   - the WebGPU part batch (vehicles/partBatchNodes.ts) takes it as is
+//     (setWorldMatrixAt): its shader cancels the car's transform for loose
+//     instances, so moving the car costs nothing;
+//   - the WebGL InstancedMesh draws instances in the car's frame, so a loose
+//     part is re-expressed there (inverse car world * W), and only on frames
+//     the car moved or the body changed.
 
 import * as THREE from 'three';
 
-import { createPartBatchMesh, type LiveAssembly } from './dune/live-geometry.mjs';
+import type { LiveAssembly } from './dune/live-geometry.mjs';
 
 export interface BodyPose {
   /** Native fracture part index (metadata.json parts[]). */
@@ -24,101 +29,125 @@ export interface BodyPose {
   rotation: [number, number, number, number];
 }
 
-type Batch = THREE.InstancedMesh;
+/** A batch that draws world-space instances itself (the WebGPU part batch). */
+interface WorldSpaceBatch {
+  setWorldMatrixAt(index: number, matrix: THREE.Matrix4): void;
+}
+type Batch = THREE.InstancedMesh & Partial<WorldSpaceBatch>;
+
+interface Loose {
+  batch: Batch;
+  index: number;
+  /** Where the part is drawn, in world space. */
+  world: THREE.Matrix4;
+}
 
 const ONE = new THREE.Vector3(1, 1, 1);
 
 export class LooseParts {
-  /** World-space container: the caller places it beside the car, not under it. */
-  readonly group = new THREE.Group();
-  /** One batch per car batch that has lost a part. */
-  private readonly batches = new Map<THREE.Object3D, Batch>();
-  /** Instances in use per batch. Kept here: the WebGPU part batch reads its
-   * `count` as 1 (vehicles/partBatchNodes.ts), so it cannot be the cursor. */
-  private readonly used = new Map<Batch, number>();
-  /** Loose visual part id -> its instance. */
-  private readonly slots = new Map<string, { batch: Batch; index: number }>();
+  private readonly parts = new Map<string, Loose>();
+  /** Parts whose world matrix changed and is not yet in their batch. */
+  private readonly dirty = new Set<Loose>();
   /** The pose last drawn for each body, to skip bodies that did not move. */
   private readonly poses = new Map<number, Float64Array>();
+  /** The car's world matrix when loose parts were last re-expressed in its frame (WebGL). */
+  private readonly carWorld = new THREE.Matrix4();
+  private carWorldKnown = false;
   private readonly body = new THREE.Matrix4();
-  private readonly instance = new THREE.Matrix4();
+  private readonly local = new THREE.Matrix4();
+  private readonly toCar = new THREE.Matrix4();
   private readonly position = new THREE.Vector3();
   private readonly rotation = new THREE.Quaternion();
 
-  constructor(private readonly assembly: LiveAssembly) {
-    this.group.name = 'loose vehicle parts';
-  }
+  constructor(private readonly assembly: LiveAssembly) {}
 
   get size(): number {
-    return this.slots.size;
+    return this.parts.size;
   }
 
   /**
-   * Draw `bodies` (the car's broken-off bodies, as the rig reports them):
-   * for each whose pose changed, write its parts' instances. `groups` maps a
-   * body to its visual part ids; `actor` and `partMatrix` place each part.
+   * Take the car's broken-off bodies (as the rig reports them): for each whose
+   * pose changed, recompute its parts' world matrices. `groups` maps a body to
+   * its visual part ids; `actor` and `partMatrix` place each part on it.
    */
   apply(bodies: readonly BodyPose[], groups: readonly string[][], actor: THREE.Matrix4, partMatrix: (id: string) => THREE.Matrix4 | undefined): void {
-    const touched = new Set<Batch>();
     for (const body of bodies) {
       const ids = groups[body.part];
       if (!ids?.length || this.unchanged(body)) continue;
       this.body.compose(this.position.fromArray(body.position), this.rotation.fromArray(body.rotation), ONE).multiply(actor);
       for (const id of ids) {
-        const local = partMatrix(id);
-        const slot = local && this.slotFor(id);
-        if (!slot) continue;
-        slot.batch.setMatrixAt(slot.index, this.instance.multiplyMatrices(this.body, local));
-        touched.add(slot.batch);
+        const offset = partMatrix(id);
+        const loose = offset && this.looseFor(id);
+        if (!loose) continue;
+        loose.world.multiplyMatrices(this.body, offset);
+        this.dirty.add(loose);
       }
     }
+  }
+
+  /**
+   * Write what changed into the batches. `car` is the object the batches
+   * belong to (the car visual's group), for the WebGL batches that draw in its
+   * frame. Cheap when nothing changed: call it every frame.
+   */
+  sync(car: THREE.Object3D): void {
+    if (!this.parts.size) return;
+    let carMoved = false;
+    for (const loose of this.parts.values()) {
+      if (!loose.batch.setWorldMatrixAt) {
+        car.updateWorldMatrix(true, false);
+        carMoved = !this.carWorldKnown || !this.carWorld.equals(car.matrixWorld);
+        if (carMoved) {
+          this.carWorld.copy(car.matrixWorld);
+          this.carWorldKnown = true;
+          this.toCar.copy(car.matrixWorld).invert();
+        }
+        break;
+      }
+    }
+    const touched = new Set<Batch>();
+    const write = (loose: Loose) => {
+      if (loose.batch.setWorldMatrixAt) loose.batch.setWorldMatrixAt(loose.index, loose.world);
+      else loose.batch.setMatrixAt(loose.index, this.local.multiplyMatrices(this.toCar, loose.world));
+      touched.add(loose.batch);
+    };
+    if (carMoved) {
+      for (const loose of this.parts.values()) if (!loose.batch.setWorldMatrixAt || this.dirty.has(loose)) write(loose);
+    } else {
+      for (const loose of this.dirty) write(loose);
+    }
+    this.dirty.clear();
     for (const batch of touched) batch.instanceMatrix.needsUpdate = true;
   }
 
   /** Every part back on the car (a respawn); `restore` gives its pose there. */
   reset(restore: (id: string) => THREE.Matrix4): void {
-    for (const id of this.slots.keys()) this.assembly.showPart(id, restore(id));
-    this.slots.clear();
+    for (const id of this.parts.keys()) this.assembly.restorePart(id, restore(id));
+    this.discard();
+  }
+
+  /** Forget every loose part without touching the car (its model is being rebuilt). */
+  discard(): void {
+    this.parts.clear();
+    this.dirty.clear();
     this.poses.clear();
-    for (const batch of this.batches.values()) {
-      batch.count = 0;
-      this.used.set(batch, 0);
-    }
+    this.carWorldKnown = false;
   }
 
   /** Where each loose part is drawn, in world space (vehicle QA traces). */
   drawn(max: number): { id: string; position: [number, number, number]; center: [number, number, number]; rotation: [number, number, number, number] }[] {
     const out: { id: string; position: [number, number, number]; center: [number, number, number]; rotation: [number, number, number, number] }[] = [];
-    const m = new THREE.Matrix4(), v = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), c = new THREE.Vector3();
-    this.group.updateWorldMatrix(true, false);
-    for (const id of [...this.slots.keys()].sort().slice(0, max)) {
-      const { batch, index } = this.slots.get(id)!;
+    const v = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3(), c = new THREE.Vector3();
+    for (const id of [...this.parts.keys()].sort().slice(0, max)) {
+      const { batch, world } = this.parts.get(id)!;
       if (!batch.geometry.boundingSphere) batch.geometry.computeBoundingSphere();
-      batch.getMatrixAt(index, m);
-      m.premultiply(this.group.matrixWorld).decompose(v, q, s);
+      world.decompose(v, q, s);
       // A part's origin can sit far from its geometry (parts are authored in
       // the car's frame): `center` is where the geometry is drawn.
-      c.copy(batch.geometry.boundingSphere!.center).applyMatrix4(m);
+      c.copy(batch.geometry.boundingSphere!.center).applyMatrix4(world);
       out.push({ id, position: [v.x, v.y, v.z], center: [c.x, c.y, c.z], rotation: [q.x, q.y, q.z, q.w] });
     }
     return out;
-  }
-
-  /** Drop every loose part without touching the car (its model is being rebuilt). */
-  discard(): void {
-    for (const batch of this.batches.values()) {
-      this.group.remove(batch);
-      batch.dispose();
-    }
-    this.batches.clear();
-    this.used.clear();
-    this.slots.clear();
-    this.poses.clear();
-  }
-
-  dispose(): void {
-    this.discard();
-    this.group.removeFromParent();
   }
 
   /** True when `body` is where it was last drawn (and records it otherwise). */
@@ -134,33 +163,15 @@ export class LooseParts {
     return false;
   }
 
-  /** A loose part's instance: on first use the part leaves the car. */
-  private slotFor(id: string): { batch: Batch; index: number } | null {
-    const existing = this.slots.get(id);
+  /** A part's loose state: on first use it leaves the car. */
+  private looseFor(id: string): Loose | null {
+    const existing = this.parts.get(id);
     if (existing) return existing;
-    const onCar = this.assembly.slots.get(id);
-    if (!onCar) return null;
-    let batch = this.batches.get(onCar.mesh);
-    if (!batch) {
-      const parts = onCar.mesh.userData.parts as unknown[];
-      batch = createPartBatchMesh(onCar.part.geometry, onCar.mesh.material, parts.length) as Batch;
-      batch.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      batch.castShadow = batch.receiveShadow = true;
-      // The bodies are anywhere: no aggregate bounds to cull by.
-      batch.frustumCulled = false;
-      batch.count = 0;
-      this.used.set(batch, 0);
-      batch.userData = { system: onCar.mesh.userData.system, material: onCar.mesh.userData.material, parts: [] as { id: string }[] };
-      this.batches.set(onCar.mesh, batch);
-      this.group.add(batch);
-    }
-    const index = this.used.get(batch) ?? 0;
-    this.used.set(batch, index + 1);
-    batch.count = index + 1;
-    (batch.userData.parts as { id: string }[])[index] = onCar.part;
-    const slot = { batch, index };
-    this.slots.set(id, slot);
-    this.assembly.hidePart(id);
-    return slot;
+    const slot = this.assembly.slots.get(id);
+    if (!slot) return null;
+    const loose = { batch: slot.mesh as Batch, index: slot.index, world: new THREE.Matrix4() };
+    this.parts.set(id, loose);
+    this.assembly.markLoose(id);
+    return loose;
   }
 }

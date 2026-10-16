@@ -147,10 +147,7 @@ export class LiveGeometry {
  * batches; vehicles/partBatchNodes.ts). */
 let createBatch = (geometry, material, count) => new T.InstancedMesh(geometry, material, count);
 export function setPartBatchFactory(factory) { createBatch = factory; }
-/** A batch of `count` instances of `geometry`, as the assembly draws its parts. */
-export function createPartBatchMesh(geometry, material, count) { return createBatch(geometry, material, count); }
 
-const HIDDEN = new T.Matrix4().makeScale(0, 0, 0);
 
 /** Group repeated geometry into GPU instances. A resize changes matrices in the
  * existing buffers; each instance still maps to a stable, selectable part ID. */
@@ -159,8 +156,8 @@ export class LiveAssembly {
     this.group = group; this.materials = materials; this.batches = new Map(); this.meshes = [];
     /** Part id -> { mesh, index, part }: where each part is drawn. */
     this.slots = new Map();
-    /** Parts not drawn on the car (broken off: drawn as loose bodies instead). */
-    this.hidden = new Set();
+    /** Parts that broke off: bodies of their own, no longer posed with the car. */
+    this.loose = new Set();
   }
   update(model, explosion, hidden, explosionCenters) {
     const buckets = new Map();
@@ -192,7 +189,7 @@ export class LiveAssembly {
     this.meshes = [...this.batches.values()];
     this.slots = new Map();
     for (const mesh of this.meshes) mesh.userData.parts.forEach((part, index) => this.slots.set(part.id, { mesh, index, part }));
-    this.hidden.clear();
+    this.loose.clear();
   }
   bindMotion() {
     this.motionSlots = [];
@@ -202,25 +199,21 @@ export class LiveAssembly {
     }
   }
   /** Pose the moving parts (suspension, wheels, steering) on the car. A part
-   * that broke off is a body of its own and stays hidden here. */
+   * that broke off is a body of its own: the suspension leaves it alone. */
   applyMotion(rig) {
     const touched = new Set();
     for (const { mesh, index, part } of this.motionSlots) {
-      if (this.hidden.has(part.id)) continue;
+      if (this.loose.has(part.id)) continue;
       mesh.setMatrixAt(index, rig.matrixFor(part));
       touched.add(mesh);
     }
     for (const mesh of touched) mesh.instanceMatrix.needsUpdate = true;
   }
-  /** Stop drawing a part on the car (it broke off). */
-  hidePart(id) {
-    const slot = this.slots.get(id); if (!slot || this.hidden.has(id)) return;
-    this.hidden.add(id);
-    slot.mesh.setMatrixAt(slot.index, HIDDEN); slot.mesh.instanceMatrix.needsUpdate = true;
-  }
-  /** Draw a part on the car again, at `matrix` (its rest or motion pose). */
-  showPart(id, matrix) {
-    const slot = this.slots.get(id); if (!slot || !this.hidden.delete(id)) return;
+  /** A part broke off: its instance is now posed as a body of its own (vehicles/looseParts.ts). */
+  markLoose(id) { if (this.slots.has(id)) this.loose.add(id); }
+  /** A loose part back on the car (a respawn), at `matrix` (its rest or motion pose). */
+  restorePart(id, matrix) {
+    const slot = this.slots.get(id); if (!slot || !this.loose.delete(id)) return;
     slot.mesh.setMatrixAt(slot.index, matrix); slot.mesh.instanceMatrix.needsUpdate = true;
   }
   dispose() { for (const mesh of this.meshes) { this.group.remove(mesh); mesh.dispose(); } this.batches.clear(); this.meshes = []; }

@@ -28,7 +28,7 @@ export class VehicleVisual {
   /** Visual part ids per native fracture part index (metadata.json parts[].visualIds). */
   private fractureGroups: string[][] | null = null;
   private readonly partMatrix = new Map<string, THREE.Matrix4>();
-  /** The parts that broke off: bodies of their own, drawn in world space. */
+  /** The parts that broke off: bodies of their own, drawn at their world poses. */
   private readonly loose = new LooseParts(this.assembly);
   /** The rig last applied, and the wheel state last posed: work only on change. */
   private appliedRig: VehicleRigState | null = null;
@@ -41,12 +41,6 @@ export class VehicleVisual {
       this.group.position.y = -resolveVehicleGeometry(configuration).originHeight;
     }
   }
-  /**
-   * The car's broken-off parts, in world space. The caller places it in the
-   * world beside the car's group, not under it: a loose part does not move
-   * with the car.
-   */
-  get debris(): THREE.Group { return this.loose.group; }
   get partCount(): number { return this.model.parts.length; }
   get parts(): {id: string; name: string; system: string}[] { return this.model.parts; }
   configure(value: VehicleConfiguration): void {
@@ -118,6 +112,13 @@ export class VehicleVisual {
     }
     this.appliedRig = rig;
   }
+  /**
+   * Bring the drawn loose parts up to date: the bodies a rig moved, and (on
+   * WebGL, whose batches draw in the car's frame) every loose part when the
+   * car itself moved. Call each frame after placing the car; free when
+   * nothing changed.
+   */
+  syncLoose(): void { this.loose.sync(this.group); }
   /** A part's pose back on the car: its motion pose, or its authored one. */
   private restingMatrix(id: string): THREE.Matrix4 {
     const part = this.model.parts.find((p: { id: string }) => p.id === id);
@@ -153,7 +154,7 @@ export class VehicleVisual {
     this.assembly.applyMotion(this.rig);
   }
   dispose(): void {
-    this.loose.dispose();
+    this.loose.discard();
     this.assembly.dispose(); this.source.dispose();
     Object.values(this.palette).forEach(m => m.dispose());
     this.bodyPaint.dispose(); this.wheelPaint.dispose();

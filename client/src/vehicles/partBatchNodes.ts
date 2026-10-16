@@ -10,6 +10,11 @@
 // and attribute layout instead, so all cars share a handful of shaders that
 // the loading screen builds ahead (scene/ShaderWarmup.tsx).
 //
+// A part that broke off a car is a body of its own (vehicles/looseParts.ts):
+// its instance carries its WORLD matrix and a `partLoose` flag, and the
+// shader undoes the car's transform for it, so it is drawn where its body is
+// however the car moves, in the same batch and draw call, with no CPU work.
+//
 // Only imported behind __WEBGPU__; registered by @render-backend/install.
 
 import * as THREE from 'three';
@@ -19,10 +24,12 @@ import {
   dot,
   mat3,
   mat4,
+  modelWorldMatrixInverse,
   normalGeometry,
   normalLocal,
   normalize,
   positionGeometry,
+  select,
   vec3,
   vec4,
 } from 'three/tsl';
@@ -43,8 +50,13 @@ function partPositionNode(): Node {
     // As three's InstanceNode: divide by the squared column lengths, so a
     // non-uniform scale still yields the right normal direction.
     const n = (normalGeometry as Node).div(vec3(dot(c0.xyz, c0.xyz), dot(c1.xyz, c1.xyz), dot(c2.xyz, c2.xyz)));
-    normalLocal.assign(normalize(mat3(c0.xyz, c1.xyz, c2.xyz).mul(n)));
-    return mat4(c0, c1, c2, c3).mul(vec4(positionGeometry, 1)).xyz;
+    const normal: Node = normalize(mat3(c0.xyz, c1.xyz, c2.xyz).mul(n));
+    const position: Node = mat4(c0, c1, c2, c3).mul(vec4(positionGeometry, 1));
+    // A loose part's matrix is its world pose: bring it into the car's frame,
+    // which the renderer's model transform then takes back to the world.
+    const loose: Node = (attribute('partLoose', 'float') as Node).greaterThan(0.5);
+    normalLocal.assign(select(loose, normalize((modelWorldMatrixInverse as Node).mul(vec4(normal, 0)).xyz), normal));
+    return select(loose, (modelWorldMatrixInverse as Node).mul(position).xyz, position.xyz);
   })();
   return sharedPosition;
 }
@@ -77,6 +89,9 @@ class PartBatch extends THREE.Mesh {
   readonly isPartBatch = true;
   readonly instanceMatrix: { count: number; array: Float32Array; needsUpdate: boolean; setUsage: (usage: THREE.Usage) => void };
   private readonly matrices: Float32Array;
+  /** Per instance: 1 when its matrix is a world pose (a loose part), 0 in the car's frame. */
+  private readonly loose: Float32Array;
+  private readonly looseAttribute: THREE.InstancedBufferAttribute;
 
   constructor(template: THREE.BufferGeometry, material: THREE.Material, capacity: number) {
     const geometry = new THREE.InstancedBufferGeometry();
@@ -92,6 +107,10 @@ class PartBatch extends THREE.Mesh {
     for (let column = 0; column < 4; column += 1) {
       geometry.setAttribute(`partMatrix${column}`, new THREE.InterleavedBufferAttribute(buffer, 4, column * 4));
     }
+    const loose = new Float32Array(capacity);
+    const looseAttribute = new THREE.InstancedBufferAttribute(loose, 1);
+    looseAttribute.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('partLoose', looseAttribute);
     geometry.instanceCount = capacity;
     super(geometry, partMaterial(material));
     // Assigning a palette material (VehicleVisual repaints) draws it through
@@ -104,6 +123,8 @@ class PartBatch extends THREE.Mesh {
       enumerable: true,
     });
     this.matrices = matrices;
+    this.loose = loose;
+    this.looseAttribute = looseAttribute;
     this.instanceMatrix = {
       count: capacity,
       array: matrices,
@@ -119,7 +140,22 @@ class PartBatch extends THREE.Mesh {
   get count(): number { return 1; }
   set count(value: number) { (this.geometry as THREE.InstancedBufferGeometry).instanceCount = value; }
 
-  setMatrixAt(index: number, matrix: THREE.Matrix4): void { matrix.toArray(this.matrices, index * 16); }
+  /** An instance in the car's frame (attached to the car). */
+  setMatrixAt(index: number, matrix: THREE.Matrix4): void {
+    matrix.toArray(this.matrices, index * 16);
+    if (this.loose[index] !== 0) {
+      this.loose[index] = 0;
+      this.looseAttribute.needsUpdate = true;
+    }
+  }
+  /** An instance at a world pose (a part that broke off: its own body). */
+  setWorldMatrixAt(index: number, matrix: THREE.Matrix4): void {
+    matrix.toArray(this.matrices, index * 16);
+    if (this.loose[index] !== 1) {
+      this.loose[index] = 1;
+      this.looseAttribute.needsUpdate = true;
+    }
+  }
   getMatrixAt(index: number, matrix: THREE.Matrix4): void { matrix.fromArray(this.matrices, index * 16); }
 
   // The template's attributes belong to the vehicle's LiveGeometry: dispose

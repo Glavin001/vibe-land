@@ -593,11 +593,9 @@ export class VehiclesRenderer {
         vehicleMeshGroup.visible = !(layers.hideVisuals && (data?.handle == null || data.handle === id));
       }
       if (custom) {
-        // Its broken-off parts are bodies of their own: in the world, not under the car.
-        if (custom.debris.parent !== group) group.add(custom.debris);
-        custom.debris.visible = vehicleMeshGroup.visible;
         // Work happens when a new rig arrives and changes something, not per frame.
         if (vs.customRig) custom.applyRig(vs.customRig);
+        custom.syncLoose();
       }
       if (custom) {
         const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
