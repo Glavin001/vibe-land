@@ -99,6 +99,18 @@ enum PhysicsBackend {
     Physx(PhysxPhysicsArena),
 }
 
+/// A vehicle's state for the per-player stream (`vehicle_stream_states`).
+pub struct VehicleStreamState {
+    pub id: u32,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    /// Per wheel: travel from neutral, steer, spin angle, on road (1/0; -1 gone).
+    pub wheels: [[f32; 4]; 4],
+    pub wheel_rates: [f32; 4],
+}
+
 /// Server-owned physics facade. Engine-specific handles never leave this type.
 pub struct PhysicsArena {
     backend: PhysicsBackend,
@@ -151,6 +163,23 @@ impl PhysicsArena {
         }
     }
 
+    /// Detached parts of a destructible vehicle, with the rigid body each is
+    /// on (named by its lowest part), its centre of mass and velocities.
+    pub fn vehicle_detached_bodies(&mut self, id:u32) -> Vec<vibe_land_destruction::per_player::VehicleDetachedPart> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => {
+                let v = |p: vibe_land_physx_bridge::FfiVec3| [p.x, p.y, p.z];
+                arena.vehicle_detached_bodies(id).into_iter().map(|p| vibe_land_destruction::per_player::VehicleDetachedPart {
+                    part: p.part_index as u16, body: p.body as u16, position: v(p.position),
+                    rotation: [p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w],
+                    com: v(p.com), linear_velocity: v(p.linear_velocity), angular_velocity: v(p.angular_velocity),
+                }).collect()
+            }
+            _ => { let _ = id; Vec::new() }
+        }
+    }
+
     /// World centre of one part of a destructible vehicle.
     pub fn vehicle_part_center(&self, id:u32, part:u32) -> Option<[f32;3]> {
         match &self.backend {
@@ -175,6 +204,28 @@ impl PhysicsArena {
             #[cfg(feature="native-destruction")]
             PhysicsBackend::Physx(arena) => arena.vehicle_destruction_debug(id),
             _ => { let _ = id; Err("vehicle destruction requires the native PhysX destruction backend".into()) }
+        }
+    }
+
+    /// Every vehicle's state this tick as the per-player stream takes it:
+    /// pose, velocities, and per wheel [travel, steer, angle, on road]
+    /// (`neutral_jounce` per vehicle id) with its spin rate.
+    pub fn vehicle_stream_states(&self, neutral_jounce: impl Fn(u32) -> Option<f32>) -> Vec<VehicleStreamState> {
+        match &self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_snapshots().into_iter().filter_map(|s| {
+                let rig = crate::physx_runtime::rig_from_snapshot(&s, neutral_jounce(s.user_id)?);
+                Some(VehicleStreamState {
+                    id: s.user_id,
+                    position: [s.pose.position.x, s.pose.position.y, s.pose.position.z],
+                    rotation: [s.pose.rotation.x, s.pose.rotation.y, s.pose.rotation.z, s.pose.rotation.w],
+                    linear_velocity: [s.linear_velocity.x, s.linear_velocity.y, s.linear_velocity.z],
+                    angular_velocity: [s.angular_velocity.x, s.angular_velocity.y, s.angular_velocity.z],
+                    wheels: rig,
+                    wheel_rates: s.wheel_rotation_speed,
+                })
+            }).collect(),
+            _ => { let _ = neutral_jounce; Vec::new() }
         }
     }
 
@@ -715,6 +766,16 @@ impl PhysicsArena {
         }
     }
 
+    /// Opt-in debris strikes on players (`VIBE_CITY_DEBRIS_DAMAGE`); none
+    /// on Rapier, which has no destruction.
+    pub fn apply_debris_player_collisions(&mut self) -> Vec<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.apply_debris_player_collisions(),
+        }
+    }
+
     pub fn apply_vehicle_player_collisions(&mut self) -> Vec<u32> {
         match &mut self.backend {
             PhysicsBackend::Rapier(arena) => arena.apply_vehicle_player_collisions(),
@@ -756,6 +817,19 @@ impl PhysicsArena {
             PhysicsBackend::Physx(arena) => {
                 arena.cast_static_world_ray(origin, direction, max_distance, exclude_player)
             }
+        }
+    }
+
+    /// The nearest destruction chunk on a ray; None where the backend has
+    /// no destruction (Rapier).
+    pub fn cast_chunk_ray(&self, origin: [f32; 3], direction: [f32; 3], max_distance: f32) -> Option<f32> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => {
+                let _ = (origin, direction, max_distance);
+                None
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.cast_chunk_ray(origin, direction, max_distance),
         }
     }
 

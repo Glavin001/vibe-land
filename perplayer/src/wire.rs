@@ -1,0 +1,1350 @@
+//! The per-player wire (city wire 4): what each packet carries, byte for
+//! byte, encoded and decoded by the same code on both ends.
+//!
+//! - `PKT_PP_KEYFRAMES` (datagram): the error-driven keyframes for one
+//!   client, with the client's datagram ordinal for acks.
+//! - `PKT_PP_EVENTS` (reliable, ordered): what broke, what settled, what
+//!   woke, and the structure hash. Each event names the tick it applies at.
+//! - `PKT_PP_BOOTSTRAP` (reliable): a joining client's structural state as
+//!   bitsets, plus every body's pose.
+//! - `PKT_PP_ACK` (client to server): the newest datagram ordinal received
+//!   and a mask of the 64 before it.
+//!
+//! Positions are quantised per keyframe at the coarsest of four grids whose
+//! error stays under half the client's tolerance (`Precision`); rotations as
+//! smallest-three (2 + 3 x 10 bits); velocities at 1 cm/s and 2 mrad/s.
+
+use glam::{Quat, Vec3};
+
+use crate::predict::{predict, predict_velocity, Keyframe, Mode, Physics};
+
+pub const PKT_PP_KEYFRAMES: u8 = 132;
+pub const PKT_PP_EVENTS: u8 = 133;
+pub const PKT_PP_BOOTSTRAP: u8 = 134;
+pub const PKT_PP_ACK: u8 = 135;
+
+/// Position grids, metres: tier 0 is the finest.
+pub const POSITION_STEPS: [f32; 4] = [0.001, 0.004, 0.016, 0.064];
+const LINEAR_STEP: f32 = 0.01;
+const ANGULAR_STEP: f32 = 0.002;
+
+// ── bytes ───────────────────────────────────────────────────────────────────
+
+#[derive(Default)]
+pub struct Writer {
+    pub out: Vec<u8>,
+}
+
+impl Writer {
+    pub fn u8(&mut self, v: u8) {
+        self.out.push(v);
+    }
+    pub fn u16(&mut self, v: u16) {
+        self.out.extend_from_slice(&v.to_le_bytes());
+    }
+    pub fn u32(&mut self, v: u32) {
+        self.out.extend_from_slice(&v.to_le_bytes());
+    }
+    pub fn u64(&mut self, v: u64) {
+        self.out.extend_from_slice(&v.to_le_bytes());
+    }
+    pub fn i16(&mut self, v: i16) {
+        self.out.extend_from_slice(&v.to_le_bytes());
+    }
+    pub fn f32(&mut self, v: f32) {
+        self.out.extend_from_slice(&v.to_le_bytes());
+    }
+    pub fn varint(&mut self, mut v: u64) {
+        loop {
+            let byte = (v & 0x7f) as u8;
+            v >>= 7;
+            if v == 0 {
+                self.out.push(byte);
+                return;
+            }
+            self.out.push(byte | 0x80);
+        }
+    }
+    pub fn svarint(&mut self, v: i64) {
+        self.varint(((v << 1) ^ (v >> 63)) as u64);
+    }
+}
+
+pub struct Reader<'a> {
+    pub bytes: &'a [u8],
+    pub at: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Truncated;
+
+impl<'a> Reader<'a> {
+    pub fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, at: 0 }
+    }
+    fn take(&mut self, n: usize) -> Result<&'a [u8], Truncated> {
+        let slice = self.bytes.get(self.at..self.at + n).ok_or(Truncated)?;
+        self.at += n;
+        Ok(slice)
+    }
+    pub fn u8(&mut self) -> Result<u8, Truncated> {
+        Ok(self.take(1)?[0])
+    }
+    pub fn u16(&mut self) -> Result<u16, Truncated> {
+        Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
+    }
+    pub fn u32(&mut self) -> Result<u32, Truncated> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+    pub fn u64(&mut self) -> Result<u64, Truncated> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+    pub fn i16(&mut self) -> Result<i16, Truncated> {
+        Ok(i16::from_le_bytes(self.take(2)?.try_into().unwrap()))
+    }
+    pub fn f32(&mut self) -> Result<f32, Truncated> {
+        Ok(f32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+    pub fn varint(&mut self) -> Result<u64, Truncated> {
+        let mut v = 0u64;
+        for shift in (0..64).step_by(7) {
+            let byte = self.u8()?;
+            v |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Ok(v);
+            }
+        }
+        Err(Truncated)
+    }
+    pub fn svarint(&mut self) -> Result<i64, Truncated> {
+        let v = self.varint()?;
+        Ok(((v >> 1) as i64) ^ -((v & 1) as i64))
+    }
+    pub fn done(&self) -> bool {
+        self.at >= self.bytes.len()
+    }
+}
+
+// ── quantisation ────────────────────────────────────────────────────────────
+
+/// Smallest-three: the index of the largest component (2 bits) and the other
+/// three at 10 bits each over [-1/sqrt 2, 1/sqrt 2].
+pub fn encode_quat(q: Quat) -> u32 {
+    let q = q.normalize();
+    let c = [q.x, q.y, q.z, q.w];
+    let mut largest = 0;
+    for i in 1..4 {
+        if c[i].abs() > c[largest].abs() {
+            largest = i;
+        }
+    }
+    let sign = if c[largest] < 0.0 { -1.0 } else { 1.0 };
+    let mut bits = largest as u32;
+    let range = std::f32::consts::FRAC_1_SQRT_2;
+    let mut shift = 2;
+    for (i, &v) in c.iter().enumerate() {
+        if i == largest {
+            continue;
+        }
+        let unit = ((v * sign / range).clamp(-1.0, 1.0) + 1.0) * 0.5;
+        bits |= ((unit * 1023.0).round() as u32) << shift;
+        shift += 10;
+    }
+    bits
+}
+
+pub fn decode_quat(bits: u32) -> Quat {
+    let largest = (bits & 3) as usize;
+    let range = std::f32::consts::FRAC_1_SQRT_2;
+    let mut c = [0.0f32; 4];
+    let mut shift = 2;
+    let mut sum = 0.0;
+    for i in 0..4 {
+        if i == largest {
+            continue;
+        }
+        let unit = ((bits >> shift) & 1023) as f32 / 1023.0;
+        c[i] = (unit * 2.0 - 1.0) * range;
+        sum += c[i] * c[i];
+        shift += 10;
+    }
+    c[largest] = (1.0 - sum).max(0.0).sqrt();
+    Quat::from_xyzw(c[0], c[1], c[2], c[3]).normalize()
+}
+
+fn quantise(v: f32, step: f32) -> i64 {
+    (v / step).round() as i64
+}
+
+fn clamp_i16(v: f32, step: f32) -> i16 {
+    (v / step).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16
+}
+
+/// A keyframe as the client will decode it: what the server's error model
+/// must use as the client's baseline.
+pub fn quantised(kf: &Keyframe, tier: u8) -> Keyframe {
+    let step = POSITION_STEPS[tier as usize & 3];
+    let p = |v: f32| quantise(v, step) as f32 * step;
+    let lin = |v: f32| f32::from(clamp_i16(v, LINEAR_STEP)) * LINEAR_STEP;
+    let ang = |v: f32| f32::from(clamp_i16(v, ANGULAR_STEP)) * ANGULAR_STEP;
+    let moving = kf.mode != Mode::Resting;
+    Keyframe {
+        tick: kf.tick,
+        position: Vec3::new(p(kf.position.x), p(kf.position.y), p(kf.position.z)),
+        rotation: decode_quat(encode_quat(kf.rotation)),
+        linear_velocity: if moving {
+            Vec3::new(lin(kf.linear_velocity.x), lin(kf.linear_velocity.y), lin(kf.linear_velocity.z))
+        } else {
+            Vec3::ZERO
+        },
+        angular_velocity: if moving {
+            Vec3::new(ang(kf.angular_velocity.x), ang(kf.angular_velocity.y), ang(kf.angular_velocity.z))
+        } else {
+            Vec3::ZERO
+        },
+        mode: kf.mode,
+        decel: kf.decel, floor_drop: None,
+    }
+}
+
+// ── keyframes ───────────────────────────────────────────────────────────────
+
+/// A body on the wire: its structure and its id (the lowest chunk).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BodyKey {
+    pub structure: u32,
+    pub body: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct KeyframeRecord {
+    pub key: BodyKey,
+    pub tier: u8,
+    pub keyframe: Keyframe,
+    /// Encode as a residual against this keyframe, one the client is known to
+    /// have (acked): its prediction to this tick, plus what it missed. A body
+    /// that is predicted well costs a few bytes; a contact costs its velocity
+    /// change.
+    pub baseline: Option<Keyframe>,
+    /// The tick this version of the body was born (the fracture that last
+    /// changed its chunks), sent while that is recent: a client still
+    /// drawing an older body under this id holds the record until that
+    /// fracture's event arrives, rather than drawing the new body's pose
+    /// with the old body's chunks.
+    pub incarnation: Option<u32>,
+    /// A car's wheels at this keyframe (`CAR_BODY` records only).
+    pub wheels: Option<[Wheel; 4]>,
+}
+
+impl KeyframeRecord {
+    pub fn absolute(key: BodyKey, tier: u8, keyframe: Keyframe) -> Self {
+        Self { key, tier, keyframe, baseline: None, incarnation: None, wheels: None }
+    }
+}
+
+/// A car's chassis, in its car's body-key structure (its detached groups
+/// are named by their lowest part, always below this).
+pub const CAR_BODY: u32 = 0xFFFF;
+
+/// One wheel of a car as it is drawn: suspension travel from neutral (m),
+/// steer (rad), spin angle (rad) and spin rate (rad/s), and whether it is on
+/// the road. Between keyframes the spin carries on at its rate; travel and
+/// steer hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wheel {
+    pub travel: f32,
+    pub steer: f32,
+    pub angle: f32,
+    pub rate: f32,
+    pub grounded: bool,
+}
+
+impl Wheel {
+    /// As drawn `ticks` after its keyframe.
+    pub fn at(&self, ticks: f32, physics: Physics) -> Wheel {
+        Wheel { angle: self.angle + self.rate * ticks * physics.dt, ..*self }
+    }
+}
+
+/// Wire steps: travel 1 mm, steer 0.1 mrad, angle a turn in 65536, rate
+/// 0.01 rad/s.
+const TRAVEL_STEP: f32 = 0.001;
+const STEER_STEP: f32 = 0.0001;
+const RATE_STEP: f32 = 0.01;
+
+fn wheel_ints(wheels: &[Wheel; 4]) -> (u8, [[i16; 4]; 4]) {
+    let q = |v: f32, step: f32| (v / step).round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
+    let turn = std::f32::consts::TAU;
+    let mut grounded = 0u8;
+    let ints = std::array::from_fn(|i| {
+        let w = wheels[i];
+        if w.grounded {
+            grounded |= 1 << i;
+        }
+        let angle = ((w.angle.rem_euclid(turn) / turn * 65536.0).round() as u32 % 65536) as u16 as i16;
+        [q(w.travel, TRAVEL_STEP), q(w.steer, STEER_STEP), angle, q(w.rate, RATE_STEP)]
+    });
+    (grounded, ints)
+}
+
+fn wheels_from_ints(grounded: u8, ints: &[[i16; 4]; 4]) -> [Wheel; 4] {
+    std::array::from_fn(|i| {
+        let [travel, steer, angle, rate] = ints[i];
+        Wheel {
+            travel: f32::from(travel) * TRAVEL_STEP,
+            steer: f32::from(steer) * STEER_STEP,
+            angle: f32::from(angle as u16) / 65536.0 * std::f32::consts::TAU,
+            rate: f32::from(rate) * RATE_STEP,
+            grounded: grounded & (1 << i) != 0,
+        }
+    })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyframePacket {
+    /// The server's tick when the packet was made (the client's clock).
+    pub server_tick: u32,
+    /// This client's datagram ordinal (acks name it).
+    pub ordinal: u32,
+    pub records: Vec<KeyframeRecord>,
+}
+
+/// Rotations as residual rotation vectors, radians.
+const ROTATION_STEP: f32 = 0.001;
+const FLAG_DELTA: u8 = 1 << 4;
+const FLAG_SPIN: u8 = 1 << 5;
+const FLAG_INCARNATION: u8 = 1 << 6;
+const FLAG_WHEELS: u8 = 1 << 7;
+/// In a car's wheel block's on-road byte: the record's Sliding is Turning.
+const WHEELS_TURNING: u8 = 1 << 4;
+
+/// A record's numbers as the wire carries them.
+#[derive(Clone, Copy, Debug)]
+struct RecordInts {
+    flags: u8,
+    baseline_ticks: u32,
+    position: [i64; 3],
+    rotation_abs: u32,
+    rotation: [i64; 3],
+    linear: [i64; 3],
+    angular: [i64; 3],
+    /// Friction mode: the deceleration, 0.1 m/s^2 steps.
+    decel: u8,
+    /// Ticks from the body's birth to this keyframe (FLAG_INCARNATION).
+    incarnation_ticks: u32,
+    /// FLAG_WHEELS: the on-road mask and each wheel's travel, steer, angle
+    /// and rate.
+    wheels: (u8, [[i16; 4]; 4]),
+}
+
+const DECEL_STEP: f32 = 0.1;
+
+fn ints_of(record: &KeyframeRecord, physics: Physics) -> RecordInts {
+    let kf = &record.keyframe;
+    let tier = record.tier & 3;
+    let step = POSITION_STEPS[tier as usize];
+    let moving = kf.mode != Mode::Resting;
+    let mut flags = kf.mode.wire_bits() | (tier << 2);
+    let mut out = RecordInts {
+        flags: 0,
+        baseline_ticks: 0,
+        position: [0; 3],
+        rotation_abs: 0,
+        rotation: [0; 3],
+        linear: [0; 3],
+        angular: [0; 3],
+        decel: (kf.decel / DECEL_STEP).round().clamp(0.0, 255.0) as u8,
+        incarnation_ticks: 0,
+        wheels: (0, [[0; 4]; 4]),
+    };
+    if let Some(wheels) = &record.wheels {
+        flags |= FLAG_WHEELS;
+        out.wheels = wheel_ints(wheels);
+        if kf.mode == Mode::Turning {
+            out.wheels.0 |= WHEELS_TURNING;
+        }
+    }
+    if let Some(born) = record.incarnation.filter(|&b| b <= kf.tick) {
+        flags |= FLAG_INCARNATION;
+        out.incarnation_ticks = kf.tick - born;
+    }
+    match record.baseline.filter(|b| b.tick <= kf.tick) {
+        Some(base) => {
+            flags |= FLAG_DELTA;
+            // The wire predicts without the ground floor: each side derives
+            // the floor itself, so it may differ, and the residual must not.
+            let base = Keyframe { floor_drop: None, ..base };
+            let dt = (kf.tick - base.tick) as f32;
+            let (pp, pq) = predict(&base, dt, physics);
+            let pv = predict_velocity(&base, dt, physics);
+            out.baseline_ticks = kf.tick - base.tick;
+            out.position = (kf.position - pp).to_array().map(|v| quantise(v, step));
+            let turn = (kf.rotation * pq.inverse()).normalize();
+            let turn = if turn.w < 0.0 { -turn } else { turn };
+            out.rotation = turn.to_scaled_axis().to_array().map(|v| quantise(v, ROTATION_STEP));
+            if moving {
+                out.linear = (kf.linear_velocity - pv).to_array().map(|v| quantise(v, LINEAR_STEP));
+            }
+            let spin = (kf.angular_velocity - base.angular_velocity).to_array().map(|v| quantise(v, ANGULAR_STEP));
+            if moving && spin != [0; 3] {
+                flags |= FLAG_SPIN;
+                out.angular = spin;
+            }
+        }
+        None => {
+            out.position = kf.position.to_array().map(|v| quantise(v, step));
+            out.rotation_abs = encode_quat(kf.rotation);
+            if moving {
+                out.linear = kf.linear_velocity.to_array().map(|v| i64::from(clamp_i16(v, LINEAR_STEP)));
+                let spin = kf.angular_velocity.to_array().map(|v| i64::from(clamp_i16(v, ANGULAR_STEP)));
+                if spin != [0; 3] {
+                    flags |= FLAG_SPIN;
+                    out.angular = spin;
+                }
+            }
+        }
+    }
+    out.flags = flags;
+    out
+}
+
+fn from_ints(tick: u32, ints: &RecordInts, base: Option<&Keyframe>, physics: Physics) -> Option<Keyframe> {
+    let mode = match Mode::from_u8(ints.flags) {
+        Mode::Sliding if ints.flags & FLAG_WHEELS != 0 && ints.wheels.0 & WHEELS_TURNING != 0 => Mode::Turning,
+        mode => mode,
+    };
+    let step = POSITION_STEPS[((ints.flags >> 2) & 3) as usize];
+    let moving = mode != Mode::Resting;
+    let v3 = |a: [i64; 3], s: f32| Vec3::new(a[0] as f32 * s, a[1] as f32 * s, a[2] as f32 * s);
+    if ints.flags & FLAG_DELTA != 0 {
+        let base = Keyframe { floor_drop: None, ..*base? };
+        let dt = ints.baseline_ticks as f32;
+        let (pp, pq) = predict(&base, dt, physics);
+        let pv = predict_velocity(&base, dt, physics);
+        let turn = Quat::from_scaled_axis(v3(ints.rotation, ROTATION_STEP));
+        Some(Keyframe {
+            tick,
+            position: pp + v3(ints.position, step),
+            rotation: (turn * pq).normalize(),
+            linear_velocity: if moving { pv + v3(ints.linear, LINEAR_STEP) } else { Vec3::ZERO },
+            angular_velocity: if !moving {
+                Vec3::ZERO
+            } else if ints.flags & FLAG_SPIN != 0 {
+                base.angular_velocity + v3(ints.angular, ANGULAR_STEP)
+            } else {
+                base.angular_velocity
+            },
+            mode,
+            decel: f32::from(ints.decel) * DECEL_STEP, floor_drop: None,
+        })
+    } else {
+        Some(Keyframe {
+            tick,
+            position: v3(ints.position, step),
+            rotation: decode_quat(ints.rotation_abs),
+            linear_velocity: if moving { v3(ints.linear, LINEAR_STEP) } else { Vec3::ZERO },
+            angular_velocity: if moving && ints.flags & FLAG_SPIN != 0 { v3(ints.angular, ANGULAR_STEP) } else { Vec3::ZERO },
+            mode,
+            decel: f32::from(ints.decel) * DECEL_STEP, floor_drop: None,
+        })
+    }
+}
+
+/// The keyframe the client will decode from `record`: what the server's
+/// model of that client must hold.
+pub fn decoded(record: &KeyframeRecord, physics: Physics) -> Keyframe {
+    let ints = ints_of(record, physics);
+    let base = record.baseline.filter(|b| b.tick <= record.keyframe.tick);
+    from_ints(record.keyframe.tick, &ints, base.as_ref(), physics).expect("the encoder has its baseline")
+}
+
+/// The bytes one record will take (for budgeting).
+pub fn record_bytes(record: &KeyframeRecord, physics: Physics) -> usize {
+    PreparedRecord::new(*record, physics).bytes()
+}
+
+/// A record with its wire numbers worked out once: the encoder sizes it,
+/// packs it, writes it and decodes what the client will hold from the same
+/// numbers (a delta record's prediction from its baseline is not repeated).
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedRecord {
+    pub record: KeyframeRecord,
+    ints: RecordInts,
+    bytes: usize,
+}
+
+impl PreparedRecord {
+    pub fn new(record: KeyframeRecord, physics: Physics) -> Self {
+        let ints = ints_of(&record, physics);
+        let mut count = Count(0);
+        write_record(&mut count, &ints, 0);
+        Self { record, ints, bytes: count.0 + 3 }
+    }
+
+    /// As `record_bytes`.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// The wheels the client will decode (FLAG_WHEELS).
+    pub fn decoded_wheels(&self) -> Option<[Wheel; 4]> {
+        (self.ints.flags & FLAG_WHEELS != 0).then(|| wheels_from_ints(self.ints.wheels.0, &self.ints.wheels.1))
+    }
+
+    /// As `decoded`.
+    pub fn decoded(&self, physics: Physics) -> Keyframe {
+        let base = self.record.baseline.filter(|b| b.tick <= self.record.keyframe.tick);
+        from_ints(self.record.keyframe.tick, &self.ints, base.as_ref(), physics).expect("the encoder has its baseline")
+    }
+}
+
+/// Where a record's bytes go: a packet, or a count of them.
+trait RecordOut {
+    fn u8(&mut self, v: u8);
+    fn u32(&mut self, v: u32);
+    fn i16(&mut self, v: i16);
+    fn varint(&mut self, v: u64);
+    fn svarint(&mut self, v: i64) {
+        self.varint(((v << 1) ^ (v >> 63)) as u64);
+    }
+}
+
+impl RecordOut for Writer {
+    fn u8(&mut self, v: u8) {
+        Writer::u8(self, v);
+    }
+    fn u32(&mut self, v: u32) {
+        Writer::u32(self, v);
+    }
+    fn i16(&mut self, v: i16) {
+        Writer::i16(self, v);
+    }
+    fn varint(&mut self, v: u64) {
+        Writer::varint(self, v);
+    }
+}
+
+struct Count(usize);
+
+impl RecordOut for Count {
+    fn u8(&mut self, _: u8) {
+        self.0 += 1;
+    }
+    fn u32(&mut self, _: u32) {
+        self.0 += 4;
+    }
+    fn i16(&mut self, _: i16) {
+        self.0 += 2;
+    }
+    fn varint(&mut self, v: u64) {
+        self.0 += ((64 - v.leading_zeros()).max(1) as usize).div_ceil(7);
+    }
+}
+
+fn write_record(w: &mut impl RecordOut, ints: &RecordInts, tick_delta: i64) {
+    w.svarint(tick_delta);
+    w.u8(ints.flags);
+    let moving = Mode::from_u8(ints.flags) != Mode::Resting;
+    if ints.flags & FLAG_DELTA != 0 {
+        w.varint(u64::from(ints.baseline_ticks));
+        for v in ints.position {
+            w.svarint(v);
+        }
+        for v in ints.rotation {
+            w.svarint(v);
+        }
+        if moving {
+            for v in ints.linear {
+                w.svarint(v);
+            }
+        }
+    } else {
+        for v in ints.position {
+            w.svarint(v);
+        }
+        w.u32(ints.rotation_abs);
+        if moving {
+            for v in ints.linear {
+                w.i16(v as i16);
+            }
+        }
+    }
+    if ints.flags & FLAG_SPIN != 0 {
+        for v in ints.angular {
+            w.svarint(v);
+        }
+    }
+    if Mode::from_u8(ints.flags) == Mode::Friction {
+        w.u8(ints.decel);
+    }
+    if ints.flags & FLAG_INCARNATION != 0 {
+        w.varint(u64::from(ints.incarnation_ticks));
+    }
+    if ints.flags & FLAG_WHEELS != 0 {
+        w.u8(ints.wheels.0);
+        for wheel in ints.wheels.1 {
+            for v in wheel {
+                w.i16(v);
+            }
+        }
+    }
+}
+
+pub fn encode_keyframes(packet: &KeyframePacket, physics: Physics) -> Vec<u8> {
+    let records: Vec<PreparedRecord> = packet.records.iter().map(|r| PreparedRecord::new(*r, physics)).collect();
+    encode_prepared(packet.server_tick, packet.ordinal, &records)
+}
+
+/// `encode_keyframes` from prepared records.
+pub fn encode_prepared(server_tick: u32, ordinal: u32, records: &[PreparedRecord]) -> Vec<u8> {
+    let mut w = Writer { out: Vec::with_capacity(16 + records.iter().map(|r| r.bytes).sum::<usize>()) };
+    w.u8(PKT_PP_KEYFRAMES);
+    w.u32(server_tick);
+    w.u32(ordinal);
+    w.varint(records.len() as u64);
+    let mut order: Vec<&PreparedRecord> = records.iter().collect();
+    order.sort_by_key(|r| r.record.key);
+    let mut last = BodyKey { structure: 0, body: 0 };
+    for prepared in order {
+        let record = &prepared.record;
+        let k = record.key;
+        // Structure as a gap; body as a gap within the same structure.
+        w.varint(u64::from(k.structure - last.structure));
+        let base = if k.structure == last.structure { last.body } else { 0 };
+        w.varint(u64::from(k.body.wrapping_sub(base)));
+        last = k;
+        write_record(&mut w, &prepared.ints, i64::from(record.keyframe.tick) - i64::from(server_tick));
+    }
+    w.out
+}
+
+/// Decode, finding each delta record's baseline with `baseline(key, tick)`.
+/// Records whose baseline the client no longer has are left out and
+/// counted.
+pub fn decode_keyframes_with(
+    bytes: &[u8],
+    physics: Physics,
+    baseline: &mut dyn FnMut(BodyKey, u32) -> Option<Keyframe>,
+) -> Result<(KeyframePacket, u32), Truncated> {
+    decode_keyframes_ending(bytes, physics, baseline).map(|(packet, missing, _)| (packet, missing))
+}
+
+/// `decode_keyframes_with`, and where the packet's records end.
+fn decode_keyframes_ending(
+    bytes: &[u8],
+    physics: Physics,
+    baseline: &mut dyn FnMut(BodyKey, u32) -> Option<Keyframe>,
+) -> Result<(KeyframePacket, u32, usize), Truncated> {
+    let mut r = Reader::new(bytes);
+    if r.u8()? != PKT_PP_KEYFRAMES {
+        return Err(Truncated);
+    }
+    let server_tick = r.u32()?;
+    let ordinal = r.u32()?;
+    let count = r.varint()? as usize;
+    let mut records = Vec::with_capacity(count.min(4096));
+    let mut missing = 0u32;
+    let mut last = BodyKey { structure: 0, body: 0 };
+    for _ in 0..count {
+        let structure = last.structure + r.varint()? as u32;
+        let base = if structure == last.structure { last.body } else { 0 };
+        let body = base.wrapping_add(r.varint()? as u32);
+        let key = BodyKey { structure, body };
+        last = key;
+        let tick = (i64::from(server_tick) + r.svarint()?) as u32;
+        let flags = r.u8()?;
+        let moving = Mode::from_u8(flags) != Mode::Resting;
+        let mut ints = RecordInts { flags, baseline_ticks: 0, position: [0; 3], rotation_abs: 0, rotation: [0; 3], linear: [0; 3], angular: [0; 3], decel: 0, incarnation_ticks: 0, wheels: (0, [[0; 4]; 4]) };
+        if flags & FLAG_DELTA != 0 {
+            ints.baseline_ticks = r.varint()? as u32;
+            for v in &mut ints.position {
+                *v = r.svarint()?;
+            }
+            for v in &mut ints.rotation {
+                *v = r.svarint()?;
+            }
+            if moving {
+                for v in &mut ints.linear {
+                    *v = r.svarint()?;
+                }
+            }
+        } else {
+            for v in &mut ints.position {
+                *v = r.svarint()?;
+            }
+            ints.rotation_abs = r.u32()?;
+            if moving {
+                for v in &mut ints.linear {
+                    *v = i64::from(r.i16()?);
+                }
+            }
+        }
+        if flags & FLAG_SPIN != 0 {
+            for v in &mut ints.angular {
+                *v = r.svarint()?;
+            }
+        }
+        if Mode::from_u8(flags) == Mode::Friction {
+            ints.decel = r.u8()?;
+        }
+        let incarnation = if flags & FLAG_INCARNATION != 0 { Some(tick.wrapping_sub(r.varint()? as u32)) } else { None };
+        let wheels = if flags & FLAG_WHEELS != 0 {
+            ints.wheels.0 = r.u8()?;
+            for wheel in &mut ints.wheels.1 {
+                for v in wheel.iter_mut() {
+                    *v = r.i16()?;
+                }
+            }
+            Some(wheels_from_ints(ints.wheels.0, &ints.wheels.1))
+        } else {
+            None
+        };
+        let base = if flags & FLAG_DELTA != 0 { baseline(key, tick.wrapping_sub(ints.baseline_ticks)) } else { None };
+        match from_ints(tick, &ints, base.as_ref(), physics) {
+            Some(keyframe) => records.push(KeyframeRecord { key, tier: (flags >> 2) & 3, keyframe, baseline: base, incarnation, wheels }),
+            None => missing += 1,
+        }
+    }
+    Ok((KeyframePacket { server_tick, ordinal, records }, missing, r.at))
+}
+
+/// Decode a packet of absolute records (no baselines needed).
+pub fn decode_keyframes(bytes: &[u8], physics: Physics) -> Result<KeyframePacket, Truncated> {
+    decode_keyframes_with(bytes, physics, &mut |_, _| None).map(|(p, _)| p)
+}
+
+// ── events ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    /// Bonds broke and chunks were removed in one structure at `tick`.
+    Fracture { tick: u32, structure: u32, broken_bonds: Vec<u32>, removed_chunks: Vec<u32> },
+    /// A body came to rest at a pose: static until a wake.
+    Settle { tick: u32, key: BodyKey, position: Vec3, rotation: Quat },
+    Wake { tick: u32, key: BodyKey },
+    /// The structure hash both ends compare (gate G1).
+    Hash { tick: u32, structure: u32, hash: u64 },
+    /// A car's detached parts as bodies from `tick` on (`VEHICLE_STRUCTURE_BASE`
+    /// + the car's handle): every group, replacing the last list. Unlike a
+    /// structure's, a car's groups are the physics' own (its fracture asset
+    /// is not the client's), so they are stated, not derived.
+    VehicleGroups { tick: u32, structure: u32, groups: Vec<VehicleGroup> },
+}
+
+/// Body keys of car debris: `VEHICLE_STRUCTURE_BASE` + the car's handle.
+pub const VEHICLE_STRUCTURE_BASE: u32 = 0x8000;
+
+pub fn is_vehicle_structure(structure: u32) -> bool {
+    structure >= VEHICLE_STRUCTURE_BASE
+}
+
+/// One group of a car's detached parts: a body named by its lowest part.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VehicleGroup {
+    pub body: u32,
+    /// Its parts, ascending.
+    pub members: Vec<u32>,
+    /// Its centre of mass in the car's authored frame: the body's keyframes
+    /// place this point, and each part's authored geometry maps to the world
+    /// through the body's rotation about it.
+    pub centre: Vec3,
+}
+
+/// A car group's floor boxes, as `structure::lowest_point_of` takes them:
+/// its parts' hull points (car frame, per part) about the group's centre of
+/// mass, each a box of no extent. Both sides derive the floor of a group's
+/// keyframes from these, so a late keyframe never draws a part through the
+/// ground. None when a member has no points.
+pub fn vehicle_floor_boxes(parts: &[Vec<Vec3>], group: &VehicleGroup) -> Option<Vec<(Vec3, Vec3)>> {
+    let mut boxes = Vec::new();
+    for &m in &group.members {
+        let points = parts.get(m as usize).filter(|p| !p.is_empty())?;
+        boxes.extend(points.iter().map(|&p| (p - group.centre, Vec3::ZERO)));
+    }
+    (!boxes.is_empty()).then_some(boxes)
+}
+
+impl Event {
+    pub fn tick(&self) -> u32 {
+        match self {
+            Event::Fracture { tick, .. }
+            | Event::Settle { tick, .. }
+            | Event::Wake { tick, .. }
+            | Event::Hash { tick, .. }
+            | Event::VehicleGroups { tick, .. } => *tick,
+        }
+    }
+}
+
+fn gaps(w: &mut Writer, values: &[u32]) {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    w.varint(sorted.len() as u64);
+    let mut last = 0u32;
+    for (i, v) in sorted.iter().enumerate() {
+        w.varint(u64::from(if i == 0 { *v } else { v - last }));
+        last = *v;
+    }
+}
+
+fn read_gaps(r: &mut Reader) -> Result<Vec<u32>, Truncated> {
+    let n = r.varint()? as usize;
+    let mut out = Vec::with_capacity(n.min(1 << 16));
+    let mut last = 0u32;
+    for i in 0..n {
+        let v = r.varint()? as u32;
+        last = if i == 0 { v } else { last + v };
+        out.push(last);
+    }
+    Ok(out)
+}
+
+/// An events packet: `seq` orders the reliable stream (and dedups the
+/// datagram copies of it).
+pub fn encode_events(seq: u32, events: &[Event]) -> Vec<u8> {
+    let mut w = Writer::default();
+    w.u8(PKT_PP_EVENTS);
+    w.u32(seq);
+    w.varint(events.len() as u64);
+    for event in events {
+        match event {
+            Event::Fracture { tick, structure, broken_bonds, removed_chunks } => {
+                w.u8(0);
+                w.u32(*tick);
+                w.varint(u64::from(*structure));
+                gaps(&mut w, broken_bonds);
+                gaps(&mut w, removed_chunks);
+            }
+            Event::Settle { tick, key, position, rotation } => {
+                w.u8(1);
+                w.u32(*tick);
+                w.varint(u64::from(key.structure));
+                w.varint(u64::from(key.body));
+                for v in position.to_array() {
+                    w.svarint(quantise(v, POSITION_STEPS[0]));
+                }
+                w.u32(encode_quat(*rotation));
+            }
+            Event::Wake { tick, key } => {
+                w.u8(2);
+                w.u32(*tick);
+                w.varint(u64::from(key.structure));
+                w.varint(u64::from(key.body));
+            }
+            Event::Hash { tick, structure, hash } => {
+                w.u8(3);
+                w.u32(*tick);
+                w.varint(u64::from(*structure));
+                w.u64(*hash);
+            }
+            Event::VehicleGroups { tick, structure, groups } => {
+                w.u8(4);
+                w.u32(*tick);
+                write_vehicle_groups(&mut w, *structure, groups);
+            }
+        }
+    }
+    w.out
+}
+
+fn write_vehicle_groups(w: &mut Writer, structure: u32, groups: &[VehicleGroup]) {
+    w.varint(u64::from(structure));
+    w.varint(groups.len() as u64);
+    for g in groups {
+        w.varint(u64::from(g.body));
+        gaps(w, &g.members);
+        for v in g.centre.to_array() {
+            w.f32(v);
+        }
+    }
+}
+
+fn read_vehicle_groups(r: &mut Reader) -> Result<(u32, Vec<VehicleGroup>), Truncated> {
+    let structure = r.varint()? as u32;
+    let n = r.varint()? as usize;
+    let mut groups = Vec::with_capacity(n.min(4096));
+    for _ in 0..n {
+        let body = r.varint()? as u32;
+        let members = read_gaps(r)?;
+        let centre = Vec3::new(r.f32()?, r.f32()?, r.f32()?);
+        groups.push(VehicleGroup { body, members, centre });
+    }
+    Ok((structure, groups))
+}
+
+pub fn decode_events(bytes: &[u8]) -> Result<(u32, Vec<Event>), Truncated> {
+    let mut r = Reader::new(bytes);
+    if r.u8()? != PKT_PP_EVENTS {
+        return Err(Truncated);
+    }
+    let seq = r.u32()?;
+    let n = r.varint()? as usize;
+    let mut events = Vec::with_capacity(n.min(4096));
+    for _ in 0..n {
+        let kind = r.u8()?;
+        let tick = r.u32()?;
+        events.push(match kind {
+            0 => {
+                let structure = r.varint()? as u32;
+                let broken_bonds = read_gaps(&mut r)?;
+                let removed_chunks = read_gaps(&mut r)?;
+                Event::Fracture { tick, structure, broken_bonds, removed_chunks }
+            }
+            1 => {
+                let key = BodyKey { structure: r.varint()? as u32, body: r.varint()? as u32 };
+                let position = Vec3::new(
+                    r.svarint()? as f32 * POSITION_STEPS[0],
+                    r.svarint()? as f32 * POSITION_STEPS[0],
+                    r.svarint()? as f32 * POSITION_STEPS[0],
+                );
+                let rotation = decode_quat(r.u32()?);
+                Event::Settle { tick, key, position, rotation }
+            }
+            2 => Event::Wake { tick, key: BodyKey { structure: r.varint()? as u32, body: r.varint()? as u32 } },
+            3 => Event::Hash { tick, structure: r.varint()? as u32, hash: r.u64()? },
+            4 => {
+                let (structure, groups) = read_vehicle_groups(&mut r)?;
+                Event::VehicleGroups { tick, structure, groups }
+            }
+            _ => return Err(Truncated),
+        });
+    }
+    Ok((seq, events))
+}
+
+// ── bootstrap ───────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BootstrapStructure {
+    pub structure: u32,
+    pub alive_bonds: Vec<u64>,
+    pub removed_chunks: Vec<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bootstrap {
+    pub tick: u32,
+    /// The next events sequence the client will see.
+    pub next_event_seq: u32,
+    pub structures: Vec<BootstrapStructure>,
+    /// Settled bodies: their rest pose.
+    pub settled: Vec<(BodyKey, Vec3, Quat)>,
+    /// Awake bodies: their keyframe.
+    pub awake: Vec<(BodyKey, Keyframe)>,
+    /// Every car's detached groups (`Event::VehicleGroups`), after the
+    /// keyframes and only when there are any.
+    pub vehicles: Vec<(u32, Vec<VehicleGroup>)>,
+}
+
+fn bits_rle(w: &mut Writer, words: &[u64]) {
+    // Runs of identical words: (count, word). All-ones and all-zeros
+    // dominate (intact or gone), so a 150,000-bond city is a few bytes until
+    // it breaks.
+    w.varint(words.len() as u64);
+    let mut i = 0;
+    while i < words.len() {
+        let mut j = i + 1;
+        while j < words.len() && words[j] == words[i] {
+            j += 1;
+        }
+        w.varint((j - i) as u64);
+        w.u64(words[i]);
+        i = j;
+    }
+}
+
+fn read_bits_rle(r: &mut Reader) -> Result<Vec<u64>, Truncated> {
+    let n = r.varint()? as usize;
+    let mut out = Vec::with_capacity(n.min(1 << 20));
+    while out.len() < n {
+        let run = r.varint()? as usize;
+        let word = r.u64()?;
+        if run == 0 || out.len() + run > n {
+            return Err(Truncated);
+        }
+        out.extend(std::iter::repeat(word).take(run));
+    }
+    Ok(out)
+}
+
+pub fn encode_bootstrap(b: &Bootstrap) -> Vec<u8> {
+    let mut w = Writer::default();
+    w.u8(PKT_PP_BOOTSTRAP);
+    w.u32(b.tick);
+    w.u32(b.next_event_seq);
+    w.varint(b.structures.len() as u64);
+    for s in &b.structures {
+        w.varint(u64::from(s.structure));
+        bits_rle(&mut w, &s.alive_bonds);
+        bits_rle(&mut w, &s.removed_chunks);
+    }
+    w.varint(b.settled.len() as u64);
+    for (key, p, q) in &b.settled {
+        w.varint(u64::from(key.structure));
+        w.varint(u64::from(key.body));
+        for v in p.to_array() {
+            w.svarint(quantise(v, POSITION_STEPS[0]));
+        }
+        w.u32(encode_quat(*q));
+    }
+    let packet = KeyframePacket {
+        server_tick: b.tick,
+        ordinal: 0,
+        records: b.awake.iter().map(|(key, kf)| KeyframeRecord::absolute(*key, 0, *kf)).collect(),
+    };
+    // Absolute records only: physics is not consulted.
+    w.out.extend_from_slice(&encode_keyframes(&packet, Physics::at_hz(60, -9.81))[1..]);
+    // Cars' detached groups, only when there are any (a bootstrap without
+    // them is byte for byte what it was before cars streamed here).
+    if !b.vehicles.is_empty() {
+        w.varint(b.vehicles.len() as u64);
+        for (structure, groups) in &b.vehicles {
+            write_vehicle_groups(&mut w, *structure, groups);
+        }
+    }
+    w.out
+}
+
+pub fn decode_bootstrap(bytes: &[u8]) -> Result<Bootstrap, Truncated> {
+    let mut r = Reader::new(bytes);
+    if r.u8()? != PKT_PP_BOOTSTRAP {
+        return Err(Truncated);
+    }
+    let tick = r.u32()?;
+    let next_event_seq = r.u32()?;
+    let n = r.varint()? as usize;
+    let mut structures = Vec::with_capacity(n.min(1 << 16));
+    for _ in 0..n {
+        let structure = r.varint()? as u32;
+        let alive_bonds = read_bits_rle(&mut r)?;
+        let removed_chunks = read_bits_rle(&mut r)?;
+        structures.push(BootstrapStructure { structure, alive_bonds, removed_chunks });
+    }
+    let n = r.varint()? as usize;
+    let mut settled = Vec::with_capacity(n.min(1 << 20));
+    for _ in 0..n {
+        let key = BodyKey { structure: r.varint()? as u32, body: r.varint()? as u32 };
+        let p = Vec3::new(
+            r.svarint()? as f32 * POSITION_STEPS[0],
+            r.svarint()? as f32 * POSITION_STEPS[0],
+            r.svarint()? as f32 * POSITION_STEPS[0],
+        );
+        settled.push((key, p, decode_quat(r.u32()?)));
+    }
+    let mut rest = vec![PKT_PP_KEYFRAMES];
+    rest.extend_from_slice(&bytes[r.at..]);
+    let (keyframes, _, end) = decode_keyframes_ending(&rest, Physics::at_hz(60, -9.81), &mut |_, _| None)?;
+    let mut vehicles = Vec::new();
+    if end < rest.len() {
+        let mut v = Reader::new(&rest[end..]);
+        for _ in 0..v.varint()? {
+            vehicles.push(read_vehicle_groups(&mut v)?);
+        }
+    }
+    Ok(Bootstrap {
+        tick,
+        next_event_seq,
+        structures,
+        settled,
+        awake: keyframes.records.into_iter().map(|r| (r.key, r.keyframe)).collect(),
+        vehicles,
+    })
+}
+
+// ── acks ────────────────────────────────────────────────────────────────────
+
+/// The upstream ack: the newest keyframe-datagram ordinal and a mask of the
+/// 64 before it, then (optional, appended later) the first events sequence
+/// the client has not received -- the application-level event ack, which
+/// lets the server tell an event that landed late.
+pub fn encode_ack(newest: u32, mask: u64, events_through: Option<u32>) -> Vec<u8> {
+    let mut w = Writer::default();
+    w.u8(PKT_PP_ACK);
+    w.u32(newest);
+    w.u64(mask);
+    if let Some(through) = events_through {
+        w.u32(through);
+    }
+    w.out
+}
+
+/// `encode_ack`, then the bodies whose delta records this client could not
+/// decode (their baseline was gone): u8 count, then per body u32 structure
+/// and u32 body (LE). The server resends each absolute. At most 255.
+pub fn encode_ack_missing(newest: u32, mask: u64, events_through: u32, missing: &[BodyKey]) -> Vec<u8> {
+    let mut out = encode_ack(newest, mask, Some(events_through));
+    let n = missing.len().min(255);
+    out.push(n as u8);
+    for key in &missing[..n] {
+        out.extend(key.structure.to_le_bytes());
+        out.extend(key.body.to_le_bytes());
+    }
+    out
+}
+
+/// The bodies an ack names as undecodable (`encode_ack_missing`); none for a
+/// plain ack.
+pub fn decode_ack_missing(bytes: &[u8]) -> Vec<BodyKey> {
+    let Some(&n) = bytes.get(17) else { return Vec::new() };
+    (0..usize::from(n))
+        .map_while(|i| {
+            let at = 18 + i * 8;
+            let word = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            Some(BodyKey { structure: word(at)?, body: word(at + 4)? })
+        })
+        .collect()
+}
+
+pub fn decode_ack(bytes: &[u8]) -> Result<(u32, u64, Option<u32>), Truncated> {
+    let mut r = Reader::new(bytes);
+    if r.u8()? != PKT_PP_ACK {
+        return Err(Truncated);
+    }
+    let (newest, mask) = (r.u32()?, r.u64()?);
+    let events_through = if bytes.len() >= 17 { Some(r.u32()?) } else { None };
+    Ok((newest, mask, events_through))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kf(tick: u32, mode: Mode) -> Keyframe {
+        Keyframe {
+            tick,
+            position: Vec3::new(-123.4567, 17.891, 250.25),
+            rotation: Quat::from_euler(glam::EulerRot::XYZ, 0.3, -1.2, 2.0),
+            linear_velocity: Vec3::new(3.21, -9.87, 0.5),
+            angular_velocity: Vec3::new(1.0, -2.5, 0.25),
+            mode,
+            decel: 0.0, floor_drop: None,
+        }
+    }
+
+    fn physics() -> Physics {
+        Physics::at_hz(60, -9.81)
+    }
+
+    /// A prepared record is sized by counting, not writing: the count must
+    /// be the bytes written, and its decode the same as `decoded`'s, for
+    /// every kind of record (absolute and delta, each mode and tier, with
+    /// spin and incarnation, residuals of every varint length).
+    #[test]
+    fn a_prepared_record_counts_exactly_the_bytes_it_writes() {
+        let ph = physics();
+        let mut checked = 0;
+        for mode in [Mode::Ballistic, Mode::Sliding, Mode::Resting, Mode::Friction] {
+            for tier in 0..4u8 {
+                for scale in [0.0f32, 0.002, 0.3, 40.0, 3000.0] {
+                    for (delta, born) in [(false, None), (true, None), (true, Some(990)), (false, Some(999))] {
+                        let mut truth = kf(1000, mode);
+                        truth.decel = 2.5;
+                        let base = decoded(&KeyframeRecord::absolute(BodyKey { structure: 1, body: 2 }, tier, kf(990, mode)), ph);
+                        truth.position = crate::predict::predict(&base, 10.0, ph).0 + Vec3::new(scale, -scale * 0.7, scale * 0.1);
+                        truth.linear_velocity += Vec3::splat(scale * 0.01);
+                        truth.angular_velocity += Vec3::new(scale * 0.001, 0.0, 0.0);
+                        let record = KeyframeRecord {
+                            key: BodyKey { structure: 3, body: 7 },
+                            tier,
+                            keyframe: truth,
+                            baseline: delta.then_some(base),
+                            incarnation: born,
+                            wheels: None,
+                        };
+                        let mut w = Writer::default();
+                        write_record(&mut w, &ints_of(&record, ph), 0);
+                        let prepared = PreparedRecord::new(record, ph);
+                        assert_eq!(prepared.bytes(), w.out.len() + 3, "{record:?}");
+                        assert_eq!(prepared.decoded(ph), decoded(&record, ph));
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 320);
+        // Varint lengths at every boundary.
+        for v in [0u64, 1, 127, 128, 16383, 16384, (1 << 21) - 1, 1 << 21, u64::MAX] {
+            let (mut w, mut c) = (Writer::default(), Count(0));
+            RecordOut::varint(&mut w, v);
+            c.varint(v);
+            assert_eq!(c.0, w.out.len(), "{v}");
+        }
+    }
+
+    #[test]
+    fn keyframes_round_trip_at_their_tier() {
+        let packet = KeyframePacket {
+            server_tick: 1000,
+            ordinal: 77,
+            records: vec![
+                KeyframeRecord::absolute(BodyKey { structure: 4, body: 120 }, 0, kf(998, Mode::Ballistic)),
+                KeyframeRecord::absolute(BodyKey { structure: 4, body: 7 }, 2, kf(1000, Mode::Sliding)),
+                KeyframeRecord::absolute(BodyKey { structure: 9, body: 3 }, 3, kf(1001, Mode::Resting)),
+            ],
+        };
+        let bytes = encode_keyframes(&packet, physics());
+        let back = decode_keyframes(&bytes, physics()).unwrap();
+        assert_eq!(back.ordinal, 77);
+        assert_eq!(back.records.len(), 3);
+        for record in &packet.records {
+            let got = back.records.iter().find(|r| r.key == record.key).unwrap();
+            // Exactly what `decoded` says the client decodes.
+            assert_eq!(got.keyframe, decoded(record, physics()));
+            assert!((got.keyframe.position - record.keyframe.position).abs().max_element() <= POSITION_STEPS[record.tier as usize] * 0.5 + 1e-4);
+        }
+        // A ballistic keyframe at the finest tier, 250 m out: 29 bytes, 9 of
+        // them position at 1 mm.
+        let one = encode_keyframes(&KeyframePacket { server_tick: 1000, ordinal: 1, records: packet.records[..1].to_vec() }, physics());
+        assert!(one.len() - 10 <= 30, "{} bytes", one.len() - 10);
+    }
+
+    /// Against a baseline the client has, a record is the residual from the
+    /// client's own prediction: a few bytes when the prediction is good, and
+    /// the decode is bit-for-bit what the encoder said it would be.
+    #[test]
+    fn a_delta_record_is_small_and_decodes_exactly() {
+        let ph = physics();
+        let base = Keyframe { mode: Mode::Ballistic, ..kf(900, Mode::Ballistic) };
+        let base = decoded(&KeyframeRecord::absolute(BodyKey { structure: 1, body: 2 }, 1, base), ph);
+        // 20 ticks on, the truth is 3 cm off the prediction and bounced.
+        let (p, q) = crate::predict::predict(&base, 20.0, ph);
+        let truth = Keyframe {
+            tick: 920,
+            position: p + Vec3::new(0.03, -0.02, 0.0),
+            rotation: (Quat::from_rotation_y(0.01) * q).normalize(),
+            linear_velocity: Vec3::new(2.0, 3.5, 0.4),
+            angular_velocity: base.angular_velocity,
+            mode: Mode::Ballistic, decel: 0.0, floor_drop: None,
+        };
+        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(base), incarnation: None, wheels: None };
+        let bytes = encode_keyframes(&KeyframePacket { server_tick: 920, ordinal: 5, records: vec![record] }, ph);
+        let (back, missing) = decode_keyframes_with(&bytes, ph, &mut |key, tick| (key.body == 2 && tick == 900).then_some(base)).unwrap();
+        assert_eq!(missing, 0);
+        assert_eq!(back.records[0].keyframe, decoded(&record, ph));
+        assert!((back.records[0].keyframe.position - truth.position).length() < 0.004);
+        assert!(bytes.len() - 10 <= 18, "{} bytes", bytes.len() - 10);
+        // Without the baseline the record is skipped and counted.
+        let (back, missing) = decode_keyframes_with(&bytes, ph, &mut |_, _| None).unwrap();
+        assert_eq!((back.records.len(), missing), (0, 1));
+    }
+
+    #[test]
+    fn the_ground_floor_never_changes_what_a_delta_decodes_to() {
+        // The server's baseline knows the body's floor; the client's copy
+        // may not (or may derive another). The residual must not care.
+        let ph = physics();
+        let base = decoded(&KeyframeRecord::absolute(BodyKey { structure: 1, body: 2 }, 1, kf(900, Mode::Ballistic)), ph);
+        let floored = Keyframe { floor_drop: Some(0.1), ..base };
+        let truth = Keyframe { tick: 940, position: base.position + Vec3::new(1.0, -0.05, 0.0), ..base };
+        let record = KeyframeRecord { key: BodyKey { structure: 1, body: 2 }, tier: 1, keyframe: truth, baseline: Some(floored), incarnation: None, wheels: None };
+        let bytes = encode_keyframes(&KeyframePacket { server_tick: 940, ordinal: 1, records: vec![record] }, ph);
+        let (back, _) = decode_keyframes_with(&bytes, ph, &mut |_, _| Some(base)).unwrap();
+        assert!((back.records[0].keyframe.position - truth.position).length() < 0.004, "{:?}", back.records[0].keyframe.position);
+        assert_eq!(back.records[0].keyframe, decoded(&record, ph));
+    }
+
+    #[test]
+    fn events_and_acks_round_trip() {
+        let events = vec![
+            Event::Fracture { tick: 50, structure: 3, broken_bonds: vec![900, 12, 13, 400], removed_chunks: vec![7] },
+            Event::Settle { tick: 51, key: BodyKey { structure: 3, body: 12 }, position: Vec3::new(1.0, 2.0, 3.0), rotation: Quat::IDENTITY },
+            Event::Wake { tick: 52, key: BodyKey { structure: 3, body: 12 } },
+            Event::Hash { tick: 60, structure: 3, hash: 0xdead_beef_cafe },
+        ];
+        let (seq, back) = decode_events(&encode_events(9, &events)).unwrap();
+        assert_eq!(seq, 9);
+        assert_eq!(back[0], Event::Fracture { tick: 50, structure: 3, broken_bonds: vec![12, 13, 400, 900], removed_chunks: vec![7] });
+        assert_eq!(back[2..], events[2..]);
+        assert_eq!(decode_ack(&encode_ack(5, 0b1011, None)).unwrap(), (5, 0b1011, None));
+        assert_eq!(decode_ack(&encode_ack(5, 0b1011, Some(42))).unwrap(), (5, 0b1011, Some(42)));
+        let missing = [BodyKey { structure: VEHICLE_STRUCTURE_BASE + 3, body: CAR_BODY }, BodyKey { structure: 7, body: 40 }];
+        let with = encode_ack_missing(5, 0b1011, 42, &missing);
+        assert_eq!(decode_ack(&with).unwrap(), (5, 0b1011, Some(42)));
+        assert_eq!(decode_ack_missing(&with), missing);
+        assert!(decode_ack_missing(&encode_ack(5, 0b1011, Some(42))).is_empty());
+    }
+
+    /// A car's groups round-trip exactly (members and centres), as an event
+    /// and in a bootstrap; a bootstrap without cars ends where it did.
+    /// A car's chassis record carries its wheels: each decodes to within its
+    /// wire step (the angle within a 65536th of a turn, wrapped), the record
+    /// counts its own bytes, and records without wheels are unchanged.
+    #[test]
+    fn a_car_record_carries_its_wheels() {
+        let ph = Physics::at_hz(60, -9.81);
+        let kf = Keyframe { tick: 500, position: Vec3::new(10.0, 0.6, -4.0), rotation: Quat::from_rotation_y(0.3), linear_velocity: Vec3::new(12.0, 0.0, 1.0), angular_velocity: Vec3::new(0.0, 0.2, 0.0), mode: Mode::Sliding, decel: 0.0, floor_drop: None };
+        let wheels = [
+            Wheel { travel: -0.031, steer: 0.21, angle: 7.5, rate: 34.2, grounded: true },
+            Wheel { travel: 0.012, steer: 0.19, angle: -1.0, rate: 34.1, grounded: true },
+            Wheel { travel: 0.0, steer: 0.0, angle: 3.0, rate: -2.5, grounded: false },
+            Wheel { travel: 0.4, steer: 0.0, angle: 0.0, rate: 0.0, grounded: true },
+        ];
+        let key = BodyKey { structure: VEHICLE_STRUCTURE_BASE + 3, body: CAR_BODY };
+        let record = KeyframeRecord { wheels: Some(wheels), ..KeyframeRecord::absolute(key, 1, kf) };
+        let plain = PreparedRecord::new(KeyframeRecord::absolute(key, 1, kf), ph);
+        let prepared = PreparedRecord::new(record, ph);
+        assert_eq!(prepared.bytes(), plain.bytes() + 33, "the wheels cost 33 bytes");
+        let bytes = encode_prepared(500, 9, &[prepared]);
+        let back = decode_keyframes(&bytes, ph).unwrap();
+        let got = back.records[0].wheels.expect("wheels");
+        assert_eq!(Some(got), prepared.decoded_wheels());
+        let turn = std::f32::consts::TAU;
+        for (g, w) in got.iter().zip(&wheels) {
+            assert!((g.travel - w.travel).abs() <= 0.0005 + 1e-6);
+            assert!((g.steer - w.steer).abs() <= 0.00005 + 1e-6);
+            assert!((g.rate - w.rate).abs() <= 0.005 + 1e-5);
+            let da = (g.angle - w.angle).rem_euclid(turn);
+            assert!(da.min(turn - da) <= turn / 65536.0, "angle {} vs {}", g.angle, w.angle);
+            assert_eq!(g.grounded, w.grounded);
+        }
+        // Spin carries on at its rate.
+        assert!((got[0].at(6.0, ph).angle - (got[0].angle + got[0].rate * 0.1)).abs() < 1e-5);
+        assert_eq!(decode_keyframes(&encode_prepared(500, 9, &[plain]), ph).unwrap().records[0].wheels, None);
+    }
+
+    #[test]
+    fn car_groups_round_trip_as_events_and_in_a_bootstrap() {
+        let groups = vec![
+            VehicleGroup { body: 3, members: vec![3, 4, 9, 200], centre: Vec3::new(0.25, -0.125, 1.0625) },
+            VehicleGroup { body: 17, members: vec![17], centre: Vec3::new(-0.7, 0.3, -1.9) },
+        ];
+        let structure = VEHICLE_STRUCTURE_BASE + 2;
+        let events = vec![Event::VehicleGroups { tick: 77, structure, groups: groups.clone() }, Event::Hash { tick: 78, structure: 1, hash: 5 }];
+        assert_eq!(decode_events(&encode_events(3, &events)).unwrap().1, events);
+        let mut b = Bootstrap {
+            tick: 80,
+            next_event_seq: 4,
+            structures: vec![],
+            settled: vec![],
+            awake: vec![(BodyKey { structure, body: 3 }, kf(80, Mode::Ballistic))],
+            vehicles: vec![],
+        };
+        let without = encode_bootstrap(&b);
+        assert!(decode_bootstrap(&without).unwrap().vehicles.is_empty());
+        b.vehicles = vec![(structure, groups)];
+        let with = encode_bootstrap(&b);
+        assert_eq!(&with[..without.len()], &without[..], "cars are appended, nothing before them changes");
+        let back = decode_bootstrap(&with).unwrap();
+        assert_eq!(back.vehicles, b.vehicles);
+        assert_eq!(back.awake.len(), 1);
+    }
+
+    #[test]
+    fn a_bootstrap_of_an_intact_city_is_tiny() {
+        let b = Bootstrap {
+            tick: 10,
+            next_event_seq: 4,
+            structures: (0..16).map(|s| BootstrapStructure { structure: s, alive_bonds: vec![u64::MAX; 150], removed_chunks: vec![0; 50] }).collect(),
+            settled: vec![(BodyKey { structure: 1, body: 5 }, Vec3::ONE, Quat::IDENTITY)],
+            awake: vec![(BodyKey { structure: 2, body: 9 }, kf(10, Mode::Ballistic))],
+            vehicles: vec![],
+        };
+        let bytes = encode_bootstrap(&b);
+        assert!(bytes.len() < 16 * 24 + 80, "{} bytes", bytes.len());
+        let back = decode_bootstrap(&bytes).unwrap();
+        assert_eq!(back.structures, b.structures);
+        assert_eq!(back.settled.len(), 1);
+        assert_eq!(back.awake[0].0, BodyKey { structure: 2, body: 9 });
+    }
+}

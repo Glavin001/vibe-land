@@ -1,5 +1,5 @@
 import {Quaternion, Vector3} from 'three';
-import {BTN_JUMP, type InputCmd, type VehicleStateMeters} from '../net/protocol';
+import {BTN_JUMP, INPUT_BUNDLE_MAX_FRAMES, SERVER_TICK_US, type InputCmd, type VehicleStateMeters} from '../net/protocol';
 import type {VehicleSample} from '../net/interpolation';
 import {resolveDrivingSetup, resolveVehicleGeometry} from '../vehicles/configuration.mjs';
 import {getSharedVehicleDefinition} from '../wasm/sharedVehicleDefinitions';
@@ -51,6 +51,12 @@ export function moveVehicle(position:V3, rotation:Q4, delta:V3, proxy:VehiclePro
       // Guard descending contact vertically; retain authoritative travel up a ramp.
       if(hit && hit.normal[1]>.45) {
         hit=remaining.y<0?{fraction:hit.fraction,normal:[0,1,0]}:null;
+      } else if(hit && i>0) {
+        // Nor does a wheel stop the car sideways: Vehicle2's wheels act only
+        // through the suspension (road queries along it); the chassis is what
+        // collides. A wheel sphere is wider than its tyre, and would stop a car
+        // the server lets scrape past a kerb or a wall.
+        hit=null;
       }
       if(hit && Number.isFinite(hit.fraction) && hit.fraction>=0 && hit.fraction<=1
         && v(hit.normal).dot(remaining)<-1e-5
@@ -144,6 +150,11 @@ export class VehiclePresentationPredictor {
   private cacheCount=0;
   private cacheFirst=-1;
   private inputTimes = new Map<number,number>();
+  /** Server vehicle input pacing: unacked inputs are the round trip plus the
+   * paced queue, so all of them are replayed (to MAX_PENDING), as client
+   * prediction does, or the newest are not drawn until acked. */
+  private paced=false;
+  setPaced(paced:boolean):void {this.paced=paced;}
   constructor(private readonly sweep:Sweep, private readonly telemetry?: (event:VehiclePredictionEvent)=>void) {}
   /** Called by the renderer-facing runtime, never by internal reconciliation pose reads. */
   presented(now:number):void {
@@ -202,7 +213,7 @@ export class VehiclePresentationPredictor {
   private replay():VehicleSample|null {
     if(!this.base||!this.proxy)return null;
     const start=performance.now();
-    const inputs=this.pending.slice(0,Math.round(MAX_DRIVER_LEAD_SEC/DT));
+    const inputs=this.paced?this.pending:this.pending.slice(0,Math.round(MAX_DRIVER_LEAD_SEC/DT));
     const first=inputs[0]?.seq??-1;
     if(this.cacheBase!==this.base || this.cacheFirst!==first || this.cacheCount>inputs.length) {
       this.cacheBase=this.base;this.cacheFirst=first;this.cacheCount=0;
@@ -222,10 +233,34 @@ export class VehiclePresentationPredictor {
     const moved=moveVehicle(presented.position,presented.quaternion,a3(this.offset),this.proxy,this.sweep);
     return {position:moved.position,quaternion:a4(this.rotationOffset.clone().multiply(q(presented.quaternion)))};
   }
+  /**
+   * The driven car's wheels as drawn with its predicted pose: the server's
+   * newest rig (travel, steer, spin as Vehicle2 had them at its tick), its
+   * front wheels turned by the steering the replayed inputs added since, and
+   * every wheel spun on at the predicted forward speed to the drawn time. So
+   * the wheels answer the stick when the body does, not a round trip later.
+   */
+  wheels(rig:{serverTick:number;wheels:readonly {travelM:number;steeringRad:number;rotationRad:number;grounded:boolean}[]},renderLeadSec=0)
+    :{travelM:number;steeringRad:number;rotationRad:number;grounded:boolean}[]|null {
+    const motion=this.cacheMotion;
+    if(!this.raw||!this.proxy||!motion||this.stalled||rig.wheels.length!==4)return null;
+    const ahead=Math.max(0,(this.raw.serverTimeUs-rig.serverTick*SERVER_TICK_US)/1e6+Math.min(DT,Math.max(0,renderLeadSec)));
+    const speed=v(this.raw.linearVelocity).dot(new Vector3(0,0,1).applyQuaternion(q(this.raw.quaternion)));
+    const steer=(motion.steering-this.steering)*this.proxy.lock;
+    const spin=speed/Math.max(1e-3,this.proxy.radius)*ahead;
+    return rig.wheels.map((w,i)=>({...w,steeringRad:i<2?w.steeringRad+steer:w.steeringRad,rotationRad:w.rotationRad+spin}));
+  }
+  /** The server time (us) `pose(renderLeadSec)` draws the car at: the acked
+   * state plus the inputs replayed since, plus the render lead. */
+  predictedTimeUs(renderLeadSec=0):number|null {
+    if(!this.raw)return null;
+    return this.raw.serverTimeUs+(renderLeadSec>0&&!this.stalled?Math.min(DT,renderLeadSec):0)*1e6;
+  }
   debug(now:number) {return {stalled:this.stalled,pending:this.pending.length,ack:this.ack??0,latestSeq:this.latestSeq,
     correction:this.offset.length(),replayError:this.replayError,replayMs:this.replayMs,
     snapshotAge:this.base?Math.max(0,now-this.observedAt):-1};}
-  resendWindow():InputCmd[]{return this.pending.slice(-3);}
+  /** Inputs to send: the newest three, or every unacked one (up to a datagram) when the server paces vehicle inputs. */
+  resendWindow(all=false):InputCmd[]{return this.pending.slice(all?-INPUT_BUNDLE_MAX_FRAMES:-3);}
   get vehicleId():number|null{return this.id;}
   get pendingCount():number{return this.pending.length;}
 }

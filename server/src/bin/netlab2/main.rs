@@ -10,6 +10,9 @@
 //!   netlab2 compare  --a D1 --b D2 [--out D]
 //!   netlab2 calibrate --bundle B --out D  (the proxy check; exits 1 when it fails)
 //!   netlab2 profiles
+//!   netlab2 city     --capture C | --bundle B --out D [--strategy shared-v2] [--clients N]
+//!                    [--camera spec]... [--link L] [--seed N] [--budget-kbps K]
+//!                    (the destruction stream alone, N players; city_lab.rs)
 //!
 //! The production modules are compiled in from their own source files, not
 //! copied: see the `#[path]` modules below.
@@ -30,6 +33,14 @@ mod snapshot_builder;
 mod bundle;
 mod calibrate;
 mod chunks;
+mod city_clips;
+mod city_pairs;
+mod city_fairness;
+mod city_lab;
+mod city_live;
+mod city_perceptual;
+mod city_study;
+mod city_pp_stage;
 #[cfg(test)]
 mod fixture_tests;
 mod link;
@@ -237,6 +248,9 @@ pub fn stream_config(pace: Pace, knobs: &BTreeMap<String, String>) -> StreamConf
                 // Read once, from the environment, by the encoder itself.
                 std::env::set_var("VIBE_CITY_MAX_EVAL", value);
             }
+            // Lab settings (`lab.*`) and the per-player stream's (`pp.*`)
+            // are not the encoder's.
+            other if other.starts_with("lab.") || other.starts_with("pp.") => {}
             other => die(&format!("unknown knob {other}; see docs/netlab-v2.md")),
         }
     }
@@ -543,6 +557,11 @@ fn main() {
         "run" => cmd_run(&args),
         "score" => cmd_score(&args),
         "calibrate" => calibrate::cmd_calibrate(&args),
+        "city" => city_lab::cmd_city(&args),
+        "city-clips" => city_clips::cmd_city_clips(&args),
+        "city-study" => city_study::cmd_city_study(&args),
+        "city-pairs" => city_pairs::cmd_city_pairs(&args),
+        "city-live" => city_live::cmd_city_live(&args),
         "matrix" => report::cmd_matrix(&args),
         "compare" => report::cmd_compare(&args),
         "profiles" => {
@@ -552,7 +571,7 @@ fn main() {
             }
         }
         _ => {
-            eprintln!("{}", include_str!("main.rs").lines().take(14).collect::<Vec<_>>().join("\n"));
+            eprintln!("{}", include_str!("main.rs").lines().take(17).collect::<Vec<_>>().join("\n"));
             std::process::exit(if args.command == "help" { 0 } else { 2 });
         }
     }

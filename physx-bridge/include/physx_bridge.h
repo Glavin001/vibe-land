@@ -20,6 +20,7 @@ struct FfiCapsulePlayerDesc;
 struct FfiVehicleDesc;
 struct FfiVehiclePartShape;
 struct FfiVehiclePartPose;
+struct FfiVehicleDetachedBody;
 struct FfiVehicleDebug;
 struct FfiStressSolveReport;
 struct FfiVehicleFracturePart;
@@ -156,6 +157,7 @@ public:
   std::uint32_t native_pose_vehicle_parts(std::uint32_t entity_id,
       rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask);
   rust::Vec<FfiVehiclePartPose> native_detached_vehicle_parts(std::uint32_t entity_id);
+  rust::Vec<FfiVehicleDetachedBody> native_detached_vehicle_bodies(std::uint32_t entity_id);
   FfiVehicleDebug native_vehicle_debug(std::uint32_t entity_id);
   bool native_set_stress_solve_report(std::uint32_t passes);
   FfiStressSolveReport native_stress_solve_report();

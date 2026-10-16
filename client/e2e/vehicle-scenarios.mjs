@@ -184,6 +184,7 @@ export const scenarios = {
     ],
     checks: [
       { car: 4, partsOff: { min: 5 } },
+      { car: 4, drawnFlicker: { max: 3 } },
       { car: 0, wheelsOn: true },
       { car: 0, partsOff: { max: 2 } },
     ],

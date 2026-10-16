@@ -294,6 +294,8 @@ export interface CityE2EStats {
   hashChecks: number;
   /** Comparisons that found divergence. */
   hashMismatches: number;
+  /** City wire 4 only: the per-player core's counters (perplayer/src/wasm.rs `stats_json`) and its live bodies. */
+  perPlayer?: Record<string, number>;
   /** Targeted per-structure repairs applied instead of full bootstraps. */
   structureRepairs: number;
   /** Body NACKs sent upstream, the bodies they named, and ledger resync requests. */

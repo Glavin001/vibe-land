@@ -373,6 +373,21 @@ impl SimWorld {
         self.colliders.get(handle).map(|c| c.user_data)
     }
 
+    /// A fixed world collider added after the world was built, queued for
+    /// the next `sync_broad_phase` (so queries see it without a rebuild).
+    pub fn insert_static_collider(&mut self, collider: ColliderBuilder) -> ColliderHandle {
+        let handle = self.colliders.insert(collider.collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all())).build());
+        self.modified_colliders.push(handle);
+        handle
+    }
+
+    /// Remove a collider and queue its removal for the next `sync_broad_phase`.
+    pub fn remove_static_collider(&mut self, handle: ColliderHandle) {
+        if self.colliders.remove(handle, &mut self.island_manager, &mut self.rigid_bodies, true).is_some() {
+            self.removed_colliders.push(handle);
+        }
+    }
+
     /// Flush pending collider changes into the broad-phase BVH.
     pub fn sync_broad_phase(&mut self) {
         if self.modified_colliders.is_empty() && self.removed_colliders.is_empty() {

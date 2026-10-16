@@ -1026,6 +1026,12 @@ export function CityChunksLayer({
         valveTicksAhead: stats.valveTicksAhead,
         hashChecks: stats.hashChecks,
         hashMismatches: stats.hashMismatches,
+        // City wire 4: the per-player core's own counters, and the bodies it
+        // draws moving (the v2 counters above do not see its stream).
+        perPlayer:
+          'perPlayer' in stats
+            ? { ...(stats as { perPlayer: Record<string, number> }).perPlayer, liveBodies: client.liveBodyKeys().size }
+            : undefined,
         structureRepairs: stats.structureRepairs,
         nacksSent: stats.nacksSent,
         nackBodiesSent: stats.nackBodiesSent,

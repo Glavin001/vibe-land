@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <numeric>
+#include <unordered_map>
 #include <dlfcn.h>
 
 using namespace physx;
@@ -166,6 +167,15 @@ static bool native_mohr_coulomb_shear() {
   static const bool value = native_env_f32("VIBE_MOHR_COULOMB_SHEAR", 0.0f) != 0.0f;
   return value;
 }
+/// VIBE_SHEAR_STIFFNESS=1 (SDKs with PX_DESTRUCTION_SHEAR_STIFFNESS; FIDELITY_AUDIT
+/// D11): a joint is stiffer along its normal than across it, k_s = gamma k_n,
+/// gamma per material (the pack's shearStiffnessRatio: masonry G/E = 0.4, EN
+/// 1996-1-1 3.8.3). Needs VIBE_SECTION_ROTATION (without it the stage keeps every joint
+/// isotropic). Off: every joint isotropic.
+static bool native_shear_stiffness() {
+  static const bool value = native_env_f32("VIBE_SHEAR_STIFFNESS", 0.0f) != 0.0f;
+  return value;
+}
 /// VIBE_STRENGTH_SHORT_TERM=1: see append_materials.
 static bool native_short_term_strength() {
   static const bool value = native_env_f32("VIBE_STRENGTH_SHORT_TERM", 0.0f) != 0.0f;
@@ -314,7 +324,8 @@ void NativeDestruction::clear() {
       if (chunk.shape != nullptr) {
         chunk.shape->release();
       }
-    }
+    }    // After the shapes that referenced them.
+    for (auto &entry : s.surface_cache) entry.second->release();
   }
   PxPhysics &physics = s.physics;
   PxScene &scene = s.scene;
@@ -466,6 +477,40 @@ std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure
     out.shearFriction = settings.shear_friction.empty() ? 0.0f : std::max(0.0f, settings.shear_friction[index]);
     out.shearCapacityLimit = settings.shear_capacity_limit.empty() ? 0.0f : std::max(0.0f, settings.shear_capacity_limit[index]);
 #endif
+    native_require(settings.shear_stiffness_ratio.empty() || settings.shear_stiffness_ratio.size() == settings.materials.size(),
+                   "shear stiffness table must be empty or parallel to the materials");
+#if defined(VIBE_PHYSX_HAS_SHEAR_STIFFNESS)
+    // Shear stiffness apart from normal (the stage ignores it unless its switch is on).
+    out.shearStiffnessRatio = settings.shear_stiffness_ratio.empty() ? 0.0f : std::max(0.0f, settings.shear_stiffness_ratio[index]);
+#endif
+    // The surface (VIBE_SURFACE_MATERIALS=1): a standard PxMaterial per distinct
+    // (static friction, dynamic friction, restitution), PhysX's own combine
+    // rules between two surfaces (average by default). Off, or untabulated:
+    // the world's material.
+    native_require(settings.surface_static_friction.empty() ||
+                       (settings.surface_static_friction.size() == settings.materials.size() &&
+                        settings.surface_dynamic_friction.size() == settings.materials.size() &&
+                        settings.surface_restitution.size() == settings.materials.size()),
+                   "surface tables must be empty or parallel to the materials");
+    {
+      static const bool surfaces_on = [] { const char *v = std::getenv("VIBE_SURFACE_MATERIALS"); return v && v[0] == '1'; }();
+      PxMaterial *surface = nullptr;
+      if (surfaces_on && !settings.surface_static_friction.empty()) {
+        const std::array<float, 3> key{settings.surface_static_friction[index], settings.surface_dynamic_friction[index],
+                                       settings.surface_restitution[index]};
+        native_require(std::isfinite(key[0]) && key[0] >= 0.0f && std::isfinite(key[1]) && key[1] >= 0.0f &&
+                           std::isfinite(key[2]) && key[2] >= 0.0f && key[2] <= 1.0f,
+                       "surface friction must be finite and non-negative, restitution in [0, 1]");
+        auto found = s.surface_cache.find(key);
+        if (found == s.surface_cache.end()) {
+          PxMaterial *created = s.physics.createMaterial(key[0], key[1], key[2]);
+          native_require(created != nullptr, "surface material allocation failed");
+          found = s.surface_cache.emplace(key, created).first;
+        }
+        surface = found->second;
+      }
+      s.surfaces.push_back(surface);
+    }
     ++index;
     s.materials.push_back(out);
   }
@@ -765,7 +810,7 @@ void NativeDestruction::create_destructible(
       PxShape *shape = nullptr;
       if (n.geom_kind == 0) {
         shape = s.physics.createShape(PxBoxGeometry(native_px(n.half_extents)),
-                                      s.material, true);
+                                      s.surface(material_base + n.material), true);
       } else if (n.geom_kind == 1) {
         std::vector<PxVec3> points;
         points.reserve(n.convex_points.size());
@@ -788,8 +833,8 @@ void NativeDestruction::create_destructible(
         native_require(mesh != nullptr, "native convex cooking failed");
         ++hulls;
         if (!mesh->isGpuCompatible()) ++cpu_hulls;
-        shape = s.physics.createShape(PxConvexMeshGeometry(mesh), s.material,
-                                      true);
+        shape = s.physics.createShape(PxConvexMeshGeometry(mesh),
+                                      s.surface(material_base + n.material), true);
         mesh->release();
       }
       native_require(shape != nullptr, "invalid or failed chunk geometry");
@@ -1057,6 +1102,46 @@ rust::Vec<FfiVehiclePartPose> NativeDestruction::detached_vehicle_parts(
     const PxTransform world=actor->getGlobalPose()*hull.shape->getLocalPose()*hull.rest.getInverse();
     out.push_back(FfiVehiclePartPose{hull.part,native_ffi(world.p),FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w}});
   }
+#else
+  PX_UNUSED(vehicle);
+#endif
+  return out;
+}
+
+rust::Vec<FfiVehicleDetachedBody> NativeDestruction::detached_vehicle_bodies(
+    const physx::native::NativeVehicle &vehicle) const {
+  rust::Vec<FfiVehicleDetachedBody> out;
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  const State &s=*state_;
+  auto binding=std::find_if(s.vehicles.begin(),s.vehicles.end(),[&](const State::VehicleBinding &b){return b.vehicle==&vehicle;});
+  native_require(binding!=s.vehicles.end(),"vehicle is not registered for native destruction");
+  const auto *carrier=vehicle.actor();
+  std::vector<bool> seen(binding->count,false);
+  std::vector<const PxRigidActor *> actors;
+  for(const auto &hull:binding->hulls) {
+    if(seen[hull.part]) continue;
+    seen[hull.part]=true; // the first hull of a part stands for its rigid chunk
+    const auto *actor=hull.shape->getActor();
+    if(!actor || actor==carrier) continue;
+    const PxTransform pose=actor->getGlobalPose();
+    const PxTransform world=pose*hull.shape->getLocalPose()*hull.rest.getInverse();
+    PxVec3 com=pose.p,linear(0.0f),angular(0.0f);
+    if(const auto *body=actor->is<PxRigidBody>()) {
+      com=pose.transform(body->getCMassLocalPose().p);
+      linear=body->getLinearVelocity();
+      angular=body->getAngularVelocity();
+    }
+    actors.push_back(actor);
+    out.push_back(FfiVehicleDetachedBody{hull.part,hull.part,native_ffi(world.p),
+        FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w},native_ffi(com),native_ffi(linear),native_ffi(angular)});
+  }
+  // A body is named by the lowest part on it.
+  std::unordered_map<const PxRigidActor *,std::uint32_t> lowest;
+  for(std::size_t i=0;i<out.size();++i) {
+    auto [it,fresh]=lowest.emplace(actors[i],out[i].part_index);
+    if(!fresh && out[i].part_index<it->second) it->second=out[i].part_index;
+  }
+  for(std::size_t i=0;i<out.size();++i) out[i].body=lowest[actors[i]];
 #else
   PX_UNUSED(vehicle);
 #endif
@@ -1369,6 +1454,19 @@ FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) 
 #else
   native_require(!native_mohr_coulomb_shear(),
                  "VIBE_MOHR_COULOMB_SHEAR needs a PhysX SDK with PX_DESTRUCTION_MOHR_COULOMB_SHEAR (PhysX feat/mohr-coulomb-shear)");
+#endif
+#if defined(VIBE_PHYSX_HAS_SHEAR_STIFFNESS)
+  // The stage reads its switch at configuration (with the section's rotational stiffness).
+  // Without the section's rotational stiffness the stage leaves every joint
+  // isotropic (it says so): the shear rows extend the rotation's bond rows.
+  if (native_shear_stiffness()) {
+    setenv("PX_DESTRUCTION_SHEAR_STIFFNESS", "1", 1);
+    std::fprintf(stderr, native_section_rotation() ? "[destruction] shear stiffness: on (a joint k_s = gamma k_n per material)\n"
+                                                   : "[destruction] shear stiffness: requested without VIBE_SECTION_ROTATION; the stage keeps joints isotropic\n");
+  }
+#else
+  native_require(!native_shear_stiffness(),
+                 "VIBE_SHEAR_STIFFNESS needs a PhysX SDK with PX_DESTRUCTION_SHEAR_STIFFNESS (PhysX feat/shear-stiffness)");
 #endif
   // One trial evaluation plus one corrected rigid pass. Zero would leave the
   // stage in its diagnostic mode, where any membership-changing verdict is

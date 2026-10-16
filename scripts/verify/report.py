@@ -12,7 +12,7 @@ import os
 import sys
 
 out = sys.argv[1]
-ORDER = ['runtime', 'section-bending', 'high-fidelity', 'high-fidelity(no-impact)', 'high-fidelity(no-rotation)', 'runtime+impact']
+ORDER = ['runtime', 'section-bending', 'high-fidelity', 'high-fidelity+impact', 'high-fidelity(no-rotation)', 'runtime+impact']
 
 
 def load(pattern):

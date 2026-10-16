@@ -310,6 +310,21 @@ describe('NetcodeClient', () => {
   // ──────────────────────────────────────────────
 
   describe('snapshot processing', () => {
+    // server VIBE_VEHICLE_INPUT_PACING: the driver's queue report paces inputs.
+    it("keeps the newest snapshot's vehicle input-queue report", () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+      expect(client.vehicleInputQueue).toBeNull();
+      client.handlePacket({ ...makeSnapshotV2({ serverTick: 10 }), inputQueue: { depth: 1, target: 3 } });
+      expect(client.vehicleInputQueue).toEqual({ depth: 1, target: 3 });
+      // A late snapshot says nothing about the queue now.
+      client.handlePacket({ ...makeSnapshotV2({ serverTick: 9 }), inputQueue: { depth: 9, target: 9 } });
+      expect(client.vehicleInputQueue).toEqual({ depth: 1, target: 3 });
+      // Out of the car (or pacing off): no report, no pacing.
+      client.handlePacket(makeSnapshotV2({ serverTick: 11 }));
+      expect(client.vehicleInputQueue).toBeNull();
+    });
+
     it('routes local player state to onLocalSnapshot', () => {
       let receivedAck = -1;
       let receivedState: NetPlayerState | null = null;

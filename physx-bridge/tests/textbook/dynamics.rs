@@ -40,6 +40,10 @@ fn friction() -> f64 {
     WorldConfig::default().dynamic_friction as f64
 }
 
+pub fn launch_ball(world: &mut World, id: u32, at: V3, radius: f64, mass: f64, velocity: V3) {
+    ball(world, id, at, radius, mass, velocity)
+}
+
 fn ball(world: &mut World, id: u32, at: V3, radius: f64, mass: f64, velocity: V3) {
     world
         .launch_dynamic_ball(LaunchedBallDesc {
@@ -100,7 +104,7 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
         }
         tier == Tier::Quick || want == Tier::Full
     };
-    let wanted = |name: &str| wanted_tier(name, if ["impact-momentum", "impact-plate-punch", "impact-restitution", "crush-locality", "impact-energy"].contains(&name) { Tier::Quick } else { Tier::Full });
+    let wanted = |name: &str| wanted_tier(name, if ["impact-momentum", "split-momentum", "contact-load-stack", "impact-plate-punch", "impact-restitution", "crush-locality", "impact-energy"].contains(&name) { Tier::Quick } else { Tier::Full });
     if std::env::var("VERIFY_MODEL_ONLY").is_ok_and(|v| v == "1") {
         return;
     }
@@ -122,6 +126,12 @@ pub fn run(config: Config, want: Tier, expected: &[Expectation], out: &mut Outpu
     // Crushing is a high-fidelity capability (an SDK with crush correction).
     if wanted("crush-locality") && std::env::var("VIBE_NATIVE_CRUSH").is_ok_and(|v| v == "1") {
         super::guard(config, "crush-locality", expected, out, |out| crush_locality(config, expected, out));
+    }
+    if wanted("contact-load-stack") {
+        super::guard(config, "contact-load-stack", expected, out, |out| contact_load_stack(config, expected, out));
+    }
+    if wanted("split-momentum") {
+        super::guard(config, "split-momentum", expected, out, |out| split_momentum(config, expected, out));
     }
     if wanted("impact-energy") {
         super::guard(config, "impact-energy", expected, out, |out| energy_audit(config, expected, out));
@@ -169,6 +179,158 @@ fn momentum(config: Config, expected: &[Expectation], out: &mut Output) {
     row(config, "impact-momentum", "momentum after impact", "m v' + M V = m v", source, "N s", p0, p0, m * vb + big_m * vblock, p0, expected, out);
     let want = m * v * (1.0 + e) / (m + big_m);
     row(config, "impact-momentum", "block velocity", "m v (1+e)/(m+M)", source, "m/s", want, want, vblock, want, expected, out);
+}
+
+/// Three loose 500 kg blocks stacked on a slab that stands on a fixed post:
+/// the structure carries them through PhysX contacts alone (Newton III), so
+/// once they settle the post's base carries the structure's weight plus the
+/// stack's. Read awake (the mean over ticks 10-20, settled) and again at 4 s,
+/// after PhysX has put the stack to sleep (near tick 30): the known gap
+/// rest-load-asleep, here with a stack -- a sleeping body stops loading what
+/// it rests on, so rubble settled on a floor stops loading it.
+fn contact_load_stack(config: Config, expected: &[Expectation], out: &mut Output) {
+    let source = "[Hibbeler Statics] 5.3 / Newton III: a resting body loads its support with its weight";
+    println!("\ncontact-load-stack -- three loose blocks on a slab on a post: the base carries them all\n  {source}");
+    let mut s = Structure::new();
+    let m = strong(&mut s, E_CONCRETE);
+    let col = Rect { b: 0.3, d: 0.3 };
+    let h = 2.0;
+    let (c, _) = column(&mut s, "post", 0.0, 0.0, h, 4, col, CONCRETE, m);
+    let base = fixed(&mut s, c[0], [0.0; 3], [0.0, -1.0, 0.0], X, col, m);
+    let slab_mass = 500.0;
+    let slab = s.chunk("slab", [0.0, h + 0.1, 0.0], [0.5, 0.1, 0.5], slab_mass);
+    s.rect_bond(c[3], slab, [0.0, h, 0.0], Y, X, col.d, Z, col.b, m);
+    let structure_weight: f64 = s.chunks.iter().map(|c| c.mass).sum::<f64>() * G;
+    let (block, half, n) = (500.0, 0.2, 3);
+    let mut world = stage::build(&s);
+    let top = 20.0 + h + 0.2;
+    for i in 0..n {
+        world
+            .add_dynamic_box(DynamicBoxDesc {
+                entity_id: 9300 + i as u32,
+                user_id: 9300 + i as u32,
+                pose: Pose { position: Vec3::new(0.0, (top + half + 0.001 + i as f64 * (2.0 * half + 0.001)) as f32, 0.0), rotation: Quat::IDENTITY },
+                half_extents: Vec3::new(half as f32, half as f32, half as f32),
+                mass: block as f32,
+                collision_group: GROUP_PLAIN,
+                collision_mask: ALL,
+            })
+            .unwrap();
+    }
+    let total = structure_weight + n as f64 * block * G;
+    let (mut awake_sum, mut awake_n, mut late) = (0.0, 0, f64::NAN);
+    let mut asleep_at_end = false;
+    let verbose = std::env::var_os("VERIFY_VERBOSE").is_some();
+    stage::run_ticks(&mut world, 240, |t, st, _, w| {
+        let axial = -stage::rows(w, s.bonds.len())[base].normal * col.area();
+        if verbose && [1, 2, 5, 10, 20, 40, 60, 120, 240].contains(&t) {
+            let blocks: Vec<String> = w.body_snapshots().map(|b| b.iter().filter(|b| (9300..9300 + n as u32).contains(&b.entity_id)).map(|b| format!("y {:.3} sleeping {}", b.pose.position.y, b.sleeping)).collect()).unwrap_or_default();
+            println!("    tick {t}: base {:.3} kN; normal contacts {} friction anchors {}; blocks {blocks:?}", axial * 1e-3, st.normal_contacts, st.friction_anchors);
+        }
+        // Settled (tick 10) and still awake: PhysX sleeps the stack near tick 30.
+        if (10..=20).contains(&t) {
+            awake_sum += axial;
+            awake_n += 1;
+        }
+        if t == 240 {
+            late = axial;
+            asleep_at_end = w.body_snapshots().map(|b| b.iter().filter(|b| (9300..9300 + n as u32).contains(&b.entity_id)).all(|b| b.sleeping)).unwrap_or(false);
+        }
+        false
+    });
+    let awake = awake_sum / awake_n.max(1) as f64;
+    println!("  base reaction: settled and awake (ticks 10-20 mean) {:.3} kN, at 4 s {:.3} kN (stack asleep: {asleep_at_end}); structure {:.3} kN + stack {:.3} kN = {:.3} kN", awake * 1e-3, late * 1e-3, structure_weight * 1e-3, n as f64 * block * G * 1e-3, total * 1e-3);
+    row(config, "contact-load-stack", "base carries structure + stack (settled, awake)", "W_structure + 3 W_block", source, "kN", total * 1e-3, total * 1e-3, awake * 1e-3, total * 1e-3, expected, out);
+    row(config, "contact-load-stack", "base carries structure + stack (at 4 s, the stack asleep)", "W_structure + 3 W_block", source, "kN", total * 1e-3, total * 1e-3, late * 1e-3, total * 1e-3, expected, out);
+}
+
+/// A free two-chunk bar (100 kg and 300 kg, 0.5 m cubes) whose joint is far
+/// too weak for the hit, struck off-centre by a ball: it moves, spins and
+/// splits. The split is the destruction stage's own work (a new body per
+/// fragment, the corrected pass re-simulated), and it must hand the fragments
+/// exactly what the parent had: across the hit and the split the horizontal
+/// linear momentum of ball + bodies is unchanged, and so is the angular
+/// momentum about the system's centre of mass (gravity is uniform: no torque
+/// about it). Each body's L = I omega + m (r - c) x v, I about its own centre
+/// of mass from the chunks' boxes (parallel-axis theorem).
+fn split_momentum(config: Config, expected: &[Expectation], out: &mut Output) {
+    let source = "[Hibbeler Dynamics] 15.2 / 19.3: sum m v and sum (I w + r x m v) conserved without external force or torque; 17.1 parallel-axis theorem";
+    println!("\nsplit-momentum -- a free bar struck off-centre spins and splits; its fragments carry its momentum\n  {source}");
+    let mut s = Structure::new();
+    let weak = s.material(Material { modulus: E_CONCRETE, compression: 1.0, tension: 1.0, shear: 1.0 });
+    let (ma, mb, half) = (100.0, 300.0, 0.25);
+    let a = s.chunk("bar-a", [-half, 0.0, 0.0], [half; 3], ma);
+    let b = s.chunk("bar-b", [half, 0.0, 0.0], [half; 3], mb);
+    s.rect_bond(a, b, [0.0, 0.0, 0.0], X, Y, 2.0 * half, Z, 2.0 * half, weak);
+    s.linear_damping = Some(0.0);
+    let mut world = stage::build(&s);
+    let (m, r, v) = (20.0, 0.1, 10.0);
+    // Along +z into B's face, 0.15 m beyond B's centre: off the bar's centre of
+    // mass (x = 0.125) by 0.275 m. Ball and bar fall together from rest.
+    ball(&mut world, 9101, [half + 0.15, 20.0, -1.5], r, m, [0.0, 0.0, v]);
+    let box_i = |mass: f64| mass * (2.0 * half).powi(2) / 6.0; // a cube about any axis: m (a^2 + a^2) / 12
+    // (horizontal momentum x, z; angular momentum about the system's centre of mass, y)
+    let measure = |w: &World| -> Option<([f64; 2], f64, usize)> {
+        let snaps = w.body_snapshots().ok()?;
+        let ballb = snaps.iter().find(|b| b.entity_id == 9101)?;
+        let bodies = native_bodies(w);
+        let mut items: Vec<(f64, V3, V3, f64)> = Vec::new(); // mass, centre of mass, velocity, I_yy omega_y
+        let omega = |id: usize| w.native_chunk_body_snapshots().ok().and_then(|s| s.iter().filter(|b| !b.kinematic).nth(id).map(|b| b.angular_velocity.y as f64)).unwrap_or(0.0);
+        match bodies.len() {
+            1 => {
+                let (_, vel, pos, _) = bodies[0];
+                // The whole bar: centre of mass at x = 0.125 m on the bar; chunks 0.375 and 0.125 m from it.
+                let i = box_i(ma) + box_i(mb) + ma * 0.375f64.powi(2) + mb * 0.125f64.powi(2);
+                items.push((ma + mb, pos, vel, i * omega(0)));
+            }
+            2 => {
+                // The fragment further along -x is A (they have moved a few mm since the split).
+                let (lo, hi) = if bodies[0].2[0] <= bodies[1].2[0] { (0, 1) } else { (1, 0) };
+                items.push((ma, bodies[lo].2, bodies[lo].1, box_i(ma) * omega(lo)));
+                items.push((mb, bodies[hi].2, bodies[hi].1, box_i(mb) * omega(hi)));
+            }
+            _ => return None,
+        }
+        let bp = [ballb.pose.position.x as f64, ballb.pose.position.y as f64, ballb.pose.position.z as f64];
+        let bv = [ballb.linear_velocity.x as f64, ballb.linear_velocity.y as f64, ballb.linear_velocity.z as f64];
+        items.push((m, bp, bv, 0.4 * m * r * r * ballb.angular_velocity.y as f64));
+        let total: f64 = items.iter().map(|i| i.0).sum();
+        let c = [0, 1, 2].map(|k| items.iter().map(|i| i.0 * i.1[k]).sum::<f64>() / total);
+        let p = [items.iter().map(|i| i.0 * i.2[0]).sum::<f64>(), items.iter().map(|i| i.0 * i.2[2]).sum::<f64>()];
+        // (r x v)_y = r_z v_x - r_x v_z
+        let l = items.iter().map(|i| i.3 + i.0 * ((i.1[2] - c[2]) * i.2[0] - (i.1[0] - c[0]) * i.2[2])).sum::<f64>();
+        Some((p, l, bodies.len()))
+    };
+    let mut before = None;
+    let mut broken_at = None;
+    let mut after = None;
+    stage::run_ticks(&mut world, 120, |t, _, broken, w| {
+        // Tick 1: both falling, the ball 1.5 m short of the bar.
+        if t == 1 {
+            before = measure(w);
+        }
+        if broken_at.is_none() && !broken.is_empty() {
+            broken_at = Some(t);
+        }
+        if let Some(bt) = broken_at {
+            if t == bt + 3 {
+                after = measure(w);
+                return true;
+            }
+        }
+        false
+    });
+    let (Some((p0, l0, n0)), Some((p1, l1, n1))) = (before, after) else {
+        println!("  no split measured (before {before:?}, broke at {broken_at:?}, after {after:?})");
+        row(config, "split-momentum", "the bar splits", "1 = two bodies", source, "1=yes", 1.0, f64::NAN, 0.0, 1.0, expected, out);
+        return;
+    };
+    println!("  before: {n0} body + ball, p ({:.3}, {:.3}) N s, L {:.4} N m s; split at tick {broken_at:?}; after: {n1} bodies + ball, p ({:.3}, {:.3}), L {:.4}", p0[0], p0[1], l0, p1[0], p1[1], l1);
+    let p_scale = m * v;
+    row(config, "split-momentum", "the bar splits into two bodies", "1 = two bodies", source, "1=yes", 1.0, f64::NAN, yes(n1 == 2), 1.0, expected, out);
+    row(config, "split-momentum", "horizontal momentum through the hit and the split", "sum m v_h = m_ball v", source, "N s", p0[1], p0[1], p1[1], p_scale, expected, out);
+    row(config, "split-momentum", "momentum across the hit (x)", "sum m v_x = 0", source, "N s", 0.0, 0.0, p1[0], p_scale, expected, out);
+    row(config, "split-momentum", "angular momentum about the centre of mass", "sum (I w + m (r - c) x v)_y conserved", source, "N m s", l0, l0, l1, l0.abs().max(1e-9), expected, out);
 }
 
 /// A 60 kg ball at 6 m/s into a 60 kg plug held in a frame by four brittle

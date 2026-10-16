@@ -41,6 +41,7 @@ mod tick_recorder;
 mod flight_recorder;
 mod invariants;
 mod snapshot_builder;
+mod vehicle_input_pacing;
 mod voxel_world;
 
 use std::{
@@ -157,6 +158,55 @@ fn server_wall_clock_us() -> u32 {
     static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let origin = *ORIGIN.get_or_init(Instant::now);
     (origin.elapsed().as_micros() % (1u128 << 32)) as u32
+}
+
+/// Opt-in gameplay (plan milestone 10): loose debris that strikes a player
+/// damages them (`VIBE_CITY_DEBRIS_DAMAGE=1`), server-authoritative, by the
+/// vehicle-strike impulse model. Off by default.
+fn debris_damage() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("VIBE_CITY_DEBRIS_DAMAGE")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    })
+}
+
+/// Opt-in gameplay (plan milestone 10): destruction chunks block hitscan
+/// shots (`VIBE_CITY_CHUNKS_BLOCK_SHOTS=1`). Off by default.
+fn chunks_block_shots() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("VIBE_CITY_CHUNKS_BLOCK_SHOTS")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    })
+}
+
+/// `VIBE_VEHICLE_TAPE=1`: record every driven car's per-tick input and state
+/// for the vehicle netcode replay (`/city-vehicle-tape`). Measurement only.
+fn vehicle_tape() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VIBE_VEHICLE_TAPE").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// `VIBE_VEHICLE_INPUT_PACING=1`: a driver's inputs are queued in order,
+/// never collapsed, and the client paces them to a jitter-derived queue depth
+/// the server reports (`vehicle_input_pacing`). Off by default.
+fn vehicle_input_pacing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VIBE_VEHICLE_INPUT_PACING").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// Frames of each driven car's tape kept (two minutes at 60 Hz).
+const VEHICLE_TAPE_FRAMES: usize = 7_200;
+
+/// City wire 4: other players' cars, chassis and wheels, are bodies of the
+/// per-player stream rather than every-tick snapshot records and rig
+/// packets (`VIBE_PP_CARS=0` turns it off). Wire 4 only.
+fn per_player_cars() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VIBE_PP_CARS").map_or(true, |value| value != "0"))
 }
 
 fn rifle_damage(zone: HitZone) -> u8 {
@@ -517,6 +567,9 @@ struct CityStatsSnapshot {
     packets_per_sec: u64,
     records_per_sec: u64,
     bytes_per_sec: u64,
+    /// Wire 4: car chassis records sent so far, and their bytes.
+    pp_car_records: u64,
+    pp_car_bytes: u64,
     topo_seq: u32,
     baseline_id: u16,
     min_body_y: f32,
@@ -640,6 +693,8 @@ impl MatchTimingStats {
 #[derive(Default)]
 struct MatchSnapshotStats {
     bytes_per_client: RollingSamples,
+    /// Car rig bytes queued per client per snapshot tick.
+    rig_bytes_per_client: RollingSamples,
     bytes_per_tick: RollingSamples,
     players_per_client: RollingSamples,
     dynamic_bodies_per_client: RollingSamples,
@@ -688,6 +743,20 @@ struct MatchNetworkSnapshot {
     dropped_outbound_packets: u64,
     dropped_outbound_snapshots: u64,
     snapshot_bytes_per_client: SummaryStatsSnapshot,
+    #[serde(default)]
+    rig_bytes_per_client: SummaryStatsSnapshot,
+    /// Driven-car ticks whose input queue was empty (the last input repeated)
+    /// and inputs dropped by collapsing a backlog to its newest: each is a
+    /// tick the driver's prediction applied an input the server did not.
+    #[serde(default)]
+    vehicle_input_starved: u64,
+    #[serde(default)]
+    vehicle_inputs_collapsed: u64,
+    /// Inputs a driven car never applied (gaps in the applied sequence),
+    /// whatever dropped them: collapsed, rejected as overtaken, or lost.
+    /// Comparable with vehicle input pacing on and off.
+    #[serde(default)]
+    vehicle_inputs_skipped: u64,
     snapshot_bytes_per_tick: SummaryStatsSnapshot,
     snapshot_players_per_client: SummaryStatsSnapshot,
     snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot,
@@ -1037,6 +1106,12 @@ struct AppState {
     next_player_id: AtomicU32,
     verifier: SpacetimeVerifier,
     cert_hash_hex: String,
+    /// Whether `/session-config` publishes `cert_hash_hex` for pinning.
+    /// `WT_ADVERTISE_CERT_HASH=0` with a CA-signed certificate makes
+    /// browsers validate it normally: they apply the pinning API's 14-day
+    /// validity limit to any certificate they are given a hash for, so a
+    /// 90-day CA certificate (e.g. `tailscale cert`) fails when pinned.
+    advertise_cert_hash: bool,
     wt_base_url: String,
     strict_snapshot_datagrams: bool,
     respawn_delay_ms: u32,
@@ -1143,6 +1218,8 @@ enum MatchEvent {
     /// Re-apply a recorded city event (`vl repro`): meteor, shot, demolish, reset.
     ReplayEvent { event: serde_json::Value, reply: tokio::sync::oneshot::Sender<Result<String, String>> },
     GarageDebug { car: u32, reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, (StatusCode, String)>> },
+    /// `VIBE_VEHICLE_TAPE=1`: a car's recorded drive (`record_vehicle_tapes`).
+    VehicleTape { car: u32, reply: tokio::sync::oneshot::Sender<serde_json::Value> },
     GarageBombardment { request: garage_bombardment::Request, reply: tokio::sync::oneshot::Sender<Result<garage_bombardment::Status, (StatusCode, String)>> },
     TuneGarageVehicle {
         expected_asset_hash: String,
@@ -1185,6 +1262,7 @@ impl MatchEvent {
             MatchEvent::ReplayEvent { .. } => "replay_event",
             MatchEvent::CurrentTick { .. } => "current_tick",
             MatchEvent::GarageDebug { .. } => "garage_debug",
+            MatchEvent::VehicleTape { .. } => "vehicle_tape",
             MatchEvent::GarageBombardment { .. } => "garage_bombardment",
             MatchEvent::TuneGarageVehicle { .. } => "tune_garage_vehicle",
             MatchEvent::PublishVehicle { .. } => "publish_vehicle",
@@ -1232,10 +1310,15 @@ struct PlayerRuntime {
     respawn_at_ms: Option<u32>,
     /// The snapshot selection's memory of this recipient (see snapshot_builder).
     snapshot_interest: snapshot_builder::RecipientInterest,
+    /// Per car in this recipient's interest, the tick its rig was last sent
+    /// (`broadcast_snapshot`: whole on entry, then on change or refresh).
+    rig_sent: HashMap<u32, u32>,
     visible_batteries: HashSet<u32>,
     battery_full_resync_pending: bool,
     /// When this player's own energy is next worth sending.
     energy_gate: energy_stream::EnergySendGate,
+    /// Input arrival lateness, for the paced vehicle queue's target depth.
+    input_jitter: vehicle_input_pacing::ArrivalJitter,
 }
 
 type DynamicBodyMetaRuntime = snapshot_builder::BodyMeta;
@@ -1316,6 +1399,18 @@ struct MatchState {
     bombardment: garage_bombardment::Bombardment,
     /// Detached-part streams of custom vehicles, by vehicle id.
     rig_streams: HashMap<u32, vehicle_assets::RigStream>,
+    /// Each car's detached parts as read this tick (wire 4 reads them for its
+    /// debris bodies before the snapshot does): (tick, id -> parts).
+    detached_parts: (u32, HashMap<u32, Vec<(u16, [f32; 3], [f32; 4])>>),
+    /// Driven-car input pipeline counters (`MatchNetworkStats`).
+    vehicle_input_starved: u64,
+    vehicle_inputs_collapsed: u64,
+    vehicle_inputs_skipped: u64,
+    /// `VIBE_VEHICLE_TAPE=1`: per driven car, this tick's applied input
+    /// (tick, input, queue depth before it, driver), then each tick's frame
+    /// of input and post-step state (`/city-vehicle-tape`).
+    vehicle_tape_inputs: HashMap<u32, (u32, InputCmd, usize, u32)>,
+    vehicle_tapes: HashMap<u32, std::collections::VecDeque<serde_json::Value>>,
     custom_vehicles: HashMap<u32, Arc<vehicle_assets::DrivableVehicle>>,
     /// The city's destructible cars (city_fleet), respawned on a city reset.
     fleet: Option<Arc<city_fleet::Fleet>>,
@@ -1514,6 +1609,7 @@ pub async fn main() -> Result<()> {
                     .unwrap_or_else(|_| "https://maincloud.spacetimedb.com".to_string()),
             },
             cert_hash_hex,
+            advertise_cert_hash: std::env::var("WT_ADVERTISE_CERT_HASH").map_or(true, |v| v != "0"),
             wt_base_url,
             strict_snapshot_datagrams,
             respawn_delay_ms,
@@ -1645,6 +1741,7 @@ pub async fn main() -> Result<()> {
         .route("/city-demolish/:match_id", post(city_demolish_handler))
         .route("/city-meteor/:match_id", post(city_meteor_handler))
         .route("/city-vehicle-debug/:match_id", get(city_vehicle_debug_handler))
+        .route("/city-vehicle-tape/:match_id", get(city_vehicle_tape_handler))
         .route("/match-stats/:match_id/ticks", get(recent_ticks_handler))
         .route("/match-stats/:match_id/replay-event", post(replay_event_handler))
         .route("/match-stats/:match_id/tick", get(current_tick_handler))
@@ -2277,7 +2374,7 @@ async fn session_config_handler(
     };
     let config = SessionConfig {
         url: format!("{}/game", state.inner.wt_base_url),
-        server_certificate_hash_hex: state.inner.cert_hash_hex.clone(),
+        server_certificate_hash_hex: if state.inner.advertise_cert_hash { state.inner.cert_hash_hex.clone() } else { String::new() },
         match_id: query.match_id,
         sim_hz: state.inner.physics.sim_hz(),
         snapshot_hz: state.inner.physics.snapshot_hz(),
@@ -2850,6 +2947,22 @@ async fn city_vehicle_debug_handler(
     tokio::time::timeout(Duration::from_secs(3),response).await
         .map_err(|_|(StatusCode::GATEWAY_TIMEOUT,"Debug readback timed out.".into()))?
         .map_err(|_|(StatusCode::SERVICE_UNAVAILABLE,"The city has ended.".into()))?.map(Json)
+}
+
+/// A city car's recorded drive (`VIBE_VEHICLE_TAPE=1`): per tick its applied
+/// input and state after the step, for the vehicle netcode replay.
+async fn city_vehicle_tape_handler(
+    State(state): State<SharedAppState>, Path(match_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<GarageDebugQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    if !city::is_city_match(&match_id) { return Err((StatusCode::BAD_REQUEST, "not a city match".into())); }
+    let handle = find_match(&state, &match_id).await.ok_or((StatusCode::NOT_FOUND, "The city is not running.".into()))?;
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle.tx.send(MatchEvent::VehicleTape { car: city_fleet::FIRST_ID + query.car.unwrap_or(0), reply })
+        .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The city has ended.".into()))?;
+    tokio::time::timeout(Duration::from_secs(5), response).await
+        .map_err(|_| (StatusCode::GATEWAY_TIMEOUT, "Tape readback timed out.".into()))?
+        .map(Json).map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "The city has ended.".into()))
 }
 
 /// The tick flight recorder's recent records (`tick_recorder`), one JSON
@@ -3727,6 +3840,12 @@ async fn run_match_loop(
         garage,
         bombardment: Default::default(),
         rig_streams: HashMap::new(),
+        detached_parts: (u32::MAX, HashMap::new()),
+        vehicle_input_starved: 0,
+        vehicle_inputs_collapsed: 0,
+        vehicle_inputs_skipped: 0,
+        vehicle_tape_inputs: HashMap::new(),
+        vehicle_tapes: HashMap::new(),
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -4102,6 +4221,15 @@ impl MatchState {
                     flight_recorder::write_bundle(dir, self.repro_bundle("report", &reason));
                 }
             }
+            MatchEvent::VehicleTape { car, reply } => {
+                let frames: Vec<serde_json::Value> = self.vehicle_tapes.get(&car).map(|t| t.iter().cloned().collect()).unwrap_or_default();
+                let vehicle = self.custom_vehicles.get(&car).map(|v| serde_json::to_value(&v.vehicle).unwrap_or_default());
+                let _ = reply.send(serde_json::json!({
+                    "car": car, "handle": self.vehicle_handles.get(&car).copied(), "vehicle": vehicle, "frames": frames,
+                    "inputStarved": self.vehicle_input_starved, "inputsCollapsed": self.vehicle_inputs_collapsed,
+                    "inputsSkipped": self.vehicle_inputs_skipped,
+                }));
+            }
             MatchEvent::GarageDebug {car,reply} => {
                 if !reply.is_closed() {
                     let result=if self.garage.as_ref().is_some_and(|session|!session.closing()) || self.fleet.is_some() {
@@ -4110,6 +4238,7 @@ impl MatchState {
                             // Which car this is, and its network handle (the client's vehicle id).
                             debug["car"]=(car-garage::VEHICLE_ID).into();
                             debug["handle"]=self.vehicle_handles.get(&car).copied().into();
+                            debug["tick"]=self.server_tick.into();
                             // What interest sees: the snapshot pose and the box the loose parts span.
                             let parts=self.arena.vehicle_detached_parts(car);
                             debug["detachedParts"]=parts.len().into();
@@ -4187,9 +4316,11 @@ impl MatchState {
                         spawn_protection_ends_at_tick: 0,
                         respawn_at_ms: None,
                         snapshot_interest: Default::default(),
+                        rig_sent: HashMap::new(),
                         visible_batteries: HashSet::new(),
                         battery_full_resync_pending: true,
                         energy_gate: crate::energy_stream::EnergySendGate::default(),
+                        input_jitter: Default::default(),
                     },
                 );
                 self.activate_spawn_protection(conn.player_id);
@@ -4227,10 +4358,19 @@ impl MatchState {
                     // client never had a ledger, so it never sees a sequence
                     // gap either -- it renders the intact manifest forever and
                     // reports nothing wrong. Enrol it for repair instead.
-                    let mut delivered =
-                        try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
-                    if let Some(lanes) = city.full_lane_map() {
-                        delivered = try_queue_packet(&conn.tx, lanes, &self.io) && delivered;
+                    let mut delivered = true;
+                    if city.is_per_player() {
+                        // Wire 4: the per-player bootstrap, and this client's
+                        // stream state started to match it.
+                        for packet in city.per_player_join(u64::from(conn.player_id), self.server_tick) {
+                            delivered = try_queue_packet(&conn.tx, packet, &self.io) && delivered;
+                        }
+                    } else {
+                        delivered =
+                            try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
+                        if let Some(lanes) = city.full_lane_map() {
+                            delivered = try_queue_packet(&conn.tx, lanes, &self.io) && delivered;
+                        }
                     }
                     // The manifest is NOT sent here, although the client
                     // cannot use anything above until it has one. It fetches it
@@ -4326,6 +4466,7 @@ impl MatchState {
                     return;
                 };
                 let is_dead = self.arena.player_is_dead(player_id);
+                let in_vehicle = self.arena.is_player_in_vehicle(player_id);
                 match packet {
                     ClientPacket::InputBundle(cmds) => {
                         // Track inter-arrival timing for jitter measurement
@@ -4343,7 +4484,7 @@ impl MatchState {
                         if runtime.bundle_sizes.len() > 60 {
                             runtime.bundle_sizes.pop_front();
                         }
-                        enqueue_inputs(runtime, cmds);
+                        receive_inputs(runtime, cmds, vehicle_input_pacing(), in_vehicle, self.server_tick);
                     }
                     ClientPacket::Fire(cmd) => {
                         if is_dead {
@@ -4475,6 +4616,11 @@ impl MatchState {
                             city.restate_bodies(&bodies);
                         }
                     }
+                    ClientPacket::CityPerPlayerAck { newest, mask, events_through, missing } => {
+                        if let Some(city) = self.city.as_mut() {
+                            city.per_player_ack(u64::from(player_id), newest, mask, events_through, &missing);
+                        }
+                    }
                     ClientPacket::CityManifestRequest => {
                         // 1.8 MB down the ordered reliable lane, so it is sent
                         // to the one client that could not get it any other way
@@ -4498,7 +4644,19 @@ impl MatchState {
                         last_topo_seq,
                         structures,
                     } => {
-                        if let Some(city) = self.city.as_mut() {
+                        if let Some(city) = self.city.as_mut().filter(|city| city.is_per_player()) {
+                            // Wire 4 has one repair: restart the client's
+                            // stream from a fresh bootstrap.
+                            info!(
+                                match_id = %self.id,
+                                player_id,
+                                last_topo_seq,
+                                "city per-player resync requested; sending bootstrap"
+                            );
+                            for packet in city.per_player_join(u64::from(player_id), self.server_tick) {
+                                let _ = try_queue_packet(&runtime.tx, packet, &self.io);
+                            }
+                        } else if let Some(city) = self.city.as_mut() {
                             if structures.is_empty() {
                                 info!(
                                     match_id = %self.id,
@@ -4667,9 +4825,29 @@ impl MatchState {
                     if index > 0 && runtime.pending_inputs.is_empty() {
                         break;
                     }
-                    applied.push(take_input_for_tick_with_vehicle_catchup(
-                        runtime, in_vehicle,
-                    ));
+                    let depth = runtime.pending_inputs.len();
+                    let previous = runtime.last_ack_input_seq;
+                    let collapse = in_vehicle && !vehicle_input_pacing();
+                    if in_vehicle && vehicle_input_pacing() && index == 0 {
+                        drop_stale_vehicle_inputs(runtime);
+                    }
+                    let input = take_input_for_tick_with_vehicle_catchup(runtime, collapse);
+                    if in_vehicle {
+                        if depth == 0 {
+                            self.vehicle_input_starved += 1;
+                        } else if collapse && depth >= VEHICLE_INPUT_CATCHUP_THRESHOLD {
+                            self.vehicle_inputs_collapsed += (depth - 1) as u64;
+                        }
+                        if depth > 0 {
+                            self.vehicle_inputs_skipped += inputs_skipped(previous, input.seq);
+                        }
+                        if vehicle_tape() {
+                            if let Some(vehicle) = self.arena.player_vehicle_id(player_id) {
+                                self.vehicle_tape_inputs.insert(vehicle, (self.server_tick, input.clone(), depth, player_id));
+                            }
+                        }
+                    }
+                    applied.push(input);
                 }
             }
             if applied.is_empty() {
@@ -4908,6 +5086,11 @@ impl MatchState {
         for player_id in self.arena.apply_vehicle_player_collisions() {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
         }
+        if debris_damage() {
+            for player_id in self.arena.apply_debris_player_collisions() {
+                self.kill_player_with_cause(player_id, server_time_ms, DeathCause::HpDamage);
+            }
+        }
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);
         self.snapshot_stats
@@ -5112,14 +5295,23 @@ impl MatchState {
             let Some(city) = self.city.as_mut() else {
                 continue;
             };
-            let bootstrap = city.bootstrap(self.server_tick);
-            city.note_client_bootstrap(u64::from(player_id));
-            let lanes = city.full_lane_map();
-            // The datagram half: every lane restates absolutely over the
-            // coming spans, so poses match the freshly-bootstrapped ledger.
-            city.begin_join_restate();
-            let queued = try_queue_packet(&runtime.tx, bootstrap, &self.io)
-                && lanes.is_none_or(|lanes| try_queue_packet(&runtime.tx, lanes, &self.io));
+            let queued = if city.is_per_player() {
+                // Wire 4: a fresh bootstrap restarts the client's stream.
+                city.per_player_join(u64::from(player_id), self.server_tick)
+                    .into_iter()
+                    .fold(true, |queued, packet| {
+                        try_queue_packet(&runtime.tx, packet, &self.io) && queued
+                    })
+            } else {
+                let bootstrap = city.bootstrap(self.server_tick);
+                city.note_client_bootstrap(u64::from(player_id));
+                let lanes = city.full_lane_map();
+                // The datagram half: every lane restates absolutely over the
+                // coming spans, so poses match the freshly-bootstrapped ledger.
+                city.begin_join_restate();
+                try_queue_packet(&runtime.tx, bootstrap, &self.io)
+                    && lanes.is_none_or(|lanes| try_queue_packet(&runtime.tx, lanes, &self.io))
+            };
             if queued {
                 self.city_desync_repairs += 1;
                 info!(
@@ -5547,7 +5739,11 @@ impl MatchState {
                     );
                 }
             }
+            if send_due && city.is_per_player() {
+                self.city_per_player_sends(&mut city, cameras.clone(), staged_tick);
+            }
             let v2_pose_stream = v3_datagrams.is_empty()
+                && !city.is_per_player()
                 && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
             if send_due && v2_pose_stream {
                 let encode_started = std::time::Instant::now();
@@ -5655,6 +5851,75 @@ impl MatchState {
             }
         }
         (!packets.is_empty()).then_some(packets)
+    }
+
+    /// Wire 4: one send tick of the per-player stream -- the shared half,
+    /// then each client's keyframe datagrams under its link's rate plan (as
+    /// `city_datagrams_for` takes it for v2, against the strategy's own
+    /// ceiling). The order is `netlab2 city`'s `run_city_stream`. Returns the
+    /// datagrams the outbound queues dropped.
+    fn city_per_player_sends(
+        &mut self,
+        city: &mut city::CityRuntime,
+        cameras: Vec<(u32, vibe_land_destruction::types::Camera)>,
+        tick: u32,
+    ) -> u64 {
+        use vibe_land_destruction::replication::SendBudget;
+        city.per_player_begin_send(tick);
+        let send_interval_s = f64::from(city.send_interval_ticks().max(1)) / f64::from(SIM_HZ);
+        let ceiling = city.per_player_ceiling_bytes();
+        let mut drops = 0u64;
+        // Every client's plan first (each link is its own), then one batched
+        // send (`send_threads` run the clients at once), then each result
+        // onto its link.
+        let mut requests: Vec<(u64, vibe_land_destruction::types::Camera, Option<u32>, SendBudget)> = Vec::new();
+        let mut plans: Vec<(u32, link_rate::SendPlan)> = Vec::new();
+        for (player_id, camera) in cameras {
+            let client = u64::from(player_id);
+            let plan = match self.players.get_mut(&player_id) {
+                Some(runtime) => match runtime.link.as_ref().and_then(|link| link.sample()) {
+                    Some(sample) => {
+                        city.note_link_rtt(client, sample.rtt_us as f32 / 1000.0);
+                        runtime.city_rate.plan(sample, send_interval_s, ceiling)
+                    }
+                    None => link_rate::SendPlan::Full,
+                },
+                None => continue,
+            };
+            let budget = match plan {
+                link_rate::SendPlan::Full => SendBudget::Full,
+                link_rate::SendPlan::Limited { allowance_bytes, sends } => {
+                    SendBudget::Limited { allowance_bytes, sends }
+                }
+                link_rate::SendPlan::Skip => SendBudget::Skip,
+            };
+            let own_car = self
+                .arena
+                .player_vehicle_id(player_id)
+                .and_then(|id| self.vehicle_handles.get(&id))
+                .map(|&handle| vibe_land_perplayer::wire::VEHICLE_STRUCTURE_BASE + u32::from(handle));
+            requests.push((client, camera, own_car, budget));
+            plans.push((player_id, plan));
+        }
+        let sends = city.per_player_sends(&requests, tick);
+        for ((player_id, plan), send) in plans.into_iter().zip(sends) {
+            let bytes: usize = send.packets.iter().map(|packet| packet.bytes.len()).sum();
+            let Some(runtime) = self.players.get_mut(&player_id) else {
+                continue;
+            };
+            if plan == link_rate::SendPlan::Skip {
+                runtime.city_rate.sent_topology(0);
+            } else {
+                runtime.city_rate.sent(bytes, plan);
+            }
+            for packet in send.packets {
+                let unreliable = packet.lane == vibe_land_destruction::replication::Lane::Datagram;
+                if !try_queue_packet_on_lane(&runtime.tx, packet.bytes, unreliable, &self.io) {
+                    drops += 1;
+                }
+            }
+        }
+        drops
     }
 
     fn tick_city(&mut self, dt: f32) {
@@ -5805,19 +6070,29 @@ impl MatchState {
                     // The client ledger still describes the demolished city and
                     // no incremental topology event can say "start over", so
                     // every client needs a fresh bootstrap.
-                    let bootstrap = city.bootstrap(self.server_tick);
-                    // Wire v3: the rebuilt encoder restarts lane ids and its
-                    // epoch, so a bootstrap alone leaves every client holding
-                    // a lane map for a world that no longer exists. Send the
-                    // new map beside it and restate every body, exactly as
-                    // join and resync do.
-                    let lanes = city.full_lane_map();
-                    city.begin_join_restate();
-                    for runtime in self.players.values() {
-                        let _ =
-                            try_queue_packet(&runtime.tx, bootstrap.clone(), &self.io);
-                        if let Some(lanes) = lanes.clone() {
-                            let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
+                    if city.is_per_player() {
+                        // Wire 4: the rebuilt stream knows no client yet;
+                        // each joins it afresh.
+                        for (player_id, runtime) in self.players.iter() {
+                            for packet in city.per_player_join(u64::from(*player_id), self.server_tick) {
+                                let _ = try_queue_packet(&runtime.tx, packet, &self.io);
+                            }
+                        }
+                    } else {
+                        let bootstrap = city.bootstrap(self.server_tick);
+                        // Wire v3: the rebuilt encoder restarts lane ids and its
+                        // epoch, so a bootstrap alone leaves every client holding
+                        // a lane map for a world that no longer exists. Send the
+                        // new map beside it and restate every body, exactly as
+                        // join and resync do.
+                        let lanes = city.full_lane_map();
+                        city.begin_join_restate();
+                        for runtime in self.players.values() {
+                            let _ =
+                                try_queue_packet(&runtime.tx, bootstrap.clone(), &self.io);
+                            if let Some(lanes) = lanes.clone() {
+                                let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
+                            }
                         }
                     }
                     tracing::info!(
@@ -5843,7 +6118,7 @@ impl MatchState {
         // 60 Hz: destruction step + reliable topology/baseline broadcast
         // (byte-identical for every client — encode once, clone the buffer).
         let city_step_started = std::time::Instant::now();
-        let (reliable, staged) = if observer_pipeline_enabled() {
+        let (mut reliable, staged) = if observer_pipeline_enabled() {
             city.step_stage(
                 self.server_tick,
                 dt,
@@ -5863,6 +6138,58 @@ impl MatchState {
         };
         let city_step_wall_ms = city_step_started.elapsed().as_secs_f32() * 1000.0;
         city.record_tick_sample(city_step_wall_ms);
+        // Wire 4: the cars' detached parts are bodies of the per-player
+        // stream (predicted, error-driven, under each client's budget), not
+        // rig-packet poses. Read once; the snapshot reuses them.
+        if staged.is_none() && city.is_per_player() {
+            let mut cars = Vec::new();
+            let mut read = HashMap::new();
+            let mut ids: Vec<u32> = self.custom_vehicles.keys().copied().collect();
+            ids.sort_unstable();
+            for id in ids {
+                let Some(&handle) = self.vehicle_handles.get(&id) else { continue };
+                if !city.per_player_vehicle_registered(handle, id) {
+                    let parts = vehicle_assets::per_player_part_models(&self.custom_vehicles[&id].geometry);
+                    city.per_player_register_vehicle(handle, id, parts);
+                }
+                let bodies = self.arena.vehicle_detached_bodies(id);
+                read.insert(id, bodies.iter().map(|p| (p.part, p.position, p.rotation)).collect());
+                cars.push((handle, bodies));
+            }
+            self.detached_parts = (self.server_tick, read);
+            reliable.extend(city.per_player_ingest_vehicles(self.server_tick, &cars));
+            // The cars themselves, chassis and wheels (`VIBE_PP_CARS=0`: by
+            // snapshot and rig packets, as on wire 2).
+            if per_player_cars() {
+                let custom = &self.custom_vehicles;
+                let inputs: Vec<vibe_land_destruction::per_player::CarInput> = self
+                    .arena
+                    .vehicle_stream_states(|id| custom.get(&id).map(|v| v.geometry.neutral_jounce))
+                    .into_iter()
+                    .filter_map(|s| {
+                        let handle = *self.vehicle_handles.get(&s.id)?;
+                        let geometry = &custom.get(&s.id)?.geometry;
+                        Some(vibe_land_destruction::per_player::CarInput {
+                            handle,
+                            position: s.position,
+                            rotation: s.rotation,
+                            linear_velocity: s.linear_velocity,
+                            angular_velocity: s.angular_velocity,
+                            wheels: std::array::from_fn(|i| vibe_land_perplayer::wire::Wheel {
+                                travel: s.wheels[i][0],
+                                steer: s.wheels[i][1],
+                                angle: s.wheels[i][2],
+                                rate: s.wheel_rates[i],
+                                grounded: s.wheels[i][3] > 0.5,
+                            }),
+                            wheel_radius: geometry.wheel_radius(),
+                            radius: geometry.reach(),
+                        })
+                    })
+                    .collect();
+                city.per_player_ingest_cars(self.server_tick, &inputs);
+            }
+        }
         // A staged tick's datagrams do not exist yet — its live-lane ingest
         // runs at flush, which drains them there.
         let v3_datagrams = if staged.is_some() {
@@ -5928,10 +6255,18 @@ impl MatchState {
         }
         // Chunk stream cadence (wire v2 only): shared encode once, per-client
         // interest + ceiling selection, own datagram sequence space per client.
+        let mut encode_ms_this_tick = 0.0_f32;
+        // Wire 4 (a staged tick sends at its flush, as v2 does).
+        if send_due && staged.is_none() && city.is_per_player() {
+            let encode_started = std::time::Instant::now();
+            outbound_drops += self.city_per_player_sends(&mut city, cameras.clone(), self.server_tick);
+            encode_ms_this_tick = encode_started.elapsed().as_secs_f32() * 1000.0;
+            city.record_encode_timings(0.0, encode_ms_this_tick);
+        }
         let v2_pose_stream = staged.is_none()
             && v3_datagrams.is_empty()
+            && !city.is_per_player()
             && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
-        let mut encode_ms_this_tick = 0.0_f32;
         if send_due && v2_pose_stream {
             // Timed because it was the single largest unmeasured cost: at 10k
             // bodies the tick was 44 ms while the city step and physx step
@@ -6034,6 +6369,19 @@ impl MatchState {
             bond_utilisation_max = stats.bond_utilisation_max,
             "city stream"
         );
+        if let Some(pp) = city.per_player_stats() {
+            info!(
+                match_id = %self.id,
+                fractures = pp.fractures,
+                removed_chunks = pp.removed_chunks,
+                derive_mismatches = pp.derive_mismatches,
+                keyframes_sent = pp.keyframes_sent,
+                keyframes_lost = pp.keyframes_lost,
+                delta_records = pp.delta_records,
+                heartbeats = pp.heartbeats,
+                "city per-player stream (wire 4)"
+            );
+        }
     }
 
     fn send_server_latency_pings(&mut self) {
@@ -6269,6 +6617,10 @@ impl MatchState {
                     .dropped_outbound_snapshots
                     .load(Ordering::Relaxed),
                 snapshot_bytes_per_client: self.snapshot_stats.bytes_per_client.snapshot(),
+                rig_bytes_per_client: self.snapshot_stats.rig_bytes_per_client.snapshot(),
+                vehicle_input_starved: self.vehicle_input_starved,
+                vehicle_inputs_collapsed: self.vehicle_inputs_collapsed,
+                vehicle_inputs_skipped: self.vehicle_inputs_skipped,
                 snapshot_bytes_per_tick: self.snapshot_stats.bytes_per_tick.snapshot(),
                 snapshot_players_per_client: self.snapshot_stats.players_per_client.snapshot(),
                 snapshot_dynamic_bodies_per_client: self
@@ -6433,6 +6785,8 @@ impl MatchState {
                     packets_per_sec: packets,
                     records_per_sec: records,
                     bytes_per_sec: bytes,
+                    pp_car_records: city.per_player_stats().map_or(0, |s| s.car_records),
+                    pp_car_bytes: city.per_player_stats().map_or(0, |s| s.car_bytes),
                     topo_seq: encoder.topo_seq,
                     baseline_id: encoder.baseline_id,
                     min_body_y: stats.min_body_y,
@@ -6946,12 +7300,24 @@ impl MatchState {
                 continue;
             };
 
-            let world_toi = self.arena.cast_static_world_ray(
+            let static_toi = self.arena.cast_static_world_ray(
                 origin,
                 queued.cmd.dir,
                 HITSCAN_MAX_DISTANCE_M,
                 Some(queued.player_id),
             );
+            // Opt-in (VIBE_CITY_CHUNKS_BLOCK_SHOTS=1): destruction chunks,
+            // standing or flying, stop shots like the static world (plan
+            // milestone 10). Off, shots pass through them as before.
+            let chunk_toi = if chunks_block_shots() {
+                self.arena.cast_chunk_ray(origin, queued.cmd.dir, HITSCAN_MAX_DISTANCE_M)
+            } else {
+                None
+            };
+            let world_toi = match (static_toi, chunk_toi) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 queued.cmd.dir,
@@ -7322,21 +7688,65 @@ impl MatchState {
         }
     }
 
+    /// `VIBE_VEHICLE_TAPE=1`: this tick's frame for each driven car, its
+    /// applied input and its state after the step, in the vehicle replay's
+    /// format (client/netlab/vehicle/replay.ts) plus the queue depth.
+    fn record_vehicle_tapes(&mut self) {
+        if !vehicle_tape() || self.vehicle_tape_inputs.is_empty() {
+            return;
+        }
+        let custom = &self.custom_vehicles;
+        let states = self.arena.vehicle_stream_states(|id| Some(custom.get(&id).map_or(0.0, |v| v.geometry.neutral_jounce)));
+        // The city's chunks released this step: a replay drops their
+        // colliders when a client would have learned of it.
+        let released: Vec<[u32; 2]> = self.city.as_ref().map_or_else(Vec::new, |c| c.released_chunks().iter().map(|&(s, n)| [s, n]).collect());
+        for (vehicle, (tick, input, depth, player)) in self.vehicle_tape_inputs.drain() {
+            let Some(s) = states.iter().find(|s| s.id == vehicle) else { continue };
+            let tape = self.vehicle_tapes.entry(vehicle).or_default();
+            tape.push_back(serde_json::json!({
+                "tick": tick,
+                "depth": depth,
+                "input": {"seq": input.seq, "clientTick": tick, "moveX": input.move_x, "moveY": input.move_y,
+                    "buttons": input.buttons, "yaw": input.yaw, "pitch": input.pitch},
+                "sample": {"serverTimeUs": f64::from(tick) * f64::from(1_000_000 / SIM_HZ as u32),
+                    "position": s.position, "quaternion": s.rotation, "linearVelocity": s.linear_velocity,
+                    "angularVelocity": s.angular_velocity, "wheelData": [0, 0, 0, 0], "driverPlayerId": player, "flags": 0},
+                "wheels": s.wheels,
+                "released": released,
+            }));
+            while tape.len() > VEHICLE_TAPE_FRAMES {
+                tape.pop_front();
+            }
+        }
+    }
+
     fn broadcast_snapshot(&mut self) {
+        self.record_vehicle_tapes();
         let snapshot_started = Instant::now();
-        let mut vehicle_rigs: Vec<Vec<u8>> = Vec::new();
+        // Per car: (id, this tick's frame, the whole rig for a client the car
+        // just entered the interest of, built when first needed).
+        let mut vehicle_rigs: Vec<(u32, vehicle_assets::RigFrame, u8, [[f32; 4]; 4], Vec<(u16, [f32; 3], [f32; 4])>)> = Vec::new();
         let mut vehicle_extents: HashMap<u32, ([f32; 3], [f32; 3])> = HashMap::new();
+        let per_player_debris = self.city.as_ref().is_some_and(|city| city.is_per_player());
+        // Wire 4 streams other players' cars (pose and wheels) as bodies.
+        let streamed_cars = per_player_debris && per_player_cars();
         for (id, asset) in &self.custom_vehicles {
             let Some(&handle) = self.vehicle_handles.get(id) else { continue };
             let Some(wheels) = self.arena.vehicle_rig(*id, asset.geometry.neutral_jounce) else { continue };
-            let detached = self.arena.vehicle_detached_parts(*id);
+            let detached = match self.detached_parts.1.get(id).filter(|_| self.detached_parts.0 == self.server_tick) {
+                Some(parts) => parts.clone(),
+                None => self.arena.vehicle_detached_parts(*id),
+            };
             // Each detached pose is its piece's authored car frame, so it
             // lies within a car length of the piece: close enough for interest.
             for (_, p, _) in &detached {
                 let e = vehicle_extents.entry(*id).or_insert((*p, *p));
                 for k in 0..3 { e.0[k] = e.0[k].min(p[k]); e.1[k] = e.1[k].max(p[k]); }
             }
-            vehicle_rigs.extend(self.rig_streams.entry(*id).or_default().packets(self.server_tick, handle, wheels, &detached));
+            // Wire 4 streams the detached parts itself: the rig is the wheels.
+            let detached = if per_player_debris { Vec::new() } else { detached };
+            let frame = self.rig_streams.entry(*id).or_default().frame(self.server_tick, handle, wheels, &detached);
+            vehicle_rigs.push((*id, frame, handle, wheels, detached));
         }
         let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
         // When this tick's state became available: stamped on every SnapshotV2
@@ -7428,15 +7838,20 @@ impl MatchState {
                     None
                 },
             };
-            let Some((packet, selection)) = snapshot_builder::build_recipient_snapshot(
+            let Some((mut packet, selection)) = snapshot_builder::build_recipient_snapshot(
                 &world,
                 &recipient,
                 &mut runtime.snapshot_interest,
                 self.strict_snapshot_datagrams,
-                &snapshot_builder::SnapshotConfig::PRODUCTION,
+                if streamed_cars { &snapshot_builder::SnapshotConfig::PER_PLAYER_CARS } else { &snapshot_builder::SnapshotConfig::PRODUCTION },
             ) else {
                 continue;
             };
+            if vehicle_input_pacing() && self.arena.is_player_in_vehicle(recipient_id) {
+                if let (ServerPacket::SnapshotV2(snapshot), Some(target)) = (&mut packet, runtime.input_jitter.target()) {
+                    snapshot.input_queue = Some((runtime.pending_inputs.len().min(u8::MAX as usize) as u8, target));
+                }
+            }
             let tx = runtime.tx.clone();
             let encoded = encode_server_packet(&packet);
             snapshot_bytes_this_tick += encoded.len();
@@ -7463,7 +7878,39 @@ impl MatchState {
                 recipient_inputs.push(recipient);
             }
             let _ = try_queue_packet(&tx, encoded, &self.io);
-            for rig in &vehicle_rigs {let _ = try_queue_packet(&tx, rig.clone(), &self.io);}
+            // Car rigs: only the cars in this recipient's interest; the whole
+            // rig when one enters it, then a frame when the rig changed or
+            // the cold refresh is due (the client keeps the last rig).
+            let visible = &runtime.snapshot_interest.visible_vehicles;
+            runtime.rig_sent.retain(|car, _| visible.contains(car));
+            let mut rig_bytes = 0usize;
+            // Streamed cars' wheels ride the stream: rigs only for the car
+            // this recipient drives.
+            let own_car = self.arena.player_vehicle_id(recipient_id);
+            for (car, frame, handle, wheels, detached) in &vehicle_rigs {
+                if !visible.contains(car) || (streamed_cars && own_car != Some(*car)) {
+                    continue;
+                }
+                let due = match runtime.rig_sent.get(car) {
+                    None => {
+                        for packet in vehicle_assets::rig_packets_with_parts(self.server_tick, *handle, *wheels, detached) {
+                            rig_bytes += packet.len();
+                            let _ = try_queue_packet(&tx, packet, &self.io);
+                        }
+                        runtime.rig_sent.insert(*car, self.server_tick);
+                        continue;
+                    }
+                    Some(&last) => frame.changed || self.server_tick.wrapping_sub(last) >= snapshot_builder::COLD_VEHICLE_REFRESH_TICKS,
+                };
+                if due {
+                    for packet in &frame.packets {
+                        rig_bytes += packet.len();
+                        let _ = try_queue_packet(&tx, packet.clone(), &self.io);
+                    }
+                    runtime.rig_sent.insert(*car, self.server_tick);
+                }
+            }
+            self.snapshot_stats.rig_bytes_per_client.record(rig_bytes as f32);
         }
         for selection in selections {
             self.note_selection(selection);
@@ -7576,6 +8023,24 @@ fn take_input_for_tick_with_vehicle_catchup(
     take_input_for_tick(runtime)
 }
 
+/// Pacing: before a driven tick, drop the oldest queued inputs beyond what the
+/// queue needs (owner's choice, 2026-10-11).
+fn drop_stale_vehicle_inputs(runtime: &mut PlayerRuntime) {
+    if let Some(target) = runtime.input_jitter.target() {
+        vehicle_input_pacing::drop_stale(&mut runtime.pending_inputs, target as usize);
+    }
+}
+
+/// Inputs between the last applied (`previous`) and the one applied now that
+/// were never applied: 0 when `applied` is the next in sequence.
+fn inputs_skipped(previous: u16, applied: u16) -> u64 {
+    if seq_is_newer(applied, previous) {
+        applied.wrapping_sub(previous) as u64 - 1
+    } else {
+        0
+    }
+}
+
 fn clear_runtime_inputs_for_vehicle_entry(runtime: &mut PlayerRuntime) {
     let ack_seq = runtime
         .last_received_input_seq
@@ -7590,6 +8055,30 @@ fn clear_runtime_inputs_for_vehicle_entry(runtime: &mut PlayerRuntime) {
         yaw: runtime.last_applied_input.yaw,
         pitch: runtime.last_applied_input.pitch,
     };
+}
+
+/// A client's input bundle reached the server before simulating `tick`. With
+/// vehicle pacing on, every input's lateness is measured, and a driver's are
+/// queued in order against the last applied (`vehicle_input_pacing`).
+fn receive_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>, pacing: bool, in_vehicle: bool, tick: u32) {
+    if !pacing {
+        return enqueue_inputs(runtime, cmds);
+    }
+    // One sample a packet: its newest input's lateness is the network's
+    // delay variation. Its older inputs are resends repairing earlier loss;
+    // after an outage they are all late by the outage, one event, not jitter.
+    if let Some(newest) = cmds.iter().map(|c| c.seq).reduce(|a, b| if seq_is_newer(b, a) { b } else { a }) {
+        runtime.input_jitter.observe(newest, tick);
+    }
+    if !in_vehicle {
+        return enqueue_inputs(runtime, cmds);
+    }
+    for cmd in cmds {
+        if runtime.last_received_input_seq.map_or(true, |last| seq_is_newer(cmd.seq, last)) {
+            runtime.last_received_input_seq = Some(cmd.seq);
+        }
+        vehicle_input_pacing::enqueue_ordered(&mut runtime.pending_inputs, runtime.last_ack_input_seq, cmd, MAX_PENDING_INPUTS);
+    }
 }
 
 fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
@@ -7734,6 +8223,8 @@ fn wants_unreliable_delivery(kind: u8) -> bool {
         || kind == PKT_PING
         || kind == PKT_CITY_CHUNKS
         || kind == vibe_land_shared::constants::PKT_CITY_DEBRIS
+        // City wire 4's keyframes: loss is what the client's acks report.
+        || kind == vibe_land_perplayer::wire::PKT_PP_KEYFRAMES
         || kind == vibe_land_shared::constants::PKT_AUDIO_CONTACTS
         // Latest-wins telemetry: a lost frame is replaced a second later, and
         // it must never sit in front of topology on the ordered stream.
@@ -7757,6 +8248,9 @@ fn classify_outbound_delivery(
         return OutboundDelivery::Datagram;
     }
     if kind == vibe_land_shared::constants::PKT_AUDIO_CONTACTS
+        // City wire 4's datagram copies of its events: the reliable stream
+        // carries every one of them too.
+        || kind == vibe_land_perplayer::wire::PKT_PP_EVENTS
         || (is_snapshot_packet_kind(kind) && strict_snapshot_datagrams) {
         return OutboundDelivery::StrictDrop;
     }
@@ -7772,8 +8266,21 @@ fn try_queue_packet(
     telemetry: &MatchIoTelemetry,
 ) -> bool {
     let kind = packet.first().copied().unwrap_or_default();
+    try_queue_packet_on_lane(tx, packet, wants_unreliable_delivery(kind), telemetry)
+}
+
+/// `try_queue_packet` on the lane the sender chose rather than the one its
+/// kind implies: city wire 4 copies reliable events onto the datagram lane
+/// (`vibe_land_destruction::replication::Outgoing::lane`).
+fn try_queue_packet_on_lane(
+    tx: &outbound::Sender,
+    packet: Vec<u8>,
+    unreliable: bool,
+    telemetry: &MatchIoTelemetry,
+) -> bool {
+    let kind = packet.first().copied().unwrap_or_default();
     let is_snapshot = is_snapshot_packet_kind(kind);
-    match tx.enqueue(packet, wants_unreliable_delivery(kind)) {
+    match tx.enqueue(packet, unreliable) {
         outbound::Enqueue::Queued => true,
         outbound::Enqueue::DatagramDropped => {
             telemetry.observe_outbound_drop(is_snapshot);
@@ -7849,7 +8356,7 @@ impl SpacetimeVerifier {
 mod tests {
     use super::{
         classify_outbound_delivery, clear_runtime_inputs_for_vehicle_entry,
-        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, is_snapshot_packet_kind,
+        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, inputs_skipped, receive_inputs, drop_stale_vehicle_inputs, vehicle_input_pacing, is_snapshot_packet_kind,
         parse_respawn_delay_ms, periodic_refresh_due, rifle_damage, server_build_profile,
         strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
         take_input_for_tick_with_vehicle_catchup, try_queue_packet, HitZone, InputCmd,
@@ -8012,10 +8519,143 @@ mod tests {
             spawn_protection_ends_at_tick: 0,
             respawn_at_ms: None,
             snapshot_interest: Default::default(),
+            rig_sent: HashMap::new(),
             visible_batteries: HashSet::new(),
             battery_full_resync_pending: true,
             energy_gate: crate::energy_stream::EnergySendGate::default(),
+            input_jitter: Default::default(),
         }
+    }
+
+    /// A driver's packets, each the newest three inputs (the client's resend
+    /// window), arrive per tick as `arrivals`; returns the input applied each
+    /// tick. Tick 1 is a burst after a delay, as LTE and uneven frames give.
+    /// One driven tick with pacing on, as the match loop runs it.
+    fn paced_vehicle_tick(runtime: &mut PlayerRuntime) -> InputCmd {
+        drop_stale_vehicle_inputs(runtime);
+        take_input_for_tick_with_vehicle_catchup(runtime, false)
+    }
+
+    fn drive_vehicle_ticks(runtime: &mut PlayerRuntime, arrivals: &[Vec<Vec<u16>>], pacing: bool) -> Vec<u16> {
+        let mut applied = Vec::new();
+        for (tick, packets) in arrivals.iter().enumerate() {
+            for packet in packets {
+                receive_inputs(runtime, packet.iter().map(|&seq| input(seq)).collect(), pacing, true, tick as u32);
+            }
+            applied.push(take_input_for_tick_with_vehicle_catchup(runtime, !pacing).seq);
+        }
+        applied
+    }
+
+    #[test]
+    fn a_driven_cars_burst_of_inputs_is_applied_in_order_not_collapsed() {
+        let mut runtime = runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        // Inputs 1..=5, one a frame. Packet 1 arrives on time; 2-5 are held
+        // up and arrive together, overtaking each other.
+        let arrivals = vec![
+            vec![vec![1]],
+            vec![],
+            vec![vec![1, 2, 3], vec![1, 2], vec![2, 3, 4], vec![3, 4, 5]],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+        ];
+        // The driver predicted each input applied once, in order. Input 1
+        // repeats while 2 is late (nothing else to apply), then 2..5 follow.
+        assert_eq!(drive_vehicle_ticks(&mut runtime, &arrivals, true), [1, 1, 2, 3, 4, 5, 5]);
+        // Shipping (pacing off) collapses the backlog: 2, 3 and 4 are never
+        // applied and 5 is applied for four ticks. Unchanged while off.
+        let mut runtime = super::tests::runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        assert_eq!(drive_vehicle_ticks(&mut runtime, &arrivals, false), [1, 1, 5, 5, 5, 5, 5]);
+    }
+
+    /// Steady inputs one a tick for `steady` ticks, then nothing for
+    /// `outage` ticks, then every unacked input in one bundle (the paced
+    /// client resends all), then steady again. Returns the inputs applied
+    /// from the bundle's tick on, and the runtime.
+    fn outage(steady: u16, outage: u16, after: u16) -> (Vec<u16>, PlayerRuntime) {
+        let mut runtime = runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        let mut tick = 0u32;
+        for seq in 1..=steady {
+            receive_inputs(&mut runtime, vec![input(seq)], true, true, tick);
+            paced_vehicle_tick(&mut runtime);
+            tick += 1;
+        }
+        for _ in 0..outage {
+            paced_vehicle_tick(&mut runtime);
+            tick += 1;
+        }
+        let backlog: Vec<InputCmd> = (steady + 1..=steady + outage).map(input).collect();
+        receive_inputs(&mut runtime, backlog, true, true, tick);
+        let mut applied = Vec::new();
+        for seq in steady + outage + 1..=steady + outage + after {
+            if seq > steady + outage + 1 {
+                receive_inputs(&mut runtime, vec![input(seq - 1)], true, true, tick);
+            }
+            applied.push(paced_vehicle_tick(&mut runtime).seq);
+            tick += 1;
+        }
+        (applied, runtime)
+    }
+
+    #[test]
+    fn an_outage_is_not_jitter() {
+        // A 2 s outage (120 ticks) delivers its inputs in one bundle. The
+        // first of them is 120 ticks late, but that is one event, not
+        // network jitter: the queue target must not grow to absorb it.
+        let (_, runtime) = outage(200, 120, 10);
+        assert!(runtime.input_jitter.target().unwrap() <= 1, "target {:?}", runtime.input_jitter.target());
+    }
+
+    #[test]
+    fn a_stale_backlog_beyond_the_target_is_dropped() {
+        // Owner's choice (2026-10-11): after an outage, keep only what the
+        // queue needs and drop the older inputs: one correction, then normal
+        // latency, rather than applying two seconds of inputs two seconds late.
+        let (applied, runtime) = outage(200, 120, 10);
+        let target = runtime.input_jitter.target().unwrap() as usize;
+        // The first tick after the bundle already applies an input at most
+        // target + margin + 1 behind the newest received.
+        assert!(
+            320 - applied[0] as usize <= target + vehicle_input_pacing::STALE_MARGIN_INPUTS + 1,
+            "applied {} of 320, target {target}",
+            applied[0]
+        );
+        assert!(runtime.pending_inputs.len() <= target + vehicle_input_pacing::STALE_MARGIN_INPUTS);
+    }
+
+    #[test]
+    fn skipped_inputs_are_the_gap_in_the_applied_sequence() {
+        assert_eq!(inputs_skipped(10, 11), 0);
+        assert_eq!(inputs_skipped(10, 14), 3); // a backlog of 4 collapsed to its newest
+        assert_eq!(inputs_skipped(0xfffe, 1), 2); // across the wrap
+        assert_eq!(inputs_skipped(10, 10), 0); // a repeat is starvation, not a skip
+    }
+
+    #[test]
+    fn a_paced_driver_accepts_an_overtaken_input_and_on_foot_is_unchanged() {
+        // Packets of one or two inputs (loss can leave a single copy of an
+        // input): 4 overtakes 3 while the queue still holds 2.
+        let arrivals = vec![vec![vec![1, 2]], vec![vec![4]], vec![vec![3]], vec![vec![5]], vec![]];
+        let mut runtime = runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        assert_eq!(drive_vehicle_ticks(&mut runtime, &arrivals, true), [1, 2, 3, 4, 5]);
+        // Shipping rejects 3 as older than the newest received.
+        let mut runtime = super::tests::runtime();
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+        assert_eq!(drive_vehicle_ticks(&mut runtime, &arrivals, false), [1, 2, 4, 5, 5]);
+        // On foot, pacing only measures: the queue is the shipping one.
+        let mut runtime = super::tests::runtime();
+        receive_inputs(&mut runtime, vec![input(1), input(3)], true, false, 0);
+        receive_inputs(&mut runtime, vec![input(2)], true, false, 1);
+        assert_eq!(runtime.pending_inputs.iter().map(|c| c.seq).collect::<Vec<_>>(), [1, 3]);
+        // But it measures, a sample a packet (its newest input): [1, 3] is
+        // one sample, and 2 is older than 3. No spread yet.
+        assert_eq!(runtime.input_jitter.target(), Some(0));
     }
 
     fn input(seq: u16) -> InputCmd {
@@ -8313,6 +8953,24 @@ mod tests {
         assert!(is_snapshot_packet_kind(PKT_SNAPSHOT));
         assert!(is_snapshot_packet_kind(PKT_SNAPSHOT_V2));
         assert!(!is_snapshot_packet_kind(PKT_PING));
+    }
+
+    /// City wire 4: keyframes ride datagrams (falling back to the stream when
+    /// one cannot go, as v2 chunks do); events are reliable by kind, and their
+    /// datagram copies are dropped rather than falling back, since the
+    /// reliable stream carries every one of them already.
+    #[test]
+    fn per_player_keyframes_ride_datagrams_and_event_copies_never_fall_back() {
+        use vibe_land_perplayer::wire::{PKT_PP_BOOTSTRAP, PKT_PP_EVENTS, PKT_PP_KEYFRAMES};
+        assert!(super::wants_unreliable_delivery(PKT_PP_KEYFRAMES));
+        assert_eq!(
+            classify_outbound_delivery(PKT_PP_KEYFRAMES, false, false),
+            OutboundDelivery::ReliableFallback
+        );
+        assert!(!super::wants_unreliable_delivery(PKT_PP_EVENTS));
+        assert!(!super::wants_unreliable_delivery(PKT_PP_BOOTSTRAP));
+        assert_eq!(classify_outbound_delivery(PKT_PP_EVENTS, false, false), OutboundDelivery::StrictDrop);
+        assert_eq!(classify_outbound_delivery(PKT_PP_EVENTS, false, true), OutboundDelivery::Datagram);
     }
 
     #[test]

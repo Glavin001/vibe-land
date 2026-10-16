@@ -1,7 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {VehiclePresentationPredictor,extrapolateVehicle,moveVehicle,vehicleProxy,type Sweep,type VehicleProxy,type VehiclePredictionEvent} from './vehiclePresentation';
 import {VehicleInterpolator,type VehicleSample} from '../net/interpolation';
-import {BTN_JUMP,type InputCmd} from '../net/protocol';
+import {BTN_JUMP,INPUT_BUNDLE_MAX_FRAMES,type InputCmd} from '../net/protocol';
 import {defaultConfiguration} from '../vehicles/configuration.mjs';
 const proxy:VehicleProxy={half:[.7,.2,1.2],wheels:[[-.9,-.25,1.2],[.9,-.25,1.2],[-.9,-.25,-1.2],[.9,-.25,-1.2]],radius:.4,wheelbase:2.4,acceleration:6,speed:30,grip:1.4,braking:1,lock:.5,response:1};
 const state=(patch:Partial<VehicleSample>={}):VehicleSample=>({serverTimeUs:0,position:[0,.652,0],quaternion:[0,0,0,1],linearVelocity:[0,0,0],angularVelocity:[0,0,0],wheelData:[0,0,0,0],driverPlayerId:1,flags:0,...patch});
@@ -19,8 +19,10 @@ describe('collision-aware Vehicle2 presentation',()=>{
     const landed=extrapolateVehicle(state({position:[0,2,0],linearVelocity:[0,-18,12]}),.25,proxy,sweep);
     expect(landed.position[1]).toBeCloseTo(.652,3);expect(landed.linearVelocity[1]).toBe(0);
     expect(landed.position[2]).toBeCloseTo(3);
+    // The chassis (half width 0.7) stops at the wall at x = 10; wheels act
+    // only through the suspension, as Vehicle2's do, so they do not.
     const hit=moveVehicle([0,.652,0],[0,0,0,1],[20,0,5],proxy,sweep);
-    expect(hit.position[0]).toBeLessThanOrEqual(8.71);expect(hit.position[2]).toBeCloseTo(5);
+    expect(hit.position[0]).toBeLessThanOrEqual(10-.7-.002+1e-6);expect(hit.position[0]).toBeGreaterThan(9.2);expect(hit.position[2]).toBeCloseTo(5);
   });
   it('preserves Vehicle2 rest height within the suspension support margin',()=>{
     const rest=state({position:[0,.675,0]});
@@ -49,6 +51,33 @@ describe('collision-aware Vehicle2 presentation',()=>{
     driver.observe(1,state({serverTimeUs:1000,position:[100,100,100]}),65534,proxy,61);
     expect(driver.pose()).toEqual(reconciled);expect(driver.resendWindow().map(i=>i.seq)).toEqual([0,1]);
     driver.record(2,[input(2)]);expect(driver.pose()).toBeNull();
+  });
+  it('draws the newest input when paced, however many are unacked',()=>{
+    // Live 2026-10-11, wall course on LTE with server input pacing: the
+    // round trip plus the paced queue left 20-30 inputs unacked, past the
+    // replay's 0.4 s (24 inputs), so the newest were not drawn until acked:
+    // input-to-drawn p95 121 ms against 33-44 ms without pacing.
+    const presented:number[]=[];
+    const driver=new VehiclePresentationPredictor(sweep,e=>{if(e.type==='vehicle_input_presented')presented.push(e.seq);});
+    driver.observe(1,state(),0,proxy,0);
+    driver.setPaced(true);
+    driver.record(1,Array.from({length:30},(_,i)=>input(i+1)));
+    driver.update(1/60,16);driver.presented(16);
+    expect(presented).toContain(30);
+    expect(driver.predictedTimeUs()).toBeCloseTo(state().serverTimeUs+30*1e6/60,0);
+    // Not paced, the shipping replay is unchanged.
+    const shipping=new VehiclePresentationPredictor(sweep);shipping.observe(1,state(),0,proxy,0);
+    shipping.record(1,Array.from({length:30},(_,i)=>input(i+1)));shipping.update(1/60,16);
+    expect(shipping.predictedTimeUs()).toBeCloseTo(state().serverTimeUs+24*1e6/60,0);
+  });
+  it('resends every unacked input when paced, up to a datagram',()=>{
+    const driver=new VehiclePresentationPredictor(sweep);driver.observe(1,state(),0,proxy,0);
+    driver.record(1,Array.from({length:8},(_,i)=>input(i+1)));
+    expect(driver.resendWindow().map(i=>i.seq)).toEqual([6,7,8]);
+    expect(driver.resendWindow(true).map(i=>i.seq)).toEqual([1,2,3,4,5,6,7,8]);
+    driver.record(1,Array.from({length:INPUT_BUNDLE_MAX_FRAMES},(_,i)=>input(i+9)));
+    const all=driver.resendWindow(true);
+    expect(all.length).toBe(INPUT_BUNDLE_MAX_FRAMES);expect(all[all.length-1].seq).toBe(INPUT_BUNDLE_MAX_FRAMES+8);
   });
   it('records actual reconciliation once and input presentation only after a render-facing read',()=>{
     const events:VehiclePredictionEvent[]=[];
@@ -105,5 +134,27 @@ describe('collision-aware Vehicle2 presentation',()=>{
     const p=vehicleProxy({...state(),id:1,driverId:1,vehicleType:0,customVehicle:{configuration,assetHash:'x',geometryHash:'g'}});
     expect(p.radius).toBe(configuration.dimensions.tireRadius);
     expect(p.acceleration).toBeCloseTo(.8*configuration.driving.grip*9.81/2);
+  });
+  // The server's rig is a round trip old; the predicted body is not. Its
+  // wheels follow the body: steered by the inputs replayed since, spun on at
+  // the predicted speed to the drawn time.
+  it('turns and spins the driven wheels with the prediction, not a round trip later',()=>{
+    const driver=new VehiclePresentationPredictor(sweep);
+    driver.observe(1,state({serverTimeUs:100*16666,linearVelocity:[0,0,10]}),0,proxy,0);
+    // Six ticks of full right steer since the acked state.
+    driver.record(1,[1,2,3,4,5,6].map(seq=>input(seq,127,127)));
+    driver.update(1/60,10);
+    const rig={serverTick:100,wheels:[0,1,2,3].map(()=>({travelM:.01,steeringRad:0,rotationRad:1,grounded:true}))};
+    const wheels=driver.wheels(rig)!;
+    // Right is negative steer (Vehicle2 and the proxy: positive yaw is left).
+    expect(wheels[0].steeringRad).toBeLessThan(-.05);
+    expect(wheels[1].steeringRad).toBe(wheels[0].steeringRad);
+    expect(wheels[2].steeringRad).toBe(0);
+    // Six ticks ahead at about 10 m/s on 0.4 m tyres: about 2.5 rad more.
+    expect(wheels[3].rotationRad-1).toBeGreaterThan(2.3);
+    expect(wheels[3].rotationRad-1).toBeLessThan(2.8);
+    expect(wheels[0].travelM).toBe(.01);
+    // Nothing to draw from without a prediction.
+    expect(new VehiclePresentationPredictor(sweep).wheels(rig)).toBeNull();
   });
 });

@@ -169,6 +169,17 @@ const assets = {
     if (header.wireVersion !== 3) return undefined;
     throw new Error('wire v3 tapes are not supported by the client stage yet (docs/netlab-v2.md)');
   },
+  // City wire 4 (per player): the client tree's own WASM core, loaded from
+  // its file (Node has no fetch of a relative URL).
+  perPlayerCore: async () => {
+    const pkg = join(clientRoot, 'src/wasm/perplayer-pkg');
+    if (!existsSync(join(pkg, 'vibe_land_perplayer_bg.wasm'))) {
+      throw new Error(`${pkg} is not built: run \`npm run build:wasm\` in ${clientRoot}`);
+    }
+    const loader = await import(from('src/city/perPlayerWasm.ts'));
+    await loader.initPerPlayerWasm(readFileSync(join(pkg, 'vibe_land_perplayer_bg.wasm')));
+    return loader.createPerPlayerCore(assets.manifest, header.simHz);
+  },
 };
 
 // Server tick timeline (tape clock) from the lab, for the city scorer's
@@ -194,13 +205,34 @@ function simTickAt(ms: number): number {
 
 // ── replay ────────────────────────────────────────────────────────────────
 fakeNowMs = times.length > 0 ? times[0] : originMs;
-const firstBootstrap = tape.packets.findIndex((p: Uint8Array) => p[0] === 122);
+const firstBootstrap = tape.packets.findIndex((p: Uint8Array) => p[0] === 122 || p[0] === 134);
 fakeNowMs = firstBootstrap >= 0 ? times[firstBootstrap] : fakeNowMs;
 const player = await createReplayPlayer(tape, assets);
 const world = player.world;
 if (!world) throw new Error('the tape has no game stream (a v1 city-only tape)');
 const client = world.client;
 const city = player.client;
+// The city client's own cost per frame (its presentation step) and for its
+// packets: what a browser frame pays for the city stream, apart from this
+// stage's recorders.
+const cityFrameMs: number[] = [];
+let cityPacketMs = 0;
+{
+  const clock = () => Number(process.hrtime.bigint()) / 1e6;
+  const sample = city.samplePresentation.bind(city);
+  city.samplePresentation = (nowMs: number) => {
+    const started = clock();
+    const out = sample(nowMs);
+    cityFrameMs.push(clock() - started);
+    return out;
+  };
+  const handle = city.handlePacket.bind(city);
+  city.handlePacket = (bytes: Uint8Array) => {
+    const started = clock();
+    handle(bytes);
+    cityPacketMs += clock() - started;
+  };
+}
 
 const recordedFrames = raw.frames ? Float64Array.from(raw.frames.times, (t: number) => t + originMs) : null;
 const startMs = player.originMs;
@@ -573,6 +605,12 @@ const stats = {
   sharedPoses: { entities: entityPoses !== null, city: cityPoses !== null },
   chunkFrames: chunkStream?.frames ?? 0,
   clientCpuMs: +clientMs.toFixed(1),
+  cityFrameMs: (() => {
+    const sorted = [...cityFrameMs].sort((x, y) => x - y);
+    const mean = sorted.reduce((a, v) => a + v, 0) / Math.max(1, sorted.length);
+    return { frames: sorted.length, mean: +mean.toFixed(4), p99: +(sorted[Math.floor(sorted.length * 0.99)] ?? 0).toFixed(4), max: +(sorted[sorted.length - 1] ?? 0).toFixed(3) };
+  })(),
+  cityPacketMs: +cityPacketMs.toFixed(1),
   // Snapshots applied as the newest, and those that arrived after a newer
   // one (dropped whole by clients before the late-snapshot change, applied
   // per entity since).

@@ -3,6 +3,9 @@ import { ingestAudioContacts, resetAudioContacts } from '../audio/contactStream'
 import {VehiclePresentationPredictor, extrapolateVehicle, vehicleProxy, type VehicleProxy} from '../physics/vehiclePresentation';
 import type { CityCameraDropCmd } from '../net/protocol';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { loadVehicleMetadata, type WheelPose } from '../vehicles/vehicleStream';
+import { DetachBlend } from '../vehicles/detachBlend';
+import { CityVehicleColliders } from '../vehicles/cityColliders';
 import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
@@ -32,7 +35,7 @@ import {
   type ShotFiredPacket,
   type VehicleStateMeters,
 } from '../net/protocol';
-import { netPlayerStateToMeters } from '../net/protocol';
+import { netPlayerStateToMeters, SERVER_TICK_US } from '../net/protocol';
 import type { SemanticInputState } from '../input/types';
 import { PredictionManager } from '../physics/predictionManager';
 import { VehiclePredictionManager } from '../physics/vehiclePredictionManager';
@@ -41,11 +44,14 @@ import { CosmeticPhysicsWorld } from './cosmeticPhysicsWorld';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from './vehicleDebug';
 import { FixedInputBundler } from './fixedInputBundler';
+import { inputClockRate } from './inputPacing';
 import { ThinAuthoritativePredictor } from '../physics/thinAuthoritativePredictor';
 import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
 import { fetchSessionConfig, type SessionConfigResponse } from '../net/webTransportClient';
 import { decodeMatchStatsPacket } from '../net/matchStatsFrame';
 import { CityClient } from '../city/cityClient';
+import { PerPlayerCityClient, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS } from '../city/perPlayerCityClient';
+import { encodePerPlayerAck } from '../city/perPlayerAck';
 import {
   PKT_CITY_BOOTSTRAP,
   PKT_CITY_MANIFEST,
@@ -310,6 +316,10 @@ export interface GameRuntimeClient {
   ): void;
   reconcileVehicle(vehicleState: NetVehicleState, ackInputSeq: number): void;
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null;
+  /** The driven car's wheels drawn with its predicted pose (null: draw the server's rig). */
+  getDrivenVehicleWheels(): WheelPose[] | null;
+  /** The server tick the driven car is drawn at (its prediction), or null. */
+  getDrivenVehiclePredictedTick(): number | null;
   getDrivenVehicleId(): number | null;
   getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   isInVehicle(): boolean;
@@ -572,6 +582,12 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   ): void;
   abstract reconcileVehicle(vehicleState: NetVehicleState, ackInputSeq: number): void;
   abstract getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null;
+  getDrivenVehicleWheels(): WheelPose[] | null {
+    return null;
+  }
+  getDrivenVehiclePredictedTick(): number | null {
+    return null;
+  }
   abstract getDrivenVehicleId(): number | null;
   abstract getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   abstract isInVehicle(): boolean;
@@ -1057,6 +1073,8 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   });
   private sim: WasmSimWorldInstance | null = null;
   private cosmeticWorld: CosmeticPhysicsWorld | null = null;
+  /** The city's standing chunks in `cosmeticWorld` for the driven car's prediction. */
+  private cityColliders: CityVehicleColliders | null = null;
   private prediction: PredictionManager | null = null;
   private vehiclePrediction: VehiclePredictionManager | null = null;
   private dynamicBodiesPrediction: DynamicBodyPredictionManager | null = null;
@@ -1113,6 +1131,46 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     return decodeCityManifestPayload(this.pushedCityManifest, manifestHash);
   }
 
+  /** Wire 4: the upstream ack timer (see startPerPlayerAcks). */
+  private perPlayerAckTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Wire 4: acknowledge keyframe datagrams about 30 times a second, on the
+   * same upstream path as resyncs. The server presumes a keyframe received
+   * until three acks in a row leave it out, then resends what drifted.
+   * Layout (perplayer/src/wire.rs `encode_ack`): u8 135, u32 newest LE,
+   * u64 mask LE.
+   */
+  private startPerPlayerAcks(
+    client: NetcodeClient,
+    cityClient: PerPlayerCityClient,
+  ): void {
+    this.stopPerPlayerAcks();
+    let last = '';
+    this.perPlayerAckTimer = setInterval(() => {
+      if (this.client !== client || this.cityClient !== cityClient) {
+        this.stopPerPlayerAcks();
+        return;
+      }
+      const ack = cityClient.ack();
+      if (!ack) return;
+      const missing = ack.length > 5 ? ack.subarray(5, 5 + 2 * ack[4]) : undefined;
+      const key = `${ack[0]}:${ack[1]}:${ack[2]}:${ack[3] ?? ''}`;
+      // Nothing new since the last ack (and nothing undecodable to name):
+      // the server already has it.
+      if (key === last && !missing?.length) return;
+      last = key;
+      client.sendCityResync(encodePerPlayerAck(ack[0], ack[1], ack[2], ack[3], missing));
+    }, 33);
+  }
+
+  private stopPerPlayerAcks(): void {
+    if (this.perPlayerAckTimer !== null) {
+      clearInterval(this.perPlayerAckTimer);
+      this.perPlayerAckTimer = null;
+    }
+  }
+
   private async initCityClient(client: NetcodeClient): Promise<void> {
     try {
       let { cityWorld, manifestHash, wireVersion } = client.citySessionConfig();
@@ -1151,15 +1209,71 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         v3 = { decoder: createDebrisDecoder(dictionary, 1 << 16, 60) };
         console.info('[city] wire v3: debris wasm decoder ready');
       }
-      const cityClient = new CityClient(manifest, (bytes) => client.sendCityResync(bytes), v3);
+      const sendUpstream = (bytes: Uint8Array) => client.sendCityResync(bytes);
+      let cityClient: CityClient;
+      if (wireVersion === 4) {
+        // City wire 4, the per-player stream: the shared Rust core (WASM)
+        // decides what is drawn; its acks tell the server which keyframe
+        // datagrams arrived. pendingCityPackets buffers everything meanwhile.
+        const { initPerPlayerWasm, createPerPlayerCore } = await import('../city/perPlayerWasm');
+        await initPerPlayerWasm();
+        const perPlayer = new PerPlayerCityClient(manifest, sendUpstream, createPerPlayerCore(manifest, 60));
+        // Cars' broken-off parts are bodies of this stream; their cars draw them.
+        // The driven car is drawn ahead of them: its parts blend out of it.
+        // Parts already off a car when its driving starts are not blended.
+        const detachBlend = new DetachBlend();
+        let blendCar: number | null = null;
+        perPlayer.setVehicleDebrisListener((handle, parts) => {
+          if (handle !== client.getLocalDrivenVehicleId()) {
+            if (handle === blendCar) blendCar = null;
+            client.setVehicleDebris(handle, parts);
+            return;
+          }
+          const first = blendCar !== handle;
+          if (first) {
+            detachBlend.reset();
+            blendCar = handle;
+          }
+          client.setVehicleDebris(handle, detachBlend.apply(performance.now(), first ? null : this.drivenVehiclePose(false), parts));
+        });
+        // On the clock other cars are drawn at (?carClock=0: the per-player
+        // render tick, for comparison).
+        if (new URLSearchParams(globalThis.location?.search ?? '').get('carClock') !== '0') {
+          perPlayer.setVehicleClock(() => client.getRenderTimeUs() / SERVER_TICK_US);
+        }
+        // Other players' cars, pose and wheels, as the stream draws them.
+        client.setStreamedCarSource((tick) => perPlayer.carsAt(tick));
+        // Their hulls, so a part between keyframes rests on the ground as the
+        // server models it.
+        client.setVehicleAssetListener((handle, vehicle) => {
+          void loadVehicleMetadata(this.backend.httpOrigin, vehicle.geometryHash).then(m => {
+            if (Array.isArray(m?.parts)) perPlayer.setVehicleParts(handle, m.parts);
+          });
+        });
+        this.startPerPlayerAcks(client, perPlayer);
+        cityClient = perPlayer;
+        console.info('[city] wire 4: per-player core ready');
+      } else {
+        cityClient = new CityClient(manifest, sendUpstream, v3);
+      }
       // In the native app's single-player the server is in this process: body
       // poses come from memory every tick instead of the budgeted stream.
       const link = inProcessLink();
-      if (link?.poses && !v3) {
+      if (link?.poses && !v3 && wireVersion !== 4) {
         cityClient.setPoseFeed(new CityPoseFeed({ poses: (since) => link.poses!(since) }));
         console.info('[city] body poses from the in-process pose feed');
       }
       this.cityClient = cityClient;
+      // The standing city as the driven car's prediction collides with it,
+      // opt-in (?cityColliders=1): measured worse than flat ground in Vibe
+      // Town, whose roadside obstacles a car breaks through
+      // (docs/vehicle-city-measurement.md).
+      if (this.cosmeticWorld && new URLSearchParams(globalThis.location?.search ?? '').get('cityColliders') === '1') {
+        const started = performance.now();
+        this.cityColliders = new CityVehicleColliders(this.cosmeticWorld, manifest.manifest, cityClient.topology);
+        this.cityColliders.sync();
+        console.info(`[city] ${this.cityColliders.count} chunk colliders for vehicle prediction in ${(performance.now() - started).toFixed(0)} ms`);
+      }
       cityTapeRecorder.describe(
         { matchId: this.matchId, manifestHash: manifest.hashHex, wireVersion, simHz: 60 },
         () => cityClient.requestResync(),
@@ -1394,8 +1508,13 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
               // wrong. Everything else here is a delta that the bootstrap or
               // the next resync supersedes anyway, so dropping the oldest
               // non-bootstrap packet costs nothing by comparison.
+              // Wire 4's bootstrap and events are kept too: its events are
+              // sequenced, and one evicted stalls every later one.
               const oldest = this.pendingCityPackets.findIndex(
-                (packet) => packet[0] !== PKT_CITY_BOOTSTRAP,
+                (packet) =>
+                  packet[0] !== PKT_CITY_BOOTSTRAP &&
+                  packet[0] !== PKT_PP_BOOTSTRAP &&
+                  packet[0] !== PKT_PP_EVENTS,
               );
               this.pendingCityPackets.splice(oldest < 0 ? 0 : oldest, 1);
             }
@@ -1472,6 +1591,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   disconnect(): void {
+    this.stopPerPlayerAcks();
     resetAudioContacts();
     hotspotWatch.disarm();
     cityTapeRecorder.describeSession(null);
@@ -1502,14 +1622,18 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   submitInput(frameDeltaSec: number, input: SemanticInputState): void {
     if (this.thinAuthoritative) {
-      const cmds = this.authoritativeInputBundler.produce(frameDeltaSec, input);
       const driven=this.client?.getLocalDrivenVehicleId();
+      // Server vehicle input pacing: hold its queue at the jitter target.
+      const paced=driven!=null?this.client?.vehicleInputQueue??null:null;
+      const cmds = this.authoritativeInputBundler.produce(frameDeltaSec*inputClockRate(paced,this.client?.serverClock.getRate()??1), input);
       if(driven!=null) {
+        this.thinVehiclePredictor.setPaced(paced!==null);
         this.thinVehiclePredictor.record(driven,cmds);
+        this.cityColliders?.sync();
         this.thinVehiclePredictor.update(frameDeltaSec,performance.now());
       } else if(this.thinVehiclePredictor.vehicleId!==null) this.thinVehiclePredictor.reset();
       if (cmds.length > 0) {
-        const redundant=driven!=null?this.thinVehiclePredictor.resendWindow():[];
+        const redundant=driven!=null?this.thinVehiclePredictor.resendWindow(paced!==null):[];
         this.sendInputs(redundant.length?redundant:cmds);
       }
       const client = this.client;
@@ -2279,7 +2403,28 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     return proxy;
   }
 
+  override getDrivenVehiclePredictedTick(): number | null {
+    if (!this.thinAuthoritative || !this.client || this.client.presentsImmediately) return null;
+    const id = this.client.getLocalDrivenVehicleId();
+    if (id == null || this.thinVehiclePredictor.vehicleId !== id) return null;
+    const us = this.thinVehiclePredictor.predictedTimeUs(this.authoritativeInputBundler.remainderSec());
+    return us == null ? null : us / SERVER_TICK_US;
+  }
+
+  override getDrivenVehicleWheels(): WheelPose[] | null {
+    if (!this.thinAuthoritative || !this.client || this.client.presentsImmediately) return null;
+    const id = this.client.getLocalDrivenVehicleId();
+    if (id == null || this.thinVehiclePredictor.vehicleId !== id) return null;
+    const rig = this.client.getVehicleRig(id);
+    return rig ? this.thinVehiclePredictor.wheels(rig, this.authoritativeInputBundler.remainderSec()) : null;
+  }
+
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
+    return this.drivenVehiclePose(true);
+  }
+
+  /** The driven car as drawn this frame; `present` records it as presented. */
+  private drivenVehiclePose(present: boolean): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
     if (this.thinAuthoritative) {
       const vehicleId = this.client?.getLocalDrivenVehicleId();
       if (vehicleId == null || !this.client) return null;
@@ -2287,7 +2432,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       // snapshot; over a network its proxy prediction masks the round trip.
       const predicted=this.thinVehiclePredictor.vehicleId===vehicleId&&!this.client.presentsImmediately
         ?this.thinVehiclePredictor.pose(this.authoritativeInputBundler.remainderSec()):null;
-      if(predicted){this.thinVehiclePredictor.presented(performance.now());return predicted;}
+      if(predicted){if(present)this.thinVehiclePredictor.presented(performance.now());return predicted;}
       // Before the first owning snapshot, use bounded collision-aware extrapolation.
       const renderTimeUs = this.client.getDynamicBodyRenderTimeUs();
       const sample = this.client.sampleRemoteVehicle(vehicleId, renderTimeUs);

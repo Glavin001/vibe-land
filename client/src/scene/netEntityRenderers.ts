@@ -4,6 +4,7 @@ import { defaultConfiguration, vehicles as vehicleModels } from '../vehicles/con
 import { registerShaderWarmup } from './ShaderWarmup';
 import { debugState } from '../vehicles/destructionDebug';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { loadVehicleMetadata } from '../vehicles/vehicleStream';
 // The networked world's entities as the game draws them: players (animated
 // characters with HP bars, spawn shields and id labels), dynamic bodies
 // (balls, boxes, cannonballs), batteries and vehicles.
@@ -567,8 +568,11 @@ export class VehiclesRenderer {
           vehicleMeshGroup.userData.geometryHash = vs.customVehicle.geometryHash;
           this.customVisuals.set(id, visual);
           // Native part index -> visual ids, for drawing parts that break off.
-          fetch(`${resolveMultiplayerBackend().httpOrigin}/vehicle-assets/${vs.customVehicle.geometryHash}/metadata.json`)
-            .then(r => r.ok ? r.json() : null)
+          // Resolved in the chain: without a page origin (tests, workers) the
+          // car draws whole rather than throwing out of the frame.
+          const geometryHash = vs.customVehicle.geometryHash;
+          Promise.resolve()
+            .then(() => loadVehicleMetadata(resolveMultiplayerBackend().httpOrigin, geometryHash))
             .then(m => { if (Array.isArray(m?.parts)) visual.setFractureGroups(m.parts.map((p: {visualIds: string[]}) => p.visualIds)); })
             .catch(() => {});
         } else vehicleMeshGroup = createVehicleMesh(id, vehicleType);
@@ -602,7 +606,11 @@ export class VehiclesRenderer {
       if (custom) {
         const trace = (globalThis as { __VIBE_VEHICLE_TRACE__?: unknown[] }).__VIBE_VEHICLE_TRACE__;
         if (Array.isArray(trace) && trace.length < 20000) trace.push({ kind: 'frame', t: performance.now(), id,
-          position: [vPos[0], vPos[1], vPos[2]], rigTick: vs.customRig?.serverTick ?? null, detached: vs.customRig?.detached?.length ?? 0,
+          position: [vPos[0], vPos[1], vPos[2]], quaternion: [vQuat[0], vQuat[1], vQuat[2], vQuat[3]],
+          // The server tick other players' cars are drawn at this frame (GameWorld).
+          drawTick: (globalThis as { __VIBE_CAR_TICK__?: number }).__VIBE_CAR_TICK__ ?? null,
+          drivenTick: (globalThis as { __VIBE_DRIVEN_TICK__?: number | null }).__VIBE_DRIVEN_TICK__ ?? null,
+          rigTick: vs.customRig?.serverTick ?? null, detached: vs.customRig?.detached?.length ?? 0,
           fractureGroups: custom.hasFractureGroups(), drawnLoose: custom.drawnLooseParts(4096),
           rigDetached: vs.customRig?.detached?.slice(0, 4096).map(d => ({ part: d.part, position: d.position, rotation: d.rotation })) ?? [] });
       }

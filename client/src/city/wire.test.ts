@@ -109,6 +109,9 @@ describe('city wire decoder', () => {
     // The meteor launch rides the same raw-bytes path.
     expect(isCityPacketKind(130)).toBe(true);
     expect(isCityPacketKind(131)).toBe(true); // Bounded audio contact summaries.
-    expect(isCityPacketKind(134)).toBe(false);
+    // City wire 4 (per player): keyframes, events, bootstrap; its ack (135) goes upstream.
+    expect(isCityPacketKind(132)).toBe(true);
+    expect(isCityPacketKind(134)).toBe(true);
+    expect(isCityPacketKind(135)).toBe(false);
   });
 });

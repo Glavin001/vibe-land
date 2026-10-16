@@ -398,6 +398,123 @@ pub fn eccentric_column(n: usize) -> Statics {
     }
 }
 
+/// A column loaded off its axis in both directions (e_x = e_z = e): the
+/// corner fibre carries both bending stresses at once.
+pub fn biaxial_column(n: usize) -> Statics {
+    let mut s = Structure::new();
+    let m = strong(&mut s, E_CONCRETE);
+    let h = 2.0;
+    let (c, _) = column(&mut s, "col", 0.0, 0.0, h, n, COL, LIGHT, m);
+    let base = fixed(&mut s, c[0], [0.0, 0.0, 0.0], [0.0, -1.0, 0.0], X, COL, m);
+    let e = 0.1;
+    let load_mass = 20_000.0;
+    // The block covers the column's top face and reaches 0.2 m past it in +x
+    // and +z: its centre is e off the axis in each.
+    let block = s.chunk("load", [e, h + 0.1, e], [COL.d / 2.0 + e, 0.1, COL.b / 2.0 + e], load_mass);
+    s.rect_bond(c[n - 1], block, [0.0, h, 0.0], Y, X, COL.d, Z, COL.b, m);
+    let p = load_mass * G;
+    let a = COL.area();
+    let sm = COL.modulus(); // square: the same about both axes
+    Statics {
+        name: "biaxial-column".into(),
+        title: "Column, eccentric in both axes (e_x = e_z = 0.1 m)",
+        source: "[Gere] 11.5 / [Hib-MoM] 8.4: sigma = -P/A -/+ P e_x / S_z -/+ P e_z / S_x (the corner takes both)",
+        tier: Tier::Quick,
+        checks: vec![
+            check("base corner compression fibre", base, Q::Compression, p / a + 2.0 * p * e / sm, "P/A + P e_x / S + P e_z / S"),
+            check("base corner tension fibre", base, Q::Tension, 2.0 * p * e / sm - p / a, "P e_x / S + P e_z / S - P/A"),
+            check("base axial force", base, Q::Axial, -p, "N = -P"),
+        ],
+        structure: s,
+    }
+}
+
+/// Three posts under a rigid slab, the middle one stiffer (E 3x): the slab
+/// sinks without turning (symmetry), every post shortens the same, so each
+/// carries the load in proportion to its stiffness k = E A / L.
+pub fn stiffness_share(n: usize) -> Statics {
+    let mut s = Structure::new();
+    let outer = strong(&mut s, E_CONCRETE);
+    let middle = strong(&mut s, 3.0 * E_CONCRETE);
+    let h = 2.0;
+    let a = 1.0; // outer posts at x = -a, +a
+    let mut bases = Vec::new();
+    let mut tops = Vec::new();
+    for (i, (x, m)) in [(-a, outer), (0.0, middle), (a, outer)].into_iter().enumerate() {
+        let (c, _) = column(&mut s, &format!("post{i}_"), x, 0.0, h, n, COL, LIGHT, m);
+        let base = fixed(&mut s, c[0], [x, 0.0, 0.0], [0.0, -1.0, 0.0], X, COL, m);
+        bases.push(base);
+        tops.push((c[n - 1], x, m));
+    }
+    let slab_mass = 30_000.0;
+    let slab = s.chunk("slab", [0.0, h + 0.1, 0.0], [a + COL.d / 2.0, 0.1, COL.b / 2.0], slab_mass);
+    for (top, x, m) in tops {
+        s.rect_bond(top, slab, [x, h, 0.0], Y, X, COL.d, Z, COL.b, m);
+    }
+    let p = slab_mass * G;
+    let post = LIGHT * h * COL.area() * G; // a post's own weight, carried at its base
+    let (km, ko) = (3.0, 1.0);
+    Statics {
+        name: "stiffness-share".into(),
+        title: "Three posts under a rigid slab, the middle one 3x stiffer (indeterminate, compatibility)",
+        source: "[Gere] 2.4 statically indeterminate axial members: equal shortening, F_i = P k_i / sum k",
+        tier: Tier::Quick,
+        checks: vec![
+            check("middle post base force", bases[1], Q::Axial, -(p * km / (km + 2.0 * ko) + post), "-(P k_m / (k_m + 2 k_o) + w_post)"),
+            check("outer post base force", bases[0], Q::Axial, -(p * ko / (km + 2.0 * ko) + post), "-(P k_o / (k_m + 2 k_o) + w_post)"),
+            check("other outer post base force", bases[2], Q::Axial, -(p * ko / (km + 2.0 * ko) + post), "-(P k_o / (k_m + 2 k_o) + w_post)"),
+        ],
+        structure: s,
+    }
+}
+
+/// A cantilever whose section is a triangle, apex up: its centroid sits h/3
+/// above the base, so under bending its extreme fibres stand 2h/3 (apex) and
+/// h/3 (base) from the neutral axis and their stresses differ 2:1. Every
+/// other case's section is symmetric, where a grade that ignores the real
+/// centroid still reads right.
+pub fn triangle_cantilever() -> Statics {
+    let mut s = Structure::new();
+    let m = strong(&mut s, E_CONCRETE);
+    let (b, h, l, n) = (0.3, 0.45, 2.0, 4);
+    // The section about its centroid: base at y = -h/3, apex at 2h/3.
+    let tri: [[f64; 2]; 3] = [[-h / 3.0, -b / 2.0], [-h / 3.0, b / 2.0], [2.0 * h / 3.0, 0.0]];
+    let area = b * h / 2.0;
+    let i = b * h.powi(3) / 36.0;
+    let a = l / n as f64;
+    let face = |x: f64| tri.iter().map(|q| [x, q[0], q[1]]).collect::<Vec<V3>>();
+    let mut chunks = Vec::new();
+    let mut bonds = Vec::new();
+    for k in 0..n {
+        // A triangular prism, its centre at the prism's centroid (its mass
+        // centre): the stage takes a bond's section from the chunks' own
+        // geometry, so the chunks must be the prisms, not boxes round them.
+        let mut pts = face(-a / 2.0);
+        pts.extend(face(a / 2.0));
+        let c = s.hull_chunk(&format!("tri{k}"), [(k as f64 + 0.5) * a, 0.0, 0.0], pts, CONCRETE * area * a);
+        if let Some(&prev) = chunks.last() {
+            bonds.push(s.poly_bond(prev, c, [k as f64 * a, 0.0, 0.0], X, face(k as f64 * a), m));
+        }
+        chunks.push(c);
+    }
+    let anchor = s.chunk("anchor", [0.0, 0.0, 0.0], [PLATE, h, b], 0.0);
+    let root = s.poly_bond(chunks[0], anchor, [0.0, 0.0, 0.0], [-1.0, 0.0, 0.0], face(0.0), m);
+    let w = CONCRETE * area * G;
+    let moment = w * l * l / 2.0; // hogging: the apex in tension
+    Statics {
+        name: "triangle-cantilever".into(),
+        title: "Cantilever of triangular section (apex up), self-weight: asymmetric fibres",
+        source: "[Gere] 5.5, App. D: I = b h^3 / 36 about the centroid (h/3 above the base); sigma = M c / I, c = 2h/3 (apex) and h/3 (base)",
+        tier: Tier::Quick,
+        checks: vec![
+            check("root tension fibre (apex, 2h/3 from the neutral axis)", root, Q::Tension, moment * (2.0 * h / 3.0) / i, "M (2h/3) / I"),
+            check("root compression fibre (base, h/3)", root, Q::Compression, moment * (h / 3.0) / i, "M (h/3) / I"),
+            check("root shear force", root, Q::Shear, w * l, "V = w L"),
+        ],
+        structure: s,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Frames
 
@@ -530,6 +647,9 @@ pub fn registry() -> Vec<Statics> {
         two_span(21),
         axial_column(6),
         eccentric_column(4),
+        biaxial_column(4),
+        stiffness_share(4),
+        triangle_cantilever(),
         portal_lateral(6, 12),
         three_hinged(6, 6),
         pratt_truss(),

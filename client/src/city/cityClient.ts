@@ -175,6 +175,10 @@ export interface CityClientStats {
   settlesSuperseded: number;
   /// Topology released by the wall-clock valve, ahead of the pose clock.
   valveApplies: number;
+  /** Gate G2: topology messages applied, and applied before the drawing reached their tick. */
+  eventsApplied: number;
+  eventsAppliedEarly: number;
+  eventsAppliedEarlyTicks: number;
   valveTicksAhead: number;
   /// Frames the presentation was held behind a promotion the pose stream had
   /// shown but the reliable stream had not delivered, the ticks of delay those
@@ -977,6 +981,10 @@ export class CityClient {
    * keeping up with the reliable channel.
    */
   topologyValveApplies = 0;
+  /** Topology messages applied, and those applied before the drawing reached their tick (gate G2). */
+  eventsApplied = 0;
+  eventsAppliedEarly = 0;
+  eventsAppliedEarlyTicks = 0;
   topologyValveTicksAhead = 0;
   /**
    * Bodies whose ledger pose changed without a streaming update to carry it
@@ -1686,16 +1694,29 @@ export class CityClient {
   private lastLive: ReadonlySet<number> = new Set();
 
   /** Route one raw server packet (kind 119-122). */
-  handlePacket(bytes: Uint8Array): void {
-    if (bytes.length === 0) {
-      return;
-    }
+  /**
+   * Count a received city packet in the stream's bandwidth (the overlay's
+   * "city stream") and, when it came as a datagram, in `datagramsReceived`.
+   * A subclass that routes its own packets elsewhere calls this too.
+   */
+  protected countPacket(bytes: Uint8Array, datagram: boolean): void {
     this.bytesReceived += bytes.length;
     const now = performance.now();
     this.bytesWindow.push({ at: now, bytes: bytes.length });
     while (this.bytesWindow.length > 0 && now - this.bytesWindow[0].at > 2000) {
       this.bytesWindow.shift();
     }
+    if (datagram) {
+      this.datagramsReceived += 1;
+    }
+  }
+
+  handlePacket(bytes: Uint8Array): void {
+    if (bytes.length === 0) {
+      return;
+    }
+    this.countPacket(bytes, false);
+    const now = performance.now();
     switch (bytes[0]) {
       case PKT_CITY_CHUNKS:
         // A v3 match never ranks poses per client; any stray v2 datagram
@@ -2057,6 +2078,15 @@ export class CityClient {
    * pose stream.
    */
   private applyTopologyMessage(message: TopologyMessage): void {
+    // Gate G2 (docs/netcode-lab.md): an event applied before the drawing has
+    // reached its tick shows the break ahead of the motion that caused it.
+    // Counted, not prevented: v2 applies on arrival by design (decision D6).
+    const presented = this.presentedTick();
+    if (Number.isFinite(presented) && message.simTick > presented + 1) {
+      this.eventsAppliedEarly += 1;
+      this.eventsAppliedEarlyTicks += message.simTick - presented;
+    }
+    this.eventsApplied += 1;
     // Read where the chunks about to be re-parented are drawn, before the
     // ledger moves them.
     this.captureDrawnPoses(message);
@@ -3439,6 +3469,9 @@ export class CityClient {
       settlesAfterSilence: this.topology.settlesAfterSilence,
       settlesSuperseded: this.topology.settlesSuperseded,
       valveApplies: this.topologyValveApplies,
+      eventsApplied: this.eventsApplied,
+      eventsAppliedEarly: this.eventsAppliedEarly,
+      eventsAppliedEarlyTicks: this.eventsAppliedEarlyTicks,
       valveTicksAhead: this.topologyValveTicksAhead,
       topologyHoldFrames: this.topologyHoldFrames,
       topologyHoldTicksAdded: this.topologyHoldTicksAdded,

@@ -8,6 +8,7 @@ pub mod gates;
 pub mod presented;
 pub mod capture;
 pub mod packets;
+pub mod perceptual;
 pub mod replay;
 pub mod score;
 pub mod tape;

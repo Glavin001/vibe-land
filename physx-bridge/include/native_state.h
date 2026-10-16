@@ -11,6 +11,7 @@
 #include "cuda.h"
 
 #include <cstdint>
+#include <array>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -182,6 +183,15 @@ struct NativeDestruction::State {
   /// First stage material index per structure, so a bond's authored material
   /// resolves inside its own structure's table.
   std::map<std::uint32_t, std::uint32_t> material_base;
+  // Per stage material (material_base + authored index): the surface's PxMaterial
+  // (VIBE_SURFACE_MATERIALS=1), or nullptr for the world's. One PxMaterial per
+  // distinct (static, dynamic, restitution); this table holds a reference each.
+  std::vector<physx::PxMaterial *> surfaces;
+  std::map<std::array<float, 3>, physx::PxMaterial *> surface_cache;
+  physx::PxMaterial &surface(std::uint32_t stage_material) {
+    physx::PxMaterial *m = stage_material < surfaces.size() ? surfaces[stage_material] : nullptr;
+    return m ? *m : material;
+  }
   // Impact-pressure crush: impedance (Pa s/m) of bodies that are not chunks, by GPU index.
   std::map<std::uint32_t, float> impactors;
   std::map<std::uint32_t, std::uint32_t> next_serial;

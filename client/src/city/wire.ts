@@ -642,7 +642,12 @@ export function isCityPacketKind(kind: number): boolean {
     kind === PKT_CITY_TOPO_HASH ||
     kind === PKT_CITY_STRUCTURE_BOOTSTRAP ||
     kind === PKT_AUDIO_CONTACTS ||
-    kind === PKT_METEOR_LAUNCHED
+    kind === PKT_METEOR_LAUNCHED ||
+    // City wire 4, the per-player stream (perPlayerCityClient.ts): keyframes,
+    // events, bootstrap.
+    kind === 132 ||
+    kind === 133 ||
+    kind === 134
   );
 }
 

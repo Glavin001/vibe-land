@@ -234,16 +234,22 @@ fn apply_app_defaults() {
         // On 2026-10-08 the app on Vibe Town (high profile, at rest) hung
         // WindowServer 52-66 s after launch in 4 of 4 runs with the heartbeat
         // on (busy on or off); macOS's watchdog then logged the owner out. With
-        // both off it ran 120 s and 180 s with WindowServer answering in
-        // <= 87 ms (clean/high-fidelity docs/perf/NATIVE_APP_FINDINGS.md).
+        // both off it ran 120 s with WindowServer answering in ~55 ms
+        // throughout (docs/perf/NATIVE_APP_FINDINGS.md).
         ("CUMETAL_GPU_KEEPALIVE_US", "0"),
         ("CUMETAL_GPU_KEEPALIVE_BUSY", "0"),
-        // No GPU code that waits on another threadgroup: CuMetal's resident
-        // cooperative grids spin at a device-atomic barrier for peers only
-        // assumed resident; with the window server and this app's rendering
-        // holding GPU cores a peer never starts and the GPU hangs (the
-        // WindowServer watchdog then logs the user out). One threadgroup per
-        // cooperative launch waits only on itself (clean/high-fidelity).
+        // No GPU code that waits on another threadgroup. Metal promises no
+        // forward progress between threadgroups; CuMetal's resident cooperative
+        // grids (Blast's persistent stress solve on a structure over 1,024
+        // nodes, the hierarchy construction) spin at a device-atomic barrier
+        // for peers that are only assumed resident. With the window server and
+        // this app's own rendering holding GPU cores, a peer never starts, the
+        // barrier never opens and the GPU hangs: WindowServer's watchdog then
+        // logs the user out, and killing the app cannot stop work already on
+        // the GPU (cuda-metal docs/known-gaps/runtime.md, "Residency is shared
+        // with other processes"). Vibe Town (57,087 chunks) hung 52-68 s after
+        // launch every time (2026-10-08). Off, each cooperative launch is one
+        // threadgroup, whose barrier waits only on itself.
         ("CUMETAL_COOPERATIVE_RESIDENT_GRID", "0"),
     ] {
         if std::env::var_os(name).is_none() {

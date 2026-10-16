@@ -19,6 +19,7 @@ namespace vibe_land::physx_bridge {
 struct FfiVec3;
 struct FfiVehicleFracturePart;
 struct FfiVehiclePartPose;
+struct FfiVehicleDetachedBody;
 struct FfiVehicleDebug;
 struct FfiStressSolveReport;
 struct FfiPose;
@@ -46,7 +47,10 @@ struct FfiChunkRayHit;
 /// The stage consumes PhysX's own solved contact impulses on the GPU, so the
 /// CPU contact callback has nothing to do for these pairs. The filter shader
 /// drops their notification flags, which removes the whole `onContact` cost for
-/// the city while players, vehicles and projectiles keep their reports.
+/// the city while players, vehicles and projectiles keep their reports. The one
+/// exception is opt-in: with `VIBE_CITY_DEBRIS_DAMAGE=1`, a moving (not
+/// kinematic) chunk body touching a player capsule keeps its report, so the
+/// server can apply debris strikes (physx_bridge.cc `simulation_filter`).
 inline constexpr std::uint32_t kNativeChunkFilterBit = 1u << 31;
 
 /// Drives PhysX's built-in GPU destruction stage for one `PxScene`.
@@ -95,6 +99,9 @@ public:
   /// World transforms, from each part's authored actor-frame pose, of the
   /// parts whose hulls have left the vehicle's carrier (detached fragments).
   rust::Vec<FfiVehiclePartPose> detached_vehicle_parts(const physx::native::NativeVehicle &vehicle) const;
+  /// The same parts with the rigid body each is on (named by its lowest part),
+  /// that body's world centre of mass and its velocities. Readback only.
+  rust::Vec<FfiVehicleDetachedBody> detached_vehicle_bodies(const physx::native::NativeVehicle &vehicle) const;
   /// Debug readback: every hull's world pose, owner and filter; owners' mass frames.
   FfiVehicleDebug vehicle_debug(const physx::native::NativeVehicle &vehicle) const;
   /// Refresh functional state from accepted shape owners, before Vehicle2 runs.

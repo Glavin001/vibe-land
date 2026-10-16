@@ -634,6 +634,18 @@ pub struct DestructibleSettings {
     /// (EN 1996-1-1 3.6.2: f_vk = f_vk0 + 0.4 sigma_d <= f_vlt); 0 none.
     pub shear_friction: Vec<f32>,
     pub shear_capacity_limit: Vec<f32>,
+    /// Empty, or parallel to `materials`: a joint's stiffness across its normal
+    /// over its stiffness along it (G/E; masonry 0.4, EN 1996-1-1 3.8.3), with
+    /// VIBE_SHEAR_STIFFNESS (PhysX PX_DESTRUCTION_SHEAR_STIFFNESS, FIDELITY_AUDIT
+    /// D11); 0 or 1 isotropic.
+    pub shear_stiffness_ratio: Vec<f32>,
+    /// Empty, or parallel to `materials`: each material's surface as a PhysX
+    /// `PxMaterial` (static and dynamic friction, restitution), used with
+    /// VIBE_SURFACE_MATERIALS=1 (AGENTS.md: per-material friction and
+    /// restitution, cited); otherwise, or empty, the world's material.
+    pub surface_static_friction: Vec<f32>,
+    pub surface_dynamic_friction: Vec<f32>,
+    pub surface_restitution: Vec<f32>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -672,6 +684,10 @@ impl Default for DestructibleSettings {
             bearing_joint: Vec::new(),
             shear_friction: Vec::new(),
             shear_capacity_limit: Vec::new(),
+            shear_stiffness_ratio: Vec::new(),
+            surface_static_friction: Vec::new(),
+            surface_dynamic_friction: Vec::new(),
+            surface_restitution: Vec::new(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -1711,6 +1727,14 @@ impl World {
                 rotation: Quat { x: p.rotation.x, y: p.rotation.y, z: p.rotation.z, w: p.rotation.w } }).collect())
     }
 
+    /// Detached parts with the rigid body each is on, its centre of mass and
+    /// its velocities.
+    #[cfg(feature = "native-destruction")]
+    pub fn native_detached_vehicle_bodies(&mut self, entity_id: u32)
+        -> Result<Vec<FfiVehicleDetachedBody>, BridgeError> {
+        self.inner.pin_mut().native_detached_vehicle_bodies(entity_id).map_err(operation_error)
+    }
+
     /// Debug readback of a registered vehicle: every hull's actual world pose,
     /// owning actor and filter, and each owning actor's mass frame.
     #[cfg(feature = "native-destruction")]
@@ -2092,7 +2116,7 @@ fn operation_error(error: cxx::Exception) -> BridgeError {
 
 #[cfg(feature = "gpu")]
 /// The stress solve report types (World::native_stress_solve_report), named by diagnostics.
-pub use ffi::{FfiChunkCrushEvent, FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3};
+pub use ffi::{FfiChunkCrushEvent, FfiStressChunkResidual, FfiStressComponentReport, FfiStressSolveReport, FfiVec3, FfiVehicleDetachedBody};
 
 #[cfg(feature = "gpu")]
 #[cxx::bridge(namespace = "vibe_land::physx_bridge")]
@@ -2228,6 +2252,20 @@ mod ffi {
         part_index: u32,
         position: FfiVec3,
         rotation: FfiQuat,
+    }
+
+    /// A detached vehicle part and the rigid body it is on.
+    struct FfiVehicleDetachedBody {
+        part_index: u32,
+        /// The lowest part on the same rigid body.
+        body: u32,
+        /// The part's map from authored actor-frame geometry to world.
+        position: FfiVec3,
+        rotation: FfiQuat,
+        /// The body's world centre of mass and velocities.
+        com: FfiVec3,
+        linear_velocity: FfiVec3,
+        angular_velocity: FfiVec3,
     }
 
     /// One registered vehicle hull as PhysX has it now (debug readback).
@@ -2543,6 +2581,12 @@ mod ffi {
         /// Empty, or parallel to `materials`: friction mu and shear cap (Pa, 0 uncapped).
         shear_friction: Vec<f32>,
         shear_capacity_limit: Vec<f32>,
+        /// Empty, or parallel to `materials`: shear over normal stiffness, 0 or 1 isotropic.
+        shear_stiffness_ratio: Vec<f32>,
+        /// Empty, or parallel to `materials`: the surface's PxMaterial (VIBE_SURFACE_MATERIALS=1).
+        surface_static_friction: Vec<f32>,
+        surface_dynamic_friction: Vec<f32>,
+        surface_restitution: Vec<f32>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -3025,6 +3069,7 @@ mod ffi {
         fn native_pose_vehicle_parts(self: Pin<&mut World>, entity_id: u32,
             poses: &[FfiVehiclePartPose], exclude_mask: u32) -> Result<u32>;
         fn native_detached_vehicle_parts(self: Pin<&mut World>, entity_id: u32) -> Result<Vec<FfiVehiclePartPose>>;
+        fn native_detached_vehicle_bodies(self: Pin<&mut World>, entity_id: u32) -> Result<Vec<FfiVehicleDetachedBody>>;
         fn native_vehicle_debug(self: Pin<&mut World>, entity_id: u32) -> Result<FfiVehicleDebug>;
         fn native_set_stress_solve_report(self: Pin<&mut World>, passes: u32) -> Result<bool>;
         fn native_stress_solve_report(self: Pin<&mut World>) -> Result<FfiStressSolveReport>;
@@ -3476,6 +3521,10 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
             bearing_joint: value.bearing_joint,
             shear_friction: value.shear_friction,
             shear_capacity_limit: value.shear_capacity_limit,
+            shear_stiffness_ratio: value.shear_stiffness_ratio,
+            surface_static_friction: value.surface_static_friction,
+            surface_dynamic_friction: value.surface_dynamic_friction,
+            surface_restitution: value.surface_restitution,
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,

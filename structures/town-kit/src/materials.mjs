@@ -74,8 +74,18 @@ export const mortarJointsEnabled = () => (globalThis.process?.env?.VIBE_BRICK_JO
  * runtime packs stay byte-identical.
  */
 export const MASONRY_FRICTION = 0.4;
+/**
+ * A masonry joint's shear stiffness over its normal stiffness (FIDELITY_AUDIT
+ * D11; the stage reads it under VIBE_SHEAR_STIFFNESS, PhysX
+ * PX_DESTRUCTION_SHEAR_STIFFNESS): EN 1996-1-1 3.8.3, the shear modulus G of
+ * masonry may be taken as 40% of its elastic modulus E. A bond's stiffness is
+ * the wall's E A / L along its normal, G A / L across it. With one stiffness in
+ * every direction a head joint drew 2.5x its share of a pier stone's load in
+ * vertical shear (docs/calibration/house-headers.md "Stone").
+ */
+export const MASONRY_SHEAR_STIFFNESS = 0.4;
 export const masonryShear = (fb) => (globalThis.process?.env?.VIBE_REAL_CAPACITIES ?? '0') === '1'
-  ? { shearFriction: MASONRY_FRICTION, shearCapacityLimit: 0.065 * fb } : {};
+  ? { shearFriction: MASONRY_FRICTION, shearCapacityLimit: 0.065 * fb, shearStiffnessRatio: MASONRY_SHEAR_STIFFNESS } : {};
 export const BRICK_FB = 20e6, STONE_FB = 50e6;
 /** Masonry by name: a concrete facade with a brick texture is still concrete. */
 export const isMasonry = (name) => /^brick(-|$)/.test(name) || /masonry/.test(name) && !/connection|seam/.test(name);
@@ -95,7 +105,10 @@ export const mortarMaterial = (brick) => ({ ...structuredClone(brick), name: 'mo
  * M2.5-M9: initial shear strength f_vk0 0.15 MPa (its friction term 0.4 sigma_d
  * is masonryShear's, graded under VIBE_MOHR_COULOMB_SHEAR: FIDELITY_AUDIT C11;
  * with it the house cracks 8 joints, 0.48%, the rest D11's: one stiffness per
- * bond in every direction, where masonry's G is 0.4 E); flexural tension across the bed joint
+ * bond in every direction, where masonry's G is 0.4 E. With D11's shear
+ * stiffness, MASONRY_SHEAR_STIFFNESS, 0 at the product's 64 stress iterations,
+ * 1 at the qualification's 16: a joint at 0.99 of capacity overshot on the
+ * first tick); flexural tension across the bed joint
  * f_xk1 0.1 MPa (EN 1996-1-1 3.6.3, nationally determined; 0.05-0.1 for natural
  * stone and aggregate units in general-purpose mortar); in compression the
  * masonry's f_k = 0.45 f_b^0.7 f_m^0.3 = 10.5 MPa (eq. 3.1, the crush law's);

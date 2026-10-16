@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A tape recorded against a different scene would replay as a stream of
     // bodies the manifest cannot place, and the audit would be nonsense that
     // looks like a result.
-    if reader.manifest_hash != manifest.hash() {
+    if !manifest.matches_hash(&reader.manifest_hash) {
         return Err(format!(
             "tape was recorded against a different manifest: tape {} vs {}",
             hex(&reader.manifest_hash),

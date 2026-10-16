@@ -204,6 +204,10 @@ pub struct Solved {
 /// tick when the stresses first reach `accurate`.
 pub fn solve(s: &Structure, max_ticks: u32, accurate: impl Fn(&[Graded]) -> bool) -> Solved {
     let mut world = build(s);
+    // VERIFY_SOLVE_REPORT=1: the stage's per-component solve report (why each
+    // solve stopped, its residual history, each chunk's stress input) with the
+    // verbose tick lines (the trial solve, pass bit 0).
+    let report = std::env::var_os("VERIFY_SOLVE_REPORT").is_some() && world.native_set_stress_solve_report(1).unwrap_or(false);
     let mut out = Solved { rows: Vec::new(), ticks: 0, converged: false, converged_at: 0, accurate_at: None };
     for t in 1..=max_ticks {
         world.step().unwrap();
@@ -217,6 +221,18 @@ pub fn solve(s: &Structure, max_ticks: u32, accurate: impl Fn(&[Graded]) -> bool
             let raw = world.native_bond_stress_rows(0).unwrap();
             let avail = raw.iter().filter(|r| r.native_verdict_available).count();
             println!("    tick {t}: {status:?}; verdicts {avail}/{}", raw.len());
+            if report {
+                let r = world.native_stress_solve_report().unwrap();
+                for c in &r.components {
+                    println!("      component {} chunks {} anchored {} reason {} iterations {} tolerance2 {:e} best2 {:e} final2 {:e} history {:?}",
+                        c.component, c.chunk_count, c.anchored, c.reason, c.iterations, c.tolerance2, c.best2, c.final2, c.history);
+                }
+                for c in &r.chunks {
+                    let v = |a: &vibe_land_physx_bridge::FfiVec3| format!("({:e},{:e},{:e})", a.x, a.y, a.z);
+                    println!("      chunk {} component {} residual2 {:e} prepared lin {} ang {} constraint lin {} contact lin {}",
+                        c.node, c.component, c.residual2, v(&c.prepared_linear), v(&c.prepared_angular), v(&c.constraint_linear), v(&c.contact_linear));
+                }
+            }
         }
         if out.accurate_at.is_none() && accurate(&out.rows) {
             out.accurate_at = Some(t);

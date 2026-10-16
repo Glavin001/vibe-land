@@ -761,6 +761,11 @@ pub struct EncoderCheckpoint {
 pub const ENCODER_CHECKPOINT_FORMAT: u32 = 1;
 
 impl EncoderCheckpoint {
+    /// The structural state at the checkpoint.
+    pub fn ledger(&self) -> &CityLedger {
+        &self.ledger
+    }
+
     /// Client ids the encoder was serving.
     pub fn clients(&self) -> Vec<u64> {
         let mut clients: Vec<u64> = self.clients.keys().copied().collect();
@@ -854,7 +859,7 @@ impl ChunkStreamEncoder {
                 checkpoint.format, ENCODER_CHECKPOINT_FORMAT
             ));
         }
-        if checkpoint.manifest_hash != manifest.hash() {
+        if !manifest.matches_hash(&checkpoint.manifest_hash) {
             return Err("encoder checkpoint was taken against a different manifest".into());
         }
         let mut encoder = Self::new(manifest, checkpoint.config);
@@ -1977,14 +1982,14 @@ impl ChunkStreamEncoder {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use vibe_netcode::destruction_backend::{FractureBatch, IslandPromotion, SettleEvent};
 
     use crate::city::{build_city_scene, CitySceneDesc};
     use crate::scene_pack::parse_scene_pack;
 
-    fn manifest() -> DestructionManifest {
+    pub(crate) fn manifest() -> DestructionManifest {
         let pack = parse_scene_pack(
             r#"{
             "version": 1, "title": "tiny",
@@ -2023,7 +2028,7 @@ mod tests {
         )
     }
 
-    fn promotion_output() -> DestructionTickOutput {
+    pub(crate) fn promotion_output() -> DestructionTickOutput {
         DestructionTickOutput {
             batches: vec![FractureBatch {
                 structure_id: 0,
@@ -2044,7 +2049,7 @@ mod tests {
         }
     }
 
-    fn snapshot(tick_offset: f32) -> BodySnapshotInput {
+    pub(crate) fn snapshot(tick_offset: f32) -> BodySnapshotInput {
         BodySnapshotInput {
             body_entity: ids::body_entity(0, 1),
             position: [1.0 + tick_offset, 2.0, 0.0],
@@ -2056,7 +2061,7 @@ mod tests {
         }
     }
 
-    fn close_camera() -> Camera {
+    pub(crate) fn close_camera() -> Camera {
         Camera {
             eye: Vec3::new(0.0, 2.0, -10.0),
             direction: Vec3::Z,

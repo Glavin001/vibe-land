@@ -2,6 +2,7 @@
 members = [
     "destruction",
     "netcode",
+    "perplayer",
     "physx-bridge",
     "shared",
     "server",

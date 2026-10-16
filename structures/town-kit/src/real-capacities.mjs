@@ -275,6 +275,7 @@ export function applyRealProp(pack, type) {
       for (const key2 of LIMIT_KEYS) if (values[key2] != null) material[key2] = values[key2];
       if (values.elasticModulus) material.elasticModulus = values.elasticModulus;
       if (values.shearFriction) { material.shearFriction = values.shearFriction; material.shearCapacityLimit = values.shearCapacityLimit ?? 0; }
+      if (values.shearStiffnessRatio) material.shearStiffnessRatio = values.shearStiffnessRatio;
       made.set(key, table.push(material) - 1);
     }
     bond.m = made.get(key);

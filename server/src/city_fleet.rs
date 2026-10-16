@@ -63,7 +63,14 @@ pub async fn prepare(builds: &[String]) -> Arc<Fleet> {
     static FLEET: OnceLock<Arc<Fleet>> = OnceLock::new();
     if let Some(fleet) = FLEET.get() { return fleet.clone(); }
     let mut cars = Vec::new();
+    // A build named twice is prepared once: the same configuration gives the
+    // same asset (Vibe Town parks 22 cars of 6 builds, ~40 s each).
+    let mut prepared_builds: std::collections::HashMap<String, Arc<_>> = std::collections::HashMap::new();
     for build in builds {
+        if let Some(asset) = prepared_builds.get(build) {
+            cars.push((FIRST_ID + cars.len() as u32, build.clone(), Arc::clone(asset)));
+            continue;
+        }
         let started = std::time::Instant::now();
         let prepared = async {
             let configuration = build_configuration(build).await?;
@@ -80,7 +87,9 @@ pub async fn prepare(builds: &[String]) -> Arc<Fleet> {
         match prepared {
             Ok(asset) => {
                 tracing::info!(build, parts = asset.geometry.parts.len(), ms = started.elapsed().as_millis() as u64, "city fleet car prepared");
-                cars.push((FIRST_ID + cars.len() as u32, build.clone(), Arc::new(asset)));
+                let asset = Arc::new(asset);
+                prepared_builds.insert(build.clone(), Arc::clone(&asset));
+                cars.push((FIRST_ID + cars.len() as u32, build.clone(), asset));
             }
             Err(error) => tracing::error!(build, %error, "city fleet car could not be prepared; left out"),
         }

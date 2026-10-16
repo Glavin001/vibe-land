@@ -13,10 +13,11 @@ test bed's harness is server/src/perf_suite.rs: the production arena, the
 city stage and the fleet, stepped as the server steps them, with fixed inputs
 at fixed ticks.
 
-High-fidelity impacts cost 5-20 s a tick in the impact solve, so in that
-profile the house impacts are timed as replays of captured impact ticks
-(PhysX destruction_impact_capture_replay on target/perf-suite/captures/*.impc,
-made once by --capture), not live: the suite would otherwise take minutes.
+Every scenario runs live in both profiles. (Under the retired impact solve,
+high-fidelity impacts cost 5-20 s a tick and were timed as replays of captured
+impact ticks; on the clean baseline, 2026-10-08, they run at game speed. A
+process may still restrict its live profiles with "live": [...], and replays
+remain supported for such a case.)
 
 Everything timed runs inside ONE hold of the exclusive GPU lock
 (scripts/perf/gpu-run.sh without VIBE_GPU_SHARED), after the builds, with an

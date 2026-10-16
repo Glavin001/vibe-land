@@ -356,14 +356,15 @@ impl Config {
         // all on (here the ones the stress solve and grading see: section
         // rotational stiffness, which implies section bending).
         // "section-bending" alone is a diagnostic step between them.
-        // The stage's impact machinery is on with either impact model: the
-        // retired ADMM solve (VIBE_IMPACT_CAPACITY) or the impact step the high
-        // profile runs (VIBE_IMPACT_STEP; the bridge sets desc.impactCapacity for both).
+        // The high profile has no impact machinery (AGENTS.md "GPU destruction";
+        // docs/destruction/CLEANUP_2026-10-08.md). "+impact" names a run with the
+        // retired impact models on (VIBE_IMPACT_CAPACITY, VIBE_IMPACT_STEP), on an
+        // SDK that still carries them.
         let impact = flag("VIBE_IMPACT_CAPACITY") || flag("VIBE_IMPACT_STEP");
         let rotation = flag("VIBE_SECTION_ROTATION");
         let true_stiffness = rotation || flag("VIBE_BOND_TRUE_STIFFNESS");
         if rotation {
-            let name = if impact { "high-fidelity" } else { "high-fidelity(no-impact)" };
+            let name = if impact { "high-fidelity+impact" } else { "high-fidelity" };
             Config { name, rotation: Rotation::Section, grading: Grading::Section, true_stiffness }
         } else if flag("VIBE_SECTION_BENDING") {
             let name = if impact { "high-fidelity(no-rotation)" } else { "section-bending" };
@@ -395,10 +396,13 @@ pub fn fibres(normal: f64, bend: f64) -> (f64, f64) {
 }
 
 /// The stage's translational bond stiffness (append_bonds, non-vehicle).
-pub fn bond_stiffness(s: &Structure, b: &Bond, true_stiffness: bool) -> f64 {
+/// Under section rotation the spring length is the centres' separation along
+/// the bond normal, not their distance (native_destruction.cc append_bonds:
+/// the material a bond strains lies across its interface).
+pub fn bond_stiffness(s: &Structure, b: &Bond, true_stiffness: bool, along_normal: bool) -> f64 {
     let ca = s.chunks[b.a].center;
     let cb = s.chunks[b.b].center;
-    let distance = norm(sub(ca, cb));
+    let distance = if along_normal { dot(normalize(b.normal), sub(cb, ca)).abs() } else { norm(sub(ca, cb)) };
     let e = s.materials[b.material].modulus;
     let area = section(b).area;
     if true_stiffness {
@@ -481,7 +485,7 @@ pub fn solve_model(s: &Structure, g: f64, rotation: Rotation, true_stiffness: bo
         .bonds
         .iter()
         .map(|b| {
-            let k = bond_stiffness(s, b, true_stiffness);
+            let k = bond_stiffness(s, b, true_stiffness, matches!(rotation, Rotation::Section));
             let both = s.chunks[b.a].mass > 0.0 && s.chunks[b.b].mass > 0.0;
             let mut rot = [[0.0; 3]; 3];
             let point = match rotation {

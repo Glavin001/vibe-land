@@ -43,6 +43,18 @@ pub enum ClientPacket {
     CityNack {
         bodies: Vec<u32>,
     },
+    /// City wire 4: the newest keyframe-datagram ordinal received and a mask
+    /// of the 64 before it (`vibe_land_perplayer::wire::encode_ack`).
+    CityPerPlayerAck {
+        newest: u32,
+        mask: u64,
+        /// The first events sequence the client has not received (newer
+        /// clients append it).
+        events_through: Option<u32>,
+        /// Bodies whose delta records the client could not decode: resent
+        /// absolute (`vibe_land_perplayer::wire::encode_ack_missing`).
+        missing: Vec<vibe_land_perplayer::wire::BodyKey>,
+    },
     /// The client could not fetch the manifest over HTTP; send it down the
     /// session instead. Only this asks for it -- see `PKT_CITY_MANIFEST`.
     CityManifestRequest,
@@ -87,6 +99,18 @@ pub enum ClientDatagram {
     /// Bodies whose v3 chains a lost datagram poisoned; restate exactly these.
     CityNack {
         bodies: Vec<u32>,
+    },
+    /// City wire 4: the newest keyframe-datagram ordinal received and a mask
+    /// of the 64 before it (`vibe_land_perplayer::wire::encode_ack`).
+    CityPerPlayerAck {
+        newest: u32,
+        mask: u64,
+        /// The first events sequence the client has not received (newer
+        /// clients append it).
+        events_through: Option<u32>,
+        /// Bodies whose delta records the client could not decode: resent
+        /// absolute (`vibe_land_perplayer::wire::encode_ack_missing`).
+        missing: Vec<vibe_land_perplayer::wire::BodyKey>,
     },
 }
 
@@ -221,7 +245,9 @@ pub struct SnapshotV2Packet {
     /// client uses: no support, or a support that is not moving (the client
     /// reads only the support velocity). Never set together with `removals`,
     /// whose section follows the trailer: a 12-byte block is detected by the
-    /// bytes left after the entities, which the section would add to.
+    /// bytes left after the entities, which the section would add to. The
+    /// 3-byte `input_queue` section may go with it: 12 + 4 + 3 = 19 left,
+    /// under the 27 that would read as a support block.
     pub compact_self: bool,
     /// Entities this recipient's stream has stopped carrying (retired by the
     /// server, or out of its interest), each restated in a few consecutive
@@ -229,7 +255,17 @@ pub struct SnapshotV2Packet {
     /// [`SNAPSHOT_V2_REMOVALS_TAG`], count, entries), which clients that
     /// predate it never read.
     pub removals: Vec<SnapshotRemoval>,
+    /// The recipient's vehicle input queue as the server holds it this tick:
+    /// (depth, target depth), the target from the measured jitter of its
+    /// input arrivals. Sent to a driver while vehicle input pacing is on
+    /// (`VIBE_VEHICLE_INPUT_PACING`), whose client then paces its inputs to
+    /// keep the queue at the target. A section after the removals (tag
+    /// [`SNAPSHOT_V2_INPUT_QUEUE_TAG`], depth, target) older clients never read.
+    pub input_queue: Option<(u8, u8)>,
 }
+
+/// First byte of the input-queue section (after the removals, when any).
+pub const SNAPSHOT_V2_INPUT_QUEUE_TAG: u8 = 0xE8;
 
 /// One entry of the SnapshotV2 removals section: `handle` is a dynamic body's
 /// handle, or `0x8000 | vehicle handle` (the convention of the self state's
@@ -426,6 +462,12 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 structures: decode_resync_structures(&mut buf)?,
             }
         }
+        vibe_land_perplayer::wire::PKT_PP_ACK => {
+            let (newest, mask, events_through) = vibe_land_perplayer::wire::decode_ack(bytes)
+                .map_err(|_| anyhow::anyhow!("short city per-player ack datagram"))?;
+            let missing = vibe_land_perplayer::wire::decode_ack_missing(bytes);
+            ClientDatagram::CityPerPlayerAck { newest, mask, events_through, missing }
+        }
         PKT_CITY_NACK => {
             ensure!(buf.remaining() >= 2, "short city nack datagram");
             let count = usize::from(buf.get_u16_le());
@@ -470,6 +512,9 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
             physics_ms,
         },
         ClientDatagram::CityNack { bodies } => ClientPacket::CityNack { bodies },
+        ClientDatagram::CityPerPlayerAck { newest, mask, events_through, missing } => {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, missing }
+        }
         ClientDatagram::CityResyncRequest {
             last_topo_seq,
             structures,
@@ -778,6 +823,11 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                     out.put_u8(removal.age_ticks);
                 }
             }
+            if let Some((depth, target)) = pkt.input_queue {
+                out.put_u8(SNAPSHOT_V2_INPUT_QUEUE_TAG);
+                out.put_u8(depth);
+                out.put_u8(target);
+            }
         }
     }
     out.to_vec()
@@ -878,6 +928,12 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
             }
         }
         PKT_CITY_MANIFEST_REQUEST => ClientPacket::CityManifestRequest,
+        vibe_land_perplayer::wire::PKT_PP_ACK => {
+            let (newest, mask, events_through) = vibe_land_perplayer::wire::decode_ack(bytes)
+                .map_err(|_| anyhow::anyhow!("short city per-player ack packet"))?;
+            let missing = vibe_land_perplayer::wire::decode_ack_missing(bytes);
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, missing }
+        }
         PKT_CITY_NACK => {
             ensure!(buf.remaining() >= 2, "short city nack packet");
             let count = usize::from(buf.get_u16_le());
@@ -1111,6 +1167,29 @@ mod tests {
         }
     }
 
+    /// City wire 4's ack, on both client paths (WebTransport datagram, and the
+    /// reliable/WebSocket packet), in `vibe_land_perplayer::wire::encode_ack`'s
+    /// layout: u8 135, u32 newest LE, u64 mask LE.
+    #[test]
+    fn per_player_ack_decodes_on_both_paths() {
+        let bytes = vibe_land_perplayer::wire::encode_ack(0x0102_0304, 0x8000_0000_0000_0005, None);
+        assert_eq!(bytes.len(), 13);
+        assert_eq!(bytes[0], 135);
+        match decode_client_packet(&bytes).expect("ack packet") {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, .. } => {
+                assert_eq!((newest, mask, events_through), (0x0102_0304, 0x8000_0000_0000_0005, None));
+            }
+            other => panic!("wrong packet: {other:?}"),
+        }
+        match client_datagram_to_packet(decode_client_datagram(&bytes).expect("ack datagram")) {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, .. } => {
+                assert_eq!((newest, mask, events_through), (0x0102_0304, 0x8000_0000_0000_0005, None));
+            }
+            other => panic!("wrong packet: {other:?}"),
+        }
+        assert!(decode_client_packet(&bytes[..9]).is_err(), "a short ack must not decode");
+    }
+
     #[test]
     fn decode_client_packet_preserves_full_input_bundle() {
         let bytes = [
@@ -1257,6 +1336,37 @@ mod tests {
         assert_eq!(encoded.len(), 23 + 33 + entities + SNAPSHOT_V2_TRAILER_BYTES);
         let tail = &encoded[encoded.len() - 4..];
         assert_eq!(u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn snapshot_v2_input_queue_section_is_last_and_keeps_the_compact_self_state() {
+        let queue = |compact_self, removals: Vec<SnapshotRemoval>| {
+            encode_server_packet(&ServerPacket::SnapshotV2(SnapshotV2Packet {
+                compact_self,
+                removals,
+                input_queue: Some((5, 3)),
+                ..SnapshotV2Packet::default()
+            }))
+        };
+        let compact = queue(true, vec![]);
+        // The client reads a support block only with 27 or more bytes after
+        // the entities (decodeSnapshotV2Packet).
+        let after_entities = SNAPSHOT_V2_COMPACT_SELF_PLAYER_BYTES + SNAPSHOT_V2_TRAILER_BYTES + 3;
+        assert!(after_entities < 27);
+        assert_eq!(compact.len(), 23 + after_entities);
+        assert_eq!(&compact[compact.len() - 3..], &[SNAPSHOT_V2_INPUT_QUEUE_TAG, 5, 3]);
+        let with_removals = queue(true, vec![SnapshotRemoval { handle: 7, age_ticks: 1 }]);
+        assert_eq!(
+            with_removals.len(),
+            23 + 33 + SNAPSHOT_V2_TRAILER_BYTES + 2 + SNAPSHOT_V2_REMOVAL_BYTES + 3
+        );
+        assert_eq!(&with_removals[with_removals.len() - 3..], &[SNAPSHOT_V2_INPUT_QUEUE_TAG, 5, 3]);
+        // Absent, the packet is byte for byte what it was.
+        let plain = encode_server_packet(&ServerPacket::SnapshotV2(SnapshotV2Packet {
+            compact_self: true,
+            ..SnapshotV2Packet::default()
+        }));
+        assert_eq!(plain[..], compact[..compact.len() - 3]);
     }
 
     #[test]

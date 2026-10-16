@@ -214,6 +214,13 @@ impl GarageDestruction {
         if !self.configured { return Vec::new(); }
         world.native_detached_vehicle_parts(self.entity).unwrap_or_default()
     }
+
+    /// The same parts with the rigid body each is on, its centre of mass and
+    /// its velocities.
+    pub fn detached_bodies(&self, world: &mut bridge::World) -> Vec<bridge::FfiVehicleDetachedBody> {
+        if !self.configured { return Vec::new(); }
+        world.native_detached_vehicle_bodies(self.entity).unwrap_or_default()
+    }
 }
 
 /// After a completed step, for every destructible car in the scene: configure

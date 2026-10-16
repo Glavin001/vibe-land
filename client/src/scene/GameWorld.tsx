@@ -61,6 +61,7 @@ import {
   MELEE_RANGE_M,
   RIFLE_FIRE_INTERVAL_MS,
   VEHICLE_INTERACT_RADIUS_M,
+  SERVER_TICK_US,
 } from '../net/protocol';
 import type {
   DamageEventPacket,
@@ -2846,6 +2847,12 @@ export function GameWorld({
 
     const currentRemote = state.remotePlayers;
     const renderTimeUs = client.getRenderTimeUs();
+    // Vehicle QA traces: the server tick other players' cars are drawn at.
+    if ((globalThis as { __VIBE_VEHICLE_TRACE__?: unknown }).__VIBE_VEHICLE_TRACE__) {
+      (globalThis as { __VIBE_CAR_TICK__?: number }).__VIBE_CAR_TICK__ = renderTimeUs / SERVER_TICK_US;
+      // And the tick the car this player drives is drawn at (its prediction).
+      (globalThis as { __VIBE_DRIVEN_TICK__?: number | null }).__VIBE_DRIVEN_TICK__ = client.getDrivenVehiclePredictedTick();
+    }
     let crosshairAimState: CrosshairAimState = 'idle';
     let closestAimDistance = Number.POSITIVE_INFINITY;
 
@@ -2921,6 +2928,9 @@ export function GameWorld({
         (id, vs) => {
           const isLocalVehicle = isDrivingNow && localVehiclePos !== null && drivenVehicleId === id;
           if (isLocalVehicle && localVehiclePos) {
+            // Its wheels with its prediction (the renderer reads the rig next).
+            const wheels = client.getDrivenVehicleWheels();
+            if (wheels && vs.customRig) vs.customRig = { ...vs.customRig, wheels };
             return { position: localVehiclePos.position, quaternion: localVehiclePos.quaternion, localDebug: localVehicleDebug };
           }
           const sample = localAuthorityTransport

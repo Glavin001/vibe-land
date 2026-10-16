@@ -32,6 +32,7 @@ libc = "0.2"
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }
 vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
 vibe-land-destruction = { path = "../destruction" }
+vibe-land-perplayer = { path = "../perplayer" }
 destruction-codec = { path = "../research/destruction-codec" }
 flate2 = "1"
 crc32fast = "1"

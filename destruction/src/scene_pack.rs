@@ -896,6 +896,20 @@ pub fn shear_friction_tables(json: &[u8]) -> (Vec<f32>, Vec<f32>) {
     (get("shearFriction"), get("shearCapacityLimit"))
 }
 
+/// Each material's shear stiffness ratio (FIDELITY_AUDIT D11; town-kit
+/// materials.mjs): `shearStiffnessRatio`, its joints' stiffness across their
+/// normal over their stiffness along it (masonry G/E = 0.4, EN 1996-1-1
+/// 3.8.3). Read by the native stage under VIBE_SHEAR_STIFFNESS. Empty when the
+/// pack authors none; 0 where a material is isotropic.
+pub fn shear_stiffness_table(json: &[u8]) -> Vec<f32> {
+    let Ok(pack) = serde_json::from_slice::<serde_json::Value>(json) else { return Vec::new() };
+    let Some(materials) = pack["defaults"]["solver"]["materials"].as_array() else { return Vec::new() };
+    if !materials.iter().any(|m| m["shearStiffnessRatio"].as_f64().unwrap_or(0.0) > 0.0) {
+        return Vec::new();
+    }
+    materials.iter().map(|m| m["shearStiffnessRatio"].as_f64().unwrap_or(0.0).max(0.0) as f32).collect()
+}
+
 /// Each material's impact-solve modulus (Pa), `materials[].impactElasticModulus`
 /// (town-kit: a wall tie's axial stiffness), where its `elasticModulus` is a
 /// concession for gravity load sharing. Empty when the pack authors none.

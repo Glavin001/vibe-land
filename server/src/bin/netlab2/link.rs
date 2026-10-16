@@ -576,6 +576,43 @@ impl LinkSim {
         }
     }
 
+    /// Run the sender up to `at_ms` (no earlier than the last admission):
+    /// every transmission due before then has happened, so every datagram
+    /// sent by then has its fate. Like `signals`, it changes nothing the
+    /// link does.
+    pub fn poll(&mut self, at_ms: f64) {
+        self.run(Some(at_ms));
+    }
+
+    /// When the datagram admitted as `index` arrives, once the sender has
+    /// transmitted it (`poll`): `None` while it is still queued, and for a
+    /// datagram lost, dropped or sent on the stream.
+    pub fn datagram_arrival(&self, index: usize) -> Option<f64> {
+        let delivery = self.deliveries.get(index)?;
+        (delivery.fate == Fate::Delivered && delivery.channel == crate::vltape::CHANNEL_WT_DATAGRAM)
+            .then_some(delivery.arrive_ms)
+            .flatten()
+    }
+
+    /// Whether the stream frame admitted as `index` had fully arrived, every
+    /// stream byte up to its end delivered, by `at_ms` (after `poll`): the
+    /// client's in-order view of the reliable lane.
+    pub fn stream_arrived(&self, index: usize, at_ms: f64) -> bool {
+        let Ok(i) = self.frames.binary_search_by_key(&index, |&(idx, _)| idx) else { return false };
+        let end = self.frames[i].1;
+        let mut covered = 0u64;
+        for (&chunk_end, &(start, arrive)) in self.chunk_arrivals.range(..) {
+            if start > covered || arrive > at_ms {
+                break;
+            }
+            covered = chunk_end;
+            if covered >= end {
+                return true;
+            }
+        }
+        covered >= end
+    }
+
     /// Stream bytes not yet transmitted (new data and retransmissions due),
     /// for reports: what the controller's estimate aims at.
     pub fn stream_backlog_bytes(&self) -> u64 {

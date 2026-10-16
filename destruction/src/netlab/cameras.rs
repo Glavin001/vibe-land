@@ -29,6 +29,20 @@ pub enum CameraSpec {
     Walker { centre: [f32; 2], radius: f32, speed: f32, height: f32, phase: f32, fov: f32 },
     /// An orbit camera above the scene, looking at `centre`.
     Orbit { centre: [f32; 3], radius: f32, height: f32, period_s: f32, phase: f32, fov: f32 },
+    /// Standing at `eye` looking at `look`, then at `at_s` turning by
+    /// `turn_deg` about the vertical in `turn_ms` (a 180 degree flick takes
+    /// under 100 ms), and holding the new heading.
+    Flick { eye: [f32; 3], look: [f32; 3], at_s: f32, turn_deg: f32, turn_ms: f32, fov: f32 },
+    /// Standing at `eye`, turning about the vertical at `rate_deg_s`.
+    Pan { eye: [f32; 3], look: [f32; 3], rate_deg_s: f32, fov: f32 },
+    /// Looking at `look` while stepping side to side, `amplitude` metres
+    /// either way of `eye`, one cycle per `period_s`.
+    Strafe { eye: [f32; 3], look: [f32; 3], amplitude: f32, period_s: f32, fov: f32 },
+    /// Aiming down sights: the field of view goes from `from_fov` to `to_fov`
+    /// at `at_s` over `ms` (80 to 20 degrees is a 4x scope).
+    Zoom { eye: [f32; 3], look: [f32; 3], at_s: f32, ms: f32, from_fov: f32, to_fov: f32 },
+    /// Hidden at `eye`, stepping out to `peek` for half of every `period_s`.
+    Peek { eye: [f32; 3], peek: [f32; 3], look: [f32; 3], period_s: f32, fov: f32 },
 }
 
 impl CameraSpec {
@@ -91,6 +105,48 @@ impl CameraSpec {
                 phase: num("phase", 0.0)?,
                 fov: num("fov", 80.0)?,
             }),
+            "facing" => {
+                // A static camera placed relative to what it watches:
+                // `distance` metres from `target` on compass `bearing`
+                // (degrees, 0 = +z), eye at `height` above the ground.
+                let target = Vec3::from_array(vec3("target")?);
+                let distance = num("dist", 30.0)?;
+                let bearing = num("bearing", 0.0)?.to_radians();
+                let height = num("height", EYE_HEIGHT_M)?;
+                let eye = Vec3::new(target.x + distance * bearing.sin(), height, target.z + distance * bearing.cos());
+                Ok(Self::Static { eye: eye.to_array(), look: target.to_array(), fov: num("fov", 80.0)? })
+            }
+            "flick" => Ok(Self::Flick {
+                eye: vec3("eye")?,
+                look: vec3("look")?,
+                at_s: num("at", 2.0)?,
+                turn_deg: num("turn", 180.0)?,
+                turn_ms: num("ms", 100.0)?,
+                fov: num("fov", 80.0)?,
+            }),
+            "pan" => Ok(Self::Pan { eye: vec3("eye")?, look: vec3("look")?, rate_deg_s: num("rate", 30.0)?, fov: num("fov", 80.0)? }),
+            "strafe" => Ok(Self::Strafe {
+                eye: vec3("eye")?,
+                look: vec3("look")?,
+                amplitude: num("amp", 3.0)?,
+                period_s: num("period", 2.0)?,
+                fov: num("fov", 80.0)?,
+            }),
+            "zoom" => Ok(Self::Zoom {
+                eye: vec3("eye")?,
+                look: vec3("look")?,
+                at_s: num("at", 2.0)?,
+                ms: num("ms", 150.0)?,
+                from_fov: num("from", 80.0)?,
+                to_fov: num("to", 20.0)?,
+            }),
+            "peek" => Ok(Self::Peek {
+                eye: vec3("eye")?,
+                peek: vec3("peek")?,
+                look: vec3("look")?,
+                period_s: num("period", 4.0)?,
+                fov: num("fov", 80.0)?,
+            }),
             other => Err(format!("unknown camera spec kind {other:?} in {text:?}")),
         }
     }
@@ -101,6 +157,60 @@ impl CameraSpec {
             Self::Static { .. } => "static".into(),
             Self::Walker { .. } => "walker".into(),
             Self::Orbit { .. } => "orbit".into(),
+            Self::Flick { .. } => "flick".into(),
+            Self::Pan { .. } => "pan".into(),
+            Self::Strafe { .. } => "strafe".into(),
+            Self::Zoom { .. } => "zoom".into(),
+            Self::Peek { .. } => "peek".into(),
+        }
+    }
+
+    /// The camera `seconds` into a run (scripted specs run on this clock),
+    /// or a recorded player's at `tick`.
+    pub fn camera_in_run(&self, tick: u32, seconds: f32, tracks: &PlayerTracks) -> Option<Camera> {
+        let look_from = |eye: Vec3, look: Vec3| (look - eye).normalize_or_zero();
+        let yawed = |direction: Vec3, degrees: f32| glam::Quat::from_rotation_y(degrees.to_radians()) * direction;
+        let ramp = |at_s: f32, ms: f32| ((seconds - at_s) / (ms.max(1.0) / 1000.0)).clamp(0.0, 1.0);
+        match self {
+            Self::Player { id } => tracks.camera_at(*id, tick),
+            Self::Static { .. } | Self::Walker { .. } | Self::Orbit { .. } => {
+                // Their clock is the seconds of the run too.
+                let hz = 1000u32;
+                self.camera_at((seconds.max(0.0) * hz as f32).round() as u32, hz, tracks)
+            }
+            Self::Flick { eye, look, at_s, turn_deg, turn_ms, fov } => {
+                let eye = Vec3::from_array(*eye);
+                let direction = yawed(look_from(eye, Vec3::from_array(*look)), turn_deg * ramp(*at_s, *turn_ms));
+                Some(Camera { eye, direction, fov_degrees: *fov })
+            }
+            Self::Pan { eye, look, rate_deg_s, fov } => {
+                let eye = Vec3::from_array(*eye);
+                let direction = yawed(look_from(eye, Vec3::from_array(*look)), rate_deg_s * seconds);
+                Some(Camera { eye, direction, fov_degrees: *fov })
+            }
+            Self::Strafe { eye, look, amplitude, period_s, fov } => {
+                let base = Vec3::from_array(*eye);
+                let target = Vec3::from_array(*look);
+                let forward = look_from(base, target);
+                let right = forward.cross(Vec3::Y).normalize_or_zero();
+                let offset = amplitude * (seconds * std::f32::consts::TAU / period_s.max(0.1)).sin();
+                let eye = base + right * offset;
+                Some(Camera { eye, direction: look_from(eye, target), fov_degrees: *fov })
+            }
+            Self::Zoom { eye, look, at_s, ms, from_fov, to_fov } => {
+                let eye = Vec3::from_array(*eye);
+                let t = ramp(*at_s, *ms);
+                Some(Camera {
+                    eye,
+                    direction: look_from(eye, Vec3::from_array(*look)),
+                    fov_degrees: from_fov + (to_fov - from_fov) * t,
+                })
+            }
+            Self::Peek { eye, peek, look, period_s, fov } => {
+                let phase = (seconds / period_s.max(0.1)).fract();
+                let eye = Vec3::from_array(if phase >= 0.5 { *peek } else { *eye });
+                Some(Camera { eye, direction: look_from(eye, Vec3::from_array(*look)), fov_degrees: *fov })
+            }
         }
     }
 
@@ -109,6 +219,9 @@ impl CameraSpec {
     pub fn camera_at(&self, tick: u32, hz: u32, tracks: &PlayerTracks) -> Option<Camera> {
         let seconds = tick as f32 / hz.max(1) as f32;
         match self {
+            Self::Flick { .. } | Self::Pan { .. } | Self::Strafe { .. } | Self::Zoom { .. } | Self::Peek { .. } => {
+                self.camera_in_run(tick, seconds, tracks)
+            }
             Self::Player { id } => tracks.camera_at(*id, tick),
             Self::Static { eye, look, fov } => Some(Camera {
                 eye: Vec3::from_array(*eye),
@@ -214,12 +327,19 @@ impl SceneExtent {
     pub fn of(manifest: &DestructionManifest) -> Self {
         let mut min = Vec3::splat(f32::MAX);
         let mut max = Vec3::splat(f32::MIN);
+        // Each chunk's world box, not its bounding sphere: the sphere's
+        // radius put the "ground" (min.y) metres below the real one, and a
+        // walker's eye at ground + 1.6 m underground.
         for structure in &manifest.structures {
             let origin = Vec3::from_array(structure.world_position);
+            let rotation = glam::Quat::from_array(structure.world_rotation);
+            let axes = glam::Mat3::from_quat(rotation);
+            let abs = glam::Mat3::from_cols(axes.x_axis.abs(), axes.y_axis.abs(), axes.z_axis.abs());
             for chunk in &structure.chunks {
-                let centre = origin + Vec3::from_array(chunk.centroid);
-                min = min.min(centre - chunk.radius);
-                max = max.max(centre + chunk.radius);
+                let centre = origin + rotation * Vec3::from_array(chunk.centroid);
+                let half = abs * (Vec3::from_array(chunk.size) * 0.5);
+                min = min.min(centre - half);
+                max = max.max(centre + half);
             }
         }
         if min.x > max.x {
@@ -350,6 +470,33 @@ mod tests {
         assert!(CameraSpec::parse("static:eye=1,2").is_err());
     }
 
+    /// The scripted cameras the spec's camera-motion axis needs: a 180
+    /// degree flick inside 100 ms, a pan, a strafe, a scope zoom, a peek and
+    /// a camera placed relative to what it watches.
+    #[test]
+    fn scripted_cameras_move_as_specified() {
+        let tracks = PlayerTracks::default();
+        let at = |spec: &str, s: f32| CameraSpec::parse(spec).expect(spec).camera_in_run(0, s, &tracks).expect("camera");
+        let flick = "flick:eye=0,2,0;look=0,2,-10;at=1;turn=180;ms=100";
+        assert!(at(flick, 0.99).direction.z < -0.99);
+        assert!(at(flick, 1.05).direction.x.abs() > 0.99, "half way through the turn");
+        assert!(at(flick, 1.1).direction.z > 0.99, "turned around within 100 ms");
+        let pan = at("pan:eye=0,2,0;look=0,2,-10;rate=90", 1.0);
+        assert!(pan.direction.x.abs() > 0.99);
+        let strafe = "strafe:eye=0,2,0;look=0,2,-20;amp=3;period=2";
+        assert!((at(strafe, 0.5).eye.x.abs() - 3.0).abs() < 1e-3);
+        assert!(at(strafe, 0.5).direction.z < 0.0);
+        let zoom = "zoom:eye=0,2,0;look=0,2,-10;at=1;ms=200;from=80;to=20";
+        assert_eq!(at(zoom, 0.5).fov_degrees, 80.0);
+        assert_eq!(at(zoom, 1.3).fov_degrees, 20.0);
+        let peek = "peek:eye=0,2,0;peek=2,2,0;look=0,2,-10;period=4";
+        assert_eq!(at(peek, 1.0).eye.x, 0.0);
+        assert_eq!(at(peek, 3.0).eye.x, 2.0);
+        let facing = at("facing:target=10,0,10;dist=30;bearing=0;height=1.6", 0.0);
+        assert!((facing.eye.distance(Vec3::new(10.0, 1.6, 40.0))) < 1e-3);
+        assert!(facing.direction.z < -0.99);
+    }
+
     /// Recorded tracks are held between samples and absent before the first
     /// one, which is when that player had not joined.
     #[test]
@@ -385,5 +532,24 @@ mod tests {
             assert_eq!(x.camera, y.camera);
         }
         assert!(matches!(a[9].camera, CameraSpec::Orbit { .. }));
+    }
+
+    #[test]
+    fn walkers_stand_on_the_ground_not_under_it() {
+        // A floor slab: thin, wide, so its bounding sphere reaches metres
+        // below the ground it lies on (the city's first chunk, verbatim).
+        let manifest: DestructionManifest = serde_json::from_str(
+            r#"{"version":1,"structures":[{"structureId":1,"worldPosition":[0,0,0],"worldRotation":[0,0,0,1],"bonds":[],
+                "chunks":[{"nodeIndex":0,"centroid":[-6.75,0.32,-4.66667],"mass":0,"volume":12.6,"size":[4.5,0.6,4.66667],
+                "radius":3.2552924,"support":true,"geometry":{"kind":"cuboid","halfExtents":[2.25,0.3,2.33333]}}]}]}"#,
+        )
+        .expect("manifest");
+        let extent = SceneExtent::of(&manifest);
+        assert!((extent.min.y - 0.02).abs() < 1e-4, "{:?}", extent.min);
+        for client in build_client_set(8, &PlayerTracks::default(), &manifest, &[], 3) {
+            if let CameraSpec::Walker { height, .. } = client.camera {
+                assert!((height - (0.02 + EYE_HEIGHT_M)).abs() < 1e-4, "{height}");
+            }
+        }
     }
 }

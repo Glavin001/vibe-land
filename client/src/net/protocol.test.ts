@@ -29,6 +29,7 @@ import {
   PKT_SNAPSHOT,
   PKT_SNAPSHOT_V2,
   SNAPSHOT_V2_REMOVALS_TAG,
+  SNAPSHOT_V2_INPUT_QUEUE_TAG,
   PKT_WELCOME,
   PKT_SHOT_FIRED,
   PKT_SHOT_RESULT,
@@ -563,6 +564,52 @@ describe('snapshot V2 decode', () => {
     const older = decodeServerDatagramPacket(binary.slice(0, legacy.length + 21 + 4));
     if (older.type !== 'snapshotV2') return;
     expect(older.removals).toBeUndefined();
+  });
+
+  // server/src/protocol.rs `input_queue`: a driver's vehicle input queue
+  // (depth, target) while pacing is on, a section after the removals.
+  it('reads the input-queue section after the removals, or after the trailer', () => {
+    const legacy = buildSnapshotV2Binary(); // 12-byte self state, no trailer
+    const withRemovals = new Uint8Array(legacy.length + 21 + 4 + 2 + 3 + 3);
+    withRemovals.set(legacy.subarray(0, 35), 0);
+    withRemovals.set(legacy.subarray(35), 35 + 21);
+    let view = new DataView(withRemovals.buffer);
+    let o = legacy.length + 21;
+    view.setUint32(o, 77, true); o += 4;
+    view.setUint8(o++, SNAPSHOT_V2_REMOVALS_TAG);
+    view.setUint8(o++, 1);
+    view.setUint16(o, 0x0123, true); o += 2;
+    view.setUint8(o++, 0);
+    view.setUint8(o++, SNAPSHOT_V2_INPUT_QUEUE_TAG);
+    view.setUint8(o++, 5);
+    view.setUint8(o++, 3);
+    const a = decodeServerDatagramPacket(withRemovals);
+    if (a.type !== 'snapshotV2') throw new Error('not a snapshot');
+    expect(a.serverWallUs).toBe(77);
+    expect(a.removals).toHaveLength(1);
+    expect(a.inputQueue).toEqual({ depth: 5, target: 3 });
+
+    // With the 12-byte self state and no removals: 12 + 4 + 3 bytes after
+    // the entities is still under the 27 that would read as a support block.
+    const compact = new Uint8Array(legacy.length + 4 + 3);
+    compact.set(legacy, 0);
+    view = new DataView(compact.buffer);
+    o = legacy.length;
+    view.setUint32(o, 1234, true); o += 4;
+    view.setUint8(o++, SNAPSHOT_V2_INPUT_QUEUE_TAG);
+    view.setUint8(o++, 0);
+    view.setUint8(o++, 2);
+    const b = decodeServerDatagramPacket(compact);
+    if (b.type !== 'snapshotV2') throw new Error('not a snapshot');
+    expect(b.serverWallUs).toBe(1234);
+    expect(b.selfState.supportHandle).toBe(0);
+    expect(b.vehicleStates[0].handle).toBe(3);
+    expect(b.removals).toBeUndefined();
+    expect(b.inputQueue).toEqual({ depth: 0, target: 2 });
+
+    const none = decodeServerDatagramPacket(compact.slice(0, legacy.length + 4));
+    if (none.type !== 'snapshotV2') throw new Error('not a snapshot');
+    expect(none.inputQueue).toBeUndefined();
   });
 });
 

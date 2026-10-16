@@ -1,0 +1,24 @@
+{
+  "name": "meteor-volley",
+  "description": "Eight meteors on eight different buildings over ~10 s: many separate impacts across the city at once, each a local burst of fractures and debris, rather than one structure's collapse. Targets are each structure's roof centre, resolved from the capture's own manifest.",
+  "match": "city-default",
+  "server_env": {
+    "VIBE_CITY_SCENE": "high-rise-3f-local.json",
+    "VIBE_CITY_GRID": "4"
+  },
+  "seed": 1,
+  "warmup_s": 3.0,
+  "duration_s": 30.0,
+  "settle_s": 15.0,
+  "bot": {"centre": [0.0, 0.0], "radius": 150.0, "seed": 1},
+  "events": [
+    {"t_s": 2.0, "kind": "meteor", "structure": 6},
+    {"t_s": 3.4, "kind": "meteor", "structure": 9},
+    {"t_s": 4.8, "kind": "meteor", "structure": 0},
+    {"t_s": 6.2, "kind": "meteor", "structure": 15},
+    {"t_s": 7.6, "kind": "meteor", "structure": 3},
+    {"t_s": 9.0, "kind": "meteor", "structure": 12},
+    {"t_s": 10.4, "kind": "meteor", "structure": 10},
+    {"t_s": 11.8, "kind": "meteor", "structure": 7}
+  ]
+}

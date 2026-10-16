@@ -120,6 +120,10 @@ pub struct WasmSimWorld {
     next_collider_id: u32,
     collider_ids: HashMap<u32, ColliderHandle>,
 
+    // Caller-keyed fixed world shapes (`setStaticShapes`): a city's standing
+    // chunks, as the server's physics collides with them.
+    static_shapes: HashMap<u32, ColliderHandle>,
+
     // Dynamic body rigid bodies (server ID → Rapier RigidBodyHandle)
     dynamic_colliders: HashMap<u32, RigidBodyHandle>,
 
@@ -158,6 +162,7 @@ impl WasmSimWorld {
             pending_inputs: Vec::new(),
             next_collider_id: 1,
             collider_ids: HashMap::new(),
+            static_shapes: HashMap::new(),
             dynamic_colliders: HashMap::new(),
             ragdoll_bodies: HashMap::new(),
             ragdoll_joint_handles: HashMap::new(),
@@ -542,6 +547,60 @@ impl WasmSimWorld {
     }
 
     // ── Raycasting ───────────────────────────────────
+
+    /// Add (or replace) fixed world shapes by key: per key a pose in `poses`
+    /// (x, y, z, qx, qy, qz, qw) and, by `counts`, either a cuboid (0: three
+    /// half extents next in `data`) or a convex hull of that many points
+    /// (centroid-relative xyz in `data`). They join the next sweep without a
+    /// broad-phase rebuild. Returns how many were added.
+    #[wasm_bindgen(js_name = setStaticShapes)]
+    pub fn set_static_shapes(&mut self, keys: &[u32], poses: &[f32], counts: &[u32], data: &[f32]) -> u32 {
+        let mut at = 0usize;
+        let mut added = 0u32;
+        for (i, &key) in keys.iter().enumerate() {
+            let (Some(p), Some(&n)) = (poses.get(i * 7..i * 7 + 7), counts.get(i)) else { break };
+            let take = if n == 0 { 3 } else { 3 * n as usize };
+            let Some(values) = data.get(at..at + take) else { break };
+            at += take;
+            let shape = if n == 0 {
+                Some(ColliderBuilder::cuboid(values[0].max(1e-4), values[1].max(1e-4), values[2].max(1e-4)))
+            } else {
+                let points: Vec<Point<f32>> = values.chunks_exact(3).map(|v| point![v[0], v[1], v[2]]).collect();
+                ColliderBuilder::convex_hull(&points)
+            };
+            let Some(shape) = shape else { continue };
+            let q = Quaternion::new(p[6], p[3], p[4], p[5]);
+            if !p.iter().all(|v| v.is_finite()) || q.norm_squared() < 1e-6 {
+                continue;
+            }
+            let pose = Isometry::from_parts(Translation::new(p[0], p[1], p[2]), UnitQuaternion::new_normalize(q));
+            if let Some(old) = self.static_shapes.remove(&key) {
+                self.sim.remove_static_collider(old);
+            }
+            let handle = self.sim.insert_static_collider(shape.position(pose));
+            self.static_shapes.insert(key, handle);
+            added += 1;
+        }
+        self.sim.sync_broad_phase();
+        added
+    }
+
+    /// Remove fixed world shapes by key (`setStaticShapes`).
+    #[wasm_bindgen(js_name = removeStaticShapes)]
+    pub fn remove_static_shapes(&mut self, keys: &[u32]) {
+        for key in keys {
+            if let Some(handle) = self.static_shapes.remove(key) {
+                self.sim.remove_static_collider(handle);
+            }
+        }
+        self.sim.sync_broad_phase();
+    }
+
+    /// How many keyed fixed world shapes are loaded.
+    #[wasm_bindgen(js_name = staticShapeCount)]
+    pub fn static_shape_count(&self) -> u32 {
+        self.static_shapes.len() as u32
+    }
 
     /// Sweep a box (radius=0) or sphere against fixed, non-sensor world geometry.
     /// Returns [fraction, normalX, normalY, normalZ]. Never changes gameplay state.

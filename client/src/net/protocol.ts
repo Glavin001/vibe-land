@@ -359,6 +359,14 @@ export type SnapshotV2Packet = {
    * consecutive snapshots.
    */
   removals?: SnapshotRemovalV2[];
+  /**
+   * This driver's vehicle input queue as the server holds it after the tick
+   * (`depth`), and the depth that absorbs the measured arrival jitter
+   * (`target`), from a server pacing vehicle inputs
+   * (`VIBE_VEHICLE_INPUT_PACING`): a section after the removals (tag 0xE8,
+   * depth, target). The client paces its inputs to the target.
+   */
+  inputQueue?: { depth: number; target: number };
 };
 
 /**
@@ -371,6 +379,8 @@ export type SnapshotRemovalV2 = {
   removedTick: number;
 };
 
+/** First byte of the SnapshotV2 input-queue section (after the removals). */
+export const SNAPSHOT_V2_INPUT_QUEUE_TAG = 0xe8;
 /** First byte of the SnapshotV2 removals section. */
 export const SNAPSHOT_V2_REMOVALS_TAG = 0xe7;
 /** Handle bit of a vehicle in a removals entry. */
@@ -542,6 +552,15 @@ export function encodeClientHello(packet: ClientHello): Uint8Array {
   );
   return out;
 }
+
+/**
+ * Most input frames one bundle carries and still fits a QUIC datagram:
+ * RFC 9000 guarantees a 1,200-byte UDP payload, less at most 45 bytes of
+ * 1-RTT packet and WebTransport datagram overhead (1 flags, 20 connection id,
+ * 4 packet number, 16 AEAD tag, 1 frame type, 2 length, 1 session id), at 10
+ * bytes a frame after a 2-byte header.
+ */
+export const INPUT_BUNDLE_MAX_FRAMES = Math.floor((1200 - 45 - 2) / 10);
 
 export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
   if (frames.length === 0) {
@@ -965,7 +984,10 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
   const serverWallUs = view.byteLength - o >= 4 ? view.getUint32(o, true) : null;
   // Removals section after the trailer. A server only sends it with the full
   // 33-byte self state, so the self-state length detection above holds.
+  // Then the input-queue section (3 bytes: with a 12-byte self state, 19
+  // after the entities, still under the 27 a support block needs).
   let removals: SnapshotRemovalV2[] | undefined;
+  let inputQueue: { depth: number; target: number } | undefined;
   if (serverWallUs !== null) {
     let r = o + 4;
     if (view.byteLength - r >= 2 && view.getUint8(r) === SNAPSHOT_V2_REMOVALS_TAG) {
@@ -985,6 +1007,9 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
         }
       }
     }
+    if (view.byteLength - r >= 3 && view.getUint8(r) === SNAPSHOT_V2_INPUT_QUEUE_TAG) {
+      inputQueue = { depth: view.getUint8(r + 1), target: view.getUint8(r + 2) };
+    }
   }
 
   return {
@@ -1002,6 +1027,7 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     vehicleStates,
     serverWallUs,
     ...(removals ? { removals } : {}),
+    ...(inputQueue ? { inputQueue } : {}),
   };
 }
 

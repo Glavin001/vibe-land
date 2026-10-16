@@ -27,6 +27,10 @@ use vibe_land_destruction::encoder::{ChunkStreamEncoder, EncoderConfig, SharedRe
 use vibe_land_destruction::ids as city_ids;
 use vibe_land_destruction::manifest::DestructionManifest;
 use vibe_land_destruction::netlab::capture::{NetlabCapture, TickStats};
+use vibe_land_destruction::per_player::{PerPlayer, PerPlayerConfig};
+use vibe_land_destruction::replication::{
+    ClientFeedback, ClientSend, ClientView, ReplicationStrategy, SendBudget,
+};
 use vibe_land_destruction::scene_pack::load_scene_pack_file;
 use vibe_land_destruction::synthetic::SyntheticDestruction;
 use vibe_land_destruction::types::Camera;
@@ -310,19 +314,38 @@ const CITY_V3_MATCH_PREFIX: &str = "cityv3";
 /// desynced, because only server-side send drops were detectable).
 const TOPO_HASH_INTERVAL_TICKS: u32 = 120;
 
+/// Match ids starting with this speak city wire 4, the per-player stream
+/// (`vibe_land_destruction::per_player`), whatever the env default.
+const CITY_PER_PLAYER_MATCH_PREFIX: &str = "citypp";
+
+/// City wire 4: the per-player destruction stream. Not a
+/// `ChunkStreamEncoder` layout (the v2 encoder never speaks it), so it is not
+/// in `wire::SUPPORTED_CITY_WIRE_VERSIONS`; the runtime routes it to
+/// `PerPlayer` instead.
+pub const CITY_WIRE_PER_PLAYER: u8 = 4;
+
 /// Which city wire a match speaks.
 ///
 /// Per match rather than per process: a v3 rollout wants one match on the new
 /// encoding beside the fleet on the old one, and rollback to be a match id
 /// rather than a deploy. `VIBE_CITY_WIRE` moves the default once v3 has soaked.
 pub fn city_wire_version(match_id: &str) -> u8 {
+    city_wire_version_with(match_id, std::env::var("VIBE_CITY_WIRE").ok().as_deref())
+}
+
+fn city_wire_version_with(match_id: &str, env_wire: Option<&str>) -> u8 {
+    if match_id.starts_with(CITY_PER_PLAYER_MATCH_PREFIX) {
+        return CITY_WIRE_PER_PLAYER;
+    }
     if match_id.starts_with(CITY_V3_MATCH_PREFIX) {
         return vibe_land_destruction::wire::CITY_WIRE_V3;
     }
-    std::env::var("VIBE_CITY_WIRE")
-        .ok()
-        .and_then(|value| value.parse::<u8>().ok())
-        .filter(|version| vibe_land_destruction::wire::is_supported_city_wire_version(*version))
+    env_wire
+        .and_then(|value| value.trim().parse::<u8>().ok())
+        .filter(|version| {
+            vibe_land_destruction::wire::is_supported_city_wire_version(*version)
+                || *version == CITY_WIRE_PER_PLAYER
+        })
         .unwrap_or(vibe_land_destruction::wire::CITY_WIRE_VERSION)
 }
 
@@ -631,6 +654,64 @@ enum CityBackend {
     /// made the previous attempt at this port impossible to reason about.
     #[cfg(feature = "native-destruction")]
     Native(vibe_land_destruction::native_runtime::NativeCityDestruction),
+}
+
+/// City wire 4: the per-player stream (`vibe_land_destruction::per_player`),
+/// driven in the order `netlab2 city` drives it (`run_city_stream`): every
+/// sim tick is ingested and its reliable events go to every client; on each
+/// send tick `begin_send`, then one `client_send` per client under its link's
+/// plan; acks come back as `on_feedback`.
+///
+/// The v2 encoder still ingests (topology only) and owns the ledger the
+/// runtime's telemetry reads, but none of its packets are sent in a wire-4
+/// match: no topology, baseline, hash or chunk datagrams.
+struct PerPlayerLive {
+    strategy: PerPlayer,
+    /// Reliable events this tick's ingest produced, for every client.
+    staged_reliable: Vec<Vec<u8>>,
+    /// Cars whose debris this stream carries: handle -> vehicle id.
+    vehicles: HashMap<u8, u32>,
+}
+
+/// The live per-player configuration: the defaults, plus
+/// `VIBE_CITY_PP_KNOBS` (comma-separated `name=value`, the lab's `pp.*`
+/// knob names, e.g. `age_priority=1,drawn_view=1,send_threads=8`). A bad
+/// list is logged and ignored: the defaults run.
+///
+/// Live, the per-tick work runs on half the cores (at most 8;
+/// `send_threads=1` runs it on the tick's own thread): what a tick waits on
+/// is its wall time, and the output is the same on any number of threads.
+/// The lab keeps one, so its CPU costs compare run to run.
+fn per_player_config(sim_hz: u32) -> PerPlayerConfig {
+    let mut config = PerPlayerConfig::validated(sim_hz);
+    config.send_threads = std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 8)) as u32;
+    if let Ok(list) = std::env::var("VIBE_CITY_PP_KNOBS") {
+        let mut tuned = config;
+        match tuned.apply_knobs(&list) {
+            Ok(()) => {
+                tracing::info!(knobs = %list, "per-player knobs");
+                config = tuned;
+            }
+            Err(e) => tracing::warn!(error = %e, knobs = %list, "VIBE_CITY_PP_KNOBS ignored"),
+        }
+    }
+    config
+}
+
+impl PerPlayerLive {
+    fn new(manifest: &DestructionManifest, ledger: vibe_land_destruction::topology::CityLedger, sim_hz: u32) -> Self {
+        Self {
+            strategy: PerPlayer::new(manifest, ledger, per_player_config(sim_hz)),
+            staged_reliable: Vec::new(),
+            vehicles: HashMap::new(),
+        }
+    }
+
+    fn ingest(&mut self, sim_tick: u32, snapshots: &[BodySnapshotInput], output: &DestructionTickOutput) {
+        for packet in self.strategy.ingest_tick(sim_tick, snapshots, output) {
+            self.staged_reliable.push(packet.bytes);
+        }
+    }
 }
 
 /// The wire-v3 pose stream: the live debris codec fed beside the v2 encoder.
@@ -1009,6 +1090,7 @@ fn feed_encoder(
     capture: &mut Option<NetlabCapture>,
     encoder: &mut ChunkStreamEncoder,
     live: &mut Option<V3Live>,
+    per_player: &mut Option<PerPlayerLive>,
     manifest: &DestructionManifest,
     pose_feed: Option<&crate::pose_feed::PoseFeed>,
     sim_tick: u32,
@@ -1024,13 +1106,18 @@ fn feed_encoder(
         }
         capture.push_tick(sim_tick, snapshots, output);
     }
-    if live.is_some() {
+    // Wire 4 sends none of the v2 pose stream either: the v2 encoder only
+    // keeps the ledger (bootstraps for telemetry, the pose feed's topo seq).
+    if live.is_some() || per_player.is_some() {
         encoder.ingest_tick_topology_only(sim_tick, snapshots, output, &output.wakes);
     } else {
         encoder.ingest_tick(sim_tick, snapshots, output, &output.wakes);
     }
     if let Some(live) = live.as_mut() {
         live.ingest(manifest, sim_tick, snapshots, output);
+    }
+    if let Some(per_player) = per_player.as_mut() {
+        per_player.ingest(sim_tick, snapshots, output);
     }
     // An in-process client reads every pose from memory (pose_feed.rs), with
     // the topology sequence this tick's ingest reached.
@@ -1137,6 +1224,8 @@ pub struct CityRuntime {
     pub tick_window: CityTickWindow,
     /// Present when this match speaks wire v3; owns the live pose stream.
     live: Option<V3Live>,
+    /// Present when this match speaks wire 4 (per player); owns that stream.
+    per_player: Option<PerPlayerLive>,
     /// Present when `VIBE_CITY_TAPE_OUT` is set: the match records its own
     /// encoder input so the stream can be replayed offline against exactly
     /// what happened here.
@@ -1154,6 +1243,10 @@ pub struct CityRuntime {
     /// it, and the last tick's summary.
     stress_report: Option<(u32, bool)>,
     stress_summary: Option<crate::session_capture::StressSolveSummary>,
+    /// Chunks that left their island this step, as (structure, node): every
+    /// chunk of a promoted island, and every chunk migrated off the support
+    /// island (0). For the vehicle tape (`released_chunks`).
+    released: Vec<(u32, u32)>,
     encoder: ChunkStreamEncoder,
     pub manifest: Arc<DestructionManifest>,
     send_interval_ticks: u32,
@@ -1243,6 +1336,7 @@ impl CityRuntime {
         Self {
             pose_feed: None,
             live: None,
+            per_player: None,
             capture,
             recent_events: std::collections::VecDeque::new(),
             pending_demolition: Vec::new(),
@@ -1257,6 +1351,7 @@ impl CityRuntime {
             backend,
             stress_report: None,
             stress_summary: None,
+            released: Vec::new(),
             encoder,
             manifest,
             send_interval_ticks: config.send_interval_ticks,
@@ -1409,6 +1504,8 @@ impl CityRuntime {
                 // Mohr-Coulomb joint shear (opt-in, VIBE_MOHR_COULOMB_SHEAR=1; FIDELITY_AUDIT C11).
                 (settings.shear_friction, settings.shear_capacity_limit) =
                     vibe_land_destruction::scene_pack::shear_friction_tables(payload);
+                // Shear stiffness apart from normal stiffness (opt-in, VIBE_SHEAR_STIFFNESS=1; FIDELITY_AUDIT D11).
+                settings.shear_stiffness_ratio = vibe_land_destruction::scene_pack::shear_stiffness_table(payload);
                 if !settings.crush.is_empty() {
                     let crushable = settings.crush.iter().filter(|c| c.cap_pressure > 0.0).count();
                     tracing::info!(crushable, "scene authors chunk crushing");
@@ -1520,6 +1617,19 @@ impl CityRuntime {
     /// is announced in the session config and a mid-match change would leave
     /// joined clients decoding a layout they never agreed to.
     pub fn set_wire_version(&mut self, version: u8) {
+        if version == CITY_WIRE_PER_PLAYER {
+            // The v2 encoder keeps the ledger on its own layout; nothing it
+            // encodes is sent. The per-player stream starts from that ledger.
+            self.encoder.set_wire_version(vibe_land_destruction::wire::CITY_WIRE_VERSION);
+            self.live = None;
+            self.per_player = Some(PerPlayerLive::new(
+                &self.manifest,
+                self.encoder.ledger().clone(),
+                self.sim_hz,
+            ));
+            return;
+        }
+        self.per_player = None;
         self.encoder.set_wire_version(version);
         self.live = if version == vibe_land_destruction::wire::CITY_WIRE_V3 {
             Some(V3Live::new(self.sim_hz, self.manifest.total_chunks()))
@@ -1529,7 +1639,153 @@ impl CityRuntime {
     }
 
     pub fn wire_version(&self) -> u8 {
+        if self.per_player.is_some() {
+            return CITY_WIRE_PER_PLAYER;
+        }
         self.encoder.wire_version()
+    }
+
+    /// Whether this match speaks wire 4 (the per-player stream).
+    pub fn is_per_player(&self) -> bool {
+        self.per_player.is_some()
+    }
+
+    /// Wire 4: (re)start `client`'s stream at `sim_tick` -- its bootstrap
+    /// (reliable), with the server's model of what it draws reset to match.
+    /// Join, resync, repair and reset all use it. Empty on other wires.
+    pub fn per_player_join(&mut self, client: u64, sim_tick: u32) -> Vec<Vec<u8>> {
+        let Some(pp) = self.per_player.as_mut() else {
+            return Vec::new();
+        };
+        let packets: Vec<Vec<u8>> =
+            pp.strategy.join(client, sim_tick).into_iter().map(|packet| packet.bytes).collect();
+        let bytes: usize = packets.iter().map(Vec::len).sum();
+        self.sent_packets += packets.len() as u64;
+        self.sent_bytes += bytes as u64;
+        self.total_sent_bytes += bytes as u64;
+        packets
+    }
+
+    /// Wire 4: the shared half of a send tick (`ReplicationStrategy::begin_send`).
+    pub fn per_player_begin_send(&mut self, sim_tick: u32) {
+        if let Some(pp) = self.per_player.as_mut() {
+            pp.strategy.begin_send(sim_tick);
+        }
+    }
+
+    /// Wire 4: the per-send byte ceiling the link's plan is taken against.
+    pub fn per_player_ceiling_bytes(&self) -> usize {
+        self.per_player
+            .as_ref()
+            .map_or(0, |pp| pp.strategy.ceiling_bytes())
+    }
+
+    /// Wire 4: one client's keyframe datagrams this send, under `budget`.
+    pub fn per_player_send(
+        &mut self,
+        client: u64,
+        camera: Camera,
+        sim_tick: u32,
+        budget: SendBudget,
+    ) -> ClientSend {
+        let Some(pp) = self.per_player.as_mut() else {
+            return ClientSend::default();
+        };
+        let before = pp.strategy.stats.keyframes_sent;
+        let send = pp.strategy.client_send(client, &ClientView { camera, own_car: None }, sim_tick, Some(budget));
+        let records = pp.strategy.stats.keyframes_sent - before;
+        let bytes: usize = send.packets.iter().map(|packet| packet.bytes.len()).sum();
+        self.sent_packets += send.packets.len() as u64;
+        self.sent_bytes += bytes as u64;
+        self.sent_records += records;
+        self.total_sent_bytes += bytes as u64;
+        self.total_sent_records += records;
+        send
+    }
+
+    /// Wire 4: every client's keyframe datagrams this send, each under its
+    /// budget, in one batch (`send_threads` run them at once).
+    /// Each request: (client, camera, the car it drives (body-key structure),
+    /// budget).
+    pub fn per_player_sends(&mut self, requests: &[(u64, Camera, Option<u32>, SendBudget)], sim_tick: u32) -> Vec<ClientSend> {
+        let Some(pp) = self.per_player.as_mut() else {
+            return requests.iter().map(|_| ClientSend::default()).collect();
+        };
+        let before = pp.strategy.stats.keyframes_sent;
+        let batch: Vec<vibe_land_destruction::replication::SendRequest> = requests
+            .iter()
+            .map(|&(client, camera, own_car, budget)| vibe_land_destruction::replication::SendRequest {
+                client,
+                view: ClientView { camera, own_car },
+                tick: sim_tick,
+                budget: Some(budget),
+            })
+            .collect();
+        let sends = pp.strategy.client_sends(&batch);
+        let records = pp.strategy.stats.keyframes_sent - before;
+        let packets: usize = sends.iter().map(|s| s.packets.len()).sum();
+        let bytes: usize = sends.iter().flat_map(|s| &s.packets).map(|packet| packet.bytes.len()).sum();
+        self.sent_packets += packets as u64;
+        self.sent_bytes += bytes as u64;
+        self.sent_records += records;
+        self.total_sent_bytes += bytes as u64;
+        self.total_sent_records += records;
+        sends
+    }
+
+    /// Wire 4: whether car `id`'s debris is streamed under `handle`.
+    pub fn per_player_vehicle_registered(&self, handle: u8, id: u32) -> bool {
+        self.per_player.as_ref().is_some_and(|pp| pp.vehicles.get(&handle) == Some(&id))
+    }
+
+    /// Wire 4: stream car `id`'s detached parts (under `handle`) as bodies.
+    pub fn per_player_register_vehicle(&mut self, handle: u8, id: u32, parts: Vec<vibe_land_destruction::per_player::VehiclePartModel>) {
+        if let Some(pp) = self.per_player.as_mut() {
+            pp.strategy.register_vehicle(handle, parts);
+            pp.vehicles.insert(handle, id);
+        }
+    }
+
+    /// Wire 4: this tick's detached parts of the registered cars, as
+    /// `PerPlayer::ingest_vehicles` takes them; their reliable events.
+    pub fn per_player_ingest_vehicles(&mut self, sim_tick: u32, cars: &[(u8, Vec<vibe_land_destruction::per_player::VehicleDetachedPart>)]) -> Vec<Vec<u8>> {
+        let Some(pp) = self.per_player.as_mut() else {
+            return Vec::new();
+        };
+        let packets: Vec<Vec<u8>> = pp.strategy.ingest_vehicles(sim_tick, cars).into_iter().map(|p| p.bytes).collect();
+        let bytes: usize = packets.iter().map(Vec::len).sum();
+        self.sent_packets += packets.len() as u64;
+        self.sent_bytes += bytes as u64;
+        self.total_sent_bytes += bytes as u64;
+        packets
+    }
+
+    /// Chunks that left their island in the last step (structure, node).
+    pub fn released_chunks(&self) -> &[(u32, u32)] {
+        &self.released
+    }
+
+    /// Wire 4: this tick's cars (chassis and wheels) for the stream.
+    pub fn per_player_ingest_cars(&mut self, sim_tick: u32, cars: &[vibe_land_destruction::per_player::CarInput]) {
+        if let Some(pp) = self.per_player.as_mut() {
+            pp.strategy.ingest_cars(sim_tick, cars);
+        }
+    }
+
+    /// Wire 4: a client's datagram acks (`PKT_PP_ACK`).
+    pub fn per_player_ack(&mut self, client: u64, newest: u32, mask: u64, events_through: Option<u32>, missing: &[vibe_land_perplayer::wire::BodyKey]) {
+        if let Some(pp) = self.per_player.as_mut() {
+            pp.strategy.on_feedback(client, ClientFeedback::DatagramAcks { newest, mask });
+            pp.strategy.missing_baselines(client, missing);
+            if let Some(through) = events_through {
+                pp.strategy.on_feedback(client, ClientFeedback::EventsReceived { through });
+            }
+        }
+    }
+
+    /// Wire 4: the strategy's counters, for telemetry.
+    pub fn per_player_stats(&self) -> Option<vibe_land_destruction::per_player::PerPlayerStats> {
+        self.per_player.as_ref().map(|pp| pp.strategy.stats)
     }
 
     /// Where the ground is, for the backend's below-ground log and retire
@@ -1763,7 +2019,10 @@ impl CityRuntime {
     }
 
     pub fn send_interval_ticks(&self) -> u32 {
-        self.send_interval_ticks
+        match &self.per_player {
+            Some(pp) => pp.strategy.send_interval_ticks(),
+            None => self.send_interval_ticks,
+        }
     }
 
     pub fn add_client(&mut self, client: u64) {
@@ -1780,6 +2039,9 @@ impl CityRuntime {
 
     pub fn remove_client(&mut self, client: u64) {
         self.encoder.remove_client(client);
+        if let Some(pp) = self.per_player.as_mut() {
+            pp.strategy.remove_client(client);
+        }
     }
 
     /// Route a hitscan ray into city damage via building bounding spheres.
@@ -2075,6 +2337,13 @@ impl CityRuntime {
                 self.stress_summary = read_stress_summary(&mut self.stress_report, world);
                 match post_step_result {
                     Ok(output) => {
+                        self.released.clear();
+                        for batch in &output.batches {
+                            for promotion in &batch.promoted_islands {
+                                self.released.extend(promotion.chunks.iter().map(|&n| (promotion.structure_id, n)));
+                            }
+                            self.released.extend(batch.migrations.iter().filter(|m| m.from_island_id == 0).map(|m| (batch.structure_id, m.chunk_id)));
+                        }
                         // Timed, as the Physx arm's ingest is: this was the
                         // one child of the native step with no span, and at
                         // 19k awake bodies it was the largest one.
@@ -2084,6 +2353,7 @@ impl CityRuntime {
                             &mut self.capture,
                             &mut self.encoder,
                             &mut self.live,
+                            &mut self.per_player,
                             &self.manifest,
                             self.pose_feed.as_deref(),
                             sim_tick,
@@ -2128,6 +2398,7 @@ impl CityRuntime {
                     &mut self.capture,
                     &mut self.encoder,
                     &mut self.live,
+                    &mut self.per_player,
                     &self.manifest,
                     self.pose_feed.as_deref(),
                     sim_tick,
@@ -2144,6 +2415,7 @@ impl CityRuntime {
                         &mut self.capture,
                         &mut self.encoder,
                         &mut self.live,
+                        &mut self.per_player,
                         &self.manifest,
                         self.pose_feed.as_deref(),
                         sim_tick,
@@ -2191,6 +2463,7 @@ impl CityRuntime {
                                     &mut self.capture,
                                     &mut self.encoder,
                                     &mut self.live,
+                                    &mut self.per_player,
                                     &self.manifest,
                                     self.pose_feed.as_deref(),
                                     sim_tick,
@@ -2214,6 +2487,15 @@ impl CityRuntime {
                     }
                 }
             }
+        }
+        // Wire 4: the per-player events replace every v2 reliable message
+        // (topology, baselines, hashes); the client derives its ledger from
+        // the events and checks it against their own hashes.
+        if let Some(pp) = self.per_player.as_mut() {
+            reliable.clear();
+            reliable.append(&mut pp.staged_reliable);
+            self.last_encode_ms = started.elapsed().as_secs_f32() * 1000.0;
+            return reliable;
         }
         if let Some(live) = self.live.as_mut() {
             reliable.append(&mut live.staged_reliable);
@@ -2356,6 +2638,7 @@ impl CityRuntime {
                         &mut self.capture,
                         &mut self.encoder,
                         &mut self.live,
+                        &mut self.per_player,
                         &self.manifest,
                         self.pose_feed.as_deref(),
                         sim_tick,
@@ -2373,6 +2656,13 @@ impl CityRuntime {
                 staged.snapshot_ms,
                 ingest_started.elapsed().as_secs_f32() * 1000.0,
             );
+        }
+        // Wire 4: as in `step`, the per-player events and nothing of v2's.
+        if let Some(pp) = self.per_player.as_mut() {
+            reliable.clear();
+            reliable.append(&mut pp.staged_reliable);
+            self.last_encode_ms += started.elapsed().as_secs_f32() * 1000.0;
+            return reliable;
         }
         if let Some(live) = self.live.as_mut() {
             reliable.append(&mut live.staged_reliable);
@@ -2450,6 +2740,9 @@ impl CityRuntime {
     /// horizon (`ChunkStreamEncoder::note_link_rtt`).
     pub fn note_link_rtt(&mut self, client: u64, rtt_ms: f32) {
         self.encoder.note_link_rtt(client, rtt_ms);
+        if let Some(pp) = self.per_player.as_mut() {
+            pp.strategy.note_link_rtt(client, rtt_ms);
+        }
     }
 
     /// `client_datagrams` under this client's link allowance (the rate
@@ -2652,6 +2945,7 @@ impl CityRuntime {
     /// structure), for energy accounting; empty off the native backend.
     pub fn native_crushed_chunks(&self) -> Vec<(u32, u32)> {
         match &self.backend {
+            #[cfg(feature = "native-destruction")]
             CityBackend::Native(backend) => backend.crushes().iter().map(|c| (c.structure_id, c.chunk_id)).collect(),
             _ => Vec::new(),
         }
@@ -3092,6 +3386,118 @@ mod tests {
             vibe_land_destruction::wire::CITY_WIRE_VERSION
         );
         assert!(city.live.is_none(), "v2 must not gain a v3 encoder");
+    }
+
+    #[test]
+    fn wire_4_is_chosen_by_the_citypp_prefix_or_the_env_default() {
+        assert_eq!(city_wire_version_with("citypp-a", None), CITY_WIRE_PER_PLAYER);
+        assert_eq!(city_wire_version_with("citypp", Some("3")), CITY_WIRE_PER_PLAYER);
+        assert_eq!(
+            city_wire_version_with("cityv3-a", Some("4")),
+            vibe_land_destruction::wire::CITY_WIRE_V3
+        );
+        assert_eq!(city_wire_version_with("city-default", Some("4")), CITY_WIRE_PER_PLAYER);
+        // The default stays v2: unset, unparsable or unknown.
+        for env in [None, Some(""), Some("x"), Some("9")] {
+            assert_eq!(
+                city_wire_version_with("city-default", env),
+                vibe_land_destruction::wire::CITY_WIRE_VERSION
+            );
+        }
+    }
+
+    #[test]
+    fn reset_keeps_a_wire_4_match_on_wire_4() {
+        let mut city = CityRuntime::synthetic(60).expect("synthetic city");
+        city.set_wire_version(CITY_WIRE_PER_PLAYER);
+        assert_eq!(city.wire_version(), CITY_WIRE_PER_PLAYER);
+        city.reset(60, None).expect("synthetic reset");
+        assert_eq!(city.wire_version(), CITY_WIRE_PER_PLAYER, "reset downgraded wire 4");
+        assert!(city.is_per_player());
+        assert!(city.live.is_none());
+    }
+
+    /// A wire-4 match end to end against the client's own core: the join is
+    /// one per-player bootstrap, every reliable packet is a per-player events
+    /// packet (no v2 topology, baseline or hash), the sends are keyframe
+    /// datagrams (and event copies), acks feed back, and the client's
+    /// structure hashes agree with the server's after real fractures.
+    #[test]
+    fn a_wire_4_match_streams_per_player_packets_a_client_core_agrees_with() {
+        use vibe_land_perplayer::wire::{PKT_PP_BOOTSTRAP, PKT_PP_EVENTS, PKT_PP_KEYFRAMES};
+        let mut city = CityRuntime::synthetic(60).expect("synthetic city");
+        city.set_wire_version(CITY_WIRE_PER_PLAYER);
+        let client_id = 7u64;
+        city.add_client(client_id);
+        let boot = city.per_player_join(client_id, 0);
+        assert_eq!(boot.iter().map(|p| p[0]).collect::<Vec<_>>(), vec![PKT_PP_BOOTSTRAP]);
+
+        let gravity_y = -(vibe_netcode::movement::GRAVITY as f32);
+        let mut client = vibe_land_perplayer::client::Client::new(
+            vibe_land_destruction::per_player::structure_defs(&city.manifest),
+            vibe_land_perplayer::predict::Physics::at_hz(60, gravity_y),
+            60,
+            5.0,
+        );
+        client.ingest(&boot[0], 0.0);
+
+        // Shoot the first building a few times from outside it.
+        let (centre, radius) = city.structure_centers[0];
+        let origin = centre + Vec3::new(radius * 3.0, 0.0, 0.0);
+        let camera = Camera {
+            eye: origin,
+            direction: Vec3::NEG_X,
+            fov_degrees: 80.0,
+        };
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        let (mut events, mut datagrams) = (0usize, 0usize);
+        for tick in 1..=360u32 {
+            if tick % 30 == 1 && tick < 200 {
+                city.apply_shot_ray(origin, Vec3::NEG_X, None);
+            }
+            for packet in city.step(tick, 1.0 / 60.0, [0.0, gravity_y, 0.0], None) {
+                assert_eq!(packet[0], PKT_PP_EVENTS, "a wire-4 match sent a v2 reliable packet");
+                events += 1;
+                client.ingest(&packet, ms(tick));
+            }
+            if tick % city.send_interval_ticks() == 0 {
+                city.per_player_begin_send(tick);
+                let send = city.per_player_send(client_id, camera, tick, SendBudget::Full);
+                for packet in send.packets {
+                    assert!(
+                        packet.bytes[0] == PKT_PP_KEYFRAMES || packet.bytes[0] == PKT_PP_EVENTS,
+                        "unexpected kind {} on a wire-4 send",
+                        packet.bytes[0]
+                    );
+                    datagrams += 1;
+                    client.ingest(&packet.bytes, ms(tick));
+                }
+                if let Some((newest, mask)) = client.ack() {
+                    city.per_player_ack(client_id, newest, mask, Some(client.events_through()), &client.take_missing_baselines());
+                }
+            }
+            client.advance(ms(tick));
+        }
+        client.advance(ms(400));
+        let stats = city.per_player_stats().expect("wire-4 stats");
+        assert!(events > 0 && datagrams > 0, "events {events}, datagrams {datagrams}");
+        assert!(stats.fractures > 0, "the shots broke nothing: {stats:?}");
+        assert!(client.stats.hash_checks > 0, "no hash reached the client");
+        assert_eq!(client.stats.hash_mismatches, 0, "the client's structure diverged");
+        assert_eq!(client.stats.decode_errors, 0);
+    }
+
+    /// The default (v2) match is untouched: v2 reliable packets, no wire-4 ones.
+    #[test]
+    fn a_v2_match_sends_no_per_player_packets() {
+        let mut city = CityRuntime::synthetic(60).expect("synthetic city");
+        city.set_wire_version(vibe_land_destruction::wire::CITY_WIRE_VERSION);
+        city.add_client(7);
+        assert!(!city.is_per_player());
+        assert!(city.per_player_join(7, 0).is_empty());
+        let reliable = city.step(TOPO_HASH_INTERVAL_TICKS, 1.0 / 60.0, [0.0, -9.81, 0.0], None);
+        assert!(reliable.iter().any(|p| p[0] == vibe_land_destruction::wire::PKT_CITY_TOPO_HASH));
+        assert!(reliable.iter().all(|p| p[0] < 132 || p[0] > 135));
     }
 }
 

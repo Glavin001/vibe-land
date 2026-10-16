@@ -3,14 +3,6 @@
 # head, and this checkout contains each vibe-land branch's changes to what the
 # bridge and server build from (scripts/fidelity/provenance.sh).
 # repo	branch (a|b: either head counts, e.g. a branch or the merge that took it)	what it carries
-physx	feat/impact-capacity	impact capacity E and impact-pressure crush (VIBE_IMPACT_CAPACITY)
-physx	perf/rotation-convergence	section rotation's solve convergence (VIBE_SECTION_ROTATION)
-physx	feat/section-rotational-stiffness	rotational stiffness from the real section (VIBE_SECTION_ROTATION)
-physx	fix/crush-in-correction	crush in the correction pass (VIBE_NATIVE_CRUSH)
-physx	fix/mac-ctest-baseline	the destruction ctest gate on CuMetal
+physx	clean/high-fidelity	the clean SDK (2026-10-08): section bending and rotation, Krylov carry, crush in the correction pass, the Mac ctest gate, the corrected warm start, re-bearing, Mohr-Coulomb shear, shear stiffness (off); no impact machinery
 vibe-land	perf/rotation-convergence	the bridge side of rotation convergence
-vibe-land	fix/impact-convergence	the impact solve's convergence work and its oracles
-physx	fix/static-ductile-steel	steel joints yield and neck in the static verdict (PX_DESTRUCTION_STATIC_DUCTILE)
-physx	feat/rebearing	a bearing joint whose fasteners fail bears on as a unilateral contact (PX_DESTRUCTION_REBEARING, VIBE_REBEARING)
 vibe-land	feat/rebearing	the bridge side of re-bearing (VIBE_REBEARING -> PX_DESTRUCTION_REBEARING)
-physx	feat/mohr-coulomb-shear	an intact joint's shear grows with the compression across it, Mohr-Coulomb (PX_DESTRUCTION_MOHR_COULOMB_SHEAR, VIBE_MOHR_COULOMB_SHEAR)

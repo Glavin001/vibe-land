@@ -8,7 +8,10 @@ export interface NativeTrace {world:unknown;frames:{input:InputCmd;sample:Vehicl
 /** Runs shipping presentation against a pinned authority tape. All receive scheduling
  * and quality timestamps are integer ticks; performance.now() inside the predictor
  * is used only for its diagnostic accounting and is never used in this report. */
-export function replayVehicleTrace(trace:NativeTrace,proxy:VehicleProxy,sweep:Sweep,link:LinkCase,seed:number,sequenceOffset=0) {
+/** `onArrive(sourceTick)`: a snapshot of that tick reached the client (before it
+ * is observed), e.g. to change the world the predictor sweeps as the client
+ * would learn of it. */
+export function replayVehicleTrace(trace:NativeTrace,proxy:VehicleProxy,sweep:Sweep,link:LinkCase,seed:number,sequenceOffset=0,onArrive?:(sourceTick:number)=>void) {
   if(!Array.isArray(trace.frames)||trace.frames.length<180)throw Error('Need at least 180 native frames');
   const firstTime=trace.frames[0].sample.serverTimeUs;
   trace.frames.forEach((f,i)=>{
@@ -35,6 +38,7 @@ export function replayVehicleTrace(trace:NativeTrace,proxy:VehicleProxy,sweep:Sw
     driver.record(7,[input(tick)]);
     while(cursor<packets.length && packets[cursor].arrivalTick<=tick) {
       const p=packets[cursor++];if(p.dropped)continue;
+      onArrive?.(p.sourceTick);
       driver.observe(7,sample(p.sourceTick),input(p.sourceTick).seq,proxy,tick*1000/HZ);
       observer.push(7,sample(p.sourceTick));
     }
