@@ -43,6 +43,9 @@ public:
 	void SetInput(const VlInput& Input);
 	/** Where sounds are heard from (Unreal space): the camera, as the web hears from its camera. */
 	void SetListener(const FVector& Position);
+	/** What a shot along the ray would hit among the other players, as the server classifies hitscan
+	 * (0 none, 1 body, 2 head), blocked by standing buildings; the player id into OutPlayer. */
+	uint32 AimTarget(const FVector& Origin, const FVector& Direction, uint32* OutPlayer = nullptr) const;
 	/** The sound mix (the web's sound settings): VL_MIX_* preset at a VL_RANGE_* dynamic range. Kept
 	 * across reconnects. */
 	void SetMix(uint32 Preset, uint32 Range);

@@ -143,6 +143,17 @@ void UVibeNetSubsystem::SetMix(uint32 Preset, uint32 Range)
 	}
 }
 
+uint32 UVibeNetSubsystem::AimTarget(const FVector& Origin, const FVector& Direction, uint32* OutPlayer) const
+{
+	if (!Client)
+	{
+		return 0;
+	}
+	const float O[3] = { static_cast<float>(Origin.X), static_cast<float>(Origin.Y), static_cast<float>(Origin.Z) };
+	const float D[3] = { static_cast<float>(Direction.X), static_cast<float>(Direction.Y), static_cast<float>(Direction.Z) };
+	return vl_client_aim_target(Client, O, D, OutPlayer);
+}
+
 void UVibeNetSubsystem::SetListener(const FVector& Position)
 {
 	if (Client)

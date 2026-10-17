@@ -1286,6 +1286,7 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		int32 Shots = 0;
 		double NextShot = 0.0;
 		double StandingPelvisZ = 0.0;
+		uint32 CrosshairZone = 0;
 		double LowestPelvisZ = TNumericLimits<double>::Max();
 		double LastPelvisZ = 0.0;
 		int32 PelvisSamples = 0;
@@ -1366,6 +1367,13 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 			Click();
 			S->Shots += 1;
 			S->NextShot = Now() + 0.15;
+			if (const APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0))
+			{
+				if (const AVibeCityHUD* Hud = Cast<AVibeCityHUD>(PC->GetHUD()))
+				{
+					S->CrosshairZone = FMath::Max(S->CrosshairZone, Hud->CrosshairZone());
+				}
+			}
 		}
 		if (Now() > S->Deadline)
 		{
@@ -1409,6 +1417,8 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		TestEqual(TEXT("the web's ragdoll rig: 12 joints"), Players ? Players->RagdollJoints() : 0, 12);
 		TestTrue(TEXT("the dead player ragdolls"), S->PelvisSamples > 0);
 		TestTrue(TEXT("the ragdoll falls: its pelvis drops below half its standing height"), S->PelvisSamples > 0 && S->LastPelvisZ < S->StandingPelvisZ * 0.5);
+		// The crosshair turned red over them while aimed at (the server's hitscan classifier).
+		TestTrue(FString::Printf(TEXT("the crosshair marked the target (zone %u)"), S->CrosshairZone), S->CrosshairZone > 0);
 		// Their energy, dropped where they died (server kill_player_with_cause, PKT_BATTERY_SYNC):
 		// the core lists the battery and AVibeCityBatteries draws one cell per listed battery.
 		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))

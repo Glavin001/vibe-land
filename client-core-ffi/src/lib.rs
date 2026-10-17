@@ -27,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 17;
+pub const VL_ABI_VERSION: u32 = 18;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -730,6 +730,25 @@ pub unsafe extern "C" fn vl_catalog(out_materials: *mut *const VlMaterial, out_c
         }
         Err(_) => VL_ERR_PANIC,
     }
+}
+
+/// What a shot along (origin, dir) in the renderer's space would hit among the other players drawn
+/// in the last frame, as the server classifies hitscan, blocked by standing buildings: returns the
+/// zone (0 none, 1 body, 2 head) and writes the player id to `player` (when not null). For the
+/// crosshair's target highlight.
+///
+/// # Safety
+/// `client` must be live; `origin` and `dir` point to three floats; `player` null or writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_aim_target(client: *const VlClient, origin: *const f32, dir: *const f32, player: *mut u32) -> u32 {
+    let (Some(c), false, false) = (client.as_ref(), origin.is_null(), dir.is_null()) else { return 0 };
+    let o = [*origin, *origin.add(1), *origin.add(2)];
+    let d = [*dir, *dir.add(1), *dir.add(2)];
+    let (zone, id) = catch_unwind(AssertUnwindSafe(|| c.core.aim_target(o, d))).unwrap_or((0, 0));
+    if !player.is_null() {
+        *player = id;
+    }
+    zone
 }
 
 /// Where sounds are heard from, in the renderer's space (a spectator's camera; without it the

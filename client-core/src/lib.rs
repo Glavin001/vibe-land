@@ -526,6 +526,9 @@ impl ClientCore {
                         next_input_seq: self.bundler.as_ref().map_or(0, |b| u32::from(b.next_seq())),
                         prediction_offset_m: self.predictor.offset().length(),
                         acked_pos: self.space.pos(players.acked_pos),
+                        melee_cooldown_s: self.last_melee_us.map_or(0.0, |last| {
+                            (f64::from(MELEE_COOLDOWN_MS) / 1000.0 - now_us.saturating_sub(last) as f64 / 1e6).max(0.0) as f32
+                        }),
                     };
                 }
             }
@@ -858,6 +861,36 @@ impl ClientCore {
 
     /// Put the player at a pose (the web's aerial camera: leaving it drops the player where the
     /// camera is). Renderer space; sent on the reliable stream; the server rate-limits it.
+    /// What a shot along the ray (renderer space) would hit among the other players drawn this
+    /// frame, classified as the server classifies hitscan (netcode lag_comp
+    /// `classify_player_hitscan`: body capsule and head ball) and blocked by standing buildings:
+    /// `(zone, player)`, zone 0 none, 1 body, 2 head (`HIT_ZONE_*`).
+    pub fn aim_target(&self, origin: [f32; 3], dir: [f32; 3]) -> (u32, u32) {
+        let cfg = vibe_netcode::movement::MoveConfig::default();
+        let o = self.space.pos_to_server(origin);
+        let d = (self.space.pos_to_server(dir) - self.space.pos_to_server([0.0; 3])).normalize_or_zero();
+        let mut best: Option<(f32, u32, u32)> = None;
+        for p in &self.frame.remote_players {
+            if p.state_flags & crate::frame::VL_STATE_DEAD != 0 {
+                continue;
+            }
+            let c = self.space.pos_to_server(p.pos);
+            if let Some(hit) = vibe_netcode::lag_comp::classify_player_hitscan(o.to_array(), d.to_array(), c.to_array(), cfg.capsule_half_segment, cfg.capsule_radius, None) {
+                let zone = match hit.zone {
+                    vibe_netcode::lag_comp::HitZone::Head => 2,
+                    _ => 1,
+                };
+                if best.map_or(true, |(t, ..)| hit.distance < t) {
+                    best = Some((hit.distance, zone, p.player_id));
+                }
+            }
+        }
+        match best {
+            Some((t, zone, id)) if !self.city.as_ref().is_some_and(|c| c.segment_blocked(o, o + d * t, 0.0)) => (zone, id),
+            _ => (0, 0),
+        }
+    }
+
     pub fn camera_drop(&mut self, pos: [f32; 3], yaw: f32, pitch: f32) {
         if self.state != VlCoreState::Playing {
             return;
@@ -945,4 +978,24 @@ fn emit_sound(director: &mut audio::AudioDirector, activity: &mut audio::Activit
     let arrival = audio::SoundEvent { at_ms: e.at_ms + f64::from(audio::propagation_delay_ms(e.position.distance(listener))), ..e.clone() };
     activity.add(&arrival, listener, now_ms, 0.0);
     director.enqueue(e);
+}
+
+#[cfg(test)]
+mod aim_tests {
+    use super::*;
+
+    #[test]
+    fn aim_target_classifies_as_the_server() {
+        let mut core = ClientCore::new(Space::Server);
+        // A player standing 10 m ahead (+z), capsule centre 0.8 m up.
+        core.frame.remote_players.push(crate::frame::VlPlayer { player_id: 7, pos: [0.0, 0.8, 10.0], ..Default::default() });
+        let eye = [0.0, 0.8, 0.0];
+        assert_eq!(core.aim_target(eye, [0.0, 0.0, 1.0]), (1, 7), "level aim hits the body");
+        // Toward the head ball's centre, 0.75 m above the capsule centre.
+        let up = 0.75f32 / 10.0;
+        assert_eq!(core.aim_target(eye, [0.0, up, 1.0]).0, 2, "the head");
+        assert_eq!(core.aim_target(eye, [0.5, 0.0, 1.0]), (0, 0), "a miss to the side");
+        core.frame.remote_players[0].state_flags = crate::frame::VL_STATE_DEAD;
+        assert_eq!(core.aim_target(eye, [0.0, 0.0, 1.0]).0, 0, "the dead are not targets");
+    }
 }

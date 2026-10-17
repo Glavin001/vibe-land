@@ -113,6 +113,8 @@ pub struct VlLocal {
     /// with (the drawn pose is sampled later in the interpolation buffer): the pair to measure
     /// movement per applied input frame with.
     pub acked_pos: [f32; 3],
+    /// Seconds until a melee is allowed again (the server's `MELEE_COOLDOWN_MS`); 0 when ready.
+    pub melee_cooldown_s: f32,
 }
 
 /// What the renderer's player is doing this frame, in the renderer's space: axes in [-1, 1]

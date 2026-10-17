@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 17
+#define VL_ABI_VERSION 18
 
 #define VL_OK 0
 
@@ -343,6 +343,10 @@ typedef struct VlLocal {
    * movement per applied input frame with.
    */
   float acked_pos[3];
+  /**
+   * Seconds until a melee is allowed again (the server's `MELEE_COOLDOWN_MS`); 0 when ready.
+   */
+  float melee_cooldown_s;
 } VlLocal;
 
 /**
@@ -1180,6 +1184,20 @@ int32_t vl_client_chunk_surfaces(struct VlClient *client,
  * `out_materials` and `out_count` must be writable.
  */
 int32_t vl_catalog(const struct VlMaterial **out_materials, size_t *out_count);
+
+/**
+ * What a shot along (origin, dir) in the renderer's space would hit among the other players drawn
+ * in the last frame, as the server classifies hitscan, blocked by standing buildings: returns the
+ * zone (0 none, 1 body, 2 head) and writes the player id to `player` (when not null). For the
+ * crosshair's target highlight.
+ *
+ * # Safety
+ * `client` must be live; `origin` and `dir` point to three floats; `player` null or writable.
+ */
+uint32_t vl_client_aim_target(const struct VlClient *client,
+                              const float *origin,
+                              const float *dir,
+                              uint32_t *player);
 
 /**
  * Where sounds are heard from, in the renderer's space (a spectator's camera; without it the
