@@ -1,0 +1,17 @@
+[package]
+name = "vibe-land-rubble-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "vibe-land's rigid-body world on rubble (AVBD on the GPU through wgpu): no PhysX"
+
+# rubble is a sibling checkout, the way physx-bridge reaches ../../PhysX: from
+# the main checkout ../../rubble-vibe is ~/Development/rubble-vibe, and a
+# worktree under .claude/worktrees/ reaches it through the rubble-vibe symlink
+# beside it. Its build compiles Slang kernels, so `slangc` must be on PATH (or
+# SLANGC set).
+[dependencies]
+engine-webgpu = { path = "../../rubble-vibe/engine/crates/engine-webgpu" }
+engine-schema = { path = "../../rubble-vibe/engine/crates/engine-schema" }
+engine-vehicle = { path = "../../rubble-vibe/engine/crates/engine-vehicle" }
+glam = { version = "0.29", features = ["bytemuck"] }
+anyhow = "1"

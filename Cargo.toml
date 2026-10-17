@@ -4,6 +4,7 @@ members = [
     "netcode",
     "perplayer",
     "physx-bridge",
+    "rubble-bridge",
     "shared",
     "server",
     "sim-native",
