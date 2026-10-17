@@ -92,6 +92,10 @@ private:
 	TSet<uint64> DirtyBodies;
 	/** Per catalog entry: (texture-array layer, metalness), and whether it is glass. */
 	TArray<FVector2D> CatalogLayerMetal;
+	/** Per catalog entry: the factor on the core's tile UVs for the material drawn (1, or
+	 * metres_per_tile / hd_metres_per_tile with the 2K sources). */
+	TArray<float> CatalogUvScale;
+	bool bHdMaterial = false;
 	TArray<bool> CatalogGlass;
 	FBox Bounds = FBox(ForceInit);
 	bool bCityBuilt = false;

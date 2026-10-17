@@ -53,4 +53,6 @@ private:
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UProceduralMeshComponent> Ground;
+
+	bool bHdGround = false;
 };

@@ -6,6 +6,8 @@
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "ProceduralMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 #include "vibe_client_core.h"
@@ -60,10 +62,13 @@ AVibeCityEnvironment::AVibeCityEnvironment()
 	Ground->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Ground->SetCastShadow(false);
 
+	// The same chunk material the city wears (2K sources when built, as the director chooses).
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Chunk(TEXT("/Game/VibeCity/Materials/M_VibeCityChunk.M_VibeCityChunk"));
-	if (Chunk.Get())
+	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Hd(TEXT("/Game/VibeCity/Materials/M_VibeCityChunkHD.M_VibeCityChunkHD"));
+	bHdGround = Hd.Get() && !FParse::Param(FCommandLine::Get(), TEXT("VibeWebTextures"));
+	if (UMaterialInterface* Material = bHdGround ? Hd.Get() : Chunk.Get())
 	{
-		Ground->SetMaterial(0, Chunk.Get());
+		Ground->SetMaterial(0, Material);
 	}
 }
 
@@ -99,7 +104,8 @@ void AVibeCityEnvironment::BuildGround()
 			Grass = static_cast<int32>(i);
 		}
 	}
-	const float TileM = Grass != INDEX_NONE ? Catalog[Grass].metres_per_tile : 2.0f;
+	const float TileM = Grass == INDEX_NONE ? 2.0f
+		: (bHdGround && Catalog[Grass].hd_metres_per_tile > 0.0f ? Catalog[Grass].hd_metres_per_tile : Catalog[Grass].metres_per_tile);
 	const FVector2D LayerMetal(Grass != INDEX_NONE ? Catalog[Grass].layer : 0, 0.0);
 
 	const double R = GroundHalfExtentCm;

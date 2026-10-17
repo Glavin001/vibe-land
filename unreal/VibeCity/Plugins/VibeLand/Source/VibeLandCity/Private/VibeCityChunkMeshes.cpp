@@ -69,8 +69,10 @@ void AVibeCityDirector::BuildCity(UVibeNetSubsystem* NetSubsystem)
 	vl_catalog(&Catalog, &CatalogCount);
 	CatalogLayerMetal.SetNum(static_cast<int32>(CatalogCount));
 	CatalogGlass.SetNum(static_cast<int32>(CatalogCount));
+	CatalogUvScale.SetNum(static_cast<int32>(CatalogCount));
 	for (size_t i = 0; i < CatalogCount; ++i)
 	{
+		CatalogUvScale[i] = bHdMaterial && Catalog[i].hd_metres_per_tile > 0.0f ? Catalog[i].metres_per_tile / Catalog[i].hd_metres_per_tile : 1.0f;
 		CatalogLayerMetal[i] = FVector2D(FMath::Max(Catalog[i].layer, 0), Catalog[i].metalness);
 		CatalogGlass[i] = (Catalog[i].flags & VL_MATERIAL_GLASS) != 0;
 	}
@@ -127,6 +129,7 @@ void AVibeCityDirector::AppendChunk(int32 ChunkIndex, const FTransform& ToCompon
 		const bool bGlass = CatalogGlass.IsValidIndex(static_cast<int32>(Material)) && CatalogGlass[Material];
 		FSectionBuffers& S = bGlass ? Glass : Opaque;
 		const FVector2D LayerMetal = CatalogLayerMetal.IsValidIndex(static_cast<int32>(Material)) ? CatalogLayerMetal[Material] : FVector2D::ZeroVector;
+		const double UvScale = CatalogUvScale.IsValidIndex(static_cast<int32>(Material)) ? CatalogUvScale[Material] : 1.0;
 		for (uint32 k = 0; k < 3; ++k)
 		{
 			const uint32 V = R.first_vertex + M.indices[R.first_index + t + k];
@@ -137,7 +140,7 @@ void AVibeCityDirector::AppendChunk(int32 ChunkIndex, const FTransform& ToCompon
 			// Unreal derives the binormal as normal x tangent, flipped when bFlipTangentY; the core's
 			// w is +1 when normal x tangent already points along +v.
 			S.Tangents.Add(FProcMeshTangent(ToComponent.TransformVectorNoScale(FVector(Tg[0], Tg[1], Tg[2])), Tg[3] < 0.0f));
-			S.UV0.Add(FVector2D(M.tile_uvs[V][0], M.tile_uvs[V][1]));
+			S.UV0.Add(FVector2D(M.tile_uvs[V][0], M.tile_uvs[V][1]) * UvScale);
 			S.UV1.Add(LayerMetal);
 		}
 	}

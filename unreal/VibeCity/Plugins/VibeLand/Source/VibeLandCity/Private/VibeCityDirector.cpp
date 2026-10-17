@@ -32,11 +32,19 @@ AVibeCityDirector::AVibeCityDirector()
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Chunk(TEXT("/Game/VibeCity/Materials/M_VibeCityChunk.M_VibeCityChunk"));
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Glass(TEXT("/Game/VibeCity/Materials/M_VibeCityGlass.M_VibeCityGlass"));
 	ChunkMaterial = Chunk.Get();
+	// The 2K sources (import-city-materials.sh --hd) when they were built, unless -VibeWebTextures.
+	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Hd(TEXT("/Game/VibeCity/Materials/M_VibeCityChunkHD.M_VibeCityChunkHD"));
+	if (Hd.Get() && !FParse::Param(FCommandLine::Get(), TEXT("VibeWebTextures")))
+	{
+		ChunkMaterial = Hd.Get();
+		bHdMaterial = true;
+	}
 	// -VibeFlatChunks: the chunk material without its normal map.
 	if (FParse::Param(FCommandLine::Get(), TEXT("VibeFlatChunks")))
 	{
 		static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Flat(TEXT("/Game/VibeCity/Materials/M_VibeCityChunkFlat.M_VibeCityChunkFlat"));
 		ChunkMaterial = Flat.Get();
+		bHdMaterial = false;
 	}
 	GlassMaterial = Glass.Get();
 }
