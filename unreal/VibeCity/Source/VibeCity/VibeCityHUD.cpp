@@ -12,6 +12,12 @@
 #include "VibeCityGrass.h"
 #include "VibeNetSubsystem.h"
 #include "VibePlayerPawn.h"
+#include "HttpModule.h"
+#include "Interfaces/IHttpRequest.h"
+#include "Interfaces/IHttpResponse.h"
+#include "Dom/JsonObject.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 namespace
 {
@@ -505,6 +511,11 @@ void AVibeCityHUD::DrawHUD()
 		DrawControls(W, H, Scale, Pawn->IsInVehicle());
 	}
 	DrawGrassSync(W, H, Scale);
+	if (const APlayerController* PC = GetOwningPlayerController(); PC && PC->WasInputKeyJustPressed(EKeys::F9))
+	{
+		ToggleStats();
+	}
+	DrawStats(W, H, Scale, Now, Dt);
 	if (const AVibePlayerPawn* Pawn = Cast<AVibePlayerPawn>(GetOwningPawn()); Pawn && !bDead)
 	{
 		FString Hint;
@@ -549,4 +560,152 @@ void AVibeCityHUD::DrawHUD()
 	{
 		Banner(TEXT("Low energy"), FLinearColor(1.0f, 0.8f, 0.2f), H * 0.68f);
 	}
+}
+
+void AVibeCityHUD::PollMatchStats(double Now)
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	const UVibeNetSubsystem* Net = GameInstance ? GameInstance->GetSubsystem<UVibeNetSubsystem>() : nullptr;
+	if (!Net || bStatsPolling || Now - StatsPolledAt < 1.0 || Net->CurrentApiBaseUrl().IsEmpty())
+	{
+		return;
+	}
+	bStatsPolling = true;
+	StatsPolledAt = Now;
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+	Request->SetURL(Net->CurrentApiBaseUrl() / TEXT("match-stats") / Net->CurrentMatchId());
+	Request->SetVerb(TEXT("GET"));
+	Request->SetTimeout(5.0f);
+	TWeakObjectPtr<AVibeCityHUD> Self(this);
+	Request->OnProcessRequestComplete().BindLambda([Self](FHttpRequestPtr, FHttpResponsePtr Response, bool bOk) {
+		AVibeCityHUD* Hud = Self.Get();
+		if (!Hud)
+		{
+			return;
+		}
+		Hud->bStatsPolling = false;
+		TSharedPtr<FJsonObject> Json;
+		if (!bOk || !Response.IsValid() || Response->GetResponseCode() != 200
+			|| !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Response->GetContentAsString()), Json) || !Json.IsValid())
+		{
+			return;
+		}
+		// The headline numbers CityStatsOverlay leads with.
+		TArray<TPair<FString, FString>> Rows;
+		auto Num = [&Json](const TCHAR* Key) { double V = 0.0; return Json->TryGetNumberField(Key, V) ? V : -1.0; };
+		auto Add = [&Rows](const FString& Label, const FString& Value) { Rows.Emplace(Label, Value); };
+		FString Backend;
+		Json->TryGetStringField(TEXT("physics_backend"), Backend);
+		Add(TEXT("physics"), FString::Printf(TEXT("%s, step %.2f ms"), *Backend, Num(TEXT("physics_last_step_ms"))));
+		Add(TEXT("server tick"), FString::Printf(TEXT("%.0f"), Num(TEXT("server_tick"))));
+		Add(TEXT("players"), FString::Printf(TEXT("%.0f"), Num(TEXT("player_count"))));
+		Add(TEXT("bodies awake / all"), FString::Printf(TEXT("%.0f / %.0f"), Num(TEXT("physics_active_dynamic_bodies")), Num(TEXT("dynamic_body_count"))));
+		Add(TEXT("cars, batteries"), FString::Printf(TEXT("%.0f, %.0f"), Num(TEXT("vehicle_count")), Num(TEXT("battery_count"))));
+		if (const TSharedPtr<FJsonObject>* City = nullptr; Json->TryGetObjectField(TEXT("city"), City) && City)
+		{
+			double Structures = 0.0, Wire = 0.0;
+			(*City)->TryGetNumberField(TEXT("structures"), Structures);
+			(*City)->TryGetNumberField(TEXT("wire_version"), Wire);
+			const TSharedPtr<FJsonObject>* Step = nullptr;
+			double StepP95 = -1.0;
+			if ((*City)->TryGetObjectField(TEXT("window_step_ms"), Step) && Step)
+			{
+				(*Step)->TryGetNumberField(TEXT("p95"), StepP95);
+			}
+			Add(TEXT("city"), FString::Printf(TEXT("%.0f structures, wire %.0f, step p95 %.2f ms"), Structures, Wire, StepP95));
+		}
+		if (const TSharedPtr<FJsonObject>* Network = nullptr; Json->TryGetObjectField(TEXT("network"), Network) && Network)
+		{
+			double In = 0.0, Out = 0.0, Malformed = 0.0;
+			(*Network)->TryGetNumberField(TEXT("inbound_bps"), In);
+			(*Network)->TryGetNumberField(TEXT("outbound_bps"), Out);
+			(*Network)->TryGetNumberField(TEXT("malformed_packets"), Malformed);
+			Add(TEXT("server net"), FString::Printf(TEXT("in %.2f / out %.2f Mbps, %.0f malformed"), In * 8.0 / 1e6, Out * 8.0 / 1e6, Malformed));
+		}
+		Hud->ServerRows = MoveTemp(Rows);
+	});
+	Request->ProcessRequest();
+}
+
+void AVibeCityHUD::DrawStats(float W, float H, float Scale, double Now, float Dt)
+{
+	FrameTimes.Add(Dt);
+	if (FrameTimes.Num() > 240)
+	{
+		FrameTimes.RemoveAt(0, FrameTimes.Num() - 240, EAllowShrinking::No);
+	}
+	LastServerRows = LastClientRows = 0;
+	if (!bStatsOpen)
+	{
+		return;
+	}
+	PollMatchStats(Now);
+	const UGameInstance* GameInstance = GetGameInstance();
+	const UVibeNetSubsystem* Net = GameInstance ? GameInstance->GetSubsystem<UVibeNetSubsystem>() : nullptr;
+	if (!Net)
+	{
+		return;
+	}
+	const VlStats& S = Net->LastFrame().stats;
+	TArray<float> Sorted = FrameTimes;
+	Sorted.Sort();
+	double Sum = 0.0;
+	for (const float T : FrameTimes)
+	{
+		Sum += T;
+	}
+	const double Fps = Sum > 0.0 ? FrameTimes.Num() / Sum : 0.0;
+	const double P95 = Sorted.Num() ? Sorted[FMath::Min(Sorted.Num() - 1, FMath::FloorToInt(Sorted.Num() * 0.95))] * 1000.0 : 0.0;
+	const TArray<TPair<FString, FString>> ClientRows = {
+		{ TEXT("fps, frame p95"), FString::Printf(TEXT("%.0f, %.1f ms"), Fps, P95) },
+		{ TEXT("chunks, bodies"), FString::Printf(TEXT("%u, %u"), S.chunks, S.live_bodies) },
+		{ TEXT("players seen"), FString::Printf(TEXT("%u"), S.remote_players) },
+		{ TEXT("snapshots"), FString::Printf(TEXT("%llu"), S.snapshots) },
+		{ TEXT("keyframes (late)"), FString::Printf(TEXT("%llu (%llu)"), S.keyframes, S.late_keyframes) },
+		{ TEXT("events, fractures"), FString::Printf(TEXT("%llu, %llu"), S.events_applied, S.fractures) },
+		{ TEXT("hash checks / mismatches"), FString::Printf(TEXT("%llu / %llu"), S.hash_checks, S.hash_mismatches) },
+		{ TEXT("bootstraps, resyncs"), FString::Printf(TEXT("%llu, %llu"), S.bootstraps, S.resync_requests) },
+		{ TEXT("decode errors"), FString::Printf(TEXT("%llu"), S.decode_errors) },
+	};
+	UFont* Font = GEngine->GetSmallFont();
+	const TArray<TPair<FString, FString>> Server = ServerRows.Num() ? ServerRows : TArray<TPair<FString, FString>>{ { TEXT("…"), TEXT("fetching match stats") } };
+	const FString Title = FString::Printf(TEXT("Server · %s"), *Net->CurrentMatchId());
+	const FString Footer = TEXT("F9 closes · R resets the city · 1/2/3 rifle, cannon, meteor");
+	// Columns and rows sized from the text itself.
+	float LabelW = 0.0f, ValueW = 0.0f, RowH = 0.0f, TW = 0.0f, TH = 0.0f;
+	for (const TArray<TPair<FString, FString>>* Rows : { &Server, &ClientRows })
+	{
+		for (const TPair<FString, FString>& Row : *Rows)
+		{
+			GetTextSize(Row.Key, TW, TH, Font);
+			LabelW = FMath::Max(LabelW, TW);
+			RowH = FMath::Max(RowH, TH);
+			GetTextSize(Row.Value, TW, TH, Font);
+			ValueW = FMath::Max(ValueW, TW);
+		}
+	}
+	GetTextSize(Footer, TW, TH, Font);
+	const float Gap = 14.0f * Scale, Pad = 10.0f * Scale;
+	const float PanelW = FMath::Max(LabelW + Gap + ValueW, TW);
+	RowH += 3.0f * Scale;
+	const float X = W - PanelW - Pad - 16.0f * Scale;
+	float Y = 48.0f * Scale;
+	const int32 Lines = Server.Num() + ClientRows.Num() + 3;
+	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.6f), X - Pad, Y - Pad, PanelW + 2.0f * Pad, Lines * RowH + RowH * 0.5f + 2.0f * Pad);
+	auto Section = [&](const FString& Heading, const TArray<TPair<FString, FString>>& Rows) {
+		DrawText(Heading, FLinearColor(0.4f, 0.9f, 1.0f), X, Y, Font);
+		Y += RowH;
+		for (const TPair<FString, FString>& Row : Rows)
+		{
+			DrawText(Row.Key, FLinearColor(0.75f, 0.75f, 0.75f), X, Y, Font);
+			DrawText(Row.Value, FLinearColor::White, X + LabelW + Gap, Y, Font);
+			Y += RowH;
+		}
+	};
+	Section(Title, Server);
+	Y += RowH * 0.5f;
+	Section(TEXT("Client"), ClientRows);
+	DrawText(Footer, FLinearColor(0.6f, 0.6f, 0.6f), X, Y, Font);
+	LastServerRows = ServerRows.Num();
+	LastClientRows = ClientRows.Num();
 }

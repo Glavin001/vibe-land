@@ -112,9 +112,39 @@ bool FVibeCityPlayHud::RunTest(const FString& Parameters)
 		{
 			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("hud.png"), true, false);
 		}
+		// The city stats (F9): closed at first, then the server's match stats and the client's
+		// counters.
+		TestEqual(TEXT("the stats start closed"), Hud ? Hud->StatsOpen() : true, false);
+		if (Hud)
+		{
+			Hud->ToggleStats();
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this]()
+	{
+		AVibeCityHUD* Hud = HudOf(HudTestWorld());
+		AddInfo(FString::Printf(TEXT("stats: %d server rows, %d client rows"), Hud ? Hud->StatsServerRows() : -1, Hud ? Hud->StatsClientRows() : -1));
+		TestTrue(TEXT("the server's match stats arrived"), Hud && Hud->StatsServerRows() >= 5);
+		TestEqual(TEXT("the client's counters"), Hud ? Hud->StatsClientRows() : -1, 9);
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("stats.png"), true, false);
+		}
 		return true;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this]()
+	{
+		if (AVibeCityHUD* Hud = HudOf(HudTestWorld()))
+		{
+			Hud->ToggleStats();
+			TestFalse(TEXT("closed again"), Hud->StatsOpen());
+		}
+		return true;
+	}));
 	return true;
 }
 

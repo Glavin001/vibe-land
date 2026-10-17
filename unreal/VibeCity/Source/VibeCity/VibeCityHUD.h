@@ -16,6 +16,9 @@
  * tick rate, ping, download) and the connection banner (connecting, or why it dropped and when it
  * rejoins). Values come from the core.
  * The controls panel (ControlHintsOverlay.tsx) and the shared grass status (GrassLayoutSync.ts).
+ * F9 opens the city stats (CityStatsOverlay.tsx's readout): the server's match stats
+ * (/match-stats/<match>, fetched once a second while open) beside the client's stream counters. The
+ * web panel's render-tuning tools (cost sweeps, quality toggles, tapes) belong to its renderer.
  * While the aerial camera flies (or a drop is on its way) it draws no crosshair or weapon and shows
  * the web's flight panel instead (CityFlightControls.tsx).
  */
@@ -78,7 +81,24 @@ public:
 	const FString& GrassSyncShown() const { return LastGrassSync; }
 	/** Fold or unfold the controls panel (F1). */
 	void ToggleControls() { bControlsExpanded = !bControlsExpanded; }
+	/** Open or close the city stats (F9). */
+	void ToggleStats() { bStatsOpen = !bStatsOpen; }
+	bool StatsOpen() const { return bStatsOpen; }
+	/** Rows the stats panel drew last frame from the server's match stats, and from the client (tests). */
+	int32 StatsServerRows() const { return LastServerRows; }
+	int32 StatsClientRows() const { return LastClientRows; }
 private:
+	void DrawStats(float W, float H, float Scale, double Now, float Dt);
+	void PollMatchStats(double Now);
+	bool bStatsOpen = false;
+	bool bStatsPolling = false;
+	double StatsPolledAt = -1.0;
+	/** The last match stats, as rows (label, value). */
+	TArray<TPair<FString, FString>> ServerRows;
+	/** Frame times over the last second, for fps and the 95th percentile. */
+	TArray<float> FrameTimes;
+	int32 LastServerRows = 0;
+	int32 LastClientRows = 0;
 	int32 LastControlRows = 0;
 	FString LastControlsTitle;
 	FString LastGrassSync;
