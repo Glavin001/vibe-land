@@ -17,6 +17,8 @@
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 #include "Tests/AutomationCommon.h"
 #include "UObject/UObjectIterator.h"
 #include "UnrealClient.h"
@@ -332,6 +334,59 @@ bool FVibeCityRenderCompare::RunTest(const FString& Parameters)
 		{
 			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("compare-unreal.png"), false, false);
 			AddInfo(FString::Printf(TEXT("screenshot: %s"), *(ShotDir / TEXT("compare-unreal.png"))));
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.0f));
+	return true;
+}
+
+// VibeCity.Render.Species: painted reeds, wheat, corn and ferns drawn with their own shapes. Loads
+// client-core/tests/fixtures/grass_species_layout.json (four plots painted with the web's brushes
+// in front of the comparison pose), requires plants of each species drawn, and saves species.png
+// to -VibeShotDir= from beside the plots.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityRenderSpecies, "VibeCity.Render.Species",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityRenderSpecies::RunTest(const FString& Parameters)
+{
+	TSharedRef<double> Started = MakeShared<double>(0.0);
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Started]() {
+		AVibeCityGrass* Grass = Find<AVibeCityGrass>();
+		if (!Grass || Grass->DrawnPatches() < 4)
+		{
+			return false;
+		}
+		const FString Path = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("../../client-core/tests/fixtures/grass_species_layout.json"));
+		TArray<uint8> Body;
+		TestTrue(TEXT("species layout fixture read"), FFileHelper::LoadFileToArray(Body, *Path));
+		Grass->SetLayoutUrl(FString());
+		TestTrue(TEXT("species layout applied"), Grass->ApplyLayout(Body));
+		VibeCityCapture::Park(GameWorld(), FVector3f(0.0f, 3.0f, 131.0f), FVector3f(0.0f, 0.8f, 122.0f), 0.0f);
+		*Started = FPlatformTime::Seconds();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Started]() {
+		AVibeCityGrass* Grass = Find<AVibeCityGrass>();
+		bool bAll = Grass != nullptr;
+		for (uint32 S = 1; bAll && S <= 4; ++S)
+		{
+			bAll = Grass->DrawnOfSpecies(S) > 0;
+		}
+		if (!bAll && FPlatformTime::Seconds() - *Started < 30.0)
+		{
+			return false;
+		}
+		const TCHAR* Names[] = { TEXT("grass"), TEXT("reed"), TEXT("wheat"), TEXT("corn"), TEXT("fern") };
+		for (uint32 S = 1; S <= 4; ++S)
+		{
+			const int64 N = Grass ? Grass->DrawnOfSpecies(S) : 0;
+			TestTrue(FString::Printf(TEXT("%s plants drawn (%lld)"), Names[S], N), N > 0);
+		}
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("species.png"), false, false);
 		}
 		return true;
 	}));

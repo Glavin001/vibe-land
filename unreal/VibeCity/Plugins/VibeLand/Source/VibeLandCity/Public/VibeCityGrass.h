@@ -34,12 +34,18 @@ public:
 	/** For tests: patches with a mesh, and blades drawn across them. */
 	int32 DrawnPatches() const;
 	int64 DrawnBlades() const;
+	/** For tests: plants of a species (foliageProfiles.ts order) drawn now. */
+	int64 DrawnOfSpecies(uint32 Species) const;
 
 	/** The bare footprints (server space), from the client core once the manifest arrived. */
 	void SetExclusions(TArrayView<const VlGrassExclusion> InExclusions);
 
 	/** Where the shared grass layout is served (empty: the default meadow only). */
 	void SetLayoutUrl(const FString& Url) { LayoutUrl = Url; }
+
+	/** Apply a `/match-stats/<id>/grass` response (from the poll, or `vibe.grassfile <path>`, which
+	 * also stops polling). False when it is not a valid layout. */
+	bool ApplyLayout(TConstArrayView<uint8> Body);
 
 	/** For tests: the shared layout's revision and painted tiles (empty and 0 before one loads). */
 	const FString& PaintRevision() const { return Revision; }
@@ -55,6 +61,7 @@ private:
 		bool bReady = false;
 		int32 Band = -1;
 		int32 Drawn = 0;
+		int32 DrawnSpecies[5] = {};
 		TObjectPtr<UProceduralMeshComponent> Mesh;
 	};
 
