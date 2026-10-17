@@ -65,6 +65,7 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 |---|---|---|
 | M1: `vl-headless` 60 s | `--seconds 60 --meteor-after 10 --gate` | 3579 of 3578 snapshots, 0 decode errors, 0 hash mismatches, 16 fractures, a freed body fell at −9.810 m/s² |
 | M4: 5 minutes, ≥ 20 fractures | `--seconds 300 --meteor-after 10 --meteor-every 12 --gate --min-fractures 20` | 261 fractures, 0 hash mismatches, 0 decode errors, 17857 of 17856 snapshots, server at 0.993 of real time |
+| Web on the shared core: 5 minutes, every core flag on | `node scripts/web-core-soak.mjs` (headless Chromium, a meteor every 12 s) | 25 meteors, up to 1634 live bodies presented, 496 hash checks, 0 mismatches, 0 decode errors, no render stalls, no page errors |
 | Walk displacement | `VibeCity.Play.WalkAndShoot` | server velocity exact; 1.03 input frames applied per server tick |
 | Unreal suite | `scripts/unreal/play-tests.sh` | 15 of 15, and `KillRemote` with a stand-in |
 
