@@ -396,6 +396,21 @@ mod tests {
         (outputs, rows)
     }
 
+    /// A reset parks the old city and builds a new one in the same world;
+    /// rays (shots, meteor aiming) must find the new one.
+    #[test]
+    fn a_rebuilt_city_is_hit_by_rays() {
+        let world = world();
+        let mut city = RubbleCityDestruction::build(&column(), world.clone());
+        world.lock().unwrap().step().unwrap();
+        assert!(city.ray_hit([5.0, 1.5, 0.0], [-1.0, 0.0, 0.0], 20.0).is_some(), "first city not hit");
+        city.release();
+        let city = RubbleCityDestruction::build(&column(), world.clone());
+        world.lock().unwrap().step().unwrap();
+        let hit = city.ray_hit([5.0, 1.5, 0.0], [-1.0, 0.0, 0.0], 20.0);
+        assert!(hit.is_some(), "the rebuilt city is invisible to rays");
+    }
+
     /// Untouched, the column stands asleep: nothing freed, nothing streamed.
     #[test]
     fn an_untouched_column_stands_and_streams_nothing() {

@@ -3800,6 +3800,22 @@ mod tests {
         assert!(x < face_x, "the car drove into the building: x {x} vs facade {face_x}");
     }
 
+    /// A reset leaves exactly one mirror per chunk of the new city: the old
+    /// city's parked chunks lose theirs. (Left behind, they were moved to the
+    /// parking spot and overlapped there, and the Rapier broad phase spent
+    /// 77 ms a tick on their pairs: a collapse after a reset ran at 12 Hz.)
+    #[cfg(feature = "rubble")]
+    #[test]
+    fn a_reset_leaves_one_mirror_per_new_chunk() {
+        let (mut arena, mut city) = rubble_city();
+        let chunks: usize = city.manifest.structures.iter().map(|s| s.chunks.len()).sum();
+        arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        assert_eq!(arena.box_mirror_count(), chunks);
+        city.reset(60, None).expect("reset");
+        arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        assert_eq!(arena.box_mirror_count(), chunks, "the old city's mirrors were kept");
+    }
+
     /// The default (v2) match is untouched: v2 reliable packets, no wire-4 ones.
     #[test]
     fn a_v2_match_sends_no_per_player_packets() {

@@ -97,6 +97,9 @@ pub struct RubbleWorld {
     /// (`take_new_box_bodies`): a game that moves players outside rubble
     /// mirrors them.
     new_box_bodies: Vec<(BodyId, [f32; 3], [f32; 3])>,
+    /// Bodies `park` retired since the host last collected them
+    /// (`take_parked`), so mirrors of them can be dropped.
+    parked: Vec<BodyId>,
     config: WorldConfig,
 }
 
@@ -150,7 +153,7 @@ impl RubbleWorld {
         if config.hierarchical_grid {
             sim.set_grid_levels(Some(true));
         }
-        Ok(Self { sim, collider_body: Vec::new(), new_box_bodies: Vec::new(), config })
+        Ok(Self { sim, collider_body: Vec::new(), new_box_bodies: Vec::new(), parked: Vec::new(), config })
     }
 
     pub fn config(&self) -> WorldConfig {
@@ -344,6 +347,12 @@ impl RubbleWorld {
         b.angular_vel = [0.0; 3];
         b.position = parked;
         self.sim.write_bodies(id, &[b]);
+        self.parked.push(id);
+    }
+
+    /// The bodies `park` retired since the last call.
+    pub fn take_parked(&mut self) -> Vec<BodyId> {
+        std::mem::take(&mut self.parked)
     }
 
     /// Bring a parked sphere back as a dynamic body of `mass` at `position`,
@@ -609,6 +618,25 @@ mod tests {
         assert!(fastest <= bound, "a box reached {fastest} m/s, over the energy bound {bound}");
     }
 
+    /// Bodies added after the world has stepped -- asleep or awake -- are
+    /// found by rays like bodies added before (a city reset rebuilds into a
+    /// running world).
+    #[test]
+    fn bodies_added_to_a_running_world_are_hit_by_rays() {
+        for asleep in [false, true] {
+            let mut world = RubbleWorld::new(WorldConfig::default()).expect("wgpu device");
+            ground(&mut world);
+            world.step().unwrap();
+            let late = world.add_box_bodies(
+                &[BoxBody { position: [0.0, 1.5, 0.0], rotation: IDENTITY, half: [0.5; 3], box_offset: [0.0; 3], mass: 10.0, asleep }],
+                0,
+            )[0];
+            world.step().unwrap();
+            let hit = world.raycast(&[([5.0, 1.5, 0.0], [-1.0, 0.0, 0.0], 20.0, None)])[0];
+            assert_eq!(hit.map(|h| h.body), Some(late), "asleep={asleep}: a box added after a step is invisible to rays");
+        }
+    }
+
     #[test]
     fn a_ray_down_hits_the_ground_and_names_its_body() {
         let mut world = RubbleWorld::new(WorldConfig::default()).expect("wgpu device");
@@ -618,4 +646,5 @@ mod tests {
         assert_eq!(hit.body, 0);
     }
 }
+
 

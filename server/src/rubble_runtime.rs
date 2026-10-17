@@ -141,6 +141,11 @@ impl RubblePhysicsArena {
         })
     }
 
+    /// Box bodies other code made that are mirrored for players and vehicles.
+    pub fn box_mirror_count(&self) -> usize {
+        self.box_mirrors.len()
+    }
+
     /// The world, for the city to build its structures in.
     pub fn shared_world(&self) -> Arc<Mutex<RubbleWorld>> {
         self.world.clone()
@@ -198,6 +203,22 @@ impl RubblePhysicsArena {
 
     fn sync_mirrors(&mut self) {
         self.mirror_new_box_bodies();
+        // A parked body leaves the world: drop its mirror rather than moving
+        // it to the parking spot, where thousands of them would overlap and
+        // swamp the Rapier broad phase with pairs.
+        let parked = self.world().take_parked();
+        if !parked.is_empty() {
+            let parked: std::collections::HashSet<BodyId> = parked.into_iter().collect();
+            let sim = &mut self.rapier.dynamic.sim;
+            self.box_mirrors.retain(|(body, handle, ..)| {
+                if parked.contains(body) {
+                    sim.remove_static_collider(*handle);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
         let poses = self.world().bodies();
         let sim = &mut self.rapier.dynamic.sim;
         let mut moved = |handle: ColliderHandle, pose: Isometry3<f32>| {
