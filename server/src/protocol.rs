@@ -1,6 +1,5 @@
 use anyhow::{bail, ensure, Result};
 use bytes::{Buf, BufMut, BytesMut};
-use serde::{Deserialize, Serialize};
 
 // Re-export all shared types, constants, and utilities
 pub use vibe_land_shared::constants::*;
@@ -132,198 +131,6 @@ pub enum ServerReliablePacket {
 pub enum ServerDatagramPacket {
     Snapshot(SnapshotPacket),
     SnapshotV2(SnapshotV2Packet),
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SelfPlayerStateV2 {
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub yaw_i16: i16,
-    pub pitch_i16: i16,
-    pub hp: u8,
-    pub flags: u8,
-    pub support_handle: u16,
-    pub support_local_q2_5mm: [i16; 3],
-    pub support_velocity_cms: [i16; 3],
-    pub support_flags: u8,
-    pub support_angular_velocity_mrads: [i16; 3],
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RemotePlayerStateV2 {
-    pub handle: u8,
-    pub dx_q2_5mm: i16,
-    pub dy_q2_5mm: i16,
-    pub dz_q2_5mm: i16,
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub yaw_i16: i16,
-    pub pitch_i16: i16,
-    pub hp: u8,
-    pub flags: u8,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DynamicSphereStateV2 {
-    pub handle: u16,
-    pub dx_q2_5mm: i16,
-    pub dy_q2_5mm: i16,
-    pub dz_q2_5mm: i16,
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub wx_mrads: i16,
-    pub wy_mrads: i16,
-    pub wz_mrads: i16,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DynamicBoxStateV2 {
-    pub handle: u16,
-    pub dx_q2_5mm: i16,
-    pub dy_q2_5mm: i16,
-    pub dz_q2_5mm: i16,
-    pub qx_snorm: i16,
-    pub qy_snorm: i16,
-    pub qz_snorm: i16,
-    pub qw_snorm: i16,
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub wx_mrads: i16,
-    pub wy_mrads: i16,
-    pub wz_mrads: i16,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct VehicleStateV2 {
-    pub handle: u8,
-    pub vehicle_type: u8,
-    pub driver_handle: u8,
-    pub flags: u8,
-    pub dx_q2_5mm: i16,
-    pub dy_q2_5mm: i16,
-    pub dz_q2_5mm: i16,
-    pub qx_snorm: i16,
-    pub qy_snorm: i16,
-    pub qz_snorm: i16,
-    pub qw_snorm: i16,
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub wx_mrads: i16,
-    pub wy_mrads: i16,
-    pub wz_mrads: i16,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct SnapshotV2Packet {
-    pub server_tick: u32,
-    pub ack_input_seq: u16,
-    pub anchor_px_mm: i32,
-    pub anchor_py_mm: i32,
-    pub anchor_pz_mm: i32,
-    pub self_state: SelfPlayerStateV2,
-    pub remote_players: Vec<RemotePlayerStateV2>,
-    pub sphere_states: Vec<DynamicSphereStateV2>,
-    pub box_states: Vec<DynamicBoxStateV2>,
-    pub vehicle_states: Vec<VehicleStateV2>,
-    /// The server's wall clock when the snapshot was produced, µs modulo
-    /// 2^32 on a process-local origin. Encoded as a 4-byte trailer after the
-    /// vehicles: clients that predate it stop reading before it, and clients
-    /// that know it detect it by length. Server time on the wire is
-    /// `tick × 16.67 ms`, which runs slower than wall time whenever a tick
-    /// overruns; against this clock the client measures the simulation rate
-    /// instead of mistaking a slow server for network delay.
-    pub server_wall_us: u32,
-    /// Leave the self state's 21-byte support block out (12 bytes instead of
-    /// 33). Every client since before 2026-09-24 length-detects the block
-    /// (`decodeSnapshotV2Packet`: 33, 27 or 12 bytes) and reads an absent one
-    /// as no support, so this is only set when the block says nothing the
-    /// client uses: no support, or a support that is not moving (the client
-    /// reads only the support velocity). Never set together with `removals`,
-    /// whose section follows the trailer: a 12-byte block is detected by the
-    /// bytes left after the entities, which the section would add to. The
-    /// 3-byte `input_queue` section may go with it: 12 + 4 + 3 = 19 left,
-    /// under the 27 that would read as a support block.
-    pub compact_self: bool,
-    /// Entities this recipient's stream has stopped carrying (retired by the
-    /// server, or out of its interest), each restated in a few consecutive
-    /// snapshots. Encoded after the wall-clock trailer as a section (tag
-    /// [`SNAPSHOT_V2_REMOVALS_TAG`], count, entries), which clients that
-    /// predate it never read.
-    pub removals: Vec<SnapshotRemoval>,
-    /// The recipient's vehicle input queue as the server holds it this tick:
-    /// (depth, target depth), the target from the measured jitter of its
-    /// input arrivals. Sent to a driver while vehicle input pacing is on
-    /// (`VIBE_VEHICLE_INPUT_PACING`), whose client then paces its inputs to
-    /// keep the queue at the target. A section after the removals (tag
-    /// [`SNAPSHOT_V2_INPUT_QUEUE_TAG`], depth, target) older clients never read.
-    pub input_queue: Option<(u8, u8)>,
-}
-
-/// First byte of the input-queue section (after the removals, when any).
-pub const SNAPSHOT_V2_INPUT_QUEUE_TAG: u8 = 0xE8;
-
-/// One entry of the SnapshotV2 removals section: `handle` is a dynamic body's
-/// handle, or `0x8000 | vehicle handle` (the convention of the self state's
-/// support handle); the entity was last in this recipient's stream before
-/// `server_tick - age_ticks`, and is not in it from that tick on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SnapshotRemoval {
-    pub handle: u16,
-    pub age_ticks: u8,
-}
-
-/// Bytes the SnapshotV2 wall-clock trailer adds.
-pub const SNAPSHOT_V2_TRAILER_BYTES: usize = 4;
-/// Bytes of the self state without its support block (`compact_self`).
-pub const SNAPSHOT_V2_COMPACT_SELF_PLAYER_BYTES: usize = 12;
-/// First byte of the removals section after the trailer.
-pub const SNAPSHOT_V2_REMOVALS_TAG: u8 = 0xE7;
-/// Bytes of one removals entry (u16 handle, u8 age).
-pub const SNAPSHOT_V2_REMOVAL_BYTES: usize = 3;
-/// Handle bit marking a vehicle in a removals entry.
-pub const SNAPSHOT_V2_REMOVAL_VEHICLE_BIT: u16 = 0x8000;
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PlayerRosterEntry {
-    pub handle: u8,
-    pub player_id: u32,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct PlayerRosterPacket {
-    pub entries: Vec<PlayerRosterEntry>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DynamicBodyMetaEntry {
-    pub handle: u16,
-    pub body_id: u32,
-    pub shape_type: u8,
-    pub hx_cm: u16,
-    pub hy_cm: u16,
-    pub hz_cm: u16,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct DynamicBodyMetaPacket {
-    pub entries: Vec<DynamicBodyMetaEntry>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LocalPlayerEnergyPacket {
-    pub energy_centi: u32,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct BatterySyncPacket {
-    pub full_resync: bool,
-    pub battery_states: Vec<NetBatteryState>,
-    pub removed_ids: Vec<u32>,
 }
 
 // ── Server-only decode/encode functions ─────────
@@ -1568,5 +1375,209 @@ mod camera_drop_tests {
         assert!(decode_client_datagram(&bytes[..20]).is_err());
         let mut long = bytes; long.push(0);
         assert!(decode_client_datagram(&long).is_err());
+    }
+}
+
+/// Every packet the client core decodes, produced by the server's own encoder and read back by
+/// `vibe_land_shared::net_client` -- and every packet it encodes, read back by the server's decoder.
+/// The client side is shared by the Unreal client and (through WASM) the web client.
+#[cfg(test)]
+mod client_codec_roundtrip {
+    use super::*;
+    use vibe_land_shared::net_client::{self, ServerMessage};
+
+    /// Deterministic field filler (xorshift32), so failures reproduce.
+    struct Fill(u32);
+    impl Fill {
+        fn next(&mut self) -> u32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            self.0
+        }
+        fn i16(&mut self) -> i16 { self.next() as i16 }
+        fn u16(&mut self) -> u16 { self.next() as u16 }
+        fn u8(&mut self) -> u8 { self.next() as u8 }
+        fn i32(&mut self) -> i32 { self.next() as i32 }
+        fn i16x3(&mut self) -> [i16; 3] { [self.i16(), self.i16(), self.i16()] }
+    }
+
+    fn decode(bytes: &[u8]) -> ServerMessage {
+        net_client::decode_server_packet(bytes).expect("client failed to decode a server packet")
+    }
+
+    fn snapshot(f: &mut Fill, remotes: usize, spheres: usize, boxes: usize, vehicles: usize) -> SnapshotV2Packet {
+        SnapshotV2Packet {
+            server_tick: f.next(),
+            ack_input_seq: f.u16(),
+            anchor_px_mm: f.i32(),
+            anchor_py_mm: f.i32(),
+            anchor_pz_mm: f.i32(),
+            self_state: SelfPlayerStateV2 {
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), yaw_i16: f.i16(), pitch_i16: f.i16(),
+                hp: f.u8(), flags: f.u8(), support_handle: f.u16(),
+                support_local_q2_5mm: f.i16x3(), support_velocity_cms: f.i16x3(),
+                support_flags: f.u8(), support_angular_velocity_mrads: f.i16x3(),
+            },
+            remote_players: (0..remotes).map(|_| RemotePlayerStateV2 {
+                handle: f.u8(), dx_q2_5mm: f.i16(), dy_q2_5mm: f.i16(), dz_q2_5mm: f.i16(),
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), yaw_i16: f.i16(), pitch_i16: f.i16(),
+                hp: f.u8(), flags: f.u8(),
+            }).collect(),
+            sphere_states: (0..spheres).map(|_| DynamicSphereStateV2 {
+                handle: f.u16(), dx_q2_5mm: f.i16(), dy_q2_5mm: f.i16(), dz_q2_5mm: f.i16(),
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), wx_mrads: f.i16(), wy_mrads: f.i16(), wz_mrads: f.i16(),
+            }).collect(),
+            box_states: (0..boxes).map(|_| DynamicBoxStateV2 {
+                handle: f.u16(), dx_q2_5mm: f.i16(), dy_q2_5mm: f.i16(), dz_q2_5mm: f.i16(),
+                qx_snorm: f.i16(), qy_snorm: f.i16(), qz_snorm: f.i16(), qw_snorm: f.i16(),
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), wx_mrads: f.i16(), wy_mrads: f.i16(), wz_mrads: f.i16(),
+            }).collect(),
+            vehicle_states: (0..vehicles).map(|_| VehicleStateV2 {
+                handle: f.u8(), vehicle_type: f.u8(), driver_handle: f.u8(), flags: f.u8(),
+                dx_q2_5mm: f.i16(), dy_q2_5mm: f.i16(), dz_q2_5mm: f.i16(),
+                qx_snorm: f.i16(), qy_snorm: f.i16(), qz_snorm: f.i16(), qw_snorm: f.i16(),
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), wx_mrads: f.i16(), wy_mrads: f.i16(), wz_mrads: f.i16(),
+            }).collect(),
+            server_wall_us: f.next(),
+            compact_self: false,
+            removals: Vec::new(),
+            input_queue: None,
+        }
+    }
+
+    /// What the client should read back from `sent`: the encoder drops the support block when
+    /// `compact_self` is set and there are no removals, which the decoder reads as no support.
+    fn expected(sent: &SnapshotV2Packet) -> SnapshotV2Packet {
+        let mut want = sent.clone();
+        let compact = sent.compact_self && sent.removals.is_empty();
+        want.compact_self = compact;
+        if compact {
+            let s = &mut want.self_state;
+            s.support_handle = 0;
+            s.support_local_q2_5mm = [0; 3];
+            s.support_velocity_cms = [0; 3];
+            s.support_flags = 0;
+            s.support_angular_velocity_mrads = [0; 3];
+        }
+        want
+    }
+
+    fn assert_snapshot_round_trips(sent: SnapshotV2Packet) {
+        let bytes = encode_server_datagram(&ServerDatagramPacket::SnapshotV2(sent.clone()));
+        match decode(&bytes) {
+            ServerMessage::SnapshotV2(got) => assert_eq!(got, expected(&sent)),
+            other => panic!("decoded as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn welcome() {
+        let mut f = Fill(7);
+        for _ in 0..64 {
+            let sent = WelcomePacket {
+                player_id: f.next(), protocol_version: f.u16(), physics_backend: f.u8(),
+                client_movement_mode: f.u8(), sim_hz: f.u16(), snapshot_hz: f.u16(),
+                server_time_us: (u64::from(f.next()) << 32) | u64::from(f.next()),
+                interpolation_delay_ms: f.u16(),
+            };
+            let bytes = encode_server_reliable(&ServerReliablePacket::Welcome(sent.clone()));
+            assert_eq!(bytes.len(), 23);
+            match decode(&bytes) {
+                ServerMessage::Welcome(got) => assert_eq!(got, sent),
+                other => panic!("decoded as {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn player_roster() {
+        let mut f = Fill(11);
+        for count in [0usize, 1, 7, u8::MAX as usize] {
+            let sent = PlayerRosterPacket {
+                entries: (0..count).map(|_| PlayerRosterEntry { handle: f.u8(), player_id: f.next() }).collect(),
+            };
+            let bytes = encode_server_reliable(&ServerReliablePacket::PlayerRoster(sent.clone()));
+            match decode(&bytes) {
+                ServerMessage::PlayerRoster(got) => assert_eq!(got, sent),
+                other => panic!("decoded as {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_v2_full_self_state_with_every_entity_kind() {
+        let mut f = Fill(13);
+        for (r, s, b, v) in [(0, 0, 0, 0), (1, 0, 0, 0), (3, 2, 4, 1), (12, 9, 7, 3), (40, 0, 0, 0)] {
+            assert_snapshot_round_trips(snapshot(&mut f, r, s, b, v));
+        }
+    }
+
+    #[test]
+    fn snapshot_v2_compact_self_state() {
+        let mut f = Fill(17);
+        for (r, s, b, v) in [(0, 0, 0, 0), (2, 1, 1, 1), (9, 3, 2, 0)] {
+            let mut sent = snapshot(&mut f, r, s, b, v);
+            sent.compact_self = true;
+            assert_snapshot_round_trips(sent.clone());
+            // The 3-byte input-queue section may follow a compact self state (12 + 4 + 3 < 27).
+            sent.input_queue = Some((f.u8(), f.u8()));
+            assert_snapshot_round_trips(sent);
+        }
+    }
+
+    #[test]
+    fn snapshot_v2_removals_and_input_queue() {
+        let mut f = Fill(19);
+        for removals in [1usize, 5, u8::MAX as usize] {
+            let mut sent = snapshot(&mut f, 3, 1, 2, 1);
+            sent.removals = (0..removals).map(|_| SnapshotRemoval { handle: f.u16(), age_ticks: f.u8() }).collect();
+            assert_snapshot_round_trips(sent.clone());
+            sent.input_queue = Some((f.u8(), f.u8()));
+            assert_snapshot_round_trips(sent.clone());
+            // Removals force the full self state even when compact was asked for.
+            sent.compact_self = true;
+            assert_snapshot_round_trips(sent);
+        }
+    }
+
+    #[test]
+    fn ping_and_pong() {
+        for nonce in [0u32, 1, 0xDEAD_BEEF, u32::MAX] {
+            assert!(matches!(decode(&encode_server_packet(&ServerPacket::Ping(nonce))), ServerMessage::Ping(n) if n == nonce));
+            assert!(matches!(decode(&encode_server_packet(&ServerPacket::Pong(nonce))), ServerMessage::Pong(n) if n == nonce));
+        }
+    }
+
+    #[test]
+    fn client_hello_reads_back_on_the_server() {
+        for match_id in ["citypp-ue", "city-default", ""] {
+            for caps in [CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE, CLIENT_MOVEMENT_CAP_FULL_PREDICTION] {
+                let hello = decode_client_hello(&net_client::encode_client_hello(match_id, caps)).unwrap();
+                assert_eq!(hello.match_id, match_id);
+                assert_eq!(hello.protocol_version, PROTOCOL_VERSION);
+                assert_eq!(hello.movement_capabilities, caps);
+            }
+        }
+    }
+
+    #[test]
+    fn client_resync_request_reads_back_on_the_server() {
+        for seq in [0u32, 7, u32::MAX] {
+            match decode_client_datagram(&net_client::encode_city_resync_request(seq)).unwrap() {
+                ClientDatagram::CityResyncRequest { last_topo_seq, structures } => {
+                    assert_eq!(last_topo_seq, seq);
+                    assert!(structures.is_empty());
+                }
+                other => panic!("decoded as {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn client_ping_echo_reads_back_on_the_server() {
+        for nonce in [0u32, 42, u32::MAX] {
+            assert!(matches!(decode_client_datagram(&net_client::encode_ping(nonce)).unwrap(), ClientDatagram::Ping(n) if n == nonce));
+        }
     }
 }
