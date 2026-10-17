@@ -38,6 +38,10 @@ public:
 	 * the frame's events. */
 	FOnVibeFrame OnFrame;
 
+	/** Fired just before the client is destroyed: what it handed out (chunk meshes, frame arrays) is
+	 * freed after this, so anything still reading them (a background mesh build) must finish. */
+	FSimpleMulticastDelegate OnClientDestroying;
+
 	/** What the local player is doing (Unreal space: degrees, axes in [-1, 1]); held until changed and
 	 * sent as 60 Hz input frames by the next polls. */
 	void SetInput(const VlInput& Input);

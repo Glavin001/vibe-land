@@ -36,6 +36,7 @@ public:
 	AVibeCityDirector();
 
 	virtual void Tick(float DeltaSeconds) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Bounds of the city once built (for framing a camera). */
 	FBox CityBounds() const { return Bounds; }
@@ -48,6 +49,8 @@ public:
 	/** For tests: vertices drawn by standing cells and by bodies, chunks removed, live dust puffs,
 	 * whether chunks wear the generated catalog material, sounds seen in frames so far. */
 	int64 DrawnCellVertices() const;
+	/** Cell meshes still building on workers (a cell lags its last change until its build lands). */
+	bool CellBuildsPending() const { return CellBuilds.Num() > 0; }
 	int64 DrawnBodyVertices() const;
 	int32 RemovedChunks() const;
 	/** The vertices that should be drawn: every chunk's core mesh but the removed ones'. */
@@ -107,7 +110,11 @@ private:
 	UVibeNetSubsystem* Net() const;
 	void BuildCity(UVibeNetSubsystem* Net);
 	void ApplyFrame(const VlFrameView& Frame);
-	void RebuildCell(int32 Cell);
+	/** `bAsync`: build the cell's runtime mesh on a worker; it keeps drawing what it drew until the
+	 * new mesh lands (FinishCellBuilds), so a cell's first fracture costs the game thread no build. */
+	void RebuildCell(int32 Cell, bool bAsync = false);
+	/** Apply finished background cell builds that are still current; `bWait` waits for all. */
+	void FinishCellBuilds(bool bWait);
 	void RebuildBody(uint64 Body);
 	void AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const;
 	void ApplySections(UProceduralMeshComponent* Component, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const;
@@ -135,6 +142,17 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<class UStaticMeshComponent>> ImportedGlass;
 	TArray<FIntPoint> CellKeys;
+	/** Per cell: bumped on every rebuild, so a background build a newer change overtook is dropped. */
+	TArray<uint32> CellVersions;
+	struct FCellBuild
+	{
+		int32 Cell = INDEX_NONE;
+		uint32 Version = 0;
+		VibeCityCells::FSection Opaque;
+		VibeCityCells::FSection Glass;
+	};
+	TArray<TFuture<TSharedPtr<FCellBuild>>> CellBuilds;
+	FDelegateHandle ClientDestroyingHandle;
 	/** Where this manifest's imported cells are (empty: none, or -VibeRuntimeCells). */
 	FString ImportedFolder;
 

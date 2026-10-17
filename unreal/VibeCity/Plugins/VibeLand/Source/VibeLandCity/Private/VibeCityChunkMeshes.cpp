@@ -11,6 +11,7 @@
 
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
+#include "Async/Async.h"
 #include "Engine/World.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
@@ -221,8 +222,10 @@ void AVibeCityDirector::ApplySections(UProceduralMeshComponent* Component, VibeC
 	}
 }
 
-void AVibeCityDirector::RebuildCell(int32 Cell)
+void AVibeCityDirector::RebuildCell(int32 Cell, bool bAsync)
 {
+	CellVersions.SetNum(CellChunks.Num());
+	const uint32 Version = ++CellVersions[Cell];
 	// Intact (every chunk standing, none removed, as after a city reset), a cell draws its imported
 	// mesh when there is one; from its first change, its runtime mesh.
 	bool bIntact = true;
@@ -235,18 +238,77 @@ void AVibeCityDirector::RebuildCell(int32 Cell)
 		CellComponents[Cell]->ClearAllMeshSections();
 		return;
 	}
-	DropImportedCell(Cell);
-	VibeCityCells::FSection Opaque, Glass;
+	// The standing chunks to draw: cells sit at the world origin, so a standing chunk's vertex is
+	// rest_pos + rest_quat * v.
+	TArray<TPair<int32, FTransform>> Standing;
 	for (const int32 ChunkIndex : CellChunks[Cell])
 	{
 		const FChunkSlot& Slot = Slots[ChunkIndex];
 		if (Slot.Body == 0 && !Slot.bRemoved)
 		{
-			// Cells sit at the world origin: a standing chunk's vertex is rest_pos + rest_quat * v.
-			AppendChunk(ChunkIndex, Slot.Rest, Opaque, Glass);
+			Standing.Emplace(ChunkIndex, Slot.Rest);
 		}
 	}
-	ApplySections(CellComponents[Cell], Opaque, Glass);
+	UVibeNetSubsystem* NetSubsystem = Net();
+	VlMeshView Meshes = {};
+	if (!NetSubsystem || !NetSubsystem->ChunkMeshes(Meshes))
+	{
+		return;
+	}
+	auto Build = [Meshes, Catalog = Catalog, Standing = MoveTemp(Standing), Cell, Version]()
+	{
+		TSharedPtr<FCellBuild> Out = MakeShared<FCellBuild>();
+		Out->Cell = Cell;
+		Out->Version = Version;
+		for (const TPair<int32, FTransform>& Chunk : Standing)
+		{
+			VibeCityCells::AppendChunk(Meshes, Chunk.Key, Chunk.Value, Catalog, Out->Opaque, Out->Glass);
+		}
+		return Out;
+	};
+	if (bAsync)
+	{
+		if (!ClientDestroyingHandle.IsValid())
+		{
+			// The chunk meshes the builds read are the client's: finish them before it goes.
+			ClientDestroyingHandle = NetSubsystem->OnClientDestroying.AddUObject(this, &AVibeCityDirector::FinishCellBuilds, true);
+		}
+		CellBuilds.Add(Async(EAsyncExecution::ThreadPool, MoveTemp(Build)));
+		return;
+	}
+	TSharedPtr<FCellBuild> Built = Build();
+	DropImportedCell(Cell);
+	ApplySections(CellComponents[Cell], Built->Opaque, Built->Glass);
+}
+
+void AVibeCityDirector::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// Builds read the client's chunk meshes: let them finish before the client can go.
+	FinishCellBuilds(true);
+	if (UVibeNetSubsystem* NetSubsystem = Net())
+	{
+		NetSubsystem->OnClientDestroying.Remove(ClientDestroyingHandle);
+	}
+	Super::EndPlay(EndPlayReason);
+}
+
+void AVibeCityDirector::FinishCellBuilds(bool bWait)
+{
+	for (int32 i = CellBuilds.Num() - 1; i >= 0; --i)
+	{
+		if (!bWait && !CellBuilds[i].IsReady())
+		{
+			continue;
+		}
+		const TSharedPtr<FCellBuild> Built = CellBuilds[i].Get();
+		CellBuilds.RemoveAtSwap(i);
+		// A newer rebuild of the cell overtook this one: its result is stale.
+		if (Built && CellVersions.IsValidIndex(Built->Cell) && CellVersions[Built->Cell] == Built->Version)
+		{
+			DropImportedCell(Built->Cell);
+			ApplySections(CellComponents[Built->Cell], Built->Opaque, Built->Glass);
+		}
+	}
 }
 
 void AVibeCityDirector::RebuildBody(uint64 Body)
@@ -344,9 +406,11 @@ void AVibeCityDirector::ApplyFrame(const VlFrameView& Frame)
 		}
 	}
 
+	// Cell rebuilds run on workers; finished ones land here, next frame at the latest.
+	FinishCellBuilds(false);
 	for (const int32 Cell : DirtyCells)
 	{
-		RebuildCell(Cell);
+		RebuildCell(Cell, /*bAsync=*/true);
 	}
 	for (const uint64 Body : DirtyBodies)
 	{

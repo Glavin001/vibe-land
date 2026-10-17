@@ -68,6 +68,7 @@ void UVibeNetSubsystem::Disconnect()
 	bWantConnected = false;
 	if (Client)
 	{
+		OnClientDestroying.Broadcast();
 		vl_client_destroy(Client);
 		Client = nullptr;
 		Frame = {};

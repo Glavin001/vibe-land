@@ -205,6 +205,12 @@ bool FVibeCityRenderCityAndEffects::RunTest(const FString& Parameters)
 		{
 			return false; // let the debris fly a few seconds
 		}
+		// Cell meshes rebuild on workers, a frame behind their last change: compare on a frame with
+		// none in flight.
+		if (Director->CellBuildsPending() && FPlatformTime::Seconds() - State->Started < 30.0)
+		{
+			return false;
+		}
 		TestTrue(TEXT("the meteor fractured the building"), Fractures > 0);
 		TestTrue(TEXT("fractures reached the frame as sounds"), Director->SoundsSeen() > State->SoundsAtMeteor);
 		TestTrue(TEXT("fractures reached the frame as dust"), Director->DustSeen() > State->DustAtMeteor);
