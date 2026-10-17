@@ -1,9 +1,11 @@
 #include "VibeAudio.h"
 
+#include "Components/AudioComponent.h"
 #include "Engine/GameInstance.h"
 #include "Kismet/GameplayStatics.h"
 #include "Sound/SoundAttenuation.h"
 #include "Sound/SoundBase.h"
+#include "Sound/SoundWave.h"
 #include "VibeLandNet.h"
 #include "VibeNetSubsystem.h"
 
@@ -84,6 +86,53 @@ void AVibeAudio::OnFrame(const VlFrameView& Frame)
 		else
 		{
 			Pending.Add(P);
+		}
+	}
+
+	// Loops: start new ids, update live ones, fade out the ones this frame dropped.
+	TSet<uint32> Fed;
+	for (size_t i = 0; i < Frame.loop_count; ++i)
+	{
+		const VlLoop& L = Frame.loops[i];
+		Fed.Add(L.id);
+		const FVector Position(L.position[0], L.position[1], L.position[2]);
+		TObjectPtr<UAudioComponent>* Live = Loops.Find(L.id);
+		UAudioComponent* Component = Live ? Live->Get() : nullptr;
+		if (!Component)
+		{
+			USoundBase* Sound = Clip(L.clip);
+			if (!Sound)
+			{
+				++MissingCount;
+				continue;
+			}
+			// Scrape and air clips play only as loops.
+			if (USoundWave* Wave = Cast<USoundWave>(Sound))
+			{
+				Wave->bLooping = true;
+			}
+			Component = UGameplayStatics::SpawnSoundAtLocation(this, Sound, Position, FRotator::ZeroRotator, L.gain, L.rate, 0.0f, Attenuation, nullptr, false);
+			if (!Component)
+			{
+				continue;
+			}
+			Loops.Add(L.id, Component);
+			++LoopsStartedCount;
+		}
+		Component->SetWorldLocation(Position);
+		Component->SetVolumeMultiplier(L.gain);
+		Component->SetPitchMultiplier(L.rate);
+	}
+	for (auto It = Loops.CreateIterator(); It; ++It)
+	{
+		if (!Fed.Contains(It.Key()))
+		{
+			if (UAudioComponent* Component = It.Value().Get())
+			{
+				Component->bAutoDestroy = true;
+				Component->FadeOut(0.1f, 0.0f);
+			}
+			It.RemoveCurrent();
 		}
 	}
 }

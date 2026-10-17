@@ -50,6 +50,8 @@ public:
 	int32 LiveDust() const { return DustPuffs.Num(); }
 	bool UsesCatalogMaterial() const { return ChunkMaterial != nullptr; }
 	int64 SoundsSeen() const { return SoundsSeenCount; }
+	/** Loop-frames seen so far: each frame's loop count, summed (scrapes, air). */
+	int64 LoopsSeen() const { return LoopsSeenCount; }
 	int64 DustSeen() const { return DustSeenCount; }
 
 	/** Fired once, when the city has been built from the manifest. */
@@ -145,6 +147,7 @@ private:
 	FBox Bounds = FBox(ForceInit);
 	bool bCityBuilt = false;
 	int64 SoundsSeenCount = 0;
+	int64 LoopsSeenCount = 0;
 	int64 DustSeenCount = 0;
 	uint32 LastTransportState = 0;
 	uint32 LastCoreState = 0;

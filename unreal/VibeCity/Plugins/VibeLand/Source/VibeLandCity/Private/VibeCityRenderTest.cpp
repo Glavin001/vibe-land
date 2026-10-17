@@ -4,7 +4,8 @@
 //    meshes' vertices less the removed chunks', before and after a fracture;
 //  * chunks wear the generated catalog material (not the fallback);
 //  * the meadow has patches drawn around the camera;
-//  * a meteor's fractures reach the frame as sounds and dust, and dust puffs appear.
+//  * a meteor's fractures reach the frame as sounds and dust, and dust puffs appear; the loops it
+//    raises (air, scrapes) are counted.
 //
 // Run in the game on a citypp match (scripts/unreal/play-tests.sh --only VibeCity.Render.CityAndEffects).
 
@@ -85,6 +86,7 @@ bool FVibeCityRenderCityAndEffects::RunTest(const FString& Parameters)
 		double Started = 0.0;
 		int64 SoundsAtMeteor = 0;
 		int64 DustAtMeteor = 0;
+		int64 LoopsAtMeteor = 0;
 		int32 PeakDust = 0;
 		uint64 FracturesAtMeteor = 0;
 	};
@@ -159,6 +161,7 @@ bool FVibeCityRenderCityAndEffects::RunTest(const FString& Parameters)
 		Post(N->CurrentApiBaseUrl() / TEXT("city-meteor") / N->CurrentMatchId(), Body);
 		State->SoundsAtMeteor = Director->SoundsSeen();
 		State->DustAtMeteor = Director->DustSeen();
+		State->LoopsAtMeteor = Director->LoopsSeen();
 		State->FracturesAtMeteor = N->LastFrame().stats.fractures;
 		State->Started = FPlatformTime::Seconds();
 		return true;
@@ -192,6 +195,7 @@ bool FVibeCityRenderCityAndEffects::RunTest(const FString& Parameters)
 		TestEqual(TEXT("every remaining chunk's vertices are drawn after the fracture"),
 			Director->DrawnCellVertices() + Director->DrawnBodyVertices(), Director->ExpectedVertices());
 		TestTrue(TEXT("debris drawn on bodies"), Director->DrawnBodyVertices() > 0);
+		AddInfo(FString::Printf(TEXT("loops (scrapes, air) over the meteor: %lld loop-frames"), Director->LoopsSeen() - State->LoopsAtMeteor));
 		AddInfo(FString::Printf(TEXT("after the meteor: %llu fractures, %lld sounds, %lld dust (peak %d live), %lld body vertices"),
 			Fractures, Director->SoundsSeen() - State->SoundsAtMeteor, Director->DustSeen() - State->DustAtMeteor, State->PeakDust, Director->DrawnBodyVertices()));
 		return true;

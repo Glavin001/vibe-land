@@ -339,6 +339,8 @@ pub struct SceneFrame {
     pub sounds: Vec<crate::audio::VlSound>,
     /// Dust puffs to raise this poll (client-core effects.rs), renderer space.
     pub dust: Vec<crate::effects::VlDust>,
+    /// The continuous sounds playing this poll (scrapes, air); a loop missing from a poll ends.
+    pub loops: Vec<crate::audio::VlLoop>,
     pub stats: VlStats,
 }
 
@@ -355,5 +357,6 @@ impl SceneFrame {
         self.car_parts.clear();
         self.sounds.clear();
         self.dust.clear();
+        self.loops.clear();
     }
 }

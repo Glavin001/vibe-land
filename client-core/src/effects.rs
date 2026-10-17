@@ -219,6 +219,7 @@ struct StructureInfo {
     bonds: HashMap<u32, BondInfo>,
     chunk_pos: HashMap<u32, Vec3>,
     chunk_mass: HashMap<u32, f32>,
+    chunk_radius: HashMap<u32, f32>,
     chunk_material: HashMap<u32, u32>,
 }
 
@@ -261,6 +262,7 @@ impl SourceTable {
                     bonds,
                     chunk_pos: s.chunks.iter().map(|c| (c.node_index, world(c.centroid))).collect(),
                     chunk_mass: s.chunks.iter().map(|c| (c.node_index, c.mass)).collect(),
+                    chunk_radius: s.chunks.iter().map(|c| (c.node_index, c.radius)).collect(),
                     chunk_material: s.chunks.iter().map(|c| (c.node_index, c.material)).collect(),
                 },
             );
@@ -423,6 +425,14 @@ impl SourceTable {
     /// Mass of a set of chunks of `structure`, kg.
     pub fn mass_of(&self, structure: u32, chunks: &[u32]) -> f32 {
         self.structures.get(&structure).map_or(0.0, |s| chunks.iter().filter_map(|c| s.chunk_mass.get(c)).sum())
+    }
+
+    /// A body's audible size (cityClient.ts `notePose`): its largest chunk's radius, grown with the
+    /// chunk count (radius × (1 + ∛n / 2)), at most 6 m.
+    pub fn radius_of(&self, structure: u32, chunks: &[u32]) -> f32 {
+        let Some(s) = self.structures.get(&structure) else { return 0.0 };
+        let largest = chunks.iter().take(64).filter_map(|c| s.chunk_radius.get(c)).fold(0.0f32, |a, &r| a.max(r));
+        (largest * (1.0 + (chunks.len() as f32).cbrt() * 0.5)).min(6.0)
     }
 
     /// Manifest material of a chunk.

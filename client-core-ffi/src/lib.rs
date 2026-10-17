@@ -16,7 +16,7 @@ use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use vibe_client_core::coords::Space;
-use vibe_client_core::audio::VlSound;
+use vibe_client_core::audio::{VlLoop, VlSound};
 use vibe_client_core::effects::VlDust;
 use vibe_client_core::geometry::VlMeshRange;
 use vibe_client_core::grass::{VlGrassBlade, VlGrassExclusion};
@@ -27,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 11;
+pub const VL_ABI_VERSION: u32 = 12;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -202,6 +202,11 @@ pub struct VlFrameView {
     /// Every car part off its car, as drawn now (its authored geometry through `pos`/`quat`).
     pub car_parts: *const VlCarPart,
     pub car_part_count: usize,
+    /// Continuous sounds playing now (scrapes, air rushing past fast bodies): keep one looping voice
+    /// per `id` on clip `vl_audio_clip_id(clip)`, move it to `position` and set `gain` (falloff
+    /// included) and `rate` each poll; fade it out when a poll no longer lists its `id`.
+    pub loops: *const VlLoop,
+    pub loop_count: usize,
     pub stats: VlStats,
 }
 
@@ -390,6 +395,8 @@ pub unsafe extern "C" fn vl_client_poll(client: *mut VlClient, out: *mut VlFrame
             dust_count: frame.dust.len(),
             car_parts: frame.car_parts.as_ptr(),
             car_part_count: frame.car_parts.len(),
+            loops: frame.loops.as_ptr(),
+            loop_count: frame.loops.len(),
             stats: frame.stats,
         });
         VL_OK

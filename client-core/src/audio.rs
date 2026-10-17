@@ -426,40 +426,153 @@ pub struct VlLoop {
 /// The most loops at once (engine.ts keeps ten continuous voices).
 pub const MAX_LOOPS: usize = 10;
 
-/// Continuous sounds (scrapes) kept for their loops, with when each was last fed.
+/// Continuous sounds kept for their loops, with when each was last fed (engine.ts `loops`).
 #[derive(Default)]
 pub struct Loops {
-    live: HashMap<u32, (VlLoop, f64)>,
+    live: HashMap<u32, Live>,
+}
+
+#[derive(Clone, Copy)]
+struct Live {
+    record: VlLoop,
+    position: Vec3,
+    intensity: f32,
+    air: bool,
+    at_ms: f64,
 }
 
 impl Loops {
-    /// A scrape contact (GameAudioLayer.tsx -> engine.ts `continuous`): `<material>-scrape`,
-    /// rate with sliding speed, gain 0.32 × intensity × detail, attenuated like every voice.
+    /// A scrape contact (GameAudioLayer.tsx -> engine.ts `continuous`): `<material>-scrape`, rate
+    /// with sliding speed.
     pub fn scrape(&mut self, id: u32, position: Vec3, material: AcousticMaterial, speed: f32, intensity: f32, listener: Vec3, now_ms: f64, mix: Mix) {
+        let rate = (0.62 + speed * 0.045).clamp(0.55, 1.65);
+        self.feed(id, &format!("{}-scrape", material.name()), false, position, speed, intensity, rate, listener, now_ms, mix);
+    }
+
+    /// Air rushing past a fast body (meteors over 8 m/s, other bodies over 20 m/s): the `air` clip,
+    /// Doppler-shifted by the radial speed, 343 / (343 + v_r).
+    pub fn air(&mut self, id: u32, position: Vec3, velocity: Vec3, intensity: f32, listener: Vec3, now_ms: f64, mix: Mix) {
+        let d = position.distance(listener).max(0.1);
+        let radial = velocity.dot((position - listener) / d);
+        let rate = (343.0 / (343.0 + radial.clamp(-170.0, 170.0))).clamp(0.65, 1.8);
+        self.feed(id, "air", true, position, velocity.length(), intensity, rate, listener, now_ms, mix);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn feed(&mut self, id: u32, clip: &str, air: bool, position: Vec3, speed: f32, intensity: f32, rate: f32, listener: Vec3, now_ms: f64, mix: Mix) {
         let d = position.distance(listener);
         if !(position.is_finite() && intensity.is_finite() && speed.is_finite()) || intensity < 0.015 || d > 180.0 {
             return;
         }
-        let Some(clip) = Clips::get().index(&format!("{}-scrape", material.name())) else { return };
-        let gain = clamp01(intensity) * 0.32 * mix.detail * source_attenuation(d, 1.0);
-        let rate = (0.62 + speed * 0.045).clamp(0.55, 1.65);
-        let record = VlLoop { id, clip, position: position.to_array(), gain, rate, flags: 0 };
+        let Some(clip) = Clips::get().index(clip) else { return };
         if !self.live.contains_key(&id) && self.live.len() >= MAX_LOOPS {
             // Replace the weakest only for a clearly stronger newcomer (engine.ts).
-            let score = |l: &VlLoop| l.gain;
-            let Some((&weakest, _)) = self.live.iter().min_by(|a, b| score(&a.1 .0).total_cmp(&score(&b.1 .0))) else { return };
-            if gain * 0.32 <= score(&self.live[&weakest].0) * 1.25 {
+            let score = |air: bool, intensity: f32, p: Vec3| (if air { 2.0 } else { 0.0 }) + intensity / (1.0 + p.distance(listener));
+            let Some((&weakest, victim)) = self.live.iter().min_by(|a, b| score(a.1.air, a.1.intensity, a.1.position).total_cmp(&score(b.1.air, b.1.intensity, b.1.position))) else { return };
+            if score(air, intensity * 0.32, position) <= score(victim.air, victim.intensity, victim.position) * 1.25 {
                 return;
             }
             self.live.remove(&weakest);
         }
-        self.live.insert(id, (record, now_ms));
+        let level = clamp01(intensity) * 0.32 * mix.detail;
+        let gain = level * source_attenuation(d, 1.0);
+        let record = VlLoop { id, clip, position: position.to_array(), gain, rate, flags: 0 };
+        self.live.insert(id, Live { record, position, intensity: level, air, at_ms: now_ms });
     }
 
     /// The loops still fed within 220 ms, for this poll.
     pub fn current(&mut self, now_ms: f64, out: &mut Vec<VlLoop>) {
-        self.live.retain(|_, (_, at)| now_ms - *at <= 220.0);
-        out.extend(self.live.values().map(|(l, _)| *l));
+        self.live.retain(|_, l| now_ms - l.at_ms <= 220.0);
+        out.extend(self.live.values().map(|l| l.record));
+    }
+
+    pub fn clear(&mut self) {
+        self.live.clear();
+    }
+}
+
+/// `closestPass` (model.ts): the closest approach of a body moving a -> b to a listener moving
+/// listener_a -> listener_b over the same interval.
+pub fn closest_pass(a: Vec3, b: Vec3, listener_a: Vec3, listener_b: Vec3) -> (f32, f32, Vec3) {
+    let x = a - listener_a;
+    let dx = b - listener_b - x;
+    let q = dx.length_squared();
+    let t = if q > 1e-9 { clamp01(-x.dot(dx) / q) } else { 0.0 };
+    ((x + dx * t).length(), t, a + (b - a) * t)
+}
+
+/// A moving body's sample for the fly-by tracker (motion.ts `MotionSample`).
+#[derive(Clone, Copy, Debug)]
+pub struct Motion {
+    pub id: u64,
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub time_ms: f64,
+    pub material: AcousticMaterial,
+    pub size: f32,
+}
+
+/// Swept near misses (motion.ts `SoundMotionTracker`, its fly-by half; impacts come from the
+/// validated source queue and the server's contacts).
+#[derive(Default)]
+pub struct FlybyTracker {
+    tracks: HashMap<u64, (Motion, Vec3, f64)>,
+    serial: u64,
+}
+
+impl FlybyTracker {
+    pub fn note(&mut self, sample: Motion, listener: Vec3, now_ms: f64, out: &mut Vec<SoundEvent>) {
+        if sample.position.distance(listener) > 120.0 {
+            self.tracks.remove(&sample.id);
+            return;
+        }
+        let old = self.tracks.get(&sample.id).copied();
+        if old.is_some_and(|(o, _, _)| sample.time_ms <= o.time_ms) {
+            return;
+        }
+        let flyby_at = old.map_or(f64::NEG_INFINITY, |(_, _, f)| f);
+        self.tracks.insert(sample.id, (sample, listener, flyby_at));
+        if self.tracks.len() > 1024 {
+            if let Some(&k) = self.tracks.keys().next() {
+                self.tracks.remove(&k);
+            }
+        }
+        let Some((old, old_listener, _)) = old else { return };
+        let dt = ((sample.time_ms - old.time_ms) / 1000.0) as f32;
+        if dt <= 0.0 || dt > 0.25 {
+            return;
+        }
+        let (speed, previous_speed) = (sample.velocity.length(), old.velocity.length());
+        if sample.position.distance(old.position) > speed.max(previous_speed) * dt * 1.8 + 2.0 {
+            return;
+        }
+        let (distance, fraction, position) = closest_pass(old.position, sample.position, old_listener, listener);
+        let velocity = (sample.position - old.position) / dt;
+        let relative_speed = (velocity - (listener - old_listener) / dt).length();
+        if previous_speed > 14.0 && relative_speed > 14.0 && distance < 8.0f32.min(2.5 + sample.size) && fraction > 0.0 && fraction < 1.0 && now_ms - flyby_at > 1200.0 {
+            self.tracks.get_mut(&sample.id).expect("inserted").2 = now_ms;
+            self.serial += 1;
+            out.push(SoundEvent {
+                id: sample.id.rotate_left(17) ^ self.serial ^ 0xF1B0_0000_0000_0000,
+                kind: SoundKind::Flyby,
+                position,
+                material: sample.material,
+                intensity: clamp01(0.35 + relative_speed / 180.0) * (1.0 - distance / 12.0),
+                size: sample.size,
+                seed: (self.serial as u32).wrapping_mul(997),
+                at_ms: now_ms,
+                protected: true,
+            });
+        }
+    }
+
+    /// Drop bodies not sampled for 500 ms.
+    pub fn prune(&mut self, now_ms: f64) {
+        self.tracks.retain(|_, (m, _, _)| now_ms - m.time_ms <= 500.0);
+    }
+
+    pub fn clear(&mut self) {
+        self.tracks.clear();
     }
 }
 
@@ -717,5 +830,43 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert!(Clips::get().ids[v[0].clip as usize].starts_with("flyby-"));
         assert_eq!(v[0].flags & VL_SOUND_PROTECTED, VL_SOUND_PROTECTED);
+    }
+
+    #[test]
+    fn closest_pass_matches_the_web() {
+        // model.ts closestPass([-10,0,1],[10,0,1],[0,0,0],[0,0,0]) = {distance 1, fraction .5, position [0,0,1]}
+        let (d, t, p) = closest_pass(Vec3::new(-10.0, 0.0, 1.0), Vec3::new(10.0, 0.0, 1.0), Vec3::ZERO, Vec3::ZERO);
+        assert!((d - 1.0).abs() < 1e-6 && (t - 0.5).abs() < 1e-6 && p.distance(Vec3::new(0.0, 0.0, 1.0)) < 1e-6);
+    }
+
+    #[test]
+    fn a_fast_body_passing_close_is_a_flyby_once_and_a_slow_or_far_one_is_not() {
+        let mut f = FlybyTracker::default();
+        let mut out = Vec::new();
+        let at = |x: f32, z: f32, t: f64| Motion { id: 1, position: Vec3::new(x, 0.0, z), velocity: Vec3::new(40.0, 0.0, 0.0), time_ms: t, material: AcousticMaterial::Stone, size: 1.0 };
+        f.note(at(-2.0, 1.0, 0.0), Vec3::ZERO, 0.0, &mut out);
+        f.note(at(2.0, 1.0, 100.0), Vec3::ZERO, 100.0, &mut out);
+        assert_eq!(out.len(), 1, "40 m/s past at 1 m");
+        assert_eq!(out[0].kind, SoundKind::Flyby);
+        // motion.ts: clamp(.35 + 40/180) × (1 − 1/12)
+        assert!((out[0].intensity - (0.35f32 + 40.0 / 180.0) * (1.0 - 1.0 / 12.0)).abs() < 1e-5);
+        f.note(at(-2.0, 1.0, 200.0), Vec3::ZERO, 200.0, &mut out);
+        f.note(at(2.0, 1.0, 300.0), Vec3::ZERO, 300.0, &mut out);
+        assert_eq!(out.len(), 1, "1.2 s between fly-bys of one body");
+        let mut far = FlybyTracker::default();
+        let mut none = Vec::new();
+        far.note(at(-2.0, 5.0, 0.0), Vec3::ZERO, 0.0, &mut none);
+        far.note(at(2.0, 5.0, 100.0), Vec3::ZERO, 100.0, &mut none);
+        assert!(none.is_empty(), "5 m off is beyond 2.5 + size");
+    }
+
+    #[test]
+    fn air_rises_in_pitch_toward_the_listener() {
+        let mut loops = Loops::default();
+        let mut out = Vec::new();
+        loops.air(1, Vec3::new(50.0, 0.0, 0.0), Vec3::new(-60.0, 0.0, 0.0), 0.5, Vec3::ZERO, 0.0, DEFAULT_MIX);
+        loops.current(0.0, &mut out);
+        assert_eq!(Clips::get().ids[out[0].clip as usize], "air");
+        assert!((out[0].rate - 343.0 / (343.0 - 60.0)).abs() < 1e-5);
     }
 }

@@ -87,6 +87,10 @@ pub struct CityStream {
     sim_hz: u32,
     /// Per moving body: its last motion sample and when it last raised an impact (ms).
     motion: HashMap<BodyKey, (MotionSample, f64)>,
+    /// Per moving body: its audible size and acoustic material (fixed while it moves).
+    motion_shape: HashMap<BodyKey, (f32, crate::audio::AcousticMaterial)>,
+    /// This advance's moving bodies, for the fly-by tracker (server space).
+    pub(crate) motions: Vec<crate::audio::Motion>,
 }
 
 impl CityStream {
@@ -150,6 +154,8 @@ impl CityStream {
             physics,
             sim_hz,
             motion: HashMap::new(),
+            motion_shape: HashMap::new(),
+            motions: Vec::new(),
         }
     }
 
@@ -246,6 +252,7 @@ impl CityStream {
                 self.note_motion(key, p, r);
             } else if settled {
                 self.motion.remove(&key);
+                self.motion_shape.remove(&key);
             }
             let moved = match self.last_pose.get(&key) {
                 Some(&(lp, lq, ls)) => ls != settled || lp.distance_squared(p) > 1e-10 || lq.dot(q).abs() < 1.0 - 1e-9,
@@ -282,12 +289,31 @@ impl CityStream {
 
     /// Impacts off the body velocity stream (motion.ts `classifyMotionImpact`): a body whose
     /// velocity drops sharply between render samples hit something; at most one every 220 ms.
+    /// The chunks (node indices) a body holds now.
+    fn members_of(&self, key: BodyKey) -> Vec<u32> {
+        self.structure_chunks
+            .get(&key.structure)
+            .map(|nodes| nodes.iter().filter(|(n, _)| self.client.chunk_body(key.structure, *n) == Some(key.body)).map(|(n, _)| *n).collect())
+            .unwrap_or_default()
+    }
+
     fn note_motion(&mut self, key: BodyKey, position: Vec3, render_tick: f32) {
         let Some(track) = self.client.track(key) else { return };
         let (velocity, _) = track.velocity_at(render_tick, self.physics);
         let time_ms = f64::from(render_tick) / f64::from(self.sim_hz) * 1000.0;
         let mass_guess = 1.0;
         let sample = MotionSample { position, velocity, time_ms, mass: mass_guess };
+        if self.motion_shape.len() > 8192 {
+            self.motion_shape.clear(); // retired bodies' entries
+        }
+        if !self.motion_shape.contains_key(&key) {
+            let members = self.members_of(key);
+            let radius = self.source_table.radius_of(key.structure, &members);
+            let material = self.source_table.acoustic(members.first().map_or(0, |&n| self.source_table.material_of(key.structure, n)));
+            self.motion_shape.insert(key, (radius, material));
+        }
+        let (size, material) = self.motion_shape[&key];
+        self.motions.push(crate::audio::Motion { id: (u64::from(key.structure) << 32) | u64::from(key.body), position, velocity, time_ms, material, size });
         let Some((previous, last_impact_ms)) = self.motion.get(&key).copied() else {
             self.motion.insert(key, (sample, f64::NEG_INFINITY));
             return;
@@ -298,11 +324,7 @@ impl CityStream {
         let mut impact_at = last_impact_ms;
         // Cheap test first (a real drop at all), then weigh the body.
         if velocity.length() < previous.velocity.length() * 0.85 && time_ms - last_impact_ms > 220.0 {
-            let members: Vec<u32> = self
-                .structure_chunks
-                .get(&key.structure)
-                .map(|nodes| nodes.iter().filter(|(n, _)| self.client.chunk_body(key.structure, *n) == Some(key.body)).map(|(n, _)| *n).collect())
-                .unwrap_or_default();
+            let members = self.members_of(key);
             let mass = self.source_table.mass_of(key.structure, &members);
             let weighed = MotionSample { mass, ..sample };
             let previous = MotionSample { mass, ..previous };

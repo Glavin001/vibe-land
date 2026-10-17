@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 11
+#define VL_ABI_VERSION 12
 
 #define VL_OK 0
 
@@ -515,6 +515,20 @@ typedef struct VlCarPart {
 } VlCarPart;
 
 /**
+ * A continuous sound this poll (engine.ts `continuous`): a renderer keeps one looping voice per
+ * `id`, moves it, sets its gain and rate each poll, and fades it out when a poll no longer lists it
+ * (the web releases a loop not updated for 220 ms).
+ */
+typedef struct VlLoop {
+  uint32_t id;
+  uint32_t clip;
+  float position[3];
+  float gain;
+  float rate;
+  uint32_t flags;
+} VlLoop;
+
+/**
  * Counters and clocks, for overlays, logs and test gates.
  */
 typedef struct VlStats {
@@ -601,6 +615,13 @@ typedef struct VlFrameView {
    */
   const struct VlCarPart *car_parts;
   size_t car_part_count;
+  /**
+   * Continuous sounds playing now (scrapes, air rushing past fast bodies): keep one looping voice
+   * per `id` on clip `vl_audio_clip_id(clip)`, move it to `position` and set `gain` (falloff
+   * included) and `rate` each poll; fade it out when a poll no longer lists its `id`.
+   */
+  const struct VlLoop *loops;
+  size_t loop_count;
   struct VlStats stats;
 } VlFrameView;
 

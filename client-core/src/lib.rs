@@ -96,6 +96,12 @@ pub struct ClientCore {
     meteors: Vec<(MeteorLaunched, u64)>,
     audio_contacts: Vec<crate::frame::VlAudioContact>,
     audio: audio::AudioDirector,
+    flybys: audio::FlybyTracker,
+    loops: audio::Loops,
+    /// Free dynamic bodies' last drawn position and time (server space, ms), for their velocity.
+    dynamic_previous: std::collections::HashMap<u32, (Vec3, f64)>,
+    /// Bodies launched as meteors (stone, air from 8 m/s).
+    meteor_bodies: std::collections::HashSet<u32>,
     /// Where sounds are heard from (server space): the local player's eye unless the renderer says.
     listener: Option<Vec3>,
     vehicle_assets: std::collections::HashMap<u32, VehicleAsset>,
@@ -144,6 +150,10 @@ impl ClientCore {
             meteors: Vec::new(),
             audio_contacts: Vec::new(),
             audio: audio::AudioDirector::default(),
+            flybys: audio::FlybyTracker::default(),
+            loops: audio::Loops::default(),
+            dynamic_previous: Default::default(),
+            meteor_bodies: Default::default(),
             listener: None,
             vehicle_assets: std::collections::HashMap::new(),
             vehicle_rigs: std::collections::HashMap::new(),
@@ -287,7 +297,10 @@ impl ClientCore {
         }
         if kind == PKT_METEOR_LAUNCHED {
             match decode_meteor_launched(bytes) {
-                Ok(meteor) => self.meteors.push((meteor, arrival_us)),
+                Ok(meteor) => {
+                    self.meteor_bodies.insert(meteor.body_id);
+                    self.meteors.push((meteor, arrival_us));
+                }
                 Err(_) => self.protocol_decode_errors += 1,
             }
             return;
@@ -532,7 +545,17 @@ impl ClientCore {
         let space = self.space;
         let to_server_dir = |d: [f32; 3]| (space.pos_to_server(d)).normalize_or_zero();
 
+        let mut near_misses = Vec::new();
         if let Some(city) = self.city.as_mut() {
+            // Swept near misses of moving city bodies (GameAudioLayer.tsx: the first 256 within 120 m).
+            let mut budget = 0;
+            for m in city.motions.drain(..) {
+                if m.position.distance(listener) > 120.0 || budget >= 256 {
+                    continue;
+                }
+                budget += 1;
+                self.flybys.note(m, listener, m.time_ms, &mut near_misses);
+            }
             let sources = std::mem::take(&mut city.sources);
             let table = city.source_table();
             for source in &sources {
@@ -561,7 +584,39 @@ impl ClientCore {
                 self.audio.enqueue(s);
             }
         }
-        // The server's audible contacts (GameAudioLayer.tsx): impacts as one-shots.
+        // Free dynamic bodies (cannonballs, meteors): velocity from their drawn motion, fly-bys and
+        // air (GameAudioLayer.tsx).
+        let mut seen = Vec::new();
+        for b in &self.frame.dynamic_bodies {
+            let position = space.pos_to_server(b.pos);
+            seen.push(b.body_id);
+            let previous = self.dynamic_previous.insert(b.body_id, (position, now_ms));
+            let Some((before, at)) = previous else { continue };
+            let dt = ((now_ms - at) / 1000.0) as f32;
+            if dt <= 0.0 || dt >= 0.2 {
+                continue;
+            }
+            let velocity = (position - before) / dt;
+            let meteor = self.meteor_bodies.contains(&b.body_id);
+            let radius = b.half_extents.iter().fold(0.0f32, |a, &h| a.max(h)) / space.metres();
+            let (material, size) = if meteor { (audio::AcousticMaterial::Stone, radius) } else { (audio::AcousticMaterial::Metal, radius * 2.0) };
+            let id = 0xD000_0000_0000_0000 | u64::from(b.body_id);
+            self.flybys.note(audio::Motion { id, position, velocity, time_ms: now_ms, material, size }, listener, now_ms, &mut near_misses);
+            let speed = velocity.length();
+            let loop_id = 0x8000_0000 | b.body_id;
+            if meteor && speed > 8.0 {
+                self.loops.air(loop_id, position, velocity, (speed / 90.0).min(1.0), listener, now_ms, audio::DEFAULT_MIX);
+            } else if !meteor && speed > 20.0 {
+                self.loops.air(loop_id, position, velocity, (speed / 120.0).min(1.0), listener, now_ms, audio::DEFAULT_MIX);
+            }
+        }
+        self.dynamic_previous.retain(|id, _| seen.contains(id));
+        self.meteor_bodies.retain(|id| seen.contains(id) || self.meteors.iter().any(|(m, _)| m.body_id == *id) || self.frame.meteors.iter().any(|m| m.body_id == *id));
+        self.flybys.prune(now_ms);
+        for e in near_misses {
+            self.audio.enqueue(e);
+        }
+        // The server's audible contacts (GameAudioLayer.tsx): impacts as one-shots, scrapes as loops.
         for c in &self.frame.audio_contacts {
             let contact = audio::AudioContact {
                 sim_tick: 0,
@@ -575,9 +630,19 @@ impl ClientCore {
                 intensity: c.intensity,
                 size: c.size,
             };
-            if let Some(s) = audio::sound_from_contact(&contact, audio::AcousticMaterial::Concrete, false, now_ms) {
+            if contact.scrape {
+                let (lo, hi) = (c.entity_a.min(c.entity_b), c.entity_a.max(c.entity_b));
+                let id = (lo.wrapping_mul(0x9E37_79B1) ^ hi) & 0x7FFF_FFFF;
+                self.loops.scrape(id, contact.position, audio::AcousticMaterial::Concrete, contact.tangent_speed, contact.intensity, listener, now_ms, audio::DEFAULT_MIX);
+            } else if let Some(s) = audio::sound_from_contact(&contact, audio::AcousticMaterial::Concrete, false, now_ms) {
                 self.audio.enqueue(s);
             }
+        }
+        let mut loops = Vec::new();
+        self.loops.current(now_ms, &mut loops);
+        for mut l in loops {
+            l.position = space.pos(Vec3::from_array(l.position));
+            self.frame.loops.push(l);
         }
         let mut voices = Vec::new();
         self.audio.drain(now_ms, |e| audio::voices(e, listener, now_ms, audio::DEFAULT_MIX, &mut voices));
