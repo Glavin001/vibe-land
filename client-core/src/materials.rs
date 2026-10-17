@@ -74,6 +74,9 @@ struct CatalogEntryJson {
     metalness: f32,
     #[serde(default)]
     hd: Option<HdSourceJson>,
+    /// The entry a broken (interior) face of this material wears; itself when absent.
+    #[serde(default)]
+    fracture: Option<String>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -99,6 +102,8 @@ pub struct Catalog {
     wall_layers: u32,
     floor_layers: u32,
     glass: u16,
+    /// Per entry: the entry its interior (fractured) faces wear.
+    fracture: Vec<u16>,
 }
 
 impl Catalog {
@@ -119,6 +124,7 @@ impl Catalog {
             wall_layers: 0,
             floor_layers: 0,
             glass: u16::MAX,
+            fracture: Vec::new(),
         };
         for (index, e) in parsed.materials.iter().enumerate() {
             let index = index as u16;
@@ -160,10 +166,22 @@ impl Catalog {
                 hd_metres_per_tile: e.hd.as_ref().map_or(0.0, |h| h.metres_per_tile),
             });
         }
+        for (index, e) in parsed.materials.iter().enumerate() {
+            let fracture = match &e.fracture {
+                Some(id) => catalog.index_of(id).ok_or_else(|| format!("{}: unknown fracture entry {id}", e.id))?,
+                None => index as u16,
+            };
+            catalog.fracture.push(fracture);
+        }
         if catalog.wall_layers == 0 || catalog.floor_layers == 0 || catalog.glass == u16::MAX {
             return Err("catalog needs wall, floor and glass entries".into());
         }
         Ok(catalog)
+    }
+
+    /// The entry an interior (fractured) face of entry `id` wears.
+    pub fn fracture_of(&self, id: u16) -> u16 {
+        self.fracture.get(id as usize).copied().unwrap_or(id)
     }
 
     pub fn index_of(&self, id: &str) -> Option<u16> {

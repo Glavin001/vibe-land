@@ -20,9 +20,19 @@
 //! u runs right and v runs down a wall, so textures read upright and unmirrored. Each vertex has a
 //! tangent (the direction of +u along its face) and the sign that, with the normal, gives the
 //! direction of +v (`v_dir = w · normal × tangent`), for normal maps.
+//!
+//! A face that a neighbouring chunk covers (an interface the fracture pattern cut, hidden while the
+//! structure stands) is an *interior* face, the inside material of Blast and Chaos (Houdini's
+//! "inside" group): it shows only once its chunk breaks away, and wears its material's fracture
+//! surface (the catalog's `fracture`, e.g. broken concrete). Each bond is an interface of known
+//! area and normal; on a convex chunk it lies on the one face whose outward normal points most
+//! nearly toward the bonded neighbour, and a face is interior when its bonds cover at least half
+//! its area (most of what shows of it after a break is broken surface).
+
+use std::collections::HashMap;
 
 use glam::{Quat, Vec3};
-use vibe_land_destruction::manifest::{ChunkDef, ChunkGeometry, DestructionManifest};
+use vibe_land_destruction::manifest::{ChunkDef, ChunkGeometry, DestructionManifest, StructureManifest};
 
 use crate::coords::Space;
 use crate::materials::{Catalog, VlChunkSurface};
@@ -66,7 +76,70 @@ pub struct ChunkMeshes {
     /// `drawn_metres_per_tile`), so a renderer samples its texture at these directly. Empty without
     /// surfaces.
     pub tile_uvs: Vec<[f32; 2]>,
+    /// Per vertex: 1 on an interior face (covered by bonded neighbours), else 0.
+    pub interior: Vec<u8>,
     pub indices: Vec<u32>,
+}
+
+/// One bond as a chunk sees it: the unit direction toward its neighbour across the interface (the
+/// bond normal, signed by where the neighbour's centroid lies) and the interface's area (m²).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Contact {
+    pub toward: Vec3,
+    pub area: f32,
+}
+
+/// Each chunk's contacts, in the structure's chunk order (structure frame).
+pub fn structure_contacts(structure: &StructureManifest) -> Vec<Vec<Contact>> {
+    let slot: HashMap<u32, usize> = structure.chunks.iter().enumerate().map(|(i, c)| (c.node_index, i)).collect();
+    let mut out = vec![Vec::new(); structure.chunks.len()];
+    for bond in &structure.bonds {
+        let (Some(&a), Some(&b)) = (slot.get(&bond.node0), slot.get(&bond.node1)) else { continue };
+        let n = Vec3::from_array(bond.normal).normalize_or_zero();
+        let side = n.dot(Vec3::from_array(structure.chunks[b].centroid) - Vec3::from_array(structure.chunks[a].centroid));
+        if a == b || n == Vec3::ZERO || side == 0.0 || !(bond.area > 0.0) {
+            continue;
+        }
+        let toward = n * side.signum();
+        out[a].push(Contact { toward, area: bond.area });
+        out[b].push(Contact { toward: -toward, area: bond.area });
+    }
+    out
+}
+
+/// Two triangles' unit normals within this of each other (1 − cos) are one planar face: the f32
+/// rounding of normals computed from different corners of one plane (a few ulp, ~1e-6), with two
+/// orders of margin; distinct faces of a convex chunk differ by far more.
+const SAME_FACE: f32 = 1e-4;
+
+/// Which of a convex chunk's `triangles` (chunk frame, CCW from outside) are interior: grouped into
+/// planar faces by normal, each contact's area is credited to the face whose outward normal points
+/// most nearly along it, and a face is interior when its credited area is at least half its own.
+pub fn interior_triangles(triangles: &[[Vec3; 3]], contacts: &[Contact]) -> Vec<bool> {
+    let mut face_of = Vec::with_capacity(triangles.len());
+    // Per face: its normal, its area and the bonded area credited to it.
+    let mut faces: Vec<(Vec3, f32, f32)> = Vec::new();
+    for tri in triangles {
+        let cross = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
+        let normal = cross.normalize_or_zero();
+        let area = 0.5 * cross.length();
+        let face = match faces.iter().position(|f| 1.0 - f.0.dot(normal) <= SAME_FACE) {
+            Some(i) => i,
+            None => {
+                faces.push((normal, 0.0, 0.0));
+                faces.len() - 1
+            }
+        };
+        faces[face].1 += area;
+        face_of.push(face);
+    }
+    for contact in contacts {
+        let best = faces.iter().enumerate().max_by(|a, b| a.1 .0.dot(contact.toward).total_cmp(&b.1 .0.dot(contact.toward)));
+        if let Some((i, _)) = best {
+            faces[i].2 += contact.area;
+        }
+    }
+    face_of.iter().map(|&f| faces[f].1 > 0.0 && faces[f].2 >= 0.5 * faces[f].1).collect()
 }
 
 impl ChunkMeshes {
@@ -87,10 +160,12 @@ impl ChunkMeshes {
         let mut scratch = Vec::new();
         let mut slot = 0usize;
         for structure in &manifest.structures {
-            for chunk in &structure.chunks {
+            let contacts = structure_contacts(structure);
+            for (i, chunk) in structure.chunks.iter().enumerate() {
                 let hull = server_triangles(chunk, &manifest.shape_library, &mut scratch);
+                let interior = interior_triangles(&scratch, &contacts[i]);
                 let surface = surfaces.and_then(|(s, catalog)| s.get(slot).map(|s| (*s, catalog)));
-                out.push_chunk_surfaced(chunk, &scratch, space, flip, hull, surface);
+                out.push_chunk_surfaced(chunk, &scratch, &interior, space, flip, hull, surface);
                 slot += 1;
             }
         }
@@ -112,13 +187,14 @@ impl ChunkMeshes {
     /// Appends one chunk from its server-space triangles (chunk frame, CCW from outside).
     #[cfg(test)]
     fn push_chunk(&mut self, chunk: &ChunkDef, triangles: &[[Vec3; 3]], space: Space, flip: bool, hull: bool) {
-        self.push_chunk_surfaced(chunk, triangles, space, flip, hull, None);
+        self.push_chunk_surfaced(chunk, triangles, &[], space, flip, hull, None);
     }
 
     fn push_chunk_surfaced(
         &mut self,
         chunk: &ChunkDef,
         triangles: &[[Vec3; 3]],
+        interior: &[bool],
         space: Space,
         flip: bool,
         hull: bool,
@@ -130,9 +206,11 @@ impl ChunkMeshes {
         for (t, tri) in triangles.iter().enumerate() {
             let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
             let target_normal = Vec3::from_array(space.pos(normal)).normalize_or_zero().to_array();
+            let inside = interior.get(t).copied().unwrap_or(false);
             let material = surface.map(|(s, catalog)| {
                 let a = normal.abs();
                 let id = if a.y >= a.x && a.y >= a.z { s.floor } else { s.wall };
+                let id = if inside { catalog.fracture_of(id) } else { id };
                 let tile = catalog.materials.get(id as usize).map_or(1.0, |m| m.drawn_metres_per_tile()).max(1e-3);
                 (u32::from(id), tile)
             });
@@ -143,6 +221,7 @@ impl ChunkMeshes {
                 self.normals.push(target_normal);
                 self.uvs.push(uv);
                 self.tangents.push(tangent);
+                self.interior.push(u8::from(inside));
                 if let Some((id, tile)) = material {
                     self.materials.push(id);
                     self.tile_uvs.push([uv[0] / tile, uv[1] / tile]);
@@ -452,6 +531,63 @@ mod tests {
         assert_eq!(uv_at(&a, shared), uv_at(&b, shared));
         // +z face seen from outside: u = x to the right, v = −y downward.
         assert_eq!(uv_at(&a, shared), [0.5, -0.5]);
+    }
+
+    /// The outward normals of the triangles flagged interior.
+    fn interior_normals(half: [f32; 3], contacts: &[Contact]) -> Vec<Vec3> {
+        let mut tris = Vec::new();
+        box_triangles(Vec3::from_array(half), &mut tris);
+        let inside = interior_triangles(&tris, contacts);
+        tris.iter().zip(inside).filter(|(_, i)| *i).map(|(t, _)| (t[1] - t[0]).cross(t[2] - t[0]).normalize()).collect()
+    }
+
+    #[test]
+    fn a_face_fully_bonded_to_its_neighbour_is_interior_and_no_other() {
+        // Two 1 m cubes stacked: the bond is their whole 1 m² interface.
+        let lower = interior_normals([0.5; 3], &[Contact { toward: Vec3::Y, area: 1.0 }]);
+        assert_eq!(lower.len(), 2, "both triangles of the top face, nothing else");
+        assert!(lower.iter().all(|n| n.dot(Vec3::Y) > 0.9999));
+        let upper = interior_normals([0.5; 3], &[Contact { toward: Vec3::NEG_Y, area: 1.0 }]);
+        assert_eq!(upper.len(), 2);
+        assert!(upper.iter().all(|n| n.dot(Vec3::NEG_Y) > 0.9999));
+        // A bond normal off the face's axis still lands on the face it points most nearly through.
+        let tilted = interior_normals([0.5; 3], &[Contact { toward: Vec3::new(0.3, 0.9, 0.1).normalize(), area: 1.0 }]);
+        assert!(tilted.len() == 2 && tilted.iter().all(|n| n.dot(Vec3::Y) > 0.9999));
+        assert!(interior_normals([0.5; 3], &[]).is_empty(), "an unbonded chunk is all outside");
+    }
+
+    #[test]
+    fn a_face_is_interior_only_when_bonds_cover_half_its_area() {
+        // A 4 m x 4 m slab (top face 16 m²) with a 1 m post on it: the post's foot is interior, the
+        // slab's top (1/16 covered) stays its own outside surface.
+        assert!(interior_normals([2.0, 0.1, 2.0], &[Contact { toward: Vec3::Y, area: 1.0 }]).is_empty());
+        assert_eq!(interior_normals([0.5; 3], &[Contact { toward: Vec3::NEG_Y, area: 1.0 }]).len(), 2);
+        // Eight such posts cover exactly half: interior.
+        let posts = [Contact { toward: Vec3::Y, area: 1.0 }; 8];
+        assert_eq!(interior_normals([2.0, 0.1, 2.0], &posts).len(), 2);
+        assert!(interior_normals([2.0, 0.1, 2.0], &posts[..7]).is_empty());
+    }
+
+    #[test]
+    fn contacts_point_toward_the_neighbour_whatever_the_bond_normal_sign() {
+        use vibe_land_destruction::manifest::BondDef;
+        let mut a = cuboid([0.5; 3]);
+        a.centroid = [0.0, 0.5, 0.0];
+        let mut b = cuboid([0.5; 3]);
+        b.node_index = 1;
+        b.centroid = [0.0, 1.5, 0.0];
+        for normal in [[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]] {
+            let structure = StructureManifest {
+                chunks: vec![a.clone(), b.clone()],
+                bonds: vec![BondDef { bond_index: 0, node0: 0, node1: 1, centroid: [0.0, 1.0, 0.0], normal, area: 1.0, material: 0 }],
+                structure_id: 0,
+                world_position: [0.0; 3],
+                world_rotation: [0.0, 0.0, 0.0, 1.0],
+            };
+            let c = structure_contacts(&structure);
+            assert_eq!(c[0], vec![Contact { toward: Vec3::Y, area: 1.0 }]);
+            assert_eq!(c[1], vec![Contact { toward: Vec3::NEG_Y, area: 1.0 }]);
+        }
     }
 
     #[test]

@@ -86,7 +86,8 @@ fn hull_city_meshes_match_their_chunks() {
 }
 
 /// Every face of every chunk wears a catalog material; top-facing faces wear the chunk's floor
-/// material and side faces its wall material.
+/// material and side faces its wall material, or that material's fracture surface on an interior
+/// face.
 fn check_surfaces(manifest: &DestructionManifest) -> std::collections::BTreeSet<String> {
     use vibe_client_core::materials::{chunk_surfaces, Catalog};
     let catalog = Catalog::get();
@@ -100,7 +101,9 @@ fn check_surfaces(manifest: &DestructionManifest) -> std::collections::BTreeSet<
         for v in r.first_vertex..r.first_vertex + r.vertex_count {
             let (n, m) = (meshes.normals[v as usize], meshes.materials[v as usize]);
             let up = n[1].abs() >= n[0].abs() && n[1].abs() >= n[2].abs();
-            assert_eq!(m, u32::from(if up { s.floor } else { s.wall }), "chunk {i} vertex {v}");
+            let outside = if up { s.floor } else { s.wall };
+            let expected = if meshes.interior[v as usize] == 1 { catalog.fracture_of(outside) } else { outside };
+            assert_eq!(m, u32::from(expected), "chunk {i} vertex {v}");
             assert!((m as usize) < catalog.ids.len());
             // Tiles as the web draws them: metres / (catalog tile × cityTexScale 2).
             let (uv, tile) = (meshes.uvs[v as usize], meshes.tile_uvs[v as usize]);
@@ -175,4 +178,35 @@ fn city_model_matches_the_client() {
     assert_eq!(model.meshes.indices, client.indices);
     assert_eq!(model.meshes.materials, client.materials);
     assert_eq!(model.meshes.ranges.len(), model.chunks.len(), "one mesh per chunk");
+}
+
+/// Interior faces are the interfaces the fracture pattern cut: every bonded city has some, and
+/// their area is bounded by the bonds. Each bond credits its area to one face of each of its two
+/// chunks (2 × the bond area in all), and a face is interior only when its credit is at least half
+/// its area, so the interior area is at most twice the credit: 4 × the bond area.
+#[test]
+fn interior_faces_are_the_bonded_interfaces() {
+    for scene in ["high-rise-3f-local.json", "house-1story.json"] {
+        let manifest = city(scene, 1);
+        let meshes = ChunkMeshes::build(&manifest, Space::Server);
+        let tri_area = |t: &[u32], base: usize| {
+            let p = |k: usize| Vec3::from_array(meshes.positions[base + t[k] as usize]);
+            0.5 * (p(1) - p(0)).cross(p(2) - p(0)).length()
+        };
+        let (mut interior, mut total) = (0.0f64, 0.0f64);
+        for r in &meshes.ranges {
+            let base = r.first_vertex as usize;
+            for t in meshes.indices[r.first_index as usize..(r.first_index + r.index_count) as usize].chunks_exact(3) {
+                let a = f64::from(tri_area(t, base));
+                total += a;
+                if meshes.interior[base + t[0] as usize] == 1 {
+                    interior += a;
+                }
+            }
+        }
+        let bonded: f64 = manifest.structures.iter().flat_map(|s| s.bonds.iter()).map(|b| f64::from(b.area)).sum();
+        println!("{scene}: interior {interior:.1} m² of {total:.1} m²; bonds {bonded:.1} m² (x2 = {:.1})", 2.0 * bonded);
+        assert!(interior > 0.0, "{scene}: no interior faces");
+        assert!(interior <= 4.0 * bonded + 1e-3, "{scene}: interior {interior} beyond the faces bonds can cover");
+    }
 }
