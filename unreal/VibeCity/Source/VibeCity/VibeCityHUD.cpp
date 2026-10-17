@@ -1,4 +1,5 @@
 #include "VibeCityHUD.h"
+#include "VibeSettings.h"
 
 #include "CanvasItem.h"
 #include "Engine/Canvas.h"
@@ -86,8 +87,15 @@ void AVibeCityHUD::DrawHUD()
 		DrawRect(FLinearColor(0.8f, 0.0f, 0.0f, 0.35f * DamageFlash / DamageFlashS), 0.0f, 0.0f, W, H);
 	}
 
+	const AVibePlayerPawn* Flyer = Cast<AVibePlayerPawn>(GetOwningPawn());
+	// The aerial camera (and a drop on its way) draws no crosshair or weapon (GameWorld.tsx hides the
+	// player's HUD while flying) and shows the web's flight panel (CityFlightControls.tsx).
+	const bool bFlying = Flyer && (Flyer->IsAerial() || Flyer->IsDropPending());
+
 	// Crosshair.
-	if (bValid && !bDead)
+	bDrewCrosshair = bValid && !bDead && !bFlying;
+	bDrewFlightPanel = false;
+	if (bDrewCrosshair)
 	{
 		const float Cx = W * 0.5f, Cy = H * 0.5f, Arm = 9.0f * Scale, Gap = 4.0f * Scale;
 		const FLinearColor C(1.0f, 1.0f, 1.0f, 0.9f);
@@ -115,7 +123,7 @@ void AVibeCityHUD::DrawHUD()
 	}
 
 	// Weapon, bottom right.
-	if (const AVibePlayerPawn* Pawn = Cast<AVibePlayerPawn>(GetOwningPawn()))
+	if (const AVibePlayerPawn* Pawn = Cast<AVibePlayerPawn>(GetOwningPawn()); Pawn && !bFlying)
 	{
 		const FString Weapon = FString::Printf(TEXT("%s   [1] Rifle  [2] Cannon  [3] Meteor"), AVibePlayerPawn::WeaponName(Pawn->Weapon()));
 		float TextW = 0.0f, TextH = 0.0f;
@@ -155,6 +163,32 @@ void AVibeCityHUD::DrawHUD()
 			float TextW = 0.0f, TextH = 0.0f;
 			GetTextSize(Hint, TextW, TextH, GEngine->GetMediumFont());
 			DrawText(Hint, FLinearColor::White, (W - TextW) * 0.5f, H * 0.75f, GEngine->GetMediumFont());
+		}
+	}
+	if (bFlying)
+	{
+		bDrewFlightPanel = true;
+		using EAction = FVibeSettings::EAction;
+		const FVibeSettings& S = FVibeSettings::Get();
+		auto K = [&S](EAction A) { return S.Key(A).GetDisplayName().ToString(); };
+		const TArray<FString> Lines = Flyer->IsDropPending()
+			? TArray<FString>{ TEXT("Dropping into the city…") }
+			: TArray<FString>{
+				TEXT("Aerial view"),
+				TEXT("Explore freely. Return here to drop into the city."),
+				FString::Printf(TEXT("%s/%s/%s/%s move · mouse look"), *K(EAction::MoveForward), *K(EAction::MoveLeft), *K(EAction::MoveBackward), *K(EAction::MoveRight)),
+				FString::Printf(TEXT("%s rise · %s descend · %s boost"), *K(EAction::Jump), *K(EAction::Crouch), *K(EAction::Sprint)),
+				FString::Printf(TEXT("Flight speed %d m/s (mouse wheel)"), Flyer->AerialSpeed()),
+				FString::Printf(TEXT("%s  return to player"), *K(EAction::Aerial)),
+			};
+		float Y = 72.0f * Scale;
+		const float PanelW = 300.0f * Scale;
+		for (int32 i = 0; i < Lines.Num(); ++i)
+		{
+			float TextW = 0.0f, TextH = 0.0f;
+			GetTextSize(Lines[i], TextW, TextH, GEngine->GetMediumFont());
+			DrawText(Lines[i], i == 0 ? FLinearColor(0.4f, 0.9f, 1.0f) : FLinearColor::White, W - PanelW - 24.0f * Scale, Y, GEngine->GetMediumFont());
+			Y += TextH + 4.0f * Scale;
 		}
 	}
 	if (Local.energy >= 0.0f && Local.energy > 0.0f && Local.energy < LowEnergyThreshold)

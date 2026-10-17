@@ -31,6 +31,7 @@
 #include "VibeNetSubsystem.h"
 #include "VibeCityBatteries.h"
 #include "VibePlayerPawn.h"
+#include "VibeCityHUD.h"
 #include "VibeShotEffects.h"
 #include "EngineUtils.h"
 #include "Widgets/SViewport.h"
@@ -742,6 +743,10 @@ bool FVibeCityPlayAerialAndMelee::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Pawn, PlayerPos, CameraEye]()
 	{
 		TestTrue(TEXT("N entered the aerial camera"), Pawn() && Pawn()->IsAerial());
+		APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0);
+		const AVibeCityHUD* Hud = PC ? Cast<AVibeCityHUD>(PC->GetHUD()) : nullptr;
+		TestTrue(TEXT("flying: the flight panel shows"), Hud && Hud->DrewFlightPanel());
+		TestTrue(TEXT("flying: no crosshair"), Hud && !Hud->DrewCrosshair());
 		S->EyeStart = CameraEye();
 		S->PlayerStart = PlayerPos();
 		S->FlyStart = Now();
