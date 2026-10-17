@@ -109,6 +109,10 @@ pub struct VlLocal {
     pub next_input_seq: u32,
     /// Length of the presentation offset, metres (how far the drawn pose leads the server's).
     pub prediction_offset_m: f32,
+    /// The player's authoritative position in the newest snapshot, the one `ack_input_seq` came
+    /// with (the drawn pose is sampled later in the interpolation buffer): the pair to measure
+    /// movement per applied input frame with.
+    pub acked_pos: [f32; 3],
 }
 
 /// What the renderer's player is doing this frame, in the renderer's space: axes in [-1, 1]

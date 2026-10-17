@@ -5,10 +5,12 @@
 //
 // Gates, from the server's own numbers:
 //   * holding W walks the player at the server's walk speed (MoveConfig::walk_speed, 6 m/s) +-5%
-//     toward the view's yaw (+-2 degrees): the server's reported velocity, and the distance covered
-//     per input frame the server applied (ack seq). The server applies input frames in real time
-//     (several per tick when its ticks run slow, server/src/main.rs), so neither wall time nor
-//     server ticks measure movement: applied 60 Hz frames do. The walk heads away from the city,
+//     toward the view's yaw (+-2 degrees): the server's reported velocity, and the heading of the
+//     distance between two snapshots (each with the input sequence it acknowledged);
+//   * the client's input frames reach the server at 60 per second of server time (frames applied
+//     per tick within 5% of 1). Distance per tick is reported, not gated: it is the server's
+//     input policy (a tick with no frame repeats the held input and the late frame is applied
+//     afterwards, server/src/main.rs), not the client's. The walk heads away from the city,
 //     over open ground, so nothing it bumps into slows it;
 //   * a click fires: the core reports the local shot, and the server answers it (ShotResult).
 //
@@ -96,6 +98,8 @@ namespace
 		FDelegateHandle Handle;
 		FVector WalkStart = FVector::ZeroVector;
 		uint32 WalkStartAck = 0;
+		uint32 Tick = 0;
+		uint32 WalkStartTick = 0;
 		float Yaw = 0.0f;
 		float MaxVelocityError = 0.0f;
 		int32 VelocitySamples = 0;
@@ -133,6 +137,7 @@ bool FVibeCityPlayWalkAndShoot::RunTest(const FString& Parameters)
 			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
 			{
 				S->Local = Frame.local;
+				S->Tick = Frame.stats.newest_server_tick;
 				S->RenderTick = Frame.stats.player_render_tick;
 				S->PlayerId = Frame.stats.player_id;
 				for (size_t i = 0; i < Frame.event_count; ++i)
@@ -171,8 +176,11 @@ bool FVibeCityPlayWalkAndShoot::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
 	{
-		S->WalkStart = FVector(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		// The authoritative position that came with the ack (the drawn pose lags it by the
+		// interpolation delay, which adapts while walking).
+		S->WalkStart = FVector(S->Local.acked_pos[0], S->Local.acked_pos[1], S->Local.acked_pos[2]);
 		S->WalkStartAck = S->Local.ack_input_seq;
+		S->WalkStartTick = S->Tick;
 		S->Deadline = Now() + 3.0;
 		return true;
 	}));
@@ -187,14 +195,21 @@ bool FVibeCityPlayWalkAndShoot::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, WalkSpeedMps]()
 	{
 		Key(EKeys::W, false);
-		const FVector End(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		const FVector End(S->Local.acked_pos[0], S->Local.acked_pos[1], S->Local.acked_pos[2]);
 		const uint32 Frames = (S->Local.ack_input_seq - S->WalkStartAck) & 0xFFFF;
+		const uint32 Ticks = S->Tick - S->WalkStartTick;
 		const FVector Horizontal(End.X - S->WalkStart.X, End.Y - S->WalkStart.Y, 0.0);
-		const float Speed = Frames > 0 ? static_cast<float>(Horizontal.Size()) / 100.0f / (Frames / 60.0f) : 0.0f;
-		AddInfo(FString::Printf(TEXT("walked %.1f cm over %u applied input frames: %.3f m/s; server velocity off by at most %.3f m/s over %d frames"),
-			Horizontal.Size(), Frames, Speed, S->MaxVelocityError, S->VelocitySamples));
-		TestTrue(TEXT("enough input frames to measure (>= 60)"), Frames >= 60);
-		TestTrue(FString::Printf(TEXT("distance per input frame: %.3f m/s within 5%% of %.1f"), Speed, WalkSpeedMps), FMath::Abs(Speed - WalkSpeedMps) <= 0.05f * WalkSpeedMps);
+		// What the client controls: its input frames reach the server at 60 a second of server
+		// time (frames applied per tick ~ 1), and each moves the player at the walk speed (the
+		// server's own velocity, below). Distance per tick is the server's: a tick that finds no
+		// frame repeats the held input, and the late frame is still applied afterwards, so a
+		// jittery link walks further than speed x time (server/src/main.rs take_input_for_tick).
+		const float Speed = Ticks > 0 ? static_cast<float>(Horizontal.Size()) / 100.0f / (Ticks / 60.0f) : 0.0f;
+		const float FramesPerTick = Ticks > 0 ? static_cast<float>(Frames) / Ticks : 0.0f;
+		AddInfo(FString::Printf(TEXT("walked %.1f cm over %u server ticks (%.3f m/s), %u input frames applied (%.3f per tick); server velocity off by at most %.3f m/s over %d frames"),
+			Horizontal.Size(), Ticks, Speed, Frames, FramesPerTick, S->MaxVelocityError, S->VelocitySamples));
+		TestTrue(TEXT("enough server ticks and input frames to measure (>= 60)"), Ticks >= 60 && Frames >= 60);
+		TestTrue(FString::Printf(TEXT("input frames applied per server tick: %.3f within 5%% of 1"), FramesPerTick), FMath::Abs(FramesPerTick - 1.0f) <= 0.05f);
 		TestTrue(FString::Printf(TEXT("server velocity within 5%% of %.1f m/s (worst %.3f off)"), WalkSpeedMps, S->MaxVelocityError), S->MaxVelocityError <= 0.05f * WalkSpeedMps);
 		const float Heading = FMath::RadiansToDegrees(FMath::Atan2(Horizontal.Y, Horizontal.X));
 		TestTrue(FString::Printf(TEXT("walked toward %.1f deg, faced %.1f"), Heading, S->Yaw), FMath::Abs(FRotator::NormalizeAxis(Heading - S->Yaw)) <= 2.0f);
@@ -545,12 +560,27 @@ bool FVibeCityPlayCannonAndMeteor::RunTest(const FString& Parameters)
 		return false;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
-	// Face the city's centre, a little down: a building or the street is in the line of fire.
+	// Face the nearest chunk of a building: something solid is in the line of fire wherever the
+	// player spawned (the server launches a meteor only where the ray lands).
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
 	{
 		Click();
 		const FVector Eye(S->Local.eye[0], S->Local.eye[1], S->Local.eye[2]);
-		const FVector Target(0.0, 0.0, 400.0);
+		FVector Target(0.0, 0.0, 400.0);
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			double Best = TNumericLimits<double>::Max();
+			for (const VlChunk& C : Net->Chunks())
+			{
+				const FVector P(C.rest_pos[0], C.rest_pos[1], C.rest_pos[2]);
+				const double D = FVector::DistSquared(P, Eye);
+				if (P.Z > 150.0 && D < Best)
+				{
+					Best = D;
+					Target = P;
+				}
+			}
+		}
 		if (APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0))
 		{
 			PC->SetControlRotation((Target - Eye).Rotation());

@@ -38,6 +38,10 @@ fn main() {
     // A stand-in player for other clients' tests: --jump holds jump (it hops whenever grounded),
     // --drop x,y,z (server metres) places it once joined.
     let jump = std::env::args().any(|a| a == "--jump");
+    // --walk: hold forward (server yaw 0, +z) after 2 s and print each new snapshot's tick, the
+    // acknowledged position and input sequence, and the server's velocity.
+    let walk = std::env::args().any(|a| a == "--walk");
+    let mut last_walk_tick = 0u32;
     let drop: Option<[f32; 3]> = flag("--drop").map(|v| {
         let p: Vec<f32> = v.split(',').map(|x| x.trim().parse().expect("--drop x,y,z")).collect();
         [p[0], p[1], p[2]]
@@ -113,6 +117,16 @@ fn main() {
             if j.elapsed().as_secs_f64() > 1.0 {
                 core.camera_drop(p, 0.0, 0.0);
                 dropped = true;
+            }
+        }
+        if let (true, Some(j)) = (walk, joined_at) {
+            if j.elapsed().as_secs_f64() > 2.0 {
+                core.set_input(&vibe_client_core::frame::VlInput { move_y: 1.0, ..Default::default() });
+                if frame.stats.newest_server_tick != last_walk_tick {
+                    last_walk_tick = frame.stats.newest_server_tick;
+                    let (p, v) = (frame.local.acked_pos, frame.local.player.vel);
+                    println!("walk tick={} ack={} pos=({:.3},{:.3},{:.3}) vel=({:.2},{:.2},{:.2})", last_walk_tick, frame.local.ack_input_seq, p[0], p[1], p[2], v[0], v[1], v[2]);
+                }
             }
         }
         if at_join.is_none() && joined_at.is_some() && frame.stats.snapshots > 0 {

@@ -135,6 +135,8 @@ pub struct Players {
     pub newest_tick: u32,
     /// The newest input sequence the server has applied (from the newest snapshot).
     pub ack_input_seq: u16,
+    /// The local player's position in that snapshot (server space).
+    pub acked_pos: Vec3,
     /// The render tick of the last [`sample`](Self::sample).
     render_tick: Option<f32>,
     bodies: HashMap<u16, BodyTrack>,
@@ -162,6 +164,7 @@ impl Players {
             snapshots: 0,
             newest_tick: 0,
             ack_input_seq: 0,
+            acked_pos: Vec3::ZERO,
             render_tick: None,
             bodies: HashMap::new(),
             body_meta: HashMap::new(),
@@ -196,11 +199,12 @@ impl Players {
     pub fn on_snapshot(&mut self, s: &SnapshotV2Packet, arrival_ms: f64) {
         self.snapshots += 1;
         self.clock.observe(s.server_tick, arrival_ms);
+        let anchor = Vec3::new(s.anchor_px_mm as f32, s.anchor_py_mm as f32, s.anchor_pz_mm as f32) / 1000.0;
         if s.server_tick >= self.newest_tick {
             self.ack_input_seq = s.ack_input_seq;
+            self.acked_pos = anchor;
         }
         self.newest_tick = self.newest_tick.max(s.server_tick);
-        let anchor = Vec3::new(s.anchor_px_mm as f32, s.anchor_py_mm as f32, s.anchor_pz_mm as f32) / 1000.0;
         let me = &s.self_state;
         let cms = |v: [i16; 3]| Vec3::new(f32::from(v[0]), f32::from(v[1]), f32::from(v[2])) / 100.0;
         let local = PlayerSample {

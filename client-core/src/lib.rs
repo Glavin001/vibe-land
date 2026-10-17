@@ -497,6 +497,7 @@ impl ClientCore {
                         ack_input_seq: u32::from(players.ack_input_seq),
                         next_input_seq: self.bundler.as_ref().map_or(0, |b| u32::from(b.next_seq())),
                         prediction_offset_m: self.predictor.offset().length(),
+                        acked_pos: self.space.pos(players.acked_pos),
                     };
                 }
             }

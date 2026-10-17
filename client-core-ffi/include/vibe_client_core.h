@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 15
+#define VL_ABI_VERSION 16
 
 #define VL_OK 0
 
@@ -322,6 +322,12 @@ typedef struct VlLocal {
    * Length of the presentation offset, metres (how far the drawn pose leads the server's).
    */
   float prediction_offset_m;
+  /**
+   * The player's authoritative position in the newest snapshot, the one `ack_input_seq` came
+   * with (the drawn pose is sampled later in the interpolation buffer): the pair to measure
+   * movement per applied input frame with.
+   */
+  float acked_pos[3];
 } VlLocal;
 
 /**
