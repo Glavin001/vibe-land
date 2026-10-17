@@ -44,6 +44,8 @@ pub struct VlVehicleVertex {
     pub color_rgba: u32,
     /// `VL_VEHICLE_SECTION_*`.
     pub section: u32,
+    /// The part's index in the asset's `parts` (a detached part is drawn on its own: `VlCarPart`).
+    pub part: u32,
 }
 
 /// A car mesh: triangles, and each wheel's hub (the pivot its sections turn about), actor frame.
@@ -53,6 +55,9 @@ pub struct VehicleMesh {
     pub hubs: [[f32; 3]; 4],
     /// Tyre radius in the renderer's units.
     pub wheel_radius: f32,
+    /// The actor frame is the source frame less this in height (renderer units): a detached part's
+    /// transform (`VlCarPart`, source frame) applies to a vertex at `pos + origin_height · up`.
+    pub origin_height: f32,
 }
 
 #[derive(Debug, PartialEq)]
@@ -142,7 +147,7 @@ pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space:
     let flip = flips_handedness(space);
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
-    for part in parts {
+    for (part_index, part) in parts.iter().enumerate() {
         let Some(position) = vec3(part.get("position")) else { continue };
         let material = part.get("material").and_then(Value::as_str).unwrap_or("");
         let system = part.get("system").and_then(Value::as_str).unwrap_or("");
@@ -179,7 +184,7 @@ pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space:
                 };
                 let corners = if flip { [*a, *c, *b] } else { [*a, *b, *c] };
                 for p in corners {
-                    vertices.push(VlVehicleVertex { pos: space.pos(p), normal, color_rgba: color, section });
+                    vertices.push(VlVehicleVertex { pos: space.pos(p), normal, color_rgba: color, section, part: part_index as u32 });
                 }
             }
         }
@@ -187,7 +192,31 @@ pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space:
     if vertices.is_empty() {
         return Err(VehicleMeshError::Missing("shapes with volume"));
     }
-    Ok(VehicleMesh { vertices, hubs, wheel_radius: radius * space.metres() })
+    Ok(VehicleMesh { vertices, hubs, wheel_radius: radius * space.metres(), origin_height: origin_height * space.metres() })
+}
+
+/// Each part's hull points in the source frame (part + shape + vertex, metres), in `parts` order:
+/// what the wire 4 client needs to rest a car's detached groups on the ground.
+pub fn part_hull_points(metadata: &[u8]) -> Result<Vec<Vec<Vec3>>, VehicleMeshError> {
+    let meta: Value = serde_json::from_slice(metadata).map_err(|e| VehicleMeshError::Json(e.to_string()))?;
+    let parts = meta.get("parts").and_then(Value::as_array).ok_or(VehicleMeshError::Missing("parts"))?;
+    Ok(parts
+        .iter()
+        .map(|part| {
+            let base = vec3(part.get("position")).unwrap_or(Vec3::ZERO);
+            let mut points = Vec::new();
+            for shape in part.get("shapes").and_then(Value::as_array).into_iter().flatten() {
+                let offset = vec3(shape.get("position")).unwrap_or(Vec3::ZERO);
+                for v in shape.get("vertices").and_then(Value::as_array).into_iter().flatten() {
+                    if let Some(v) = vec3(Some(v)) {
+                        // f32 sums in the server's order (the web's Math.fround chain).
+                        points.push((base + offset) + v);
+                    }
+                }
+            }
+            points
+        })
+        .collect())
 }
 
 #[cfg(test)]

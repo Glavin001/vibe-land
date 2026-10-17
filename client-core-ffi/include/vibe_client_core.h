@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 10
+#define VL_ABI_VERSION 11
 
 #define VL_OK 0
 
@@ -497,6 +497,24 @@ typedef struct VlDust {
 } VlDust;
 
 /**
+ * A car part that has come off its car (a detached group of the wire 4 stream), as drawn now: the
+ * transform that maps the part's authored geometry (the car asset's source frame: part + shape +
+ * vertex, metres, +Y up) to the world, as the web's `presentVehicleDebris` does. Renderer space.
+ */
+typedef struct VlCarPart {
+  /**
+   * The car's handle.
+   */
+  uint32_t handle;
+  /**
+   * The part's index in the car asset's `parts`.
+   */
+  uint32_t part;
+  float pos[3];
+  float quat[4];
+} VlCarPart;
+
+/**
  * Counters and clocks, for overlays, logs and test gates.
  */
 typedef struct VlStats {
@@ -578,6 +596,11 @@ typedef struct VlFrameView {
    */
   const struct VlDust *dust;
   size_t dust_count;
+  /**
+   * Every car part off its car, as drawn now (its authored geometry through `pos`/`quat`).
+   */
+  const struct VlCarPart *car_parts;
+  size_t car_part_count;
   struct VlStats stats;
 } VlFrameView;
 
@@ -608,6 +631,10 @@ typedef struct VlVehicleVertex {
    * `VL_VEHICLE_SECTION_*`.
    */
   uint32_t section;
+  /**
+   * The part's index in the asset's `parts` (a detached part is drawn on its own: `VlCarPart`).
+   */
+  uint32_t part;
 } VlVehicleVertex;
 
 /**
@@ -624,6 +651,11 @@ typedef struct VlVehicleMeshView {
    */
   float hubs[4][3];
   float wheel_radius;
+  /**
+   * The actor frame is the source frame less this height: a `VlCarPart` transform applies to a
+   * vertex at `pos + origin_height * up`.
+   */
+  float origin_height;
 } VlVehicleMeshView;
 
 /**
@@ -844,6 +876,18 @@ int32_t vl_client_melee(struct VlClient *client, uint32_t *out_swing_id);
  * `client` must be a live client; `pos` must point to three floats.
  */
 int32_t vl_client_camera_drop(struct VlClient *client, const float *pos, float yaw, float pitch);
+
+/**
+ * Hand the core a car's `metadata.json` (the bytes fetched for `vl_vehicle_mesh_build`): its part
+ * hulls rest the car's detached parts on the ground as the server does.
+ *
+ * # Safety
+ * `client` must be a live client; `metadata` must hold `len` bytes.
+ */
+int32_t vl_client_set_vehicle_metadata(struct VlClient *client,
+                                       uint32_t handle,
+                                       const uint8_t *metadata,
+                                       size_t len);
 
 /**
  * Ask to drive the car with `handle` (`VlCar::handle`).

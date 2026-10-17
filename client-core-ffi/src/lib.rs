@@ -21,13 +21,13 @@ use vibe_client_core::effects::VlDust;
 use vibe_client_core::geometry::VlMeshRange;
 use vibe_client_core::grass::{VlGrassBlade, VlGrassExclusion};
 use vibe_client_core::materials::{Catalog, VlChunkSurface, VlMaterial};
-use vibe_client_core::frame::{VlAudioContact, VlBodyPose, VlCar, VlChunk, VlChunkAssignment, VlDynamicBody, VlEvent, VlInput, VlLocal, VlMeteor, VlPlayer, VlStats};
+use vibe_client_core::frame::{VlAudioContact, VlBodyPose, VlCar, VlCarPart, VlChunk, VlChunkAssignment, VlDynamicBody, VlEvent, VlInput, VlLocal, VlMeteor, VlPlayer, VlStats};
 use vibe_client_core::{ClientCore, Lane};
 use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportConfig, TransportState};
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 10;
+pub const VL_ABI_VERSION: u32 = 11;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -199,6 +199,9 @@ pub struct VlFrameView {
     /// Dust puffs to raise now (client-core effects.rs).
     pub dust: *const VlDust,
     pub dust_count: usize,
+    /// Every car part off its car, as drawn now (its authored geometry through `pos`/`quat`).
+    pub car_parts: *const VlCarPart,
+    pub car_part_count: usize,
     pub stats: VlStats,
 }
 
@@ -385,6 +388,8 @@ pub unsafe extern "C" fn vl_client_poll(client: *mut VlClient, out: *mut VlFrame
             sound_count: frame.sounds.len(),
             dust: frame.dust.as_ptr(),
             dust_count: frame.dust.len(),
+            car_parts: frame.car_parts.as_ptr(),
+            car_part_count: frame.car_parts.len(),
             stats: frame.stats,
         });
         VL_OK
@@ -456,6 +461,23 @@ pub unsafe extern "C" fn vl_client_camera_drop(client: *mut VlClient, pos: *cons
     })
 }
 
+/// Hand the core a car's `metadata.json` (the bytes fetched for `vl_vehicle_mesh_build`): its part
+/// hulls rest the car's detached parts on the ground as the server does.
+///
+/// # Safety
+/// `client` must be a live client; `metadata` must hold `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_set_vehicle_metadata(client: *mut VlClient, handle: u32, metadata: *const u8, len: usize) -> i32 {
+    if metadata.is_null() {
+        return VL_ERR_ARG;
+    }
+    let bytes = std::slice::from_raw_parts(metadata, len);
+    guard(client, |c| match c.core.set_vehicle_metadata(handle, bytes) {
+        Ok(()) => VL_OK,
+        Err(_) => VL_ERR_ARG,
+    })
+}
+
 /// Ask to drive the car with `handle` (`VlCar::handle`).
 ///
 /// # Safety
@@ -520,6 +542,9 @@ pub struct VlVehicleMeshView {
     /// Stream wheel i's hub: the pivot its sections spin and steer about.
     pub hubs: [[f32; 3]; 4],
     pub wheel_radius: f32,
+    /// The actor frame is the source frame less this height: a `VlCarPart` transform applies to a
+    /// vertex at `pos + origin_height * up`.
+    pub origin_height: f32,
 }
 
 /// Build a car's mesh from its `metadata.json` bytes and (optionally, NUL-terminated JSON) its
@@ -554,6 +579,7 @@ pub unsafe extern "C" fn vl_vehicle_mesh_view(mesh: *const VlVehicleMesh, out: *
         vertex_count: mesh.mesh.vertices.len(),
         hubs: mesh.mesh.hubs,
         wheel_radius: mesh.mesh.wheel_radius,
+        origin_height: mesh.mesh.origin_height,
     });
     VL_OK
 }

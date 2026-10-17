@@ -218,6 +218,20 @@ pub struct VlCar {
     pub wheels: [VlWheel; 4],
 }
 
+/// A car part that has come off its car (a detached group of the wire 4 stream), as drawn now: the
+/// transform that maps the part's authored geometry (the car asset's source frame: part + shape +
+/// vertex, metres, +Y up) to the world, as the web's `presentVehicleDebris` does. Renderer space.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlCarPart {
+    /// The car's handle.
+    pub handle: u32,
+    /// The part's index in the car asset's `parts`.
+    pub part: u32,
+    pub pos: [f32; 3],
+    pub quat: [f32; 4],
+}
+
 /// [`VlCar::flags`]: `wheels` holds the stream's wheel states.
 pub const VL_CAR_HAS_WHEELS: u32 = 1;
 
@@ -319,6 +333,8 @@ pub struct SceneFrame {
     pub meteors: Vec<VlMeteor>,
     /// Audible contacts since the previous poll.
     pub audio_contacts: Vec<VlAudioContact>,
+    /// Every car part off its car (every poll).
+    pub car_parts: Vec<VlCarPart>,
     /// Sounds to start this poll (client-core audio.rs: the web's policy), renderer space.
     pub sounds: Vec<crate::audio::VlSound>,
     /// Dust puffs to raise this poll (client-core effects.rs), renderer space.
@@ -336,6 +352,7 @@ impl SceneFrame {
         self.dynamic_bodies.clear();
         self.meteors.clear();
         self.audio_contacts.clear();
+        self.car_parts.clear();
         self.sounds.clear();
         self.dust.clear();
     }

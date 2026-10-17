@@ -666,6 +666,16 @@ impl ClientCore {
         self.vehicle_assets.get(&handle)
     }
 
+    /// A car's `metadata.json` (fetched by the renderer for its mesh): its part hulls let the
+    /// stream rest the car's detached parts on the ground as the server does.
+    pub fn set_vehicle_metadata(&mut self, handle: u32, metadata: &[u8]) -> Result<(), vehicles::VehicleMeshError> {
+        let parts = vehicles::part_hull_points(metadata)?;
+        if let Some(city) = self.city.as_mut() {
+            city.set_vehicle_parts(handle, parts);
+        }
+        Ok(())
+    }
+
     /// Ask to drive the car with `handle` (the web's E near a car; the server checks the seat is
     /// free and the player within `VEHICLE_INTERACT_RADIUS_M`).
     pub fn enter_vehicle(&mut self, handle: u32) {

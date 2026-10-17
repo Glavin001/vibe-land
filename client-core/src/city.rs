@@ -224,9 +224,14 @@ impl CityStream {
             }
         }
 
+        let mut car_groups = Vec::new();
         for (key, p, q, settled) in self.client.body_poses() {
+            if vibe_land_perplayer::wire::is_vehicle_structure(key.structure) {
+                car_groups.push((key, p, q));
+                continue;
+            }
             if !self.structure_chunks.contains_key(&key.structure) {
-                continue; // a car's detached group: vehicles come later
+                continue;
             }
             let settled = settled.is_some();
             if let (Some(r), false) = (render, settled) {
@@ -246,6 +251,21 @@ impl CityStream {
                     pos: self.space.pos(p),
                     quat: self.space.quat(q),
                     flags: if settled { VL_POSE_SETTLED } else { 0 },
+                });
+            }
+        }
+        // Cars' detached groups: each part maps its authored geometry through the group's pose
+        // about the group's centre (the web's presentVehicleDebris).
+        let (groups, _) = self.client.vehicle_groups();
+        for (key, p, q) in car_groups {
+            let Some(group) = groups.get(&key.structure).and_then(|g| g.iter().find(|g| g.body == key.body)) else { continue };
+            let translation = p - q * group.centre;
+            for &part in &group.members {
+                frame.car_parts.push(VlCarPart {
+                    handle: key.structure.saturating_sub(VEHICLE_STRUCTURE_BASE),
+                    part,
+                    pos: self.space.pos(translation),
+                    quat: self.space.quat(q),
                 });
             }
         }
@@ -324,6 +344,12 @@ impl CityStream {
             }
             out.push(record);
         }
+    }
+
+    /// A car's part hulls (its asset's parts: part + shape + vertex, source frame): its detached
+    /// groups then rest on the ground as the server's do (the web's `setVehicleParts`).
+    pub fn set_vehicle_parts(&mut self, handle: u32, parts: Vec<Vec<Vec3>>) {
+        self.client.set_vehicle_parts(VEHICLE_STRUCTURE_BASE + handle, parts);
     }
 
     /// Every chunk of `structure` from the client's current state (after a bootstrap).
