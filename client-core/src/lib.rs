@@ -15,6 +15,7 @@ pub mod coords;
 pub mod effects;
 pub mod frame;
 pub mod geometry;
+pub mod grass;
 pub mod input;
 pub mod materials;
 pub mod players;
