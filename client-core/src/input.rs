@@ -8,6 +8,7 @@
 //! (`shared::movement::build_wish_dir` falls back to them when the axes are zero).
 
 use vibe_land_shared::constants::{BTN_BACK, BTN_FORWARD, BTN_LEFT, BTN_RIGHT, BTN_SECONDARY_FIRE};
+use vibe_land_shared::net_client::js_round;
 use vibe_land_shared::protocol::InputFrame;
 
 /// Frames emitted per call at most (`CLIENT_MAX_CATCHUP_STEPS` on the web).
@@ -24,11 +25,25 @@ pub struct InputState {
     pub buttons: u16,
 }
 
+/// An axis in [-1, 1] as the frame's i8, as `inputBuilder.ts` `axisToMove` computes it (f64,
+/// `Math.round`); a non-finite axis is 0.
+pub fn axis_i8(value: f64) -> i8 {
+    if !value.is_finite() {
+        return 0;
+    }
+    js_round(value * 127.0).clamp(-127.0, 127.0) as i8
+}
+
 /// One input frame as the server will read it.
 pub fn quantise(seq: u16, input: &InputState) -> InputFrame {
-    let axis = |v: f32| (if v.is_finite() { v } else { 0.0 } * 127.0).round().clamp(-127.0, 127.0) as i8;
-    let (move_x, move_y) = (axis(input.move_x), axis(input.move_y));
-    let mut buttons = input.buttons & !BTN_SECONDARY_FIRE;
+    quantise_web(seq, f64::from(input.move_x), f64::from(input.move_y), f64::from(input.yaw), f64::from(input.pitch), input.buttons)
+}
+
+/// One input frame from the web's numbers (`buildInputFromState`): the axes and their direction
+/// bits; the view angles are carried as given (the encoder quantises them).
+pub fn quantise_web(seq: u16, move_x: f64, move_y: f64, yaw: f64, pitch: f64, buttons: u16) -> InputFrame {
+    let (move_x, move_y) = (axis_i8(move_x), axis_i8(move_y));
+    let mut buttons = buttons & !BTN_SECONDARY_FIRE;
     if move_x > 0 {
         buttons |= BTN_RIGHT;
     } else if move_x < 0 {
@@ -39,19 +54,36 @@ pub fn quantise(seq: u16, input: &InputState) -> InputFrame {
     } else if move_y < 0 {
         buttons |= BTN_BACK;
     }
-    let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
-    InputFrame { seq, buttons, move_x, move_y, yaw: finite(input.yaw), pitch: finite(input.pitch) }
+    let finite = |v: f64| if v.is_finite() { v as f32 } else { 0.0 };
+    InputFrame { seq, buttons, move_x, move_y, yaw: finite(yaw), pitch: finite(pitch) }
 }
 
 pub struct InputBundler {
     step_s: f64,
     accumulator_s: f64,
     next_seq: u16,
+    max_catchup: u32,
 }
 
 impl InputBundler {
     pub fn new(sim_hz: u32) -> Self {
-        Self { step_s: 1.0 / f64::from(sim_hz.max(1)), accumulator_s: 0.0, next_seq: 1 }
+        Self::with_step(1.0 / f64::from(sim_hz.max(1)), MAX_CATCHUP_STEPS)
+    }
+
+    /// A bundler with the web's `FixedInputBundler(fixedDtSec, maxCatchupSteps)` parameters.
+    pub fn with_step(step_s: f64, max_catchup: u32) -> Self {
+        Self { step_s, accumulator_s: 0.0, next_seq: 1, max_catchup }
+    }
+
+    /// Start again from `next_seq` with nothing accumulated (`reset`).
+    pub fn reset(&mut self, next_seq: u16) {
+        self.accumulator_s = 0.0;
+        self.next_seq = next_seq;
+    }
+
+    /// The time accumulated toward the next frame, at most one step (`remainderSec`).
+    pub fn remainder_s(&self) -> f64 {
+        self.accumulator_s.clamp(0.0, self.step_s)
     }
 
     /// The sequence number the next frame will carry (fire commands are stamped with it).
@@ -61,12 +93,17 @@ impl InputBundler {
 
     /// Advance by `dt_s` of renderer time; the frames due, oldest first.
     pub fn produce(&mut self, dt_s: f64, input: &InputState) -> Vec<InputFrame> {
+        self.produce_with(dt_s, |seq| quantise(seq, input))
+    }
+
+    /// [`produce`](Self::produce) with the frame built by `frame` from its sequence number.
+    pub fn produce_with(&mut self, dt_s: f64, mut frame: impl FnMut(u16) -> InputFrame) -> Vec<InputFrame> {
         if dt_s.is_finite() && dt_s > 0.0 {
             self.accumulator_s += dt_s;
         }
         let mut frames = Vec::new();
-        while self.accumulator_s >= self.step_s && (frames.len() as u32) < MAX_CATCHUP_STEPS {
-            frames.push(quantise(self.next_seq, input));
+        while self.accumulator_s >= self.step_s && (frames.len() as u32) < self.max_catchup {
+            frames.push(frame(self.next_seq));
             self.next_seq = self.next_seq.wrapping_add(1);
             self.accumulator_s -= self.step_s;
         }

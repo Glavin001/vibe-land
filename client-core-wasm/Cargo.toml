@@ -11,4 +11,5 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 vibe-client-core = { path = "../client-core" }
+vibe-land-shared = { path = "../shared", default-features = false }
 wasm-bindgen = "0.2"
