@@ -50,6 +50,8 @@ private:
 		TObjectPtr<UStaticMeshComponent> HpBack;
 		TObjectPtr<UStaticMeshComponent> HpFill;
 		TObjectPtr<UMaterialInstanceDynamic> Tint;
+		/** The mannequin's body material (M_Main), tinted through BaseColorFactor. */
+		TObjectPtr<UMaterialInstanceDynamic> Body3D;
 		FLinearColor Color;
 		uint32 LastHp = 100;
 		double FlashUntil = 0.0;

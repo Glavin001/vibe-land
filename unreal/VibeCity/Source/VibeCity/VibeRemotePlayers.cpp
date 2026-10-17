@@ -119,12 +119,17 @@ AVibeRemotePlayers::FAvatar& AVibeRemotePlayers::AvatarFor(uint32 PlayerId)
 		A.Skeletal->SetRelativeLocationAndRotation(FVector(0.0, 0.0, -FeetBelowCentreCm), FRotator(0.0, -90.0, 0.0));
 		A.Skeletal->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		A.Skeletal->RegisterComponent();
+		// The web tints the character's main material per player; the joints keep their colour.
 		for (int32 M = 0; M < A.Skeletal->GetNumMaterials(); ++M)
 		{
-			UMaterialInstanceDynamic* Mid = A.Skeletal->CreateDynamicMaterialInstance(M);
-			if (Mid)
+			const UMaterialInterface* Source = A.Skeletal->GetMaterial(M);
+			if (Source && Source->GetName().Contains(TEXT("Main")))
 			{
-				Mid->SetVectorParameterValue(TEXT("Color"), A.Color);
+				A.Body3D = A.Skeletal->CreateDynamicMaterialInstance(M);
+				if (A.Body3D)
+				{
+					A.Body3D->SetVectorParameterValue(TEXT("BaseColorFactor"), A.Color);
+				}
 			}
 		}
 	}
@@ -207,7 +212,12 @@ void AVibeRemotePlayers::Tick(float DeltaSeconds)
 	{
 		FAvatar& A = Pair.Value;
 		const float Flash = A.FlashUntil > Now ? static_cast<float>((A.FlashUntil - Now) / HitFlashS) : 0.0f;
-		A.Tint->SetVectorParameterValue(TEXT("Color"), FMath::Lerp(A.Color, FlashColor, Flash));
+		const FLinearColor Shown = FMath::Lerp(A.Color, FlashColor, Flash);
+		A.Tint->SetVectorParameterValue(TEXT("Color"), Shown);
+		if (A.Body3D)
+		{
+			A.Body3D->SetVectorParameterValue(TEXT("BaseColorFactor"), Shown);
+		}
 		// The HP bar faces the camera (yaw only).
 		if (APlayerCameraManager* Camera = UGameplayStatics::GetPlayerCameraManager(this, 0))
 		{
