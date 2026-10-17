@@ -369,3 +369,113 @@ bool FVibeCityPlayShootRemote::RunTest(const FString& Parameters)
 }
 
 #endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+#include "Camera/CameraComponent.h"
+
+// VibeCity.Play.AimAndReset: right mouse narrows the view to the web's 45 degree vertical field of
+// view (three.js fields of view are vertical; Unreal's are horizontal, converted at the window's
+// aspect) and releasing returns it to 75; R resets the city, which the server answers with a fresh
+// wire 4 bootstrap (VlStats::bootstraps).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayAimAndReset, "VibeCity.Play.AimAndReset",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayAimAndReset::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		uint64 Bootstraps = 0;
+		uint64 BootstrapsBefore = 0;
+		bool bJoined = false;
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	auto VerticalFov = []() -> float
+	{
+		const APawn* Pawn = UGameplayStatics::GetPlayerPawn(GameWorld(), 0);
+		const UCameraComponent* Camera = Pawn ? Pawn->FindComponentByClass<UCameraComponent>() : nullptr;
+		FVector2D Size(16.0, 9.0);
+		GEngine->GameViewport->GetViewportSize(Size);
+		const double Aspect = Size.X / FMath::Max(Size.Y, 1.0);
+		return Camera ? FMath::RadiansToDegrees(2.0f * FMath::Atan(FMath::Tan(FMath::DegreesToRadians(Camera->FieldOfView) * 0.5f) / Aspect)) : -1.0f;
+	};
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 90.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
+			{
+				S->Bootstraps = Frame.stats.bootstraps;
+				S->bJoined = (Frame.local.player.flags & VL_PLAYER_VALID) != 0;
+			});
+		}
+		if (S->bJoined && S->Bootstraps > 0)
+		{
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("never joined"));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, VerticalFov]()
+	{
+		Click();
+		TestTrue(FString::Printf(TEXT("hipfire vertical fov %.2f is 75"), VerticalFov()), FMath::Abs(VerticalFov() - 75.0f) < 0.1f);
+		Key(EKeys::RightMouseButton, true);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, VerticalFov]()
+	{
+		TestTrue(FString::Printf(TEXT("aimed vertical fov %.2f is 45"), VerticalFov()), FMath::Abs(VerticalFov() - 45.0f) < 0.1f);
+		Key(EKeys::RightMouseButton, false);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, VerticalFov]()
+	{
+		TestTrue(FString::Printf(TEXT("released vertical fov %.2f is 75"), VerticalFov()), FMath::Abs(VerticalFov() - 75.0f) < 0.1f);
+		S->BootstrapsBefore = S->Bootstraps;
+		Key(EKeys::R, true);
+		Key(EKeys::R, false);
+		S->Deadline = Now() + 10.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		if (S->Bootstraps > S->BootstrapsBefore)
+		{
+			AddInfo(FString::Printf(TEXT("city reset: bootstrap %llu -> %llu"), S->BootstrapsBefore, S->Bootstraps));
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("R did not reset the city (no new bootstrap within 10 s)"));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif

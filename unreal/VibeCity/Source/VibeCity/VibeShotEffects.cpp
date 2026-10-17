@@ -16,11 +16,12 @@ namespace
 	constexpr float LifetimeS = 0.14f;
 	constexpr double BeamRadiusCm = 3.4;
 	constexpr double ImpactRadiusCm = 11.0;
-	// The aim ray's reach when nothing is known about what it hits (the web's 1000 m).
-	constexpr double MaxRangeCm = 100000.0;
-	// Where the beam leaves, relative to the eye in the aim's frame (forward, right, up), so the
-	// beam is seen from the side rather than end-on.
-	const FVector MuzzleOffsetCm(30.0, 18.0, -14.0);
+	// A local shot's beam when nothing is known about what it hits (the web's
+	// LOCAL_SHOT_TRACE_MAX_DISTANCE, 80 m).
+	constexpr double MaxRangeCm = 8000.0;
+	// Where the beam leaves, relative to the eye in the aim's frame (forward, right, up): the web's
+	// CAMERA_PSEUDO_MUZZLE_OFFSET (0.18 right, 0.12 down, 0.35 forward).
+	const FVector MuzzleOffsetCm(35.0, 18.0, -12.0);
 
 	FLinearColor Hex(uint32 Rgb)
 	{
@@ -98,7 +99,7 @@ void AVibeShotEffects::OnFrame(const VlFrameView& Frame)
 		if (E.kind == VL_EVENT_LOCAL_SHOT && E.weapon == VL_WEAPON_RIFLE)
 		{
 			// p0 is the eye, p1 the aim direction. The core knows no hit point until the server
-			// answers, so the beam runs to the web's maximum range.
+			// answers, so the beam runs the web's local tracer length.
 			const FVector Dir = P1.GetSafeNormal();
 			const FRotator Aim = Dir.Rotation();
 			const FVector Muzzle = P0 + Aim.RotateVector(MuzzleOffsetCm);

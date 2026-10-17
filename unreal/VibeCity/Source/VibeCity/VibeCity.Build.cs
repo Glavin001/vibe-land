@@ -6,6 +6,6 @@ public class VibeCity : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.NoPCHs;
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "VibeLandNet", "VibeLandCity" });
-		PrivateDependencyModuleNames.AddRange(new string[] { "InputCore", "Slate", "SlateCore", "EnhancedInput" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "InputCore", "Slate", "SlateCore", "EnhancedInput", "HTTP" });
 	}
 }

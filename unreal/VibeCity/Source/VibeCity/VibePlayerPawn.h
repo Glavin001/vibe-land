@@ -21,7 +21,8 @@ class UVibeNetSubsystem;
  *
  * Controls match the web client (client/src/input/bindings.ts): WASD move, mouse look, Space jump,
  * Left Shift sprint, C crouch, left mouse fire (held: repeats at the server's fire interval),
- * 1 / 2 / 3 rifle / cannon / meteor, mouse wheel cycles.
+ * right mouse aim (75 -> 45 degree field of view, look slowed to 0.45), 1 / 2 / 3 rifle / cannon /
+ * meteor, mouse wheel cycles, R resets the city (POST /city-reset, at most once a second).
  */
 UCLASS()
 class VIBECITY_API AVibePlayerPawn : public APawn
@@ -84,6 +85,16 @@ private:
 	TObjectPtr<UInputAction> MeteorAction;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> CycleAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> AimAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> ResetAction;
+
+	void ResetCity();
+	void UpdateFieldOfView(float DeltaSeconds);
+	bool bAiming = false;
+	float VerticalFov = 75.0f;
+	double LastResetSeconds = -1.0e9;
 
 	FVector2D MoveAxes = FVector2D::ZeroVector;
 	uint32 Buttons = 0;

@@ -4,6 +4,8 @@
 #include "Components/SceneComponent.h"
 #include "Engine/GameInstance.h"
 #include "Engine/LocalPlayer.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
@@ -14,11 +16,23 @@
 #include "InputModifiers.h"
 #include "EngineUtils.h"
 #include "VibeCityDirector.h"
+#include "GenericPlatform/GenericPlatformHttp.h"
+#include "HttpModule.h"
+#include "Interfaces/IHttpRequest.h"
+#include "Interfaces/IHttpResponse.h"
 #include "VibeLandNet.h"
 #include "VibeNetSubsystem.h"
 
 namespace
 {
+	// scene/GameWorld.tsx: three.js fields of view are vertical.
+	constexpr float HipfireVerticalFov = 75.0f;
+	constexpr float ScopeVerticalFov = 45.0f;
+	constexpr float AimFovDamp = 12.0f;
+	constexpr float AimLookMultiplier = 0.45f;
+	// city/cityReset.ts.
+	constexpr double CityResetCooldownS = 1.0;
+
 	/** Control rotation pitch in (-180, 180], as the core expects (Unreal keeps it in [0, 360)). */
 	float SignedPitch(float Pitch)
 	{
@@ -39,8 +53,8 @@ AVibePlayerPawn::AVibePlayerPawn()
 	// The eye: shared::constants::PLAYER_EYE_HEIGHT_M above the server's reported position.
 	Camera->SetRelativeLocation(FVector(0.0, 0.0, 100.0 * VL_EYE_HEIGHT_M));
 	Camera->bUsePawnControlRotation = true;
-	// The web's hipfire field of view (GameWorld.tsx), horizontal in Unreal as in three.js.
-	Camera->SetFieldOfView(75.0f);
+	// Set each frame from the web's vertical field of view and the viewport's aspect (UpdateFieldOfView).
+	Camera->SetFieldOfView(90.0f);
 
 	bUseControllerRotationYaw = false;
 	bUseControllerRotationPitch = false;
@@ -94,6 +108,8 @@ void AVibePlayerPawn::CreateInput()
 	CannonAction = Action(TEXT("IA_Cannon"), EInputActionValueType::Boolean);
 	MeteorAction = Action(TEXT("IA_Meteor"), EInputActionValueType::Boolean);
 	CycleAction = Action(TEXT("IA_CycleWeapon"), EInputActionValueType::Axis1D);
+	AimAction = Action(TEXT("IA_Aim"), EInputActionValueType::Boolean);
+	ResetAction = Action(TEXT("IA_ResetCity"), EInputActionValueType::Boolean);
 
 	Mapping = NewObject<UInputMappingContext>(this, TEXT("IMC_VibeCity"));
 	// Move: X right, Y forward. W/S drive Y (swizzled), S and A negated.
@@ -123,6 +139,8 @@ void AVibePlayerPawn::CreateInput()
 	Mapping->MapKey(CannonAction, EKeys::Two);
 	Mapping->MapKey(MeteorAction, EKeys::Three);
 	Mapping->MapKey(CycleAction, EKeys::MouseWheelAxis);
+	Mapping->MapKey(AimAction, EKeys::RightMouseButton);
+	Mapping->MapKey(ResetAction, EKeys::R);
 }
 
 void AVibePlayerPawn::PawnClientRestart()
@@ -163,6 +181,9 @@ void AVibePlayerPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 	Input->BindActionValueLambda(CannonAction, ETriggerEvent::Started, [this](const FInputActionValue&) { SelectWeapon(VL_WEAPON_CANNON); });
 	Input->BindActionValueLambda(MeteorAction, ETriggerEvent::Started, [this](const FInputActionValue&) { SelectWeapon(VL_WEAPON_METEOR); });
 	Input->BindAction(CycleAction, ETriggerEvent::Triggered, this, &AVibePlayerPawn::CycleWeapon);
+	Input->BindActionValueLambda(AimAction, ETriggerEvent::Started, [this](const FInputActionValue&) { bAiming = true; });
+	Input->BindActionValueLambda(AimAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { bAiming = false; });
+	Input->BindActionValueLambda(ResetAction, ETriggerEvent::Started, [this](const FInputActionValue&) { ResetCity(); });
 }
 
 void AVibePlayerPawn::OnMove(const FInputActionValue& Value)
@@ -177,7 +198,7 @@ void AVibePlayerPawn::OnMoveStopped(const FInputActionValue&)
 
 void AVibePlayerPawn::OnLook(const FInputActionValue& Value)
 {
-	const FVector2D Look = Value.Get<FVector2D>();
+	const FVector2D Look = Value.Get<FVector2D>() * (bAiming ? AimLookMultiplier : 1.0f);
 	AddControllerYawInput(Look.X);
 	AddControllerPitchInput(Look.Y);
 }
@@ -234,9 +255,45 @@ void AVibePlayerPawn::CycleWeapon(const FInputActionValue& Value)
 	CurrentWeapon = Order[Index];
 }
 
+void AVibePlayerPawn::ResetCity()
+{
+	const double Now = FPlatformTime::Seconds();
+	UVibeNetSubsystem* NetSubsystem = Net();
+	if (!NetSubsystem || !NetSubsystem->IsConnected() || Now - LastResetSeconds < CityResetCooldownS)
+	{
+		return;
+	}
+	LastResetSeconds = Now;
+	const FString Url = FString::Printf(TEXT("%s/city-reset/%s"), *NetSubsystem->CurrentApiBaseUrl(), *FGenericPlatformHttp::UrlEncode(NetSubsystem->CurrentMatchId()));
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+	Request->SetURL(Url);
+	Request->SetVerb(TEXT("POST"));
+	Request->OnProcessRequestComplete().BindLambda([Url](FHttpRequestPtr, FHttpResponsePtr Response, bool bOk)
+	{
+		UE_LOG(LogVibeLand, Display, TEXT("city reset %s: %s"), *Url, bOk && Response ? *FString::FromInt(Response->GetResponseCode()) : TEXT("failed"));
+	});
+	Request->ProcessRequest();
+}
+
+void AVibePlayerPawn::UpdateFieldOfView(float DeltaSeconds)
+{
+	const float Target = bAiming ? ScopeVerticalFov : HipfireVerticalFov;
+	VerticalFov = FMath::Lerp(Target, VerticalFov, FMath::Exp(-AimFovDamp * DeltaSeconds));
+	// Unreal's field of view is horizontal: keep the web's vertical one at any aspect.
+	FVector2D Size(16.0, 9.0);
+	if (GEngine && GEngine->GameViewport)
+	{
+		GEngine->GameViewport->GetViewportSize(Size);
+	}
+	const double Aspect = Size.Y > 0.0 ? Size.X / Size.Y : 16.0 / 9.0;
+	const double Horizontal = 2.0 * FMath::Atan(FMath::Tan(FMath::DegreesToRadians(VerticalFov) * 0.5) * Aspect);
+	Camera->SetFieldOfView(static_cast<float>(FMath::RadiansToDegrees(Horizontal)));
+}
+
 void AVibePlayerPawn::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	UpdateFieldOfView(DeltaSeconds);
 	if (!bOrderedBeforeDirector)
 	{
 		// The director polls the core; this frame's input must be in before it does. (It is spawned
