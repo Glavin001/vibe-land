@@ -193,6 +193,15 @@ fn vehicle_tape() -> bool {
 /// `VIBE_VEHICLE_INPUT_PACING=1`: a driver's inputs are queued in order,
 /// never collapsed, and the client paces them to a jitter-derived queue depth
 /// the server reports (`vehicle_input_pacing`). Off by default.
+/// On foot, a tick that found no input frame repeats the held one; with this on
+/// (`VIBE_FOOT_INPUT_DEBT=1`), the late frame for that slot, when it matches the
+/// repeat, is acknowledged without being simulated again (see
+/// `pay_repeat_debt`). Off by default.
+fn foot_input_debt() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("VIBE_FOOT_INPUT_DEBT").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
 fn vehicle_input_pacing() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("VIBE_VEHICLE_INPUT_PACING").is_ok_and(|v| !v.is_empty() && v != "0"))
@@ -1319,6 +1328,9 @@ struct PlayerRuntime {
     energy_gate: energy_stream::EnergySendGate,
     /// Input arrival lateness, for the paced vehicle queue's target depth.
     input_jitter: vehicle_input_pacing::ArrivalJitter,
+    /// On foot: ticks that repeated the held input for want of a frame, whose
+    /// late frames are still owed (`foot_input_debt`).
+    repeat_debt: u8,
 }
 
 type DynamicBodyMetaRuntime = snapshot_builder::BodyMeta;
@@ -4321,6 +4333,7 @@ impl MatchState {
                         battery_full_resync_pending: true,
                         energy_gate: crate::energy_stream::EnergySendGate::default(),
                         input_jitter: Default::default(),
+                        repeat_debt: 0,
                     },
                 );
                 self.activate_spawn_protection(conn.player_id);
@@ -4809,6 +4822,10 @@ impl MatchState {
                 } else {
                     input_budget
                 };
+                let foot_debt = !in_vehicle && foot_input_debt();
+                if foot_debt {
+                    pay_repeat_debt(runtime);
+                }
                 let frames = if in_vehicle {
                     1
                 } else if runtime.pending_inputs.len() > backlog_above {
@@ -4830,6 +4847,9 @@ impl MatchState {
                     let collapse = in_vehicle && !vehicle_input_pacing();
                     if in_vehicle && vehicle_input_pacing() && index == 0 {
                         drop_stale_vehicle_inputs(runtime);
+                    }
+                    if foot_debt && index == 0 && depth == 0 {
+                        add_repeat_debt(runtime);
                     }
                     let input = take_input_for_tick_with_vehicle_catchup(runtime, collapse);
                     if in_vehicle {
@@ -8001,6 +8021,35 @@ fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
     runtime.last_applied_input.clone()
 }
 
+/// A tick repeated the held input (no frame had arrived): the frame for that
+/// slot is owed. At most as many as the link's measured lateness covers
+/// (`ArrivalJitter::target`, the 95th percentile in ticks), and at least one
+/// (the starved tick itself shows a tick of lateness); a client that went quiet
+/// for longer resumes with fresh frames.
+fn add_repeat_debt(runtime: &mut PlayerRuntime) {
+    let cap = runtime.input_jitter.target().unwrap_or(0).max(1);
+    runtime.repeat_debt = runtime.repeat_debt.saturating_add(1).min(cap);
+}
+
+/// Late frames for slots already simulated with the repeated input: one that
+/// matches the repeat (same movement and buttons) is acknowledged without
+/// simulating it again, so movement equals the frames produced rather than
+/// frames plus starved ticks. One that differs (a press, a turn of the stick)
+/// is left to be simulated, so no action is lost.
+fn pay_repeat_debt(runtime: &mut PlayerRuntime) {
+    while runtime.repeat_debt > 0 {
+        let Some(front) = runtime.pending_inputs.front() else { return };
+        runtime.repeat_debt -= 1;
+        let held = &runtime.last_applied_input;
+        if front.move_x != held.move_x || front.move_y != held.move_y || front.buttons != held.buttons {
+            return;
+        }
+        let frame = runtime.pending_inputs.pop_front().expect("front");
+        runtime.last_ack_input_seq = frame.seq;
+        runtime.last_applied_input = frame;
+    }
+}
+
 fn take_input_for_tick_with_vehicle_catchup(
     runtime: &mut PlayerRuntime,
     collapse_vehicle_backlog: bool,
@@ -8062,6 +8111,12 @@ fn clear_runtime_inputs_for_vehicle_entry(runtime: &mut PlayerRuntime) {
 /// queued in order against the last applied (`vehicle_input_pacing`).
 fn receive_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>, pacing: bool, in_vehicle: bool, tick: u32) {
     if !pacing {
+        // The on-foot repeat debt is bounded by the measured lateness.
+        if foot_input_debt() {
+            if let Some(newest) = cmds.iter().map(|c| c.seq).reduce(|a, b| if seq_is_newer(b, a) { b } else { a }) {
+                runtime.input_jitter.observe(newest, tick);
+            }
+        }
         return enqueue_inputs(runtime, cmds);
     }
     // One sample a packet: its newest input's lateness is the network's
@@ -8359,7 +8414,7 @@ mod tests {
         compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, inputs_skipped, receive_inputs, drop_stale_vehicle_inputs, vehicle_input_pacing, is_snapshot_packet_kind,
         parse_respawn_delay_ms, periodic_refresh_due, rifle_damage, server_build_profile,
         strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
-        take_input_for_tick_with_vehicle_catchup, try_queue_packet, HitZone, InputCmd,
+        take_input_for_tick_with_vehicle_catchup, try_queue_packet, add_repeat_debt, pay_repeat_debt, HitZone, InputCmd, BTN_JUMP,
         MatchIoTelemetry, OutboundDelivery, PlayerRuntime, StrictSnapshotDropCause, BTN_RELOAD,
         MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
         PLAYER_OUTBOUND_QUEUE_CAPACITY, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
@@ -8524,6 +8579,7 @@ mod tests {
             battery_full_resync_pending: true,
             energy_gate: crate::energy_stream::EnergySendGate::default(),
             input_jitter: Default::default(),
+            repeat_debt: 0,
         }
     }
 
@@ -8809,6 +8865,38 @@ mod tests {
         let (frames, credit) = super::spend_input_credit(0.0, None, 1.0 / 60.0);
         assert_eq!(frames, 1);
         assert_eq!(credit, 0.0);
+    }
+
+    #[test]
+    fn foot_input_debt_pays_late_frames_once() {
+        // Held W: frame 20 applied, then a tick with no frame (repeat), then 21 and 22 arrive.
+        let mut runtime = runtime();
+        let walk = |seq: u16| InputCmd { move_y: 127, buttons: 0, ..input(seq) };
+        enqueue_inputs(&mut runtime, vec![walk(20)]);
+        take_input_for_tick(&mut runtime);
+        add_repeat_debt(&mut runtime);
+        let repeated = take_input_for_tick(&mut runtime);
+        assert_eq!(repeated.seq, 20, "the starved tick repeats the held input");
+        enqueue_inputs(&mut runtime, vec![walk(21), walk(22)]);
+        pay_repeat_debt(&mut runtime);
+        assert_eq!(runtime.last_ack_input_seq, 21, "21's slot was the repeat: acknowledged, not simulated");
+        assert_eq!(runtime.pending_inputs.len(), 1);
+        assert_eq!(take_input_for_tick(&mut runtime).seq, 22);
+        // A differing late frame (a jump) is simulated, never swallowed.
+        add_repeat_debt(&mut runtime);
+        enqueue_inputs(&mut runtime, vec![InputCmd { buttons: BTN_JUMP, ..walk(23) }]);
+        pay_repeat_debt(&mut runtime);
+        assert_eq!(runtime.pending_inputs.len(), 1);
+        assert_eq!(runtime.repeat_debt, 0);
+    }
+
+    #[test]
+    fn foot_input_debt_is_bounded_by_measured_lateness() {
+        let mut runtime = runtime();
+        for _ in 0..10 {
+            add_repeat_debt(&mut runtime);
+        }
+        assert_eq!(runtime.repeat_debt, 1, "no lateness measured: one tick");
     }
 
     #[test]
