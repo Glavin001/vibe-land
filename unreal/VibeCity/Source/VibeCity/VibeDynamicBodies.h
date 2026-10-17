@@ -41,7 +41,15 @@ private:
 		double LaunchedAt = 0.0;
 		TObjectPtr<UStaticMeshComponent> Mesh;
 		TObjectPtr<UPointLightComponent> Light;
+		/** A sphere stretched behind the meteor along its direction of travel: its fire trail. */
+		TObjectPtr<UStaticMeshComponent> Trail;
+		TObjectPtr<UMaterialInstanceDynamic> TrailMaterial;
+		FVector LastPos = FVector::ZeroVector;
+		double LastPosAt = 0.0;
 	};
+
+	/** Draws the meteor at `Pos` moving at `Velocity` (cm/s), its trail behind it. */
+	void PlaceMeteor(FFlight& F, const FVector& Pos, const FVector& Velocity);
 
 	void OnFrame(const VlFrameView& Frame);
 	UStaticMeshComponent* Body(int32 Index, bool bSphere);
@@ -55,6 +63,8 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> BallMaterial;
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> MeteorMaterial;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> TrailBase;
 
 	TArray<TObjectPtr<UStaticMeshComponent>> Spheres;
 	TArray<TObjectPtr<UStaticMeshComponent>> Boxes;

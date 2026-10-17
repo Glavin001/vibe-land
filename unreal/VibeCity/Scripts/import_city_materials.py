@@ -12,6 +12,7 @@ Creates under /Game/VibeCity:
   Materials/M_VibeCityGlass                           translucent glass
   Materials/M_VibeCityDust                            dust puffs
   Materials/M_VibeCityDustVolume                      dust parcels (instanced spheres)
+  Materials/M_VibeCityMeteor, ...MeteorTrail, ...Cannonball  meteor, its fire trail, cannonball
   Materials/M_VibeCityGrass                           meadow blades
   Materials/M_VibeCityWeather, ...WeatherAdditive     dust- and snow-storm particles
   Materials/M_VibeCityCanopy                          distant foliage canopy cards
@@ -373,6 +374,135 @@ def hd_ground_material(albedo_array, normal_array, arm_array):
         mel.connect_material_property(c, "", prop)
     mel.recompile_material(m)
     return m
+
+
+def projectile_materials():
+    """The meteor, its fire trail, and the cannonball.
+
+    M_VibeCityMeteor: basalt (near-black, mottled) with glowing ridged cracks (1 - |noise|, sharpened)
+    and a hot rim toward the silhouette; scalar Glow scales the emission.
+    M_VibeCityMeteorTrail: additive and unlit, for a sphere stretched behind the meteor: emission
+    peaks where the view meets the surface head-on, fades from Head (vector, world) out to Length
+    (scalar, cm), and flickers with drifting noise; vector Color.
+    M_VibeCityCannonball: forged iron, dark and metallic, its roughness mottled."""
+    def mul(m, a, b, x, y):
+        e = expr(m, unreal.MaterialExpressionMultiply, x, y)
+        mel.connect_material_expressions(a, "", e, "A")
+        mel.connect_material_expressions(b, "", e, "B")
+        return e
+
+    def add(m, a, b, x, y):
+        e = expr(m, unreal.MaterialExpressionAdd, x, y)
+        mel.connect_material_expressions(a, "", e, "A")
+        mel.connect_material_expressions(b, "", e, "B")
+        return e
+
+    def const(m, v, x, y):
+        e = expr(m, unreal.MaterialExpressionConstant, x, y)
+        e.set_editor_property("r", v)
+        return e
+
+    def noise(m, position, scale, levels, x, y, lo=0.0, hi=1.0):
+        n = expr(m, unreal.MaterialExpressionNoise, x, y)
+        n.set_editor_property("scale", scale)
+        n.set_editor_property("levels", levels)
+        n.set_editor_property("output_min", lo)
+        n.set_editor_property("output_max", hi)
+        if position is not None:
+            mel.connect_material_expressions(position, "", n, "Position")
+        return n
+
+    def facing(m, x, y):
+        normal = expr(m, unreal.MaterialExpressionVertexNormalWS, x - 300, y)
+        view = expr(m, unreal.MaterialExpressionCameraVectorWS, x - 300, y + 100)
+        dot = expr(m, unreal.MaterialExpressionDotProduct, x - 150, y + 40)
+        mel.connect_material_expressions(normal, "", dot, "A")
+        mel.connect_material_expressions(view, "", dot, "B")
+        sat = expr(m, unreal.MaterialExpressionSaturate, x, y + 40)
+        mel.connect_material_expressions(dot, "", sat, "")
+        return sat
+
+    # Meteor.
+    m = fresh_material("M_VibeCityMeteor")
+    world = expr(m, unreal.MaterialExpressionWorldPosition, -1400, 0)
+    mottle = noise(m, world, 0.03, 3, -1200, -200)
+    stone = expr(m, unreal.MaterialExpressionConstant3Vector, -1200, -350)
+    stone.set_editor_property("constant", unreal.LinearColor(0.045, 0.04, 0.038, 0.0))
+    basalt = mul(m, stone, add(m, mul(m, mottle, const(m, 0.6, -1050, -150), -950, -200), const(m, 0.4, -950, -100), -850, -200), -700, -300)
+    mel.connect_material_property(basalt, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    cracks_raw = noise(m, world, 0.05, 4, -1200, 100, -1.0, 1.0)
+    absn = expr(m, unreal.MaterialExpressionAbs, -1050, 100)
+    mel.connect_material_expressions(cracks_raw, "", absn, "")
+    ridge = expr(m, unreal.MaterialExpressionOneMinus, -950, 100)
+    mel.connect_material_expressions(absn, "", ridge, "")
+    sharp = expr(m, unreal.MaterialExpressionPower, -850, 100)
+    sharp.set_editor_property("const_exponent", 12.0)
+    mel.connect_material_expressions(ridge, "", sharp, "Base")
+    rim = expr(m, unreal.MaterialExpressionOneMinus, -850, 300)
+    mel.connect_material_expressions(facing(m, -950, 260), "", rim, "")
+    rim3 = expr(m, unreal.MaterialExpressionPower, -750, 300)
+    rim3.set_editor_property("const_exponent", 3.0)
+    mel.connect_material_expressions(rim, "", rim3, "Base")
+    heat = add(m, mul(m, sharp, const(m, 30.0, -750, 160), -650, 120), mul(m, rim3, const(m, 6.0, -650, 360), -550, 320), -450, 200)
+    ember = expr(m, unreal.MaterialExpressionConstant3Vector, -450, 0)
+    ember.set_editor_property("constant", unreal.LinearColor(1.0, 0.32, 0.06, 0.0))
+    glow = expr(m, unreal.MaterialExpressionScalarParameter, -450, 400)
+    glow.set_editor_property("parameter_name", "Glow")
+    glow.set_editor_property("default_value", 1.0)
+    emissive = mul(m, mul(m, ember, heat, -300, 100), glow, -150, 150)
+    mel.connect_material_property(emissive, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    mel.connect_material_property(const(m, 0.9, -150, 300), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.recompile_material(m)
+
+    # Trail.
+    t = fresh_material("M_VibeCityMeteorTrail")
+    t.set_editor_property("blend_mode", unreal.BlendMode.BLEND_ADDITIVE)
+    t.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
+    color = expr(t, unreal.MaterialExpressionVectorParameter, -900, -300)
+    color.set_editor_property("parameter_name", "Color")
+    color.set_editor_property("default_value", unreal.LinearColor(1.0, 0.35, 0.08, 1.0))
+    head = expr(t, unreal.MaterialExpressionVectorParameter, -1300, 100)
+    head.set_editor_property("parameter_name", "Head")
+    length = expr(t, unreal.MaterialExpressionScalarParameter, -1300, 250)
+    length.set_editor_property("parameter_name", "Length")
+    length.set_editor_property("default_value", 1000.0)
+    tworld = expr(t, unreal.MaterialExpressionWorldPosition, -1300, 0)
+    dist = expr(t, unreal.MaterialExpressionDistance, -1100, 60)
+    mel.connect_material_expressions(tworld, "", dist, "A")
+    mel.connect_material_expressions(head, "", dist, "B")
+    frac = expr(t, unreal.MaterialExpressionDivide, -950, 100)
+    mel.connect_material_expressions(dist, "", frac, "A")
+    mel.connect_material_expressions(length, "", frac, "B")
+    along = expr(t, unreal.MaterialExpressionOneMinus, -820, 100)
+    sat = expr(t, unreal.MaterialExpressionSaturate, -940, 180)
+    mel.connect_material_expressions(frac, "", sat, "")
+    mel.connect_material_expressions(sat, "", along, "")
+    fade = expr(t, unreal.MaterialExpressionPower, -700, 100)
+    fade.set_editor_property("const_exponent", 2.0)
+    mel.connect_material_expressions(along, "", fade, "Base")
+    core = expr(t, unreal.MaterialExpressionPower, -700, 260)
+    core.set_editor_property("const_exponent", 2.5)
+    mel.connect_material_expressions(facing(t, -800, 220), "", core, "Base")
+    ttime = expr(t, unreal.MaterialExpressionTime, -1300, 400)
+    rush = expr(t, unreal.MaterialExpressionConstant3Vector, -1300, 480)
+    rush.set_editor_property("constant", unreal.LinearColor(0.0, 0.0, 600.0, 0.0))
+    flickpos = add(t, tworld, mul(t, ttime, rush, -1150, 440), -1000, 420)
+    flicker = noise(t, flickpos, 0.01, 2, -850, 420, 0.4, 1.2)
+    bright = mul(t, mul(t, mul(t, fade, core, -550, 160), flicker, -420, 200), const(t, 18.0, -420, 320), -300, 220)
+    temission = mul(t, color, bright, -150, 0)
+    mel.connect_material_property(temission, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    mel.recompile_material(t)
+
+    # Cannonball.
+    c = fresh_material("M_VibeCityCannonball")
+    cworld = expr(c, unreal.MaterialExpressionWorldPosition, -900, 0)
+    iron = expr(c, unreal.MaterialExpressionConstant3Vector, -500, -200)
+    iron.set_editor_property("constant", unreal.LinearColor(0.035, 0.034, 0.033, 0.0))
+    mel.connect_material_property(iron, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    mel.connect_material_property(const(c, 1.0, -500, -60), "", unreal.MaterialProperty.MP_METALLIC)
+    rough = add(c, mul(c, noise(c, cworld, 0.2, 3, -700, 60), const(c, 0.3, -600, 160), -500, 80), const(c, 0.35, -500, 180), -350, 100)
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.recompile_material(c)
 
 
 def dust_volume_material():
@@ -748,6 +878,11 @@ if only == "battery":
     saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
     unreal.log(f"VIBE_IMPORT_OK battery saved={saved}")
     raise SystemExit(0)
+if only == "projectiles":
+    projectile_materials()
+    saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
+    unreal.log(f"VIBE_IMPORT_OK projectiles saved={saved}")
+    raise SystemExit(0)
 if only == "dustvolume":
     dust_volume_material()
     saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
@@ -776,6 +911,7 @@ chunk_material(albedo_array, surface_array, "M_VibeCityChunkFlat", normal_map=Fa
 glass = glass_material()
 dust_material()
 dust_volume_material()
+projectile_materials()
 grass_material()
 weather_material("M_VibeCityWeather", additive=False)
 weather_material("M_VibeCityWeatherAdditive", additive=True)
