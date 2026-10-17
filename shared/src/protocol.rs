@@ -176,7 +176,7 @@ pub struct SnapshotPacket {
     pub vehicle_states: Vec<NetVehicleState>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ShotResultPacket {
     pub shot_id: u32,
     pub weapon: u8,
@@ -194,7 +194,7 @@ pub const SHOT_RESOLUTION_PLAYER: u8 = 1;
 pub const SHOT_RESOLUTION_DYNAMIC: u8 = 2;
 pub const SHOT_RESOLUTION_BLOCKED_BY_WORLD: u8 = 3;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ShotFiredPacket {
     pub shooter_player_id: u32,
     pub shot_id: u32,
@@ -210,7 +210,7 @@ pub struct ShotFiredPacket {
     pub end_pz_mm: i32,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DamageEventPacket {
     pub attacker_player_id: u32,
     pub damage_amount: u8,
@@ -627,7 +627,7 @@ pub struct PlayerRosterPacket {
     pub entries: Vec<PlayerRosterEntry>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DynamicBodyMetaEntry {
     pub handle: u16,
     pub body_id: u32,
@@ -637,12 +637,12 @@ pub struct DynamicBodyMetaEntry {
     pub hz_cm: u16,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct DynamicBodyMetaPacket {
     pub entries: Vec<DynamicBodyMetaEntry>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LocalPlayerEnergyPacket {
     pub energy_centi: u32,
 }

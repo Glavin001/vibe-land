@@ -1580,4 +1580,140 @@ mod client_codec_roundtrip {
             assert!(matches!(decode_client_datagram(&net_client::encode_ping(nonce)).unwrap(), ClientDatagram::Ping(n) if n == nonce));
         }
     }
+
+    /// Angles survive quantisation to within one u16 step (2π/65535) and wrap into [0, 2π).
+    fn same_angle(a: f32, b: f32) -> bool {
+        let tau = std::f32::consts::TAU;
+        let d = (a - b).rem_euclid(tau);
+        d.min(tau - d) <= tau / 65535.0 + 1e-6
+    }
+
+    #[test]
+    fn client_input_bundle_reads_back_on_the_server() {
+        let mut f = Fill(0x1234_5678);
+        for count in [1usize, 3, 115, 255, 300] {
+            let frames: Vec<InputFrame> = (0..count)
+                .map(|i| InputFrame {
+                    seq: (i as u16).wrapping_add(f.u16()),
+                    buttons: f.u16(),
+                    move_x: f.u8() as i8,
+                    move_y: f.u8() as i8,
+                    yaw: (f.next() as f32 / u32::MAX as f32) * 20.0 - 10.0,
+                    pitch: (f.next() as f32 / u32::MAX as f32) * 3.0 - 1.5,
+                })
+                .collect();
+            let ClientDatagram::InputBundle(got) = decode_client_datagram(&net_client::encode_input_bundle(&frames)).unwrap() else {
+                panic!("not an input bundle");
+            };
+            let sent = &frames[frames.len().saturating_sub(net_client::INPUT_BUNDLE_MAX_FRAMES)..];
+            assert_eq!(got.len(), sent.len());
+            for (g, s) in got.iter().zip(sent) {
+                assert_eq!((g.seq, g.buttons, g.move_x, g.move_y), (s.seq, s.buttons, s.move_x, s.move_y));
+                assert!(same_angle(g.yaw, s.yaw), "yaw {} vs {}", g.yaw, s.yaw);
+                assert!(same_angle(g.pitch, s.pitch), "pitch {} vs {}", g.pitch, s.pitch);
+            }
+        }
+    }
+
+    #[test]
+    fn client_fire_reads_back_on_the_server() {
+        let dir = [0.6f32, -0.48, 0.64];
+        let cmd = FireCmd {
+            seq: 513,
+            shot_id: 0xDEAD_BEEF,
+            weapon: 3,
+            client_fire_time_us: 0x0102_0304_0506_0708,
+            client_interp_ms: 33,
+            client_dynamic_interp_ms: 83,
+            dir,
+        };
+        let bytes = net_client::encode_fire(&cmd);
+        assert_eq!(bytes.len(), 26);
+        let ClientDatagram::Fire(got) = decode_client_datagram(&bytes).unwrap() else { panic!("not fire") };
+        assert_eq!(
+            (got.seq, got.shot_id, got.weapon, got.client_fire_time_us, got.client_interp_ms, got.client_dynamic_interp_ms),
+            (cmd.seq, cmd.shot_id, cmd.weapon, cmd.client_fire_time_us, cmd.client_interp_ms, cmd.client_dynamic_interp_ms)
+        );
+        for i in 0..3 {
+            assert!((got.dir[i] - dir[i]).abs() <= 0.5 / 32767.0 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn client_melee_and_vehicle_commands_read_back_on_the_server() {
+        let melee = MeleeCmd { seq: 9, swing_id: 77, client_time_us: 123_456_789, yaw: 2.5, pitch: -0.4 };
+        let ClientDatagram::Melee(got) = decode_client_datagram(&net_client::encode_melee(&melee)).unwrap() else { panic!("not melee") };
+        assert_eq!((got.seq, got.swing_id, got.client_time_us), (9, 77, 123_456_789));
+        assert!(same_angle(got.yaw, 2.5) && same_angle(got.pitch, -0.4));
+
+        let ClientDatagram::VehicleEnter(enter) = decode_client_datagram(&net_client::encode_vehicle_enter(0xABCD, 0)).unwrap() else { panic!() };
+        assert_eq!((enter.vehicle_id, enter.seat), (0xABCD, 0));
+        let ClientDatagram::VehicleExit(exit) = decode_client_datagram(&net_client::encode_vehicle_exit(42)).unwrap() else { panic!() };
+        assert_eq!(exit.vehicle_id, 42);
+    }
+
+    #[test]
+    fn shot_damage_energy_and_body_meta_read_back_on_the_client() {
+        let mut f = Fill(0x0BAD_F00D);
+        let result = ShotResultPacket {
+            shot_id: f.next(),
+            weapon: 1,
+            confirmed: true,
+            hit_player_id: f.next(),
+            hit_zone: 2,
+            server_resolution: SHOT_RESOLUTION_DYNAMIC,
+            server_dynamic_body_id: f.next(),
+            server_dynamic_hit_toi_cm: f.u16(),
+            server_dynamic_impulse_centi: f.u16(),
+        };
+        match decode(&encode_server_packet(&ServerPacket::ShotResult(result.clone()))) {
+            ServerMessage::ShotResult(got) => assert_eq!(got, result),
+            other => panic!("{other:?}"),
+        }
+        let fired = ShotFiredPacket {
+            shooter_player_id: f.next(),
+            shot_id: f.next(),
+            weapon: 1,
+            hit_kind: 2,
+            hit_zone: 1,
+            server_fire_time_us: u64::from(f.next()) << 20,
+            origin_px_mm: f.i32(),
+            origin_py_mm: f.i32(),
+            origin_pz_mm: f.i32(),
+            end_px_mm: f.i32(),
+            end_py_mm: f.i32(),
+            end_pz_mm: f.i32(),
+        };
+        match decode(&encode_server_packet(&ServerPacket::ShotFired(fired))) {
+            ServerMessage::ShotFired(got) => assert_eq!(got, fired),
+            other => panic!("{other:?}"),
+        }
+        let damage = DamageEventPacket {
+            attacker_player_id: f.next(),
+            damage_amount: 14,
+            hit_zone: 1,
+            attacker_px_mm: f.i32(),
+            attacker_py_mm: f.i32(),
+            attacker_pz_mm: f.i32(),
+            server_time_ms: f.next(),
+        };
+        match decode(&encode_server_packet(&ServerPacket::DamageEvent(damage))) {
+            ServerMessage::DamageEvent(got) => assert_eq!(got, damage),
+            other => panic!("{other:?}"),
+        }
+        let energy = LocalPlayerEnergyPacket { energy_centi: 98_765 };
+        match decode(&encode_server_packet(&ServerPacket::LocalPlayerEnergy(energy))) {
+            ServerMessage::LocalPlayerEnergy(got) => assert_eq!(got, energy),
+            other => panic!("{other:?}"),
+        }
+        let meta = DynamicBodyMetaPacket {
+            entries: (0..5)
+                .map(|i| DynamicBodyMetaEntry { handle: i, body_id: f.next(), shape_type: (i % 2) as u8, hx_cm: f.u16(), hy_cm: f.u16(), hz_cm: f.u16() })
+                .collect(),
+        };
+        match decode(&encode_server_packet(&ServerPacket::DynamicBodyMeta(meta.clone()))) {
+            ServerMessage::DynamicBodyMeta(got) => assert_eq!(got, meta),
+            other => panic!("{other:?}"),
+        }
+    }
 }

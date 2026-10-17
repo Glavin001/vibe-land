@@ -70,12 +70,97 @@ pub struct VlBodyPose {
 pub struct VlPlayer {
     pub player_id: u32,
     pub flags: u32,
-    /// The player's position as the server simulates it.
+    /// The player's position as the server simulates it (the capsule's centre; the eye is
+    /// [`VL_EYE_HEIGHT_M`] above it).
     pub pos: [f32; 3],
     /// Yaw and pitch: radians in server space, degrees in Unreal.
     pub yaw: f32,
     pub pitch: f32,
     pub hp: u32,
+    /// Velocity (per second, in the renderer's units).
+    pub vel: [f32; 3],
+    /// The server's player flags: [`VL_STATE_ON_GROUND`], [`VL_STATE_IN_VEHICLE`], ...
+    pub state_flags: u32,
+}
+
+/// The eye above a player's reported position (`shared::constants::PLAYER_EYE_HEIGHT_M`), metres.
+pub const VL_EYE_HEIGHT_M: f32 = 0.8;
+
+/// [`VlPlayer::state_flags`] bits (`shared::constants::FLAG_*`).
+pub const VL_STATE_ON_GROUND: u32 = 1;
+pub const VL_STATE_IN_VEHICLE: u32 = 2;
+pub const VL_STATE_DEAD: u32 = 4;
+pub const VL_STATE_MELEEING: u32 = 8;
+pub const VL_STATE_SPAWN_PROTECTED: u32 = 16;
+
+/// The local player: the server's pose plus the presentation offset that hides input latency.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlLocal {
+    /// Presented pose (authoritative + offset); yaw and pitch are the server's last acknowledged
+    /// view (a renderer uses its own camera angles).
+    pub player: VlPlayer,
+    /// Where the camera goes: the presented position plus the eye height.
+    pub eye: [f32; 3],
+    /// Energy (0..1000), or a negative value before the server has sent it.
+    pub energy: f32,
+    /// The newest input sequence the server has applied, and the next one this client will send.
+    pub ack_input_seq: u32,
+    pub next_input_seq: u32,
+    /// Length of the presentation offset, metres (how far the drawn pose leads the server's).
+    pub prediction_offset_m: f32,
+}
+
+/// What the renderer's player is doing this frame, in the renderer's space: axes in [-1, 1]
+/// (`move_x` right, `move_y` forward), view angles (radians for the server, degrees for Unreal),
+/// `VL_BTN_*` bits.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlInput {
+    pub move_x: f32,
+    pub move_y: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub buttons: u32,
+}
+
+/// [`VlInput::buttons`] bits (`shared::constants::BTN_*`).
+pub const VL_BTN_JUMP: u32 = 16;
+pub const VL_BTN_CROUCH: u32 = 32;
+pub const VL_BTN_SPRINT: u32 = 64;
+/// In a vehicle: reset the car.
+pub const VL_BTN_RELOAD: u32 = 256;
+
+/// Weapons (`shared::constants::WEAPON_*`).
+pub const VL_WEAPON_RIFLE: u32 = 1;
+pub const VL_WEAPON_CANNON: u32 = 3;
+pub const VL_WEAPON_METEOR: u32 = 4;
+
+/// [`VlEvent::kind`]: a hitscan shot the server resolved (anyone's, including this client's):
+/// `player` shot from `p0` to `p1`; `a` = how it resolved (0 miss, 1 player, 2 dynamic body, 3 blocked by the world:
+/// `SHOT_RESOLUTION_*`), `b` = hit zone (0 none, 1 body, 2 head).
+pub const VL_EVENT_SHOT_FIRED: u32 = 1;
+/// The server's verdict on one of this client's shots: `id` = shot, `a` = confirmed (0/1),
+/// `player` = the player hit (0 if none), `b` = hit zone.
+pub const VL_EVENT_SHOT_RESULT: u32 = 2;
+/// This player was hit: `player` = attacker, `a` = damage, `b` = hit zone, `p0` = attacker.
+pub const VL_EVENT_DAMAGE: u32 = 3;
+/// This client fired (sent the moment it did, for the local muzzle effect and tracer): `id` =
+/// shot, `p0` = eye, `p1` = the aim direction (unit).
+pub const VL_EVENT_LOCAL_SHOT: u32 = 4;
+
+/// Something that happened, in arrival order. Positions in the renderer's space.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlEvent {
+    pub kind: u32,
+    pub player: u32,
+    pub id: u32,
+    pub weapon: u32,
+    pub a: u32,
+    pub b: u32,
+    pub p0: [f32; 3],
+    pub p1: [f32; 3],
 }
 
 /// Where the session is, as the core sees it.
@@ -126,10 +211,12 @@ pub struct VlStats {
 /// One frame's output. Arrays are rebuilt each poll (assignments and poses hold only changes).
 #[derive(Clone, Debug, Default)]
 pub struct SceneFrame {
-    pub local: VlPlayer,
+    pub local: VlLocal,
     pub remote_players: Vec<VlPlayer>,
     pub assignments: Vec<VlChunkAssignment>,
     pub body_poses: Vec<VlBodyPose>,
+    /// Events since the previous poll.
+    pub events: Vec<VlEvent>,
     pub stats: VlStats,
 }
 
@@ -138,5 +225,6 @@ impl SceneFrame {
         self.remote_players.clear();
         self.assignments.clear();
         self.body_poses.clear();
+        self.events.clear();
     }
 }

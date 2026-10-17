@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 2
+#define VL_ABI_VERSION 3
 
 #define VL_OK 0
 
@@ -71,6 +71,55 @@
  * `VlPlayer::flags`: the record is valid.
  */
 #define VL_PLAYER_VALID 1
+
+/**
+ * `VlPlayer::state_flags` (the server's player flags).
+ */
+#define VL_STATE_ON_GROUND 1
+
+#define VL_STATE_IN_VEHICLE 2
+
+#define VL_STATE_DEAD 4
+
+#define VL_STATE_MELEEING 8
+
+#define VL_STATE_SPAWN_PROTECTED 16
+
+/**
+ * The eye above a player's reported position, metres.
+ */
+#define VL_EYE_HEIGHT_M 0.8
+
+/**
+ * `VlInput::buttons`.
+ */
+#define VL_BTN_JUMP 16
+
+#define VL_BTN_CROUCH 32
+
+#define VL_BTN_SPRINT 64
+
+#define VL_BTN_RELOAD 256
+
+/**
+ * `vl_client_fire` weapons.
+ */
+#define VL_WEAPON_RIFLE 1
+
+#define VL_WEAPON_CANNON 3
+
+#define VL_WEAPON_METEOR 4
+
+/**
+ * `VlEvent::kind` (see client-core `frame.rs` for each kind's fields).
+ */
+#define VL_EVENT_SHOT_FIRED 1
+
+#define VL_EVENT_SHOT_RESULT 2
+
+#define VL_EVENT_DAMAGE 3
+
+#define VL_EVENT_LOCAL_SHOT 4
 
 /**
  * `VlFrameView::transport_state`.
@@ -153,7 +202,8 @@ typedef struct VlPlayer {
   uint32_t player_id;
   uint32_t flags;
   /**
-   * The player's position as the server simulates it.
+   * The player's position as the server simulates it (the capsule's centre; the eye is
+   * [`VL_EYE_HEIGHT_M`] above it).
    */
   float pos[3];
   /**
@@ -162,7 +212,43 @@ typedef struct VlPlayer {
   float yaw;
   float pitch;
   uint32_t hp;
+  /**
+   * Velocity (per second, in the renderer's units).
+   */
+  float vel[3];
+  /**
+   * The server's player flags: [`VL_STATE_ON_GROUND`], [`VL_STATE_IN_VEHICLE`], ...
+   */
+  uint32_t state_flags;
 } VlPlayer;
+
+/**
+ * The local player: the server's pose plus the presentation offset that hides input latency.
+ */
+typedef struct VlLocal {
+  /**
+   * Presented pose (authoritative + offset); yaw and pitch are the server's last acknowledged
+   * view (a renderer uses its own camera angles).
+   */
+  struct VlPlayer player;
+  /**
+   * Where the camera goes: the presented position plus the eye height.
+   */
+  float eye[3];
+  /**
+   * Energy (0..1000), or a negative value before the server has sent it.
+   */
+  float energy;
+  /**
+   * The newest input sequence the server has applied, and the next one this client will send.
+   */
+  uint32_t ack_input_seq;
+  uint32_t next_input_seq;
+  /**
+   * Length of the presentation offset, metres (how far the drawn pose leads the server's).
+   */
+  float prediction_offset_m;
+} VlLocal;
 
 /**
  * A chunk now rides `body` (or stands, or is removed). On a body, the chunk's world pose is the
@@ -194,6 +280,20 @@ typedef struct VlBodyPose {
   float quat[4];
   uint32_t flags;
 } VlBodyPose;
+
+/**
+ * Something that happened, in arrival order. Positions in the renderer's space.
+ */
+typedef struct VlEvent {
+  uint32_t kind;
+  uint32_t player;
+  uint32_t id;
+  uint32_t weapon;
+  uint32_t a;
+  uint32_t b;
+  float p0[3];
+  float p1[3];
+} VlEvent;
 
 /**
  * Counters and clocks, for overlays, logs and test gates.
@@ -234,15 +334,33 @@ typedef struct VlStats {
  */
 typedef struct VlFrameView {
   uint32_t transport_state;
-  struct VlPlayer local;
+  struct VlLocal local;
   const struct VlPlayer *remote_players;
   size_t remote_player_count;
   const struct VlChunkAssignment *assignments;
   size_t assignment_count;
   const struct VlBodyPose *body_poses;
   size_t body_pose_count;
+  /**
+   * Events since the previous poll (shots, verdicts, damage), in order.
+   */
+  const struct VlEvent *events;
+  size_t event_count;
   struct VlStats stats;
 } VlFrameView;
+
+/**
+ * What the renderer's player is doing this frame, in the renderer's space: axes in [-1, 1]
+ * (`move_x` right, `move_y` forward), view angles (radians for the server, degrees for Unreal),
+ * `VL_BTN_*` bits.
+ */
+typedef struct VlInput {
+  float move_x;
+  float move_y;
+  float yaw;
+  float pitch;
+  uint32_t buttons;
+} VlInput;
 
 /**
  * One chunk of the city, fixed for the life of the manifest. Index = position in the chunk table.
@@ -304,6 +422,25 @@ int32_t vl_client_connect(struct VlClient *client);
  * `client` must be a live client; `out` must point to writable memory for one `VlFrameView`.
  */
 int32_t vl_client_poll(struct VlClient *client, struct VlFrameView *out);
+
+/**
+ * What the local player is doing (see `VlInput`): held until the next call; each poll turns the
+ * time since the last into the server's 60 Hz input frames.
+ *
+ * # Safety
+ * `client` must be a live client; `input` must point to a `VlInput`.
+ */
+int32_t vl_client_set_input(struct VlClient *client, const struct VlInput *input);
+
+/**
+ * Fire `weapon` (`VL_WEAPON_*`) along the view last given to `vl_client_set_input`. Writes the shot
+ * id to `out_shot_id` (0 when nothing was fired: not playing yet, or inside the fire interval).
+ * The shot is sent at the next poll and appears as a `VL_EVENT_LOCAL_SHOT`.
+ *
+ * # Safety
+ * `client` must be a live client; `out_shot_id` must be writable (or null).
+ */
+int32_t vl_client_fire(struct VlClient *client, uint32_t weapon, uint32_t *out_shot_id);
 
 /**
  * The city's chunk table: empty until the manifest has arrived (`VlStats::chunks` > 0), then

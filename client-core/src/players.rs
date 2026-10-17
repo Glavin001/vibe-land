@@ -30,9 +30,12 @@ const Q2_5MM_M: f32 = 0.0025;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PlayerSample {
     pub pos: Vec3,
+    /// Velocity, including (for the local player) that of whatever it stands on.
+    pub vel: Vec3,
     pub yaw: f32,
     pub pitch: f32,
     pub hp: u8,
+    pub flags: u8,
 }
 
 /// One player's samples by server tick, oldest first.
@@ -88,6 +91,10 @@ pub struct Players {
     local_player_id: u32,
     pub snapshots: u64,
     pub newest_tick: u32,
+    /// The newest input sequence the server has applied (from the newest snapshot).
+    pub ack_input_seq: u16,
+    /// The render tick of the last [`sample`](Self::sample).
+    render_tick: Option<f32>,
 }
 
 impl Players {
@@ -103,6 +110,8 @@ impl Players {
             local_player_id: 0,
             snapshots: 0,
             newest_tick: 0,
+            ack_input_seq: 0,
+            render_tick: None,
         }
     }
 
@@ -124,32 +133,43 @@ impl Players {
     pub fn on_snapshot(&mut self, s: &SnapshotV2Packet, arrival_ms: f64) {
         self.snapshots += 1;
         self.clock.observe(s.server_tick, arrival_ms);
+        if s.server_tick >= self.newest_tick {
+            self.ack_input_seq = s.ack_input_seq;
+        }
         self.newest_tick = self.newest_tick.max(s.server_tick);
         let anchor = Vec3::new(s.anchor_px_mm as f32, s.anchor_py_mm as f32, s.anchor_pz_mm as f32) / 1000.0;
+        let me = &s.self_state;
+        let cms = |v: [i16; 3]| Vec3::new(f32::from(v[0]), f32::from(v[1]), f32::from(v[2])) / 100.0;
         let local = PlayerSample {
             pos: anchor,
-            yaw: i16_to_angle(s.self_state.yaw_i16),
-            pitch: i16_to_angle(s.self_state.pitch_i16),
-            hp: s.self_state.hp,
+            vel: cms([me.vx_cms, me.vy_cms, me.vz_cms]) + cms(me.support_velocity_cms),
+            yaw: i16_to_angle(me.yaw_i16),
+            pitch: i16_to_angle(me.pitch_i16),
+            hp: me.hp,
+            flags: me.flags,
         };
         self.local.push(s.server_tick, local, self.interval_ticks);
         for r in &s.remote_players {
             let delta = Vec3::new(f32::from(r.dx_q2_5mm), f32::from(r.dy_q2_5mm), f32::from(r.dz_q2_5mm)) * Q2_5MM_M;
-            let sample = PlayerSample { pos: anchor + delta, yaw: i16_to_angle(r.yaw_i16), pitch: i16_to_angle(r.pitch_i16), hp: r.hp };
+            let sample = PlayerSample {
+                pos: anchor + delta,
+                vel: Vec3::new(f32::from(r.vx_cms), f32::from(r.vy_cms), f32::from(r.vz_cms)) / 100.0,
+                yaw: i16_to_angle(r.yaw_i16),
+                pitch: i16_to_angle(r.pitch_i16),
+                hp: r.hp,
+                flags: r.flags,
+            };
             self.remote.entry(r.handle).or_default().push(s.server_tick, sample, self.interval_ticks);
         }
     }
 
     /// Players at `now_ms`, written in `space`. Returns the render tick.
-    pub fn sample(&mut self, now_ms: f64, space: Space, local: &mut VlPlayer, remote: &mut Vec<VlPlayer>) -> Option<f32> {
+    /// Interpolate to `now_ms`: remote players into `remote` (renderer space); the local player's
+    /// authoritative sample (server space) is returned for the predictor, with the render tick.
+    pub fn sample(&mut self, now_ms: f64, space: Space, remote: &mut Vec<VlPlayer>) -> Option<(f32, Option<PlayerSample>)> {
         let r = self.clock.render_tick(now_ms)?;
-        let write = |player_id: u32, s: PlayerSample| {
-            let (yaw, pitch) = space.yaw_pitch(s.yaw, s.pitch);
-            VlPlayer { player_id, flags: VL_PLAYER_VALID, pos: space.pos(s.pos), yaw, pitch, hp: u32::from(s.hp) }
-        };
-        if let Some(s) = self.local.at(r) {
-            *local = write(self.local_player_id, s);
-        }
+        self.render_tick = Some(r);
+        let write = |player_id: u32, s: PlayerSample| player_record(player_id, s, s.pos, space);
         for (&handle, track) in &self.remote {
             let id = match &self.roster {
                 Some(roster) => match roster.get(&handle) {
@@ -165,7 +185,22 @@ impl Players {
                 remote.push(write(id, s));
             }
         }
-        Some(r)
+        Some((r, self.local.at(r)))
+    }
+
+    pub fn local_player_id(&self) -> u32 {
+        self.local_player_id
+    }
+
+    /// The interpolation delay in ticks (render time trails the newest snapshot by this).
+    pub fn delay_ticks(&self) -> f32 {
+        self.clock.delay_ticks
+    }
+
+    /// The server tick the client estimates has been produced by now: the newest tick the render
+    /// clock has seen, extrapolated (render tick + delay). `None` before the first snapshot.
+    pub fn server_tick_now(&self) -> Option<f32> {
+        Some(self.render_tick? + self.clock.delay_ticks)
     }
 
     /// A remote player's interpolated state at render tick `r`.
@@ -175,12 +210,29 @@ impl Players {
     }
 }
 
+/// A player record in the renderer's space, drawn at `pos` (server space).
+pub(crate) fn player_record(player_id: u32, s: PlayerSample, pos: Vec3, space: Space) -> VlPlayer {
+    let (yaw, pitch) = space.yaw_pitch(s.yaw, s.pitch);
+    VlPlayer {
+        player_id,
+        flags: VL_PLAYER_VALID,
+        pos: space.pos(pos),
+        yaw,
+        pitch,
+        hp: u32::from(s.hp),
+        vel: space.pos(s.vel),
+        state_flags: u32::from(s.flags),
+    }
+}
+
 fn lerp(a: PlayerSample, b: PlayerSample, t: f32) -> PlayerSample {
     PlayerSample {
         pos: a.pos.lerp(b.pos, t),
+        vel: a.vel.lerp(b.vel, t),
         yaw: lerp_angle(a.yaw, b.yaw, t),
         pitch: a.pitch + (b.pitch - a.pitch) * t,
         hp: if t < 0.5 { a.hp } else { b.hp },
+        flags: if t < 0.5 { a.flags } else { b.flags },
     }
 }
 
@@ -219,10 +271,10 @@ mod tests {
         for tick in 0..30 {
             p.on_snapshot(&snap(tick, 1000, 400), ms(tick));
         }
-        let (mut local, mut remote) = (VlPlayer::default(), Vec::new());
-        p.sample(ms(30), Space::Server, &mut local, &mut remote).unwrap();
-        assert_eq!(local.player_id, 1);
-        assert!((local.pos[0] - 1.0).abs() < 1e-6);
+        let mut remote = Vec::new();
+        let (_, local) = p.sample(ms(30), Space::Server, &mut remote).unwrap();
+        assert_eq!(p.local_player_id(), 1);
+        assert!((local.unwrap().pos.x - 1.0).abs() < 1e-6);
         assert_eq!(remote.len(), 1);
         assert_eq!(remote[0].player_id, 42);
         // 400 units of 2.5 mm = 1 m beyond the anchor.
@@ -237,10 +289,11 @@ mod tests {
         for tick in 0..120 {
             p.on_snapshot(&snap(tick, tick as i32 * 100, 0), ms(tick));
         }
-        let (mut local, mut remote) = (VlPlayer::default(), Vec::new());
-        let r = p.sample(ms(120), Space::Server, &mut local, &mut remote).unwrap();
+        let mut remote = Vec::new();
+        let (r, local) = p.sample(ms(120), Space::Server, &mut remote).unwrap();
         // Drawn at the render tick: x = 0.1 m per tick there.
-        assert!((local.pos[0] - 0.1 * r).abs() < 1e-3, "x {} at tick {r}", local.pos[0]);
+        let x = local.unwrap().pos.x;
+        assert!((x - 0.1 * r).abs() < 1e-3, "x {x} at tick {r}");
     }
 
     fn snap_without_remote(tick: u32) -> SnapshotV2Packet {
@@ -262,14 +315,14 @@ mod tests {
         for tick in (10..60).map(|i| i * 2) {
             p.on_snapshot(&snap_without_remote(tick), ms(tick));
         }
-        let (mut local, mut remote) = (VlPlayer::default(), Vec::new());
-        p.sample(ms(120), Space::Server, &mut local, &mut remote).unwrap();
+        let mut remote = Vec::new();
+        p.sample(ms(120), Space::Server, &mut remote).unwrap();
         assert_eq!(remote.len(), 1, "a player at rest must not vanish between cold refreshes");
         assert!((remote[0].pos[0] - 1.0).abs() < 1e-6, "{:?}", remote[0].pos);
 
         p.on_roster(&PlayerRosterPacket { entries: vec![] });
         remote.clear();
-        p.sample(ms(122), Space::Server, &mut local, &mut remote).unwrap();
+        p.sample(ms(122), Space::Server, &mut remote).unwrap();
         assert!(remote.is_empty(), "the roster dropped the player");
     }
 

@@ -9,8 +9,12 @@ publish = false
 [lib]
 name = "vibe_client_core"
 crate-type = ["staticlib", "rlib"]
+# The library is named like client-core (the Unreal module links libvibe_client_core.a), which
+# rustdoc cannot tell apart; this crate has no doctests.
+doctest = false
 
 [dependencies]
+vibe-land-shared = { path = "../shared" }
 vibe-client-core = { path = "../client-core" }
 vibe-client-transport-wt = { path = "../client-transport-wt" }
 glam = "0.27"

@@ -68,11 +68,60 @@ impl Space {
             Space::Unreal => (-yaw_rad.to_degrees(), pitch_rad.to_degrees()),
         }
     }
+
+    /// The inverse of [`yaw_pitch`](Self::yaw_pitch): this space's yaw and pitch to server radians.
+    pub fn yaw_pitch_to_server(self, yaw: f32, pitch: f32) -> (f32, f32) {
+        match self {
+            Space::Server => (yaw, pitch),
+            Space::Unreal => (-yaw.to_radians(), pitch.to_radians()),
+        }
+    }
+
+    /// The inverse of [`pos`](Self::pos): a position or displacement in this space, in server metres.
+    pub fn pos_to_server(self, p: [f32; 3]) -> Vec3 {
+        match self {
+            Space::Server => Vec3::from_array(p),
+            Space::Unreal => Vec3::new(-p[1], p[2], p[0]) / 100.0,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inverses_round_trip() {
+        let mut g = Gen(0xC0FFEE);
+        for space in [Space::Server, Space::Unreal] {
+            for _ in 0..1000 {
+                let v = g.vec();
+                let back = space.pos_to_server(space.pos(v));
+                assert!((back - v).length() <= 1e-5 * v.length().max(1.0), "{space:?} {v} -> {back}");
+                let (yaw, pitch) = (g.f() * 3.0, g.f() * 1.5);
+                let (a, b) = space.yaw_pitch(yaw, pitch);
+                let (y2, p2) = space.yaw_pitch_to_server(a, b);
+                assert!((y2 - yaw).abs() < 1e-5 && (p2 - pitch).abs() < 1e-5);
+            }
+        }
+    }
+
+    /// Server forward for (yaw, pitch) is (sin ψ cos φ, sin φ, cos ψ cos φ); Unreal's is
+    /// FRotator(pitch, yaw, 0).Vector() = (cos p cos y, cos p sin y, sin p). They must be one
+    /// direction under the map, or aiming in Unreal fires somewhere else on the server.
+    #[test]
+    fn forward_vectors_agree() {
+        let mut g = Gen(0xBEEF);
+        for _ in 0..1000 {
+            let (yaw, pitch) = (g.f() * 3.0, g.f() * 1.5);
+            let server = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
+            let (uy, up) = Space::Unreal.yaw_pitch(yaw, pitch);
+            let (uy, up) = (uy.to_radians(), up.to_radians());
+            let unreal = [up.cos() * uy.cos(), up.cos() * uy.sin(), up.sin()];
+            let mapped = Space::Unreal.pos_to_server([unreal[0] * 100.0, unreal[1] * 100.0, unreal[2] * 100.0]);
+            assert!((mapped - server).length() < 1e-5, "{server} vs {mapped}");
+        }
+    }
 
     /// Deterministic unit quaternions and vectors (xorshift32).
     struct Gen(u32);

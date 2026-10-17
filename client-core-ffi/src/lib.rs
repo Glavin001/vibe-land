@@ -16,13 +16,13 @@ use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use vibe_client_core::coords::Space;
-use vibe_client_core::frame::{VlBodyPose, VlChunk, VlChunkAssignment, VlPlayer, VlStats};
+use vibe_client_core::frame::{VlBodyPose, VlChunk, VlChunkAssignment, VlEvent, VlInput, VlLocal, VlPlayer, VlStats};
 use vibe_client_core::{ClientCore, Lane};
 use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportConfig, TransportState};
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 2;
+pub const VL_ABI_VERSION: u32 = 3;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -50,6 +50,45 @@ pub const VL_CHUNK_HULL: u32 = 2;
 pub const VL_POSE_SETTLED: u32 = 1;
 /// `VlPlayer::flags`: the record is valid.
 pub const VL_PLAYER_VALID: u32 = 1;
+/// `VlPlayer::state_flags` (the server's player flags).
+pub const VL_STATE_ON_GROUND: u32 = 1;
+pub const VL_STATE_IN_VEHICLE: u32 = 2;
+pub const VL_STATE_DEAD: u32 = 4;
+pub const VL_STATE_MELEEING: u32 = 8;
+pub const VL_STATE_SPAWN_PROTECTED: u32 = 16;
+/// The eye above a player's reported position, metres.
+pub const VL_EYE_HEIGHT_M: f32 = 0.8;
+/// `VlInput::buttons`.
+pub const VL_BTN_JUMP: u32 = 16;
+pub const VL_BTN_CROUCH: u32 = 32;
+pub const VL_BTN_SPRINT: u32 = 64;
+pub const VL_BTN_RELOAD: u32 = 256;
+/// `vl_client_fire` weapons.
+pub const VL_WEAPON_RIFLE: u32 = 1;
+pub const VL_WEAPON_CANNON: u32 = 3;
+pub const VL_WEAPON_METEOR: u32 = 4;
+/// `VlEvent::kind` (see client-core `frame.rs` for each kind's fields).
+pub const VL_EVENT_SHOT_FIRED: u32 = 1;
+pub const VL_EVENT_SHOT_RESULT: u32 = 2;
+pub const VL_EVENT_DAMAGE: u32 = 3;
+pub const VL_EVENT_LOCAL_SHOT: u32 = 4;
+const _: () = {
+    use vibe_client_core::frame as f;
+    assert!(VL_STATE_ON_GROUND == f::VL_STATE_ON_GROUND && VL_STATE_IN_VEHICLE == f::VL_STATE_IN_VEHICLE);
+    assert!(VL_STATE_DEAD == f::VL_STATE_DEAD && VL_STATE_MELEEING == f::VL_STATE_MELEEING);
+    assert!(VL_STATE_SPAWN_PROTECTED == f::VL_STATE_SPAWN_PROTECTED && VL_EYE_HEIGHT_M == f::VL_EYE_HEIGHT_M);
+    assert!(VL_BTN_JUMP == f::VL_BTN_JUMP && VL_BTN_CROUCH == f::VL_BTN_CROUCH);
+    assert!(VL_BTN_SPRINT == f::VL_BTN_SPRINT && VL_BTN_RELOAD == f::VL_BTN_RELOAD);
+    assert!(VL_WEAPON_RIFLE == f::VL_WEAPON_RIFLE && VL_WEAPON_CANNON == f::VL_WEAPON_CANNON && VL_WEAPON_METEOR == f::VL_WEAPON_METEOR);
+    assert!(VL_EVENT_SHOT_FIRED == f::VL_EVENT_SHOT_FIRED && VL_EVENT_SHOT_RESULT == f::VL_EVENT_SHOT_RESULT);
+    assert!(VL_EVENT_DAMAGE == f::VL_EVENT_DAMAGE && VL_EVENT_LOCAL_SHOT == f::VL_EVENT_LOCAL_SHOT);
+    // The buttons and flags are the server's own bits.
+    use vibe_land_shared::constants as c;
+    assert!(VL_BTN_JUMP == c::BTN_JUMP as u32 && VL_BTN_SPRINT == c::BTN_SPRINT as u32 && VL_BTN_CROUCH == c::BTN_CROUCH as u32);
+    assert!(VL_BTN_RELOAD == c::BTN_RELOAD as u32 && VL_STATE_DEAD == c::FLAG_DEAD as u32 && VL_STATE_ON_GROUND == c::FLAG_ON_GROUND as u32);
+    assert!(VL_WEAPON_RIFLE == c::WEAPON_HITSCAN as u32 && VL_WEAPON_CANNON == c::WEAPON_CANNONBALL as u32 && VL_WEAPON_METEOR == c::WEAPON_METEOR as u32);
+    assert!(VL_EYE_HEIGHT_M == c::PLAYER_EYE_HEIGHT_M);
+};
 const _: () = {
     use vibe_client_core::frame as f;
     assert!(VL_BODY_STANDING == f::VL_BODY_STANDING && VL_BODY_REMOVED == f::VL_BODY_REMOVED);
@@ -82,13 +121,16 @@ pub struct VlConfig {
 #[repr(C)]
 pub struct VlFrameView {
     pub transport_state: u32,
-    pub local: VlPlayer,
+    pub local: VlLocal,
     pub remote_players: *const VlPlayer,
     pub remote_player_count: usize,
     pub assignments: *const VlChunkAssignment,
     pub assignment_count: usize,
     pub body_poses: *const VlBodyPose,
     pub body_pose_count: usize,
+    /// Events since the previous poll (shots, verdicts, damage), in order.
+    pub events: *const VlEvent,
+    pub event_count: usize,
     pub stats: VlStats,
 }
 
@@ -244,8 +286,42 @@ pub unsafe extern "C" fn vl_client_poll(client: *mut VlClient, out: *mut VlFrame
             assignment_count: frame.assignments.len(),
             body_poses: frame.body_poses.as_ptr(),
             body_pose_count: frame.body_poses.len(),
+            events: frame.events.as_ptr(),
+            event_count: frame.events.len(),
             stats: frame.stats,
         });
+        VL_OK
+    })
+}
+
+/// What the local player is doing (see `VlInput`): held until the next call; each poll turns the
+/// time since the last into the server's 60 Hz input frames.
+///
+/// # Safety
+/// `client` must be a live client; `input` must point to a `VlInput`.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_set_input(client: *mut VlClient, input: *const VlInput) -> i32 {
+    let Some(input) = input.as_ref() else { return VL_ERR_ARG };
+    guard(client, |c| {
+        c.core.set_input(input);
+        VL_OK
+    })
+}
+
+/// Fire `weapon` (`VL_WEAPON_*`) along the view last given to `vl_client_set_input`. Writes the shot
+/// id to `out_shot_id` (0 when nothing was fired: not playing yet, or inside the fire interval).
+/// The shot is sent at the next poll and appears as a `VL_EVENT_LOCAL_SHOT`.
+///
+/// # Safety
+/// `client` must be a live client; `out_shot_id` must be writable (or null).
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_fire(client: *mut VlClient, weapon: u32, out_shot_id: *mut u32) -> i32 {
+    guard(client, |c| {
+        let now_us = c.transport.as_ref().map_or(0, |t| t.now_us());
+        let shot = c.core.fire(weapon, now_us);
+        if !out_shot_id.is_null() {
+            out_shot_id.write(shot);
+        }
         VL_OK
     })
 }

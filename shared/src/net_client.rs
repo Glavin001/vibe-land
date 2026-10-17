@@ -12,6 +12,7 @@
 
 use crate::constants::*;
 use crate::protocol::*;
+use crate::unit_conv::{angle_to_i16, f32_to_snorm16};
 
 /// `GET /session-config?match_id=…` (server: `SessionConfig` in `server/src/main.rs`). Fields a
 /// server may omit are optional; older servers that omit `city_wire_version` speak wire 2.
@@ -80,6 +81,16 @@ pub enum ServerMessage {
     Welcome(WelcomePacket),
     SnapshotV2(SnapshotV2Packet),
     PlayerRoster(PlayerRosterPacket),
+    /// To the shooter: how the server resolved one of its shots.
+    ShotResult(ShotResultPacket),
+    /// To everyone: a hitscan shot the server resolved (origin and end, for tracers).
+    ShotFired(ShotFiredPacket),
+    /// To the victim: who hit it, how hard, from where.
+    DamageEvent(DamageEventPacket),
+    /// The local player's energy (hundredths).
+    LocalPlayerEnergy(LocalPlayerEnergyPacket),
+    /// Shapes of the snapshot's dynamic bodies (cannonballs, meteors), by handle.
+    DynamicBodyMeta(DynamicBodyMetaPacket),
     /// The server's latency probe; echo the nonce back with [`encode_ping`].
     Ping(u32),
     Pong(u32),
@@ -97,6 +108,56 @@ pub fn decode_server_packet(bytes: &[u8]) -> Result<ServerMessage, DecodeError> 
         PKT_WELCOME => ServerMessage::Welcome(decode_welcome(&mut r)?),
         PKT_SNAPSHOT_V2 => ServerMessage::SnapshotV2(decode_snapshot_v2(&mut r)?),
         PKT_PLAYER_ROSTER => ServerMessage::PlayerRoster(decode_player_roster(&mut r)?),
+        PKT_SHOT_RESULT => ServerMessage::ShotResult(ShotResultPacket {
+            shot_id: r.u32()?,
+            weapon: r.u8()?,
+            confirmed: r.u8()? != 0,
+            hit_player_id: r.u32()?,
+            hit_zone: r.u8()?,
+            server_resolution: r.u8()?,
+            server_dynamic_body_id: r.u32()?,
+            server_dynamic_hit_toi_cm: r.u16()?,
+            server_dynamic_impulse_centi: r.u16()?,
+        }),
+        PKT_SHOT_FIRED => ServerMessage::ShotFired(ShotFiredPacket {
+            shooter_player_id: r.u32()?,
+            shot_id: r.u32()?,
+            weapon: r.u8()?,
+            hit_kind: r.u8()?,
+            hit_zone: r.u8()?,
+            server_fire_time_us: r.u64()?,
+            origin_px_mm: r.i32()?,
+            origin_py_mm: r.i32()?,
+            origin_pz_mm: r.i32()?,
+            end_px_mm: r.i32()?,
+            end_py_mm: r.i32()?,
+            end_pz_mm: r.i32()?,
+        }),
+        PKT_DAMAGE_EVENT => ServerMessage::DamageEvent(DamageEventPacket {
+            attacker_player_id: r.u32()?,
+            damage_amount: r.u8()?,
+            hit_zone: r.u8()?,
+            attacker_px_mm: r.i32()?,
+            attacker_py_mm: r.i32()?,
+            attacker_pz_mm: r.i32()?,
+            server_time_ms: r.u32()?,
+        }),
+        PKT_LOCAL_PLAYER_ENERGY => ServerMessage::LocalPlayerEnergy(LocalPlayerEnergyPacket { energy_centi: r.u32()? }),
+        PKT_DYNAMIC_BODY_META => {
+            let count = r.u16()? as usize;
+            let mut entries = Vec::with_capacity(count.min(1024));
+            for _ in 0..count {
+                entries.push(DynamicBodyMetaEntry {
+                    handle: r.u16()?,
+                    body_id: r.u32()?,
+                    shape_type: r.u8()?,
+                    hx_cm: r.u16()?,
+                    hy_cm: r.u16()?,
+                    hz_cm: r.u16()?,
+                });
+            }
+            ServerMessage::DynamicBodyMeta(DynamicBodyMetaPacket { entries })
+        }
         PKT_PING => ServerMessage::Ping(r.u32()?),
         PKT_PONG => ServerMessage::Pong(r.u32()?),
         _ => ServerMessage::Other { kind },
@@ -319,6 +380,75 @@ pub fn encode_city_resync_request(last_topo_seq: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(5);
     out.push(PKT_CITY_RESYNC_REQUEST);
     out.extend_from_slice(&last_topo_seq.to_le_bytes());
+    out
+}
+
+/// The most frames one input bundle carries (the count is a u8).
+pub const INPUT_BUNDLE_MAX_FRAMES: usize = 255;
+
+/// An input bundle: the newest `frames` (oldest first), 10 bytes each. Angles are quantised as the
+/// server decodes them (`unit_conv::angle_to_i16`); at most [`INPUT_BUNDLE_MAX_FRAMES`] are sent
+/// (the newest).
+pub fn encode_input_bundle(frames: &[InputFrame]) -> Vec<u8> {
+    let frames = &frames[frames.len().saturating_sub(INPUT_BUNDLE_MAX_FRAMES)..];
+    let mut out = Vec::with_capacity(2 + frames.len() * 10);
+    out.push(PKT_INPUT_BUNDLE);
+    out.push(frames.len() as u8);
+    for f in frames {
+        out.extend_from_slice(&f.seq.to_le_bytes());
+        out.extend_from_slice(&f.buttons.to_le_bytes());
+        out.push(f.move_x as u8);
+        out.push(f.move_y as u8);
+        out.extend_from_slice(&angle_to_i16(f.yaw).to_le_bytes());
+        out.extend_from_slice(&angle_to_i16(f.pitch).to_le_bytes());
+    }
+    out
+}
+
+/// A fire command. `dir` is a unit vector in server space (quantised to snorm16 per component);
+/// `client_fire_time_us` is the client's estimate of the server clock at the shot, and the two
+/// interpolation delays let the server rewind what the shooter saw (lag compensation).
+pub fn encode_fire(cmd: &FireCmd) -> Vec<u8> {
+    let mut out = Vec::with_capacity(26);
+    out.push(PKT_FIRE);
+    out.extend_from_slice(&cmd.seq.to_le_bytes());
+    out.extend_from_slice(&cmd.shot_id.to_le_bytes());
+    out.push(cmd.weapon);
+    out.extend_from_slice(&cmd.client_fire_time_us.to_le_bytes());
+    out.extend_from_slice(&cmd.client_interp_ms.to_le_bytes());
+    out.extend_from_slice(&cmd.client_dynamic_interp_ms.to_le_bytes());
+    for c in cmd.dir {
+        out.extend_from_slice(&f32_to_snorm16(c).to_le_bytes());
+    }
+    out
+}
+
+/// A melee swing.
+pub fn encode_melee(cmd: &MeleeCmd) -> Vec<u8> {
+    let mut out = Vec::with_capacity(19);
+    out.push(PKT_MELEE);
+    out.extend_from_slice(&cmd.seq.to_le_bytes());
+    out.extend_from_slice(&cmd.swing_id.to_le_bytes());
+    out.extend_from_slice(&cmd.client_time_us.to_le_bytes());
+    out.extend_from_slice(&angle_to_i16(cmd.yaw).to_le_bytes());
+    out.extend_from_slice(&angle_to_i16(cmd.pitch).to_le_bytes());
+    out
+}
+
+/// Ask to drive `vehicle_id` (seat 0, the driver).
+pub fn encode_vehicle_enter(vehicle_id: u32, seat: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(6);
+    out.push(PKT_VEHICLE_ENTER);
+    out.extend_from_slice(&vehicle_id.to_le_bytes());
+    out.push(seat);
+    out
+}
+
+/// Leave `vehicle_id`.
+pub fn encode_vehicle_exit(vehicle_id: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(5);
+    out.push(PKT_VEHICLE_EXIT);
+    out.extend_from_slice(&vehicle_id.to_le_bytes());
     out
 }
 

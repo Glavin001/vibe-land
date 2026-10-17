@@ -12,14 +12,33 @@
 pub mod city;
 pub mod coords;
 pub mod frame;
+pub mod input;
 pub mod players;
+pub mod predictor;
 
-use vibe_land_shared::net_client::{decode_server_packet, ServerMessage, SessionConfig};
+use glam::Vec3;
+use vibe_land_shared::constants::{
+    FLAG_IN_VEHICLE, FLAG_ON_GROUND, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, WEAPON_CANNONBALL, WEAPON_HITSCAN,
+    WEAPON_METEOR,
+};
+use vibe_land_shared::net_client::{decode_server_packet, encode_fire, encode_input_bundle, ServerMessage, SessionConfig};
+use vibe_land_shared::protocol::FireCmd;
 
-use crate::city::{decode_manifest, is_city_packet, CityStream};
+use crate::city::{decode_manifest, is_city_packet, CityStream, CITY_DELAY_TICKS};
 use crate::coords::Space;
-use crate::frame::{SceneFrame, VlChunk, VlCoreState};
-use crate::players::Players;
+use crate::frame::{
+    SceneFrame, VlChunk, VlCoreState, VlEvent, VlInput, VlLocal, VL_EVENT_DAMAGE, VL_EVENT_LOCAL_SHOT, VL_EVENT_SHOT_FIRED,
+    VL_EVENT_SHOT_RESULT,
+};
+use crate::input::{InputBundler, InputState};
+use crate::players::{player_record, Players};
+use crate::predictor::ThinPredictor;
+
+/// The server's clock for lag compensation: `server_tick × (1000 / SIM_HZ)` ms in integer
+/// milliseconds per tick (`server/src/main.rs`, `server_time_ms`), so 16 ms at 60 Hz.
+fn server_ms_per_tick(sim_hz: u16) -> u64 {
+    1000 / u64::from(sim_hz.max(1))
+}
 
 /// Which lane a packet came on (the core treats them alike: the server moves oversized datagrams
 /// onto the reliable stream, so every kind can arrive on either).
@@ -49,6 +68,14 @@ pub struct ClientCore {
     player_id: u32,
     protocol_decode_errors: u64,
     unknown_packets: u64,
+    input: InputState,
+    bundler: Option<InputBundler>,
+    predictor: ThinPredictor,
+    last_poll_us: Option<u64>,
+    energy: f32,
+    events: Vec<VlEvent>,
+    next_shot_id: u32,
+    last_fire_us: Option<u64>,
 }
 
 impl ClientCore {
@@ -65,6 +92,14 @@ impl ClientCore {
             player_id: 0,
             protocol_decode_errors: 0,
             unknown_packets: 0,
+            input: InputState::default(),
+            bundler: None,
+            predictor: ThinPredictor::default(),
+            last_poll_us: None,
+            energy: -1.0,
+            events: Vec::new(),
+            next_shot_id: 1,
+            last_fire_us: None,
         }
     }
 
@@ -95,6 +130,7 @@ impl ClientCore {
             ));
             return;
         }
+        self.bundler = Some(InputBundler::new(u32::from(config.sim_hz)));
         let mut players = Players::new(u32::from(config.sim_hz), config.interpolation_delay_ms);
         players.set_snapshot_hz(config.snapshot_hz);
         self.players = Some(players);
@@ -154,6 +190,38 @@ impl ClientCore {
                     players.on_roster(&roster);
                 }
             }
+            Ok(ServerMessage::ShotFired(s)) => {
+                let mm = |x: i32, y: i32, z: i32| self.space.pos(Vec3::new(x as f32, y as f32, z as f32) / 1000.0);
+                self.events.push(VlEvent {
+                    kind: VL_EVENT_SHOT_FIRED,
+                    player: s.shooter_player_id,
+                    id: s.shot_id,
+                    weapon: u32::from(s.weapon),
+                    a: u32::from(s.hit_kind),
+                    b: u32::from(s.hit_zone),
+                    p0: mm(s.origin_px_mm, s.origin_py_mm, s.origin_pz_mm),
+                    p1: mm(s.end_px_mm, s.end_py_mm, s.end_pz_mm),
+                });
+            }
+            Ok(ServerMessage::ShotResult(s)) => self.events.push(VlEvent {
+                kind: VL_EVENT_SHOT_RESULT,
+                player: s.hit_player_id,
+                id: s.shot_id,
+                weapon: u32::from(s.weapon),
+                a: u32::from(s.confirmed),
+                b: u32::from(s.hit_zone),
+                ..Default::default()
+            }),
+            Ok(ServerMessage::DamageEvent(d)) => self.events.push(VlEvent {
+                kind: VL_EVENT_DAMAGE,
+                player: d.attacker_player_id,
+                a: u32::from(d.damage_amount),
+                b: u32::from(d.hit_zone),
+                p0: self.space.pos(Vec3::new(d.attacker_px_mm as f32, d.attacker_py_mm as f32, d.attacker_pz_mm as f32) / 1000.0),
+                ..Default::default()
+            }),
+            Ok(ServerMessage::LocalPlayerEnergy(e)) => self.energy = e.energy_centi as f32 / 100.0,
+            Ok(ServerMessage::DynamicBodyMeta(_)) => {}
             // Pings are echoed by the transport on its own thread.
             Ok(ServerMessage::Ping(_)) | Ok(ServerMessage::Pong(_)) => {}
             Ok(ServerMessage::Other { .. }) => self.unknown_packets += 1,
@@ -165,7 +233,20 @@ impl ClientCore {
     /// since the previous poll; players are interpolated to the render time.
     pub fn poll(&mut self, now_us: u64) -> &SceneFrame {
         let now_ms = now_us as f64 / 1000.0;
+        let dt_s = self.last_poll_us.map_or(0.0, |last| now_us.saturating_sub(last) as f64 / 1e6);
+        self.last_poll_us = Some(now_us);
         self.frame.clear_changes();
+        self.frame.events.append(&mut self.events);
+
+        // Input: the 60 Hz frames due since the last poll, one bundle (as the web client sends).
+        if self.state == VlCoreState::Playing {
+            if let Some(bundler) = self.bundler.as_mut() {
+                let frames = bundler.produce(dt_s, &self.input);
+                if !frames.is_empty() {
+                    self.outgoing.push(Outgoing { datagram: true, bytes: encode_input_bundle(&frames) });
+                }
+            }
+        }
 
         let mut stats = crate::frame::VlStats {
             state: self.state as u32,
@@ -191,8 +272,22 @@ impl ClientCore {
         // The city's decode errors (written above) plus the game protocol's.
         stats.decode_errors += self.protocol_decode_errors;
         if let Some(players) = self.players.as_mut() {
-            if let Some(r) = players.sample(now_ms, self.space, &mut self.frame.local, &mut self.frame.remote_players) {
+            if let Some((r, local)) = players.sample(now_ms, self.space, &mut self.frame.remote_players) {
                 stats.player_render_tick = r;
+                if let Some(s) = local {
+                    let flags = u16::from(s.flags);
+                    self.predictor.observe(s.vel, flags & FLAG_ON_GROUND != 0, flags & FLAG_IN_VEHICLE != 0, dt_s as f32);
+                    let presented = self.predictor.update(s.pos, dt_s as f32, &self.input);
+                    let player = player_record(players.local_player_id(), s, presented, self.space);
+                    self.frame.local = VlLocal {
+                        player,
+                        eye: self.space.pos(presented + Vec3::Y * PLAYER_EYE_HEIGHT_M),
+                        energy: self.energy,
+                        ack_input_seq: u32::from(players.ack_input_seq),
+                        next_input_seq: self.bundler.as_ref().map_or(0, |b| u32::from(b.next_seq())),
+                        prediction_offset_m: self.predictor.offset().length(),
+                    };
+                }
             }
             stats.snapshots = players.snapshots;
             stats.newest_server_tick = players.newest_tick;
@@ -200,6 +295,61 @@ impl ClientCore {
         stats.remote_players = self.frame.remote_players.len() as u32;
         self.frame.stats = stats;
         &self.frame
+    }
+
+    /// What the player is doing, in the renderer's space (see [`VlInput`]). Held until changed; each
+    /// poll turns the time since the last into the server's 60 Hz input frames.
+    pub fn set_input(&mut self, input: &VlInput) {
+        let (yaw, pitch) = self.space.yaw_pitch_to_server(input.yaw, input.pitch);
+        self.input = InputState { move_x: input.move_x, move_y: input.move_y, yaw, pitch, buttons: input.buttons as u16 };
+    }
+
+    /// Fire `weapon` (`VL_WEAPON_*`) along the current view (the input's yaw and pitch). Returns the
+    /// shot id, or 0 when not playing, the weapon is unknown, or the last shot was less than the
+    /// fire interval ago (the server enforces it too). The shot also appears as a
+    /// [`VL_EVENT_LOCAL_SHOT`] in the next frame.
+    pub fn fire(&mut self, weapon: u32, now_us: u64) -> u32 {
+        let weapon = match u8::try_from(weapon) {
+            Ok(w) if w == WEAPON_HITSCAN || w == WEAPON_CANNONBALL || w == WEAPON_METEOR => w,
+            _ => return 0,
+        };
+        if self.state != VlCoreState::Playing {
+            return 0;
+        }
+        if self.last_fire_us.is_some_and(|last| now_us.saturating_sub(last) < u64::from(RIFLE_FIRE_INTERVAL_MS) * 1000) {
+            return 0;
+        }
+        let (Some(config), Some(players), Some(bundler)) = (self.config.as_ref(), self.players.as_ref(), self.bundler.as_ref()) else {
+            return 0;
+        };
+        let Some(server_tick) = players.server_tick_now() else { return 0 };
+        self.last_fire_us = Some(now_us);
+        let tick_ms = 1000.0 / f32::from(config.sim_hz.max(1));
+        let (yaw, pitch) = (self.input.yaw, self.input.pitch);
+        let dir = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()).normalize_or_zero();
+        let shot_id = self.next_shot_id;
+        self.next_shot_id = self.next_shot_id.wrapping_add(1).max(1);
+        let cmd = FireCmd {
+            seq: bundler.next_seq(),
+            shot_id,
+            weapon,
+            client_fire_time_us: (server_tick.max(0.0) as u64) * server_ms_per_tick(config.sim_hz) * 1000,
+            client_interp_ms: (players.delay_ticks() * tick_ms).round() as u16,
+            client_dynamic_interp_ms: (CITY_DELAY_TICKS * tick_ms).round() as u16,
+            dir: dir.to_array(),
+        };
+        self.outgoing.push(Outgoing { datagram: true, bytes: encode_fire(&cmd) });
+        let eye = self.frame.local.eye;
+        self.events.push(VlEvent {
+            kind: VL_EVENT_LOCAL_SHOT,
+            player: self.player_id,
+            id: shot_id,
+            weapon: u32::from(weapon),
+            p0: eye,
+            p1: { let d = self.space.pos(dir); let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-9); [d[0] / l, d[1] / l, d[2] / l] },
+            ..Default::default()
+        });
+        shot_id
     }
 
     /// The frame the last [`poll`](Self::poll) produced.
