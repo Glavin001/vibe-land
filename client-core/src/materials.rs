@@ -35,6 +35,10 @@ pub struct VlMaterial {
     pub layer: i32,
     /// `VL_MATERIAL_*` bits.
     pub flags: u32,
+    /// Real-world tile size of the entry's higher-resolution source (catalog `hd`), metres; 0 when
+    /// it has none. A renderer drawing that source scales the core's tile UVs by
+    /// `metres_per_tile / hd_metres_per_tile`.
+    pub hd_metres_per_tile: f32,
 }
 
 pub const VL_MATERIAL_DIRECTIONAL: u32 = 1;
@@ -57,6 +61,14 @@ struct CatalogEntryJson {
     base_color: String,
     roughness: f32,
     metalness: f32,
+    #[serde(default)]
+    hd: Option<HdSourceJson>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HdSourceJson {
+    metres_per_tile: f32,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -134,6 +146,7 @@ impl Catalog {
                 base_color_rgba: parse_hex_rgba(&e.base_color).ok_or_else(|| format!("{}: bad baseColor", e.id))?,
                 layer: e.layer.unwrap_or(-1),
                 flags,
+                hd_metres_per_tile: e.hd.as_ref().map_or(0.0, |h| h.metres_per_tile),
             });
         }
         if catalog.wall_layers == 0 || catalog.floor_layers == 0 || catalog.glass == u16::MAX {
@@ -351,6 +364,15 @@ mod tests {
             assert_eq!(c.materials[layer].metres_per_tile, *metres as f32);
         }
         assert_eq!((c.wall_layers, c.floor_layers), (8, 2));
+        // Every texture layer has a higher-resolution source; where it is the web's own Poly Haven
+        // set the tile size is the same, so a renderer's UV scale is exactly 1 there.
+        for (layer, (id, metres)) in web.iter().enumerate() {
+            let hd = c.materials[layer].hd_metres_per_tile;
+            assert!(hd > 0.0, "{id} has no hd source");
+            if layer < 12 {
+                assert_eq!(hd, *metres as f32, "{id}");
+            }
+        }
         assert_eq!(c.materials[c.glass as usize].flags & VL_MATERIAL_GLASS, VL_MATERIAL_GLASS);
     }
 

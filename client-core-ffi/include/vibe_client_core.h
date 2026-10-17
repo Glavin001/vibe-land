@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 6
+#define VL_ABI_VERSION 7
 
 #define VL_OK 0
 
@@ -632,6 +632,12 @@ typedef struct VlMaterial {
    * `VL_MATERIAL_*` bits.
    */
   uint32_t flags;
+  /**
+   * Real-world tile size of the entry's higher-resolution source (catalog `hd`), metres; 0 when
+   * it has none. A renderer drawing that source scales the core's tile UVs by
+   * `metres_per_tile / hd_metres_per_tile`.
+   */
+  float hd_metres_per_tile;
 } VlMaterial;
 
 #ifdef __cplusplus
