@@ -9,6 +9,7 @@
 //!
 //! Times are microseconds on the caller's clock; packet arrival times and `now` must use the same one.
 
+pub mod audio;
 pub mod city;
 pub mod coords;
 pub mod frame;
@@ -24,9 +25,9 @@ use vibe_land_shared::constants::{
     FLAG_IN_VEHICLE, FLAG_ON_GROUND, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, WEAPON_CANNONBALL, WEAPON_HITSCAN,
     WEAPON_METEOR,
 };
-use vibe_land_shared::constants::{MELEE_COOLDOWN_MS, PKT_METEOR_LAUNCHED, PKT_VEHICLE_ASSET};
+use vibe_land_shared::constants::{MELEE_COOLDOWN_MS, PKT_METEOR_LAUNCHED, PKT_VEHICLE_ASSET, PKT_VEHICLE_RIG};
 use vibe_land_shared::net_client::{
-    decode_meteor_launched, decode_server_packet, decode_vehicle_asset, encode_city_camera_drop, encode_fire,
+    decode_meteor_launched, decode_server_packet, decode_vehicle_asset, decode_vehicle_rig, VehicleRig, encode_city_camera_drop, encode_fire,
     encode_input_bundle, encode_melee, encode_vehicle_enter, encode_vehicle_exit, MeteorLaunched, ServerMessage,
     SessionConfig, VehicleAsset,
 };
@@ -91,6 +92,8 @@ pub struct ClientCore {
     /// Meteor launches since the last poll, with their arrival times.
     meteors: Vec<(MeteorLaunched, u64)>,
     vehicle_assets: std::collections::HashMap<u32, VehicleAsset>,
+    /// Each car's newest rig (wheel states), for cars drawn from the snapshot.
+    vehicle_rigs: std::collections::HashMap<u32, VehicleRig>,
     /// The car this client asked to drive (its handle), until it asks to leave.
     driving: Option<u32>,
     /// Whether the server has this player in a vehicle (the newest local state).
@@ -132,6 +135,7 @@ impl ClientCore {
             last_melee_us: None,
             meteors: Vec::new(),
             vehicle_assets: std::collections::HashMap::new(),
+            vehicle_rigs: std::collections::HashMap::new(),
             driving: None,
             in_vehicle: false,
             recent_inputs: std::collections::VecDeque::new(),
@@ -223,6 +227,18 @@ impl ClientCore {
                     let handle = u32::from(asset.handle);
                     self.vehicle_assets.insert(handle, asset);
                     self.events.push(VlEvent { kind: crate::frame::VL_EVENT_VEHICLE_ASSET, id: handle, ..Default::default() });
+                }
+                Err(_) => self.protocol_decode_errors += 1,
+            }
+            return;
+        }
+        if kind == PKT_VEHICLE_RIG {
+            match decode_vehicle_rig(bytes) {
+                Ok(rig) => {
+                    let handle = u32::from(rig.handle);
+                    if self.vehicle_rigs.get(&handle).is_none_or(|r| r.server_tick <= rig.server_tick) {
+                        self.vehicle_rigs.insert(handle, rig);
+                    }
                 }
                 Err(_) => self.protocol_decode_errors += 1,
             }
@@ -328,7 +344,9 @@ impl ClientCore {
                         let unacked: Vec<InputFrame> =
                             self.recent_inputs.iter().filter(|f| (1..0x8000).contains(&f.seq.wrapping_sub(ack))).cloned().collect();
                         let keep = VEHICLE_INPUT_REDUNDANCY.max(frames.len()).min(unacked.len());
-                        unacked[unacked.len() - keep..].to_vec()
+                        let window = &unacked[unacked.len() - keep..];
+                        // Never less than this poll's frames, whatever the ack says.
+                        if window.last().map(|f| f.seq) == frames.last().map(|f| f.seq) { window.to_vec() } else { frames }
                     } else {
                         frames
                     };
@@ -387,6 +405,34 @@ impl ClientCore {
             // Cars on the players' clock (the web's setVehicleClock), so a driver sits in its car.
             if let Some(city) = self.city.as_mut() {
                 city.cars(stats.player_render_tick, &mut self.frame.cars);
+            }
+            // The snapshot's cars: on wire 4 the car this player drives is left out of the city
+            // stream and sent in every snapshot instead (the web draws it from there too). Draw a
+            // snapshot car when it is the one driven or the stream does not carry it.
+            let handles: Vec<u8> = players.vehicle_handles().collect();
+            for handle in handles {
+                let h = u32::from(handle);
+                let streamed = self.frame.cars.iter().position(|c| c.handle == h);
+                if streamed.is_some() && self.driving != Some(h) {
+                    continue;
+                }
+                let Some((p, q)) = players.vehicle_pose(handle) else { continue };
+                let mut car = crate::frame::VlCar { handle: h, pos: self.space.pos(p), quat: self.space.quat(q), ..Default::default() };
+                if let Some(rig) = self.vehicle_rigs.get(&h) {
+                    car.flags |= crate::frame::VL_CAR_HAS_WHEELS;
+                    for (out, w) in car.wheels.iter_mut().zip(rig.wheels) {
+                        *out = crate::frame::VlWheel {
+                            travel: w.travel_m * self.space.metres(),
+                            steer: w.steer_rad,
+                            spin: w.rotation_rad,
+                            grounded: u32::from(w.grounded),
+                        };
+                    }
+                }
+                match streamed {
+                    Some(i) => self.frame.cars[i] = car,
+                    None => self.frame.cars.push(car),
+                }
             }
         }
         for (m, arrival_us) in self.meteors.drain(..) {

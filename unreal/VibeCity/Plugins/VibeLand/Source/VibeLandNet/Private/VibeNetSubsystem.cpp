@@ -94,6 +94,52 @@ void UVibeNetSubsystem::SetInput(const VlInput& Input)
 	}
 }
 
+void UVibeNetSubsystem::EnterVehicle(uint32 Handle)
+{
+	if (Client)
+	{
+		vl_client_enter_vehicle(Client, Handle);
+	}
+}
+
+void UVibeNetSubsystem::ExitVehicle()
+{
+	if (Client)
+	{
+		vl_client_exit_vehicle(Client);
+	}
+}
+
+namespace
+{
+	FString VehicleAssetText(VlClient* Client, uint32 Handle, uint32 What)
+	{
+		if (!Client)
+		{
+			return FString();
+		}
+		const size_t Length = vl_client_vehicle_asset(Client, Handle, What, nullptr, 0);
+		if (Length == 0)
+		{
+			return FString();
+		}
+		TArray<char> Buffer;
+		Buffer.SetNumZeroed(static_cast<int32>(Length) + 1);
+		vl_client_vehicle_asset(Client, Handle, What, Buffer.GetData(), Buffer.Num());
+		return FString(UTF8_TO_TCHAR(Buffer.GetData()));
+	}
+}
+
+FString UVibeNetSubsystem::VehicleGeometryHash(uint32 Handle) const
+{
+	return VehicleAssetText(Client, Handle, 0);
+}
+
+FString UVibeNetSubsystem::VehicleConfiguration(uint32 Handle) const
+{
+	return VehicleAssetText(Client, Handle, 1);
+}
+
 uint32 UVibeNetSubsystem::Melee()
 {
 	uint32 SwingId = 0;

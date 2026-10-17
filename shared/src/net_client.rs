@@ -447,6 +447,37 @@ pub fn decode_vehicle_asset(bytes: &[u8]) -> Result<VehicleAsset, DecodeError> {
     })
 }
 
+/// One wheel of a [`VehicleRig`]: suspension travel (m), steer and spin angles (rad), on the ground.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RigWheel {
+    pub travel_m: f32,
+    pub steer_rad: f32,
+    pub rotation_rad: f32,
+    pub grounded: bool,
+}
+
+/// A car's wheel states (`PKT_VEHICLE_RIG`, server `vehicle_assets::rig_packet`): the server tick,
+/// the car's handle and its four wheels. Detached-part groups may follow (not decoded here).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VehicleRig {
+    pub server_tick: u32,
+    pub handle: u8,
+    pub wheels: [RigWheel; 4],
+}
+
+/// Decode a `PKT_VEHICLE_RIG` packet's fixed 58-byte part.
+pub fn decode_vehicle_rig(bytes: &[u8]) -> Result<VehicleRig, DecodeError> {
+    let (&kind, body) = bytes.split_first().ok_or(DecodeError::Empty)?;
+    let mut r = Reader { bytes: body, kind };
+    let server_tick = r.u32()?;
+    let handle = r.u8()?;
+    let mut wheels = [RigWheel::default(); 4];
+    for w in &mut wheels {
+        *w = RigWheel { travel_m: r.f32()?, steer_rad: r.f32()?, rotation_rad: r.f32()?, grounded: r.u8()? != 0 };
+    }
+    Ok(VehicleRig { server_tick, handle, wheels })
+}
+
 /// Drop the player at a pose (`PKT_CITY_CAMERA_DROP`, reliable stream): leaving the aerial camera
 /// puts the player where the camera is. Server space; the server rate-limits it and rejects
 /// non-finite or far-out poses.

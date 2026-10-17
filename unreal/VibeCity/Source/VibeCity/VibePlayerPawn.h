@@ -23,7 +23,9 @@ class UVibeNetSubsystem;
  * Left Shift sprint, C crouch, left mouse fire (held: repeats at the server's fire interval),
  * right mouse aim (75 -> 45 degree field of view, look slowed to 0.45), 1 / 2 / 3 rifle / cannon /
  * meteor, mouse wheel cycles, R resets the city (POST /city-reset, at most once a second), V melee,
- * N the aerial camera (the web's scene/aerialFlight.ts: free flight at 30 m/s, x3 sprinting, Space
+ * E enters the nearest car within the server's reach (VEHICLE_INTERACT_RADIUS_M, 4 m) or leaves
+ * it; driving uses the same controls (W/S throttle and brake, A/D steer, Space handbrake, R resets
+ * the car). N the aerial camera (the web's scene/aerialFlight.ts: free flight at 30 m/s, x3 sprinting, Space
  * and C up and down, gameplay input neutral; leaving drops the player where the camera is).
  */
 UCLASS()
@@ -40,6 +42,9 @@ public:
 
 	/** Whether the server has placed this player yet. */
 	bool IsJoined() const { return bJoined; }
+
+	/** The server has this player in a car. */
+	bool IsInVehicle() const { return bInVehicle; }
 
 	/** In the aerial camera (N). */
 	bool IsAerial() const { return bAerial; }
@@ -101,6 +106,19 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> MeleeAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> InteractAction;
+	void Interact();
+	void FollowCar(float DeltaSeconds);
+	bool bInVehicle = false;
+	uint32 DrivenCar = 0;
+	FVector ChaseFocus = FVector::ZeroVector;
+	FVector ChaseEye = FVector::ZeroVector;
+	bool bChaseValid = false;
+	/** The chase camera's orbit about the car's heading (degrees) and its pitch (degrees). */
+	float ChaseYawOffset = 0.0f;
+	float ChasePitch = 0.0f;
+	double LastChaseLookSeconds = 0.0;
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> AerialAction;
 	bool bAerial = false;

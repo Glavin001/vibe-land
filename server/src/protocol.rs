@@ -1767,4 +1767,14 @@ mod client_codec_roundtrip {
         assert_eq!(got.configuration["appearance"]["body"], "#112233");
         assert!(net_client::decode_vehicle_asset(&[vibe_land_shared::constants::PKT_VEHICLE_ASSET, b'{']).is_err());
     }
+
+    #[test]
+    fn vehicle_rig_reads_back_on_the_client() {
+        let wheels = [[0.05, -0.2, 1.5, 1.0], [0.04, -0.21, 1.6, 0.0], [0.0, 0.0, 3.0, 1.0], [-0.02, 0.0, -3.0, 1.0]];
+        let got = net_client::decode_vehicle_rig(&crate::vehicle_assets::rig_packet(4242, 3, wheels)).unwrap();
+        assert_eq!((got.server_tick, got.handle), (4242, 3));
+        for (g, w) in got.wheels.iter().zip(wheels) {
+            assert_eq!((g.travel_m, g.steer_rad, g.rotation_rad, g.grounded), (w[0], w[1], w[2], w[3] != 0.0));
+        }
+    }
 }

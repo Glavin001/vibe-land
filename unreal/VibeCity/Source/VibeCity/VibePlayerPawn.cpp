@@ -16,6 +16,7 @@
 #include "InputModifiers.h"
 #include "EngineUtils.h"
 #include "VibeCityDirector.h"
+#include "VibeVehicles.h"
 #include "GenericPlatform/GenericPlatformHttp.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
@@ -36,6 +37,15 @@ namespace
 	constexpr double AerialSpeedCmS = 3000.0;
 	constexpr double AerialSprintMultiplier = 3.0;
 	constexpr double AerialMaxStepS = 0.1;
+	// shared::constants::VEHICLE_INTERACT_RADIUS_M.
+	constexpr double VehicleInteractRadiusCm = 400.0;
+	// input/resolver.ts: the chase camera's pitch and its return to centre.
+	constexpr float ChaseDefaultPitchDeg = 8.594367f; // 0.15 rad
+	constexpr float ChasePitchMinDeg = -20.053523f;   // -0.35 rad
+	constexpr float ChasePitchMaxDeg = 34.377468f;    // 0.6 rad
+	constexpr float ChaseYawReturnDegS = 143.239449f; // 2.5 rad/s
+	constexpr float ChasePitchReturnDegS = 85.943669f; // 1.5 rad/s
+	constexpr double ChaseIdleS = 0.3;
 
 	/** Control rotation pitch in (-180, 180], as the core expects (Unreal keeps it in [0, 360)). */
 	float SignedPitch(float Pitch)
@@ -59,6 +69,9 @@ AVibePlayerPawn::AVibePlayerPawn()
 	Camera->bUsePawnControlRotation = true;
 	// Set each frame from the web's vertical field of view and the viewport's aspect (UpdateFieldOfView).
 	Camera->SetFieldOfView(90.0f);
+	// The web draws no motion blur.
+	Camera->PostProcessSettings.bOverride_MotionBlurAmount = true;
+	Camera->PostProcessSettings.MotionBlurAmount = 0.0f;
 
 	bUseControllerRotationYaw = false;
 	bUseControllerRotationPitch = false;
@@ -115,6 +128,7 @@ void AVibePlayerPawn::CreateInput()
 	AimAction = Action(TEXT("IA_Aim"), EInputActionValueType::Boolean);
 	ResetAction = Action(TEXT("IA_ResetCity"), EInputActionValueType::Boolean);
 	MeleeAction = Action(TEXT("IA_Melee"), EInputActionValueType::Boolean);
+	InteractAction = Action(TEXT("IA_Interact"), EInputActionValueType::Boolean);
 	AerialAction = Action(TEXT("IA_Aerial"), EInputActionValueType::Boolean);
 
 	Mapping = NewObject<UInputMappingContext>(this, TEXT("IMC_VibeCity"));
@@ -148,6 +162,7 @@ void AVibePlayerPawn::CreateInput()
 	Mapping->MapKey(AimAction, EKeys::RightMouseButton);
 	Mapping->MapKey(ResetAction, EKeys::R);
 	Mapping->MapKey(MeleeAction, EKeys::V);
+	Mapping->MapKey(InteractAction, EKeys::E);
 	Mapping->MapKey(AerialAction, EKeys::N);
 }
 
@@ -191,7 +206,20 @@ void AVibePlayerPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 	Input->BindAction(CycleAction, ETriggerEvent::Triggered, this, &AVibePlayerPawn::CycleWeapon);
 	Input->BindActionValueLambda(AimAction, ETriggerEvent::Started, [this](const FInputActionValue&) { bAiming = true; });
 	Input->BindActionValueLambda(AimAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { bAiming = false; });
-	Input->BindActionValueLambda(ResetAction, ETriggerEvent::Started, [this](const FInputActionValue&) { if (!bAerial) { ResetCity(); } });
+	// R: in a car, the car's reset button (held like the others); on foot, the city reset.
+	Input->BindActionValueLambda(ResetAction, ETriggerEvent::Started, [this](const FInputActionValue&)
+	{
+		if (bInVehicle)
+		{
+			OnButton(VL_BTN_RELOAD, true);
+		}
+		else if (!bAerial)
+		{
+			ResetCity();
+		}
+	});
+	Input->BindActionValueLambda(ResetAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { OnButton(VL_BTN_RELOAD, false); });
+	Input->BindActionValueLambda(InteractAction, ETriggerEvent::Started, [this](const FInputActionValue&) { Interact(); });
 	Input->BindActionValueLambda(MeleeAction, ETriggerEvent::Started, [this](const FInputActionValue&)
 	{
 		if (UVibeNetSubsystem* NetSubsystem = Net(); NetSubsystem && bJoined && !bAerial)
@@ -215,6 +243,15 @@ void AVibePlayerPawn::OnMoveStopped(const FInputActionValue&)
 void AVibePlayerPawn::OnLook(const FInputActionValue& Value)
 {
 	const FVector2D Look = Value.Get<FVector2D>() * (bAiming ? AimLookMultiplier : 1.0f);
+	if (bInVehicle)
+	{
+		// In a car the mouse orbits the chase camera about the car (input/resolver.ts); the legacy
+		// input scale (2.5 degrees per unit) keeps the feel of on-foot look.
+		ChaseYawOffset += Look.X * 2.5f;
+		ChasePitch = FMath::Clamp(ChasePitch + Look.Y * 2.5f, ChasePitchMinDeg, ChasePitchMaxDeg);
+		LastChaseLookSeconds = FPlatformTime::Seconds();
+		return;
+	}
 	AddControllerYawInput(Look.X);
 	AddControllerPitchInput(Look.Y);
 }
@@ -289,6 +326,66 @@ void AVibePlayerPawn::ResetCity()
 		UE_LOG(LogVibeLand, Display, TEXT("city reset %s: %s"), *Url, bOk && Response ? *FString::FromInt(Response->GetResponseCode()) : TEXT("failed"));
 	});
 	Request->ProcessRequest();
+}
+
+void AVibePlayerPawn::Interact()
+{
+	UVibeNetSubsystem* NetSubsystem = Net();
+	if (!NetSubsystem || !bJoined || bAerial)
+	{
+		return;
+	}
+	if (bInVehicle)
+	{
+		NetSubsystem->ExitVehicle();
+		return;
+	}
+	TActorIterator<AVibeVehicles> Vehicles(GetWorld());
+	if (TOptional<uint32> Car = Vehicles ? Vehicles->NearestCar(GetActorLocation(), VehicleInteractRadiusCm) : TOptional<uint32>())
+	{
+		DrivenCar = *Car;
+		bChaseValid = false;
+		NetSubsystem->EnterVehicle(*Car);
+	}
+}
+
+void AVibePlayerPawn::FollowCar(float DeltaSeconds)
+{
+	// The web's chase camera (scene/GameWorld.tsx): focus 1 m above the chassis, 6 m behind along the
+	// car's heading plus the mouse's orbit, 1 m higher, smoothed (rates 12 and 18 per second).
+	TActorIterator<AVibeVehicles> Vehicles(GetWorld());
+	TOptional<FVector> Chassis = Vehicles ? Vehicles->CarPosition(DrivenCar) : TOptional<FVector>();
+	TOptional<FQuat> Rotation = Vehicles ? Vehicles->CarRotation(DrivenCar) : TOptional<FQuat>();
+	AController* PC = GetController();
+	if (!Chassis || !Rotation || !PC)
+	{
+		return;
+	}
+	if (!bChaseValid)
+	{
+		ChaseYawOffset = 0.0f;
+		ChasePitch = ChaseDefaultPitchDeg;
+	}
+	if (FPlatformTime::Seconds() - LastChaseLookSeconds > ChaseIdleS)
+	{
+		ChaseYawOffset = FMath::FixedTurn(ChaseYawOffset, 0.0f, ChaseYawReturnDegS * DeltaSeconds);
+		ChasePitch = FMath::FixedTurn(ChasePitch, ChaseDefaultPitchDeg, ChasePitchReturnDegS * DeltaSeconds);
+	}
+	const float OrbitYaw = static_cast<float>(Rotation->Rotator().Yaw) + ChaseYawOffset;
+	const double FollowCm = 600.0;
+	const FVector Focus = *Chassis + FVector(0.0, 0.0, 100.0);
+	const FVector Back = FRotator(0.0, OrbitYaw, 0.0).Vector() * (FMath::Cos(FMath::DegreesToRadians(ChasePitch)) * FollowCm);
+	const FVector Target = Focus - Back + FVector(0.0, 0.0, FMath::Sin(FMath::DegreesToRadians(ChasePitch)) * FollowCm + 100.0);
+	if (!bChaseValid)
+	{
+		ChaseFocus = Focus;
+		ChaseEye = Target;
+		bChaseValid = true;
+	}
+	ChaseFocus += (Focus - ChaseFocus) * FMath::Min(DeltaSeconds * 12.0f, 1.0f);
+	ChaseEye += (Target - ChaseEye) * FMath::Min(DeltaSeconds * 18.0f, 1.0f);
+	SetActorLocation(ChaseEye - Camera->GetRelativeLocation());
+	PC->SetControlRotation((ChaseFocus - ChaseEye).Rotation());
 }
 
 void AVibePlayerPawn::ToggleAerial()
@@ -383,7 +480,7 @@ void AVibePlayerPawn::Tick(float DeltaSeconds)
 	Input.move_y = static_cast<float>(MoveAxes.Y);
 	Input.buttons = Buttons;
 	NetSubsystem->SetInput(Input);
-	if (bFireHeld && bJoined)
+	if (bFireHeld && bJoined && !bInVehicle)
 	{
 		// The core repeats at most at the server's fire interval and stamps the shot.
 		NetSubsystem->Fire(CurrentWeapon);
@@ -397,7 +494,12 @@ void AVibePlayerPawn::OnFrame(const VlFrameView& Frame)
 	{
 		return;
 	}
-	if (!bAerial)
+	bInVehicle = (Me.state_flags & VL_STATE_IN_VEHICLE) != 0;
+	if (bInVehicle)
+	{
+		FollowCar(static_cast<float>(GetWorld()->GetDeltaSeconds()));
+	}
+	else if (!bAerial)
 	{
 		SetActorLocation(FVector(Me.pos[0], Me.pos[1], Me.pos[2]));
 	}

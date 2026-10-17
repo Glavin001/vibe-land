@@ -756,3 +756,177 @@ bool FVibeCityPlayAerialAndMelee::RunTest(const FString& Parameters)
 }
 
 #endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+#include "UnrealClient.h"
+#include "VibeVehicles.h"
+
+// VibeCity.Play.Drive: the cars the stream carries are drawn (their meshes built from the server's
+// metadata.json); E beside one puts the player in it (the server's FLAG_IN_VEHICLE); W drives it
+// (it moves); E again leaves it. Needs a server whose city fields cars (the PhysX city does).
+// -VibeShotDir=<dir> also saves a screenshot of the car being driven.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayDrive, "VibeCity.Play.Drive",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		VlLocal Local = {};
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+		uint32 Car = 0;
+		FVector CarStart = FVector::ZeroVector;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	auto Vehicles = []() -> AVibeVehicles*
+	{
+		TActorIterator<AVibeVehicles> It(GameWorld());
+		return It ? *It : nullptr;
+	};
+	auto Pawn = []() { return Cast<AVibePlayerPawn>(UGameplayStatics::GetPlayerPawn(GameWorld(), 0)); };
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 90.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame) { S->Local = Frame.local; });
+		}
+		const AVibeVehicles* V = Vehicles();
+		if ((S->Local.player.flags & VL_PLAYER_VALID) && V && V->BuiltCars() > 0)
+		{
+			AddInfo(FString::Printf(TEXT("cars: %d carried, %d built"), V->CarCount(), V->BuiltCars()));
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(FString::Printf(TEXT("no car drawn (cars %d, built %d)"), V ? V->CarCount() : -1, V ? V->BuiltCars() : -1));
+			return true;
+		}
+		return false;
+	}));
+	// Stand beside the nearest car.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
+	{
+		const AVibeVehicles* V = Vehicles();
+		const FVector Me(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		TOptional<uint32> Car = V ? V->NearestCar(Me, 1.0e9) : TOptional<uint32>();
+		if (!Car)
+		{
+			AddError(TEXT("no car to drive"));
+			return true;
+		}
+		S->Car = *Car;
+		const FVector At = *V->CarPosition(*Car);
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->CameraDrop(At + FVector(0.0, 250.0, 150.0), 0.0f, 0.0f);
+		}
+		AddInfo(FString::Printf(TEXT("car %u at %s"), *Car, *At.ToString()));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S, Vehicles]()
+	{
+		Click();
+		Key(EKeys::E, true);
+		Key(EKeys::E, false);
+		S->Deadline = Now() + 5.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Pawn, Vehicles]()
+	{
+		if (Pawn() && Pawn()->IsInVehicle())
+		{
+			S->CarStart = *Vehicles()->CarPosition(S->Car);
+			Key(EKeys::W, true);
+			S->Deadline = Now() + 3.0;
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("E did not put the player in the car"));
+			S->Deadline = 0.0;
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
+	{
+		if (const AVibeVehicles* V = Vehicles())
+		{
+			const TOptional<VlCar> C = V->LastCar(S->Car);
+			for (int32 W = 0; W < 4; ++W)
+			{
+				const TOptional<FVector> P = V->WheelPosition(S->Car, W);
+				AddInfo(FString::Printf(TEXT("wheel %d at %s (car %s): travel %.2f steer %.3f spin %.2f grounded %u; car flags %u"), W,
+					P ? *P->ToString() : TEXT("?"), *V->CarPosition(S->Car)->ToString(), C ? C->wheels[W].travel : 0.f,
+					C ? C->wheels[W].steer : 0.f, C ? C->wheels[W].spin : 0.f, C ? C->wheels[W].grounded : 0u, C ? C->flags : 0u));
+			}
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([]()
+	{
+		// Mid-drive, so the frame is the chase camera's.
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("drive.png"), false, false);
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
+	{
+		Key(EKeys::W, false);
+		const FVector End = *Vehicles()->CarPosition(S->Car);
+		const double Moved = FVector::Dist2D(End, S->CarStart) / 100.0;
+		AddInfo(FString::Printf(TEXT("drove car %u %.1f m; input next %u acked %u; in vehicle %d"), S->Car, Moved,
+			S->Local.next_input_seq, S->Local.ack_input_seq, (S->Local.player.state_flags & VL_STATE_IN_VEHICLE) ? 1 : 0));
+		TestTrue(FString::Printf(TEXT("W drove the car (%.1f m)"), Moved), Moved > 2.0);
+		{
+			const APawn* P = UGameplayStatics::GetPlayerPawn(GameWorld(), 0);
+			const UCameraComponent* C = P ? P->FindComponentByClass<UCameraComponent>() : nullptr;
+			const TOptional<FQuat> R = Vehicles()->CarRotation(S->Car);
+			AddInfo(FString::Printf(TEXT("camera %s looking %s; car %s yaw %.1f"), C ? *C->GetComponentLocation().ToString() : TEXT("?"),
+				C ? *C->GetComponentRotation().ToString() : TEXT("?"), *End.ToString(), R ? R->Rotator().Yaw : 0.0));
+		}
+		Key(EKeys::E, true);
+		Key(EKeys::E, false);
+		S->Deadline = Now() + 5.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Pawn]()
+	{
+		if (Pawn() && !Pawn()->IsInVehicle())
+		{
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("E did not take the player out of the car"));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif

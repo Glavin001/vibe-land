@@ -53,6 +53,15 @@ public:
 	/** Put the player at a pose (Unreal space, degrees): leaving the aerial camera. */
 	void CameraDrop(const FVector& Position, float YawDeg, float PitchDeg);
 
+	/** Ask to drive the car with `Handle` (VlCar::handle), or leave the one entered. */
+	void EnterVehicle(uint32 Handle);
+	void ExitVehicle();
+
+	/** A car's geometry hash (its metadata is <api>/vehicle-assets/<hash>/metadata.json) and its
+	 * configuration JSON; empty until its asset has arrived (VL_EVENT_VEHICLE_ASSET). */
+	FString VehicleGeometryHash(uint32 Handle) const;
+	FString VehicleConfiguration(uint32 Handle) const;
+
 	/** The city's chunks (empty until the manifest arrived). */
 	TArrayView<const VlChunk> Chunks() const;
 

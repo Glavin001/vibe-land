@@ -125,6 +125,9 @@ pub struct Players {
     /// The render tick of the last [`sample`](Self::sample).
     render_tick: Option<f32>,
     bodies: HashMap<u16, BodyTrack>,
+    /// The snapshot's vehicles (on wire 4: the car this player drives, which the city stream
+    /// leaves out), by handle.
+    vehicles: HashMap<u8, BodyTrack>,
     /// handle -> (body id, shape, half extents m), from `PKT_DYNAMIC_BODY_META`.
     body_meta: HashMap<u16, (u32, u8, Vec3)>,
 }
@@ -146,6 +149,7 @@ impl Players {
             render_tick: None,
             bodies: HashMap::new(),
             body_meta: HashMap::new(),
+            vehicles: HashMap::new(),
         }
     }
 
@@ -221,6 +225,17 @@ impl Players {
             let q = Quat::from_xyzw(snorm(b.qx_snorm), snorm(b.qy_snorm), snorm(b.qz_snorm), snorm(b.qw_snorm)).normalize();
             bodies(b.handle, q2_5(b.dx_q2_5mm, b.dy_q2_5mm, b.dz_q2_5mm), q);
         }
+        for v in &s.vehicle_states {
+            let q = Quat::from_xyzw(snorm(v.qx_snorm), snorm(v.qy_snorm), snorm(v.qz_snorm), snorm(v.qw_snorm)).normalize();
+            let track = self.vehicles.entry(v.handle).or_default();
+            track.last_seen = s.server_tick;
+            if track.samples.back().is_none_or(|&(t, _, _)| t < s.server_tick) {
+                track.samples.push_back((s.server_tick, q2_5(v.dx_q2_5mm, v.dy_q2_5mm, v.dz_q2_5mm), q));
+                while track.samples.len() > HISTORY {
+                    track.samples.pop_front();
+                }
+            }
+        }
         for removal in &s.removals {
             // 0x8000 | handle names a vehicle (the support-handle convention), not a body.
             if removal.handle & 0x8000 == 0 {
@@ -229,6 +244,7 @@ impl Players {
         }
         let now = s.server_tick;
         self.bodies.retain(|_, t| now.saturating_sub(t.last_seen) <= BODY_STALE_TICKS);
+        self.vehicles.retain(|_, t| now.saturating_sub(t.last_seen) <= BODY_STALE_TICKS);
     }
 
     /// Players at `now_ms`, written in `space`. Returns the render tick.
@@ -270,6 +286,16 @@ impl Players {
                 half_extents: space.extents(if u32::from(shape) == VL_SHAPE_SPHERE { Vec3::splat(half.x) } else { half }),
             });
         }
+    }
+
+    /// A snapshot vehicle's pose at the last sampled render tick, in server space.
+    pub fn vehicle_pose(&self, handle: u8) -> Option<(Vec3, Quat)> {
+        self.vehicles.get(&handle)?.at(self.render_tick?)
+    }
+
+    /// The snapshot's vehicle handles.
+    pub fn vehicle_handles(&self) -> impl Iterator<Item = u8> + '_ {
+        self.vehicles.keys().copied()
     }
 
     pub fn local_player_id(&self) -> u32 {
