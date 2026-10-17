@@ -81,8 +81,15 @@ the web's fog curve (Gaussian) is thinner under 40 m.
   plants only.
 - **Lumen** (an Unreal upgrade, not a web feature). Procedural meshes have no distance fields, so
   Lumen's software tracing does not see the city.
-- **Web adoption of the core.** Module by module behind flags, off by default until a live
-  session confirms them. Packet decoding (`?sharedDecode=1`), client packet encoders, chunk hulls
-  (`?coreGeometry=1`) and the 60 Hz input frames (`?coreInput=1`) run on the shared Rust code,
-  each deep-equal to the TypeScript in tests. Audio, effects, grass and weather still run as
-  TypeScript on the web, pinned to their Rust ports by fixtures.
+- **Web adoption of the core.** Module by module behind flags, off by default until each has run
+  in live sessions, every one held equal to the TypeScript it replaces by a test:
+  - packet decoders and encoders: `?sharedDecode=1`;
+  - chunk hulls: `?coreGeometry=1`;
+  - the 60 Hz input frames: `?coreInput=1`;
+  - grass placement over the shared paint: `?coreGrass=1` (`coreGrass.test.ts`; the core's patch
+    (0, 0) in the browser has the TypeScript's 8917 blades);
+  - each sound's voices: `?coreAudio=1` (`voicePlan.core.test.ts`, 2000 random events).
+
+  The weather table is one file both clients read (`shared/assets/weather/presets.json`). Still
+  TypeScript on the web, pinned to their Rust ports by fixtures: the destruction sources and dust
+  queue, motion, debris beds and occlusion.
