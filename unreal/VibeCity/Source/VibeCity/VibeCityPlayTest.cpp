@@ -867,7 +867,18 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
 	{
 		const AVibeVehicles* V = Vehicles();
-		const FVector Me(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		FVector Me(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		// -VibeCarNear=x,y,z (server metres): the car nearest that point instead (the cross-client
+		// check drives where the web player can see).
+		FString Near;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeCarNear="), Near, /*bShouldStopOnSeparator=*/false))
+		{
+			TArray<FString> P;
+			if (Near.ParseIntoArray(P, TEXT(",")) == 3)
+			{
+				Me = FVector(100.0 * FCString::Atod(*P[2]), -100.0 * FCString::Atod(*P[0]), 100.0 * FCString::Atod(*P[1]));
+			}
+		}
 		TOptional<uint32> Car = V ? V->NearestCar(Me, 1.0e9) : TOptional<uint32>();
 		if (!Car)
 		{
@@ -1297,6 +1308,8 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		int32 PelvisSamples = 0;
 		FString PelvisTrace;
 		double HighestLatePelvisZ = -TNumericLimits<double>::Max();
+		int32 MaxBatteries = 0;
+		bool bBatteryDrawn = false;
 	};
 	TSharedRef<FState> S = MakeShared<FState>();
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
@@ -1321,12 +1334,16 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		}
 		// The stand-in (vl-headless --jump --drop 20,1,60) waits at a fixed point, Unreal
 		// (6000, -2000, 100): target the player within 10 m of it, not whoever else is in the match.
+		// -VibeTargetPlayer=N: that player exactly (a player left by an earlier session can linger there).
+		int32 Wanted = 0;
+		FParse::Value(FCommandLine::Get(), TEXT("VibeTargetPlayer="), Wanted);
 		if (S->Local.player.flags & VL_PLAYER_VALID)
 		{
 			for (const VlPlayer& R : S->Remote)
 			{
-				if (FVector::Dist2D(FVector(R.pos[0], R.pos[1], R.pos[2]), FVector(6000.0, -2000.0, 100.0)) < 1000.0
-					&& !(R.state_flags & VL_STATE_DEAD))
+				const bool bWanted = Wanted > 0 ? R.player_id == static_cast<uint32>(Wanted)
+					: FVector::Dist2D(FVector(R.pos[0], R.pos[1], R.pos[2]), FVector(6000.0, -2000.0, 100.0)) < 1000.0;
+				if (bWanted && !(R.state_flags & VL_STATE_DEAD))
 				{
 					S->Target = R.player_id;
 					return true;
@@ -1433,6 +1450,14 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 				}
 			}
 		}
+		// The battery while it lies there (a player respawning on the spot collects it at once).
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			TActorIterator<AVibeCityBatteries> Batteries(GameWorld());
+			const int32 Listed = static_cast<int32>(Net->LastFrame().battery_count);
+			S->MaxBatteries = FMath::Max(S->MaxBatteries, Listed);
+			S->bBatteryDrawn |= Listed > 0 && Batteries && Batteries->Drawn() == Listed;
+		}
 		return Now() > S->Deadline;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
@@ -1454,14 +1479,9 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("the crosshair marked the target (zone %u)"), S->CrosshairZone), S->CrosshairZone > 0);
 		// Their energy, dropped where they died (server kill_player_with_cause, PKT_BATTERY_SYNC):
 		// the core lists the battery and AVibeCityBatteries draws one cell per listed battery.
-		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
-		{
-			TActorIterator<AVibeCityBatteries> Batteries(GameWorld());
-			const int32 Listed = static_cast<int32>(Net->LastFrame().battery_count);
-			AddInfo(FString::Printf(TEXT("batteries: %d listed, %d drawn"), Listed, Batteries ? Batteries->Drawn() : 0));
-			TestTrue(TEXT("the dead player's battery is listed"), Listed > 0);
-			TestEqual(TEXT("one battery cell drawn per listed battery"), Batteries ? Batteries->Drawn() : 0, Listed);
-		}
+		AddInfo(FString::Printf(TEXT("batteries: up to %d listed after the kill; drawn one per listed: %d"), S->MaxBatteries, S->bBatteryDrawn ? 1 : 0));
+		TestTrue(TEXT("the dead player's battery is listed"), S->MaxBatteries > 0);
+		TestTrue(TEXT("one battery cell drawn per listed battery"), S->bBatteryDrawn);
 		TestTrue(TEXT("the ground holds it: the pelvis never goes below the city ground"), S->PelvisSamples > 0 && S->LowestPelvisZ >= 0.0);
 		FString ShotDir;
 		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
