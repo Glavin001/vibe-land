@@ -78,7 +78,28 @@ export type FireCmd = {
 
 export type CityCameraDropCmd = { position: [number, number, number]; yaw: number; pitch: number };
 
+/**
+ * The shared Rust encoders (net/sharedEncode.ts), once the WASM is loaded and the shared-net flag
+ * is on (wasm/sharedPhysics.ts installs them); this file's encoders otherwise.
+ */
+export type SharedEncoders = {
+  clientHello: (packet: ClientHello) => Uint8Array;
+  inputBundle: (frames: InputFrame[]) => Uint8Array;
+  fire: (packet: FireCmd) => Uint8Array;
+  melee: (packet: MeleeCmd) => Uint8Array;
+  cityCameraDrop: (cmd: CityCameraDropCmd) => Uint8Array;
+  vehicleEnter: (vehicleId: number, seat: number) => Uint8Array;
+  vehicleExit: (vehicleId: number) => Uint8Array;
+  ping: (nonce: number) => Uint8Array;
+};
+let sharedEncoders: SharedEncoders | null = null;
+
+export function provideSharedEncoders(encoders: SharedEncoders | null): void {
+  sharedEncoders = encoders;
+}
+
 export function encodeCityCameraDrop(cmd: CityCameraDropCmd): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.cityCameraDrop(cmd);
   const bytes = new Uint8Array(21);
   const view = new DataView(bytes.buffer);
   view.setUint8(0, PKT_CITY_CAMERA_DROP);
@@ -535,6 +556,7 @@ const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 
 export function encodeClientHello(packet: ClientHello): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.clientHello(packet);
   const encodedMatchId = TEXT_ENCODER.encode(packet.matchId);
   const out = new Uint8Array(1 + 2 + encodedMatchId.length + 2 + 1);
   const view = new DataView(out.buffer);
@@ -569,6 +591,7 @@ export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
   if (frames.length > 255) {
     throw new Error('input bundle too large');
   }
+  if (sharedEncoders) return sharedEncoders.inputBundle(frames);
   const out = new Uint8Array(1 + 1 + frames.length * 10);
   const view = new DataView(out.buffer);
   let o = 0;
@@ -586,6 +609,7 @@ export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
 }
 
 export function encodeFirePacket(packet: FireCmd): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.fire(packet);
   const out = new Uint8Array(1 + 2 + 4 + 1 + 8 + 2 + 2 + 2 + 2 + 2);
   const view = new DataView(out.buffer);
   let o = 0;
@@ -603,6 +627,7 @@ export function encodeFirePacket(packet: FireCmd): Uint8Array {
 }
 
 export function encodeMeleePacket(packet: MeleeCmd): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.melee(packet);
   const out = new Uint8Array(1 + 2 + 4 + 8 + 2 + 2);
   const view = new DataView(out.buffer);
   let o = 0;
@@ -1264,6 +1289,7 @@ export function netVehicleStateToMeters(state: NetVehicleState): VehicleStateMet
 }
 
 export function encodeVehicleEnterPacket(vehicleId: number, seat = 0): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.vehicleEnter(vehicleId, seat);
   const out = new Uint8Array(6);
   const view = new DataView(out.buffer);
   view.setUint8(0, PKT_VEHICLE_ENTER);
@@ -1273,6 +1299,7 @@ export function encodeVehicleEnterPacket(vehicleId: number, seat = 0): Uint8Arra
 }
 
 export function encodeVehicleExitPacket(vehicleId: number): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.vehicleExit(vehicleId);
   const out = new Uint8Array(5);
   const view = new DataView(out.buffer);
   view.setUint8(0, PKT_VEHICLE_EXIT);
@@ -1518,6 +1545,7 @@ export function encodeBlockEditPacket(cmd: BlockEditCmd): Uint8Array {
 }
 
 export function encodePingPacket(nonce: number): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.ping(nonce);
   const out = new Uint8Array(5);
   const view = new DataView(out.buffer);
   view.setUint8(0, PKT_PING);

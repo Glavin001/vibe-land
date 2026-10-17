@@ -12,7 +12,6 @@
 
 use crate::constants::*;
 use crate::protocol::*;
-use crate::unit_conv::{angle_to_i16, f32_to_snorm16};
 
 /// `GET /session-config?match_id=…` (server: `SessionConfig` in `server/src/main.rs`). Fields a
 /// server may omit are optional; older servers that omit `city_wire_version` speak wire 2.
@@ -744,12 +743,138 @@ pub fn encode_city_camera_drop(position: [f32; 3], yaw: f32, pitch: f32) -> Vec<
     out
 }
 
+// ── Client quantisation, exactly as the web client does it ───
+// client/src/net/protocol.ts quantises in f64 with JavaScript's rounding and integer conversions;
+// these reproduce it bit for bit, so the Unreal client (f32 values, widened exactly) and the web
+// (through the shared WASM, `encode_*_js`) send the same bytes for the same inputs.
+
+/// JavaScript's ToInt32: truncate, wrap modulo 2^32; NaN and infinities are 0.
+pub fn js_to_int32(x: f64) -> i32 {
+    if !x.is_finite() {
+        return 0;
+    }
+    let m = x.trunc().rem_euclid(4_294_967_296.0);
+    (if m >= 2_147_483_648.0 { m - 4_294_967_296.0 } else { m }) as i32
+}
+
+/// JavaScript's `Math.round`: halves toward +∞.
+pub fn js_round(x: f64) -> f64 {
+    let f = x.floor();
+    if x - f >= 0.5 {
+        f + 1.0
+    } else {
+        f
+    }
+}
+
+/// `angleToI16`: the angle's turn fraction on 0..65535, as the server's `i16_to_angle` reads it.
+pub fn client_angle_i16(angle_rad: f64) -> i16 {
+    let tau = std::f64::consts::PI * 2.0;
+    let normalized = (((angle_rad % tau) + tau) % tau) / tau * 65535.0;
+    (js_to_int32(js_round(normalized)) & 0xffff) as u16 as i16
+}
+
+/// `f32ToSnorm16`, written as `setInt16` writes it.
+pub fn client_snorm16(value: f64) -> i16 {
+    let clamped = if value.is_nan() { value } else { value.clamp(-1.0, 1.0) };
+    js_to_int32(js_round(clamped * 32767.0)) as i16
+}
+
+/// `clampI8`, written as `setInt8` writes it.
+pub fn client_i8(value: f64) -> i8 {
+    let r = js_round(value);
+    let clamped = if r.is_nan() { r } else { r.clamp(-127.0, 127.0) };
+    js_to_int32(clamped) as i8
+}
+
+/// `setUint64` of a JavaScript number: floored, at least 0, the low and high 32-bit words.
+pub fn js_u64(value: f64) -> u64 {
+    let n = if value.is_nan() { 0.0 } else { value.floor().max(0.0) };
+    let low = js_to_int32(n) as u32;
+    let high = js_to_int32((n / 4_294_967_296.0).floor()) as u32;
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+/// A JavaScript number masked as `x & 0xffff`.
+fn js_u16(x: f64) -> u16 {
+    (js_to_int32(x) & 0xffff) as u16
+}
+
+/// An input bundle from the web's numbers (`encodeInputBundle`): six per frame, (seq, buttons,
+/// moveX, moveY, yaw, pitch). Errors as the web's does on an empty or over-255-frame bundle.
+pub fn encode_input_bundle_js(frames: &[f64]) -> Result<Vec<u8>, &'static str> {
+    let count = frames.len() / 6;
+    if count == 0 {
+        return Err("input bundle cannot be empty");
+    }
+    if count > 255 {
+        return Err("input bundle too large");
+    }
+    let mut out = Vec::with_capacity(2 + count * 10);
+    out.push(PKT_INPUT_BUNDLE);
+    out.push(count as u8);
+    for f in frames.chunks_exact(6) {
+        out.extend_from_slice(&js_u16(f[0]).to_le_bytes());
+        out.extend_from_slice(&js_u16(f[1]).to_le_bytes());
+        out.push(client_i8(f[2]) as u8);
+        out.push(client_i8(f[3]) as u8);
+        out.extend_from_slice(&client_angle_i16(f[4]).to_le_bytes());
+        out.extend_from_slice(&client_angle_i16(f[5]).to_le_bytes());
+    }
+    Ok(out)
+}
+
+/// A fire command from the web's numbers (`encodeFirePacket`).
+#[allow(clippy::too_many_arguments)]
+pub fn encode_fire_js(seq: f64, shot_id: f64, weapon: f64, client_fire_time_us: f64, interp_ms: f64, dynamic_interp_ms: f64, dir: [f64; 3]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(26);
+    out.push(PKT_FIRE);
+    out.extend_from_slice(&js_u16(seq).to_le_bytes());
+    out.extend_from_slice(&(js_to_int32(shot_id) as u32).to_le_bytes());
+    out.push((js_to_int32(weapon) & 0xff) as u8);
+    out.extend_from_slice(&js_u64(client_fire_time_us).to_le_bytes());
+    out.extend_from_slice(&js_u16(interp_ms).to_le_bytes());
+    out.extend_from_slice(&js_u16(dynamic_interp_ms).to_le_bytes());
+    for c in dir {
+        out.extend_from_slice(&client_snorm16(c).to_le_bytes());
+    }
+    out
+}
+
+/// A melee swing from the web's numbers (`encodeMeleePacket`).
+pub fn encode_melee_js(seq: f64, swing_id: f64, client_time_us: f64, yaw: f64, pitch: f64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(19);
+    out.push(PKT_MELEE);
+    out.extend_from_slice(&js_u16(seq).to_le_bytes());
+    out.extend_from_slice(&(js_to_int32(swing_id) as u32).to_le_bytes());
+    out.extend_from_slice(&js_u64(client_time_us).to_le_bytes());
+    out.extend_from_slice(&client_angle_i16(yaw).to_le_bytes());
+    out.extend_from_slice(&client_angle_i16(pitch).to_le_bytes());
+    out
+}
+
+/// A client hello from the web's values (`encodeClientHello`).
+pub fn encode_client_hello_js(match_id: &str, protocol_version: f64, movement_caps: f64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(6 + match_id.len());
+    out.push(PKT_CLIENT_HELLO);
+    out.extend_from_slice(&js_u16(match_id.len() as f64).to_le_bytes());
+    out.extend_from_slice(match_id.as_bytes());
+    out.extend_from_slice(&js_u16(protocol_version).to_le_bytes());
+    out.push((js_to_int32(movement_caps) & 0xff) as u8);
+    out
+}
+
+/// The web's `>>> 0` of a JavaScript number.
+pub fn js_u32(x: f64) -> u32 {
+    js_to_int32(x) as u32
+}
+
 /// The most frames one input bundle carries (the count is a u8).
 pub const INPUT_BUNDLE_MAX_FRAMES: usize = 255;
 
-/// An input bundle: the newest `frames` (oldest first), 10 bytes each. Angles are quantised as the
-/// server decodes them (`unit_conv::angle_to_i16`); at most [`INPUT_BUNDLE_MAX_FRAMES`] are sent
-/// (the newest).
+/// An input bundle: the newest `frames` (oldest first), 10 bytes each. Angles are quantised for the
+/// server's `unit_conv::i16_to_angle` exactly as the web client quantises them ([`client_angle_i16`]);
+/// at most [`INPUT_BUNDLE_MAX_FRAMES`] are sent (the newest).
 pub fn encode_input_bundle(frames: &[InputFrame]) -> Vec<u8> {
     let frames = &frames[frames.len().saturating_sub(INPUT_BUNDLE_MAX_FRAMES)..];
     let mut out = Vec::with_capacity(2 + frames.len() * 10);
@@ -760,8 +885,8 @@ pub fn encode_input_bundle(frames: &[InputFrame]) -> Vec<u8> {
         out.extend_from_slice(&f.buttons.to_le_bytes());
         out.push(f.move_x as u8);
         out.push(f.move_y as u8);
-        out.extend_from_slice(&angle_to_i16(f.yaw).to_le_bytes());
-        out.extend_from_slice(&angle_to_i16(f.pitch).to_le_bytes());
+        out.extend_from_slice(&client_angle_i16(f64::from(f.yaw)).to_le_bytes());
+        out.extend_from_slice(&client_angle_i16(f64::from(f.pitch)).to_le_bytes());
     }
     out
 }
@@ -779,7 +904,7 @@ pub fn encode_fire(cmd: &FireCmd) -> Vec<u8> {
     out.extend_from_slice(&cmd.client_interp_ms.to_le_bytes());
     out.extend_from_slice(&cmd.client_dynamic_interp_ms.to_le_bytes());
     for c in cmd.dir {
-        out.extend_from_slice(&f32_to_snorm16(c).to_le_bytes());
+        out.extend_from_slice(&client_snorm16(f64::from(c)).to_le_bytes());
     }
     out
 }
@@ -791,8 +916,8 @@ pub fn encode_melee(cmd: &MeleeCmd) -> Vec<u8> {
     out.extend_from_slice(&cmd.seq.to_le_bytes());
     out.extend_from_slice(&cmd.swing_id.to_le_bytes());
     out.extend_from_slice(&cmd.client_time_us.to_le_bytes());
-    out.extend_from_slice(&angle_to_i16(cmd.yaw).to_le_bytes());
-    out.extend_from_slice(&angle_to_i16(cmd.pitch).to_le_bytes());
+    out.extend_from_slice(&client_angle_i16(f64::from(cmd.yaw)).to_le_bytes());
+    out.extend_from_slice(&client_angle_i16(f64::from(cmd.pitch)).to_le_bytes());
     out
 }
 

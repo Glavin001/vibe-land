@@ -2389,3 +2389,48 @@ pub fn decode_server_packet_flat(bytes: &[u8]) -> Result<Option<Box<[f64]>>, JsV
         .map(|flat| flat.map(Vec::into_boxed_slice))
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
+
+// The client packets, encoded by the shared encoders the Unreal client uses (net_client::encode_*_js:
+// the web's quantisation, bit for bit). client/src/net/sharedEncode.ts sends them behind a flag.
+
+#[wasm_bindgen]
+pub fn encode_input_bundle_js(frames: &[f64]) -> Result<Box<[u8]>, JsValue> {
+    crate::net_client::encode_input_bundle_js(frames).map(Vec::into_boxed_slice).map_err(JsValue::from_str)
+}
+
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_fire_js(seq: f64, shot_id: f64, weapon: f64, client_fire_time_us: f64, interp_ms: f64, dynamic_interp_ms: f64, dx: f64, dy: f64, dz: f64) -> Box<[u8]> {
+    crate::net_client::encode_fire_js(seq, shot_id, weapon, client_fire_time_us, interp_ms, dynamic_interp_ms, [dx, dy, dz]).into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_melee_js(seq: f64, swing_id: f64, client_time_us: f64, yaw: f64, pitch: f64) -> Box<[u8]> {
+    crate::net_client::encode_melee_js(seq, swing_id, client_time_us, yaw, pitch).into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_client_hello_js(match_id: &str, protocol_version: f64, movement_caps: f64) -> Box<[u8]> {
+    crate::net_client::encode_client_hello_js(match_id, protocol_version, movement_caps).into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_city_camera_drop_js(x: f64, y: f64, z: f64, yaw: f64, pitch: f64) -> Box<[u8]> {
+    crate::net_client::encode_city_camera_drop([x as f32, y as f32, z as f32], yaw as f32, pitch as f32).into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_vehicle_enter_js(vehicle_id: f64, seat: f64) -> Box<[u8]> {
+    let seat = (crate::net_client::js_to_int32(seat) & 0xff) as u8;
+    crate::net_client::encode_vehicle_enter(crate::net_client::js_u32(vehicle_id), seat).into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_vehicle_exit_js(vehicle_id: f64) -> Box<[u8]> {
+    crate::net_client::encode_vehicle_exit(crate::net_client::js_u32(vehicle_id)).into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_ping_js(nonce: f64) -> Box<[u8]> {
+    crate::net_client::encode_ping(crate::net_client::js_u32(nonce)).into_boxed_slice()
+}
