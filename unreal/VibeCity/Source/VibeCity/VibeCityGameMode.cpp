@@ -18,6 +18,7 @@
 #include "Engine/EngineTypes.h"
 #include "Kismet/GameplayStatics.h"
 #include "VibeCityDirector.h"
+#include "VibeCityPlayerController.h"
 #include "VibeLandNet.h"
 #include "VibeNetSettings.h"
 #include "VibeNetSubsystem.h"
@@ -34,6 +35,7 @@ namespace
 AVibeCityGameMode::AVibeCityGameMode()
 {
 	DefaultPawnClass = ASpectatorPawn::StaticClass();
+	PlayerControllerClass = AVibeCityPlayerController::StaticClass();
 }
 
 void AVibeCityGameMode::StartPlay()
