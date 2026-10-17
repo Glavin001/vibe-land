@@ -108,22 +108,25 @@ the web's fog curve (Gaussian) is thinner under 40 m.
   on, and imported cells carry distance fields. A cell drawing its runtime (procedural) mesh, after
   its first fracture or with no import for the manifest, has none, so Lumen's software tracing
   misses it until a reset.
-- **Web adoption of the core.** Module by module behind flags, off by default until each has run
-  in live sessions, every one held equal to the TypeScript it replaces by a test:
-  - packet decoders and encoders: `?sharedDecode=1`;
-  - chunk hulls: `?coreGeometry=1`;
-  - the 60 Hz input frames: `?coreInput=1`;
-  - grass placement over the shared paint: `?coreGrass=1` (`coreGrass.test.ts`; the core's patch
+- **The web on the core (on by default since 2026-10-17).** Each module has its own flag, on by
+  default (`client/src/core/coreFlags.ts` `coreFlag`); `?name=0` on the page URL, or its `VITE_`
+  variable set to 0, puts that module back on its TypeScript. Every one is held equal to the
+  TypeScript it replaces by a test, and all of them on ran the 5-minute soak below (and a 2-minute
+  one on the defaults: 10 meteors, 530 live bodies, 0 mismatches; all off: 0 mismatches):
+  - packet decoders and encoders: `sharedDecode`;
+  - chunk hulls: `coreGeometry`;
+  - the 60 Hz input frames: `coreInput`;
+  - grass placement over the shared paint: `coreGrass` (`coreGrass.test.ts`; the core's patch
     (0, 0) in the browser has the TypeScript's 8917 blades);
-  - each sound's voices and debris beds: `?coreAudio=1` (`voicePlan.core.test.ts`, 2000 random
+  - each sound's voices and debris beds: `coreAudio` (`voicePlan.core.test.ts`, 2000 random
     events);
-  - remote players: `?corePlayers=1`;
-  - the city manifest: `?coreManifest=1`;
-  - the local player's presentation lead: `?corePredictor=1` (`thinAuthoritativePredictor.core.test.ts`:
+  - remote players: `corePlayers`;
+  - the city manifest: `coreManifest`;
+  - the local player's presentation lead: `corePredictor` (`thinAuthoritativePredictor.core.test.ts`:
     20,000 seeded frames, the same position every frame with both at 6 and 9 m/s; by default the
     core leads sprint at the server's 8.5 m/s, not the TypeScript's 9);
   - the wire 4 city stream, built by the core from the manifest's bytes (the server's
-    `structure_defs`) instead of flattened in TypeScript: `?coreStream=1`
+    `structure_defs`) instead of flattened in TypeScript: `coreStream`
     (`perPlayerWasm.core.test.ts`, on a recorded session in `client-core/tests/corpus/citypp-meteor`:
     1031 packets, up to 290 bodies, every pose, change and ack identical). Both clients already
     reconstruct the stream with the same Rust (`perplayer`); what stays TypeScript on the web is

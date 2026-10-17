@@ -1,20 +1,21 @@
 /**
  * The shared client core (client-core, built for the browser by client-core-wasm): the Rust the
  * Unreal client links natively. The web adopts it one module at a time, each behind a flag with a
- * parity test against the TypeScript it replaces; nothing here loads unless a flag asks for it.
+ * parity test against the TypeScript it replaces. Every flag is on by default (core/coreFlags.ts
+ * `coreFlag`); `?name=0` or its `VITE_` variable set to 0 puts that module back on its TypeScript.
  *
- * - `?coreGeometry=1` (or `VITE_CORE_GEOMETRY=1`): chunk hulls from the core's quickhull instead of
+ * - `coreGeometry` (`VITE_CORE_GEOMETRY`): chunk hulls from the core's quickhull instead of
  *   three's ConvexGeometry (city/chunkGeometry.ts; parity in clientCore.test.ts).
- * - `?coreInput=1` (or `VITE_CORE_INPUT=1`): the 60 Hz input frames from the core's bundler
+ * - `coreInput` (`VITE_CORE_INPUT`): the 60 Hz input frames from the core's bundler
  *   (runtime/fixedInputBundler.ts; parity in fixedInputBundler.core.test.ts).
- * - `?coreAudio=1` (or `VITE_CORE_AUDIO=1`): each sound event's voices from the core's recipe and
+ * - `coreAudio` (`VITE_CORE_AUDIO`): each sound event's voices from the core's recipe and
  *   the debris beds from the core's (audio/voicePlan.ts, audio/coreActivity.ts; parity in
  *   audio/voicePlan.core.test.ts, audio/coreActivity.test.ts).
- * - `?corePredictor=1` (or `VITE_CORE_PREDICTOR=1`): the local player's presentation lead from the
+ * - `corePredictor` (`VITE_CORE_PREDICTOR`): the local player's presentation lead from the
  *   core (physics/thinAuthoritativePredictor.ts; parity in thinAuthoritativePredictor.core.test.ts).
- * - `?coreStream=1` (or `VITE_CORE_STREAM=1`): the wire 4 city stream built by the core from the
+ * - `coreStream` (`VITE_CORE_STREAM`): the wire 4 city stream built by the core from the
  *   manifest's bytes (city/perPlayerWasm.ts; parity in city/perPlayerWasm.core.test.ts).
- * - `?coreGrass=1`: grass patches from the core, in the grass worker (core/coreFlags.ts).
+ * - `coreGrass`: grass patches from the core, in the grass worker (core/coreFlags.ts).
  */
 import init, { convex_hull_triangles, core_city_stream, CoreInputBundler, CorePlayerInterpolator, CorePredictor } from '../wasm/core-pkg/vibe_client_core_wasm.js';
 import { provideCorePlayerInterpolator } from '../net/interpolation';
@@ -25,33 +26,25 @@ import { provideCoreInputBundler } from '../runtime/fixedInputBundler';
 import { coreVoicePlan } from '../audio/coreVoicePlan';
 import { provideVoicePlanner } from '../audio/voicePlan';
 import { provideCoreActivity } from '../audio/coreActivity';
+import { coreFlag } from './coreFlags';
 import { provideCorePredictor } from '../physics/thinAuthoritativePredictor';
 import { provideCoreCityStream } from '../city/perPlayerWasm';
 import type { PerPlayerCore } from '../city/perPlayerCityClient';
 
-function flag(urlName: string, envValue: string | undefined): boolean {
-  if (envValue === '1') return true;
-  try {
-    return new URLSearchParams(globalThis.location?.search ?? '').get(urlName) === '1';
-  } catch {
-    return false;
-  }
-}
-
 export function coreGeometryEnabled(): boolean {
-  return flag('coreGeometry', import.meta.env?.VITE_CORE_GEOMETRY);
+  return coreFlag('coreGeometry', import.meta.env?.VITE_CORE_GEOMETRY);
 }
 
 export function coreInputEnabled(): boolean {
-  return flag('coreInput', import.meta.env?.VITE_CORE_INPUT);
+  return coreFlag('coreInput', import.meta.env?.VITE_CORE_INPUT);
 }
 
 export function coreManifestEnabled(): boolean {
-  return flag('coreManifest', import.meta.env?.VITE_CORE_MANIFEST);
+  return coreFlag('coreManifest', import.meta.env?.VITE_CORE_MANIFEST);
 }
 
 export function corePlayersEnabled(): boolean {
-  return flag('corePlayers', import.meta.env?.VITE_CORE_PLAYERS);
+  return coreFlag('corePlayers', import.meta.env?.VITE_CORE_PLAYERS);
 }
 
 /** A remote-player interpolator from the core (needs the WASM loaded). */
@@ -60,7 +53,7 @@ export function corePlayerInterpolator(maxSamples: number): CorePlayerInterpolat
 }
 
 export function corePredictorEnabled(): boolean {
-  return flag('corePredictor', import.meta.env?.VITE_CORE_PREDICTOR);
+  return coreFlag('corePredictor', import.meta.env?.VITE_CORE_PREDICTOR);
 }
 
 /** The local player's predictor from the core (needs the WASM loaded). */
@@ -69,7 +62,7 @@ export function corePredictor(): CorePredictor {
 }
 
 export function coreStreamEnabled(): boolean {
-  return flag('coreStream', import.meta.env?.VITE_CORE_STREAM);
+  return coreFlag('coreStream', import.meta.env?.VITE_CORE_STREAM);
 }
 
 /** The wire 4 city stream for a binary manifest, built by the core (needs the WASM loaded). */
@@ -78,7 +71,7 @@ export function coreCityStream(manifest: Uint8Array, simHz: number, gravityY: nu
 }
 
 export function coreAudioEnabled(): boolean {
-  return flag('coreAudio', import.meta.env?.VITE_CORE_AUDIO);
+  return coreFlag('coreAudio', import.meta.env?.VITE_CORE_AUDIO);
 }
 
 /** A bundler from the core (needs the WASM loaded). */
@@ -94,7 +87,7 @@ export function coreHullTriangles(points: Float32Array): Float32Array | undefine
 
 let loading: Promise<void> | null = null;
 
-/** Load the core and install what the flags ask for. A no-op when no flag is on. */
+/** Load the core and install what the flags ask for. A no-op when every flag is off. */
 export function initClientCore(): Promise<void> {
   if (!coreGeometryEnabled() && !coreInputEnabled() && !coreAudioEnabled() && !corePlayersEnabled() && !coreManifestEnabled() && !corePredictorEnabled() && !coreStreamEnabled()) return Promise.resolve();
   loading ??= init().then(() => {

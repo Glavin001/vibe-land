@@ -8,6 +8,7 @@
  * same objects decodeSnapshotV2Packet does, with the same unit conversions, so the numbers are
  * bit-identical.
  */
+import { coreFlag } from '../core/coreFlags';
 import { decode_server_packet_flat, decode_snapshot_v2_flat } from '../wasm/pkg/vibe_land_shared.js';
 import {
   PKT_DAMAGE_EVENT,
@@ -33,14 +34,9 @@ import {
   type VehicleStateV2,
 } from './protocol';
 
-/** Whether the shared decoder is on: `?sharedDecode=1` on the page URL, or `VITE_SHARED_DECODE=1`. */
+/** Whether the shared decoder is on: by default; off with `?sharedDecode=0` or `VITE_SHARED_DECODE=0`. */
 export function sharedDecodeEnabled(): boolean {
-  if (import.meta.env?.VITE_SHARED_DECODE === '1') return true;
-  try {
-    return new URLSearchParams(globalThis.location?.search ?? '').get('sharedDecode') === '1';
-  } catch {
-    return false;
-  }
+  return coreFlag('sharedDecode', import.meta.env?.VITE_SHARED_DECODE);
 }
 
 /** Decode a SnapshotV2 packet (its kind byte first) with the shared decoder. */

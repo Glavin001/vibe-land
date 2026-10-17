@@ -1,7 +1,8 @@
-// Soak the web /city on the shared client core: headless Chromium with every core flag on, a
-// meteor every 12 s for 5 minutes, sampling the wire 4 stream's counters every 10 s.
+// Soak the web /city: headless Chromium on the page's defaults (every shared-core flag on), a
+// meteor every 12 s for 5 minutes, sampling the wire 4 stream's counters every 10 s. `--off a,b`
+// switches those flags off (`?a=0&b=0`); `--off all` runs the TypeScript path throughout.
 //
-//   node scripts/web-core-soak.mjs [--url http://localhost:3003] [--api http://127.0.0.1:4001] [--match citypp-websoak2] [--seconds 300]
+//   node scripts/web-core-soak.mjs [--url http://localhost:3003] [--api http://127.0.0.1:4001] [--match citypp-websoak2] [--seconds 300] [--off all]
 //
 // Exits non-zero on a hash mismatch, a decode error, a page error, or a render clock that stalls.
 import { createRequire } from 'node:module';
@@ -16,6 +17,8 @@ const api = arg('--api', 'http://127.0.0.1:4001');
 const match = arg('--match', `citypp-websoak-${Date.now() % 100000}`);
 const seconds = Number(arg('--seconds', '300'));
 const FLAGS = ['sharedDecode', 'coreGeometry', 'coreInput', 'corePlayers', 'coreManifest', 'coreGrass', 'coreAudio', 'corePredictor', 'coreStream'];
+const offArg = arg('--off', '');
+const off = offArg === 'all' ? FLAGS : offArg.split(',').filter(Boolean);
 
 const browser = await chromium.launch({ headless: true, args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
@@ -25,7 +28,7 @@ page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
 // goes to an optional separate service through Vite's proxy (GRASS_SERVER_PORT), so it may 500.
 page.on('console', (m) => { if (m.type() === 'error' && !/^Failed to load resource/.test(m.text())) errors.push(`console: ${m.text()}`); });
 page.on('response', (r) => { if (r.status() >= 500 && !/\/match-stats\/[^/]+\/grass/.test(r.url())) errors.push(`HTTP ${r.status()} ${r.url()}`); });
-await page.goto(`${url}/city?match=${match}&${FLAGS.map((f) => `${f}=1`).join('&')}`);
+await page.goto(`${url}/city?match=${match}${off.map((f) => `&${f}=0`).join('')}`);
 await page.waitForFunction(() => window.__VIBE_E2E__, null, { timeout: 60000 });
 await page.mouse.click(640, 400);
 await page.waitForFunction(() => window.__VIBE_E2E__.snapshot().connected, null, { timeout: 60000 });
@@ -60,7 +63,7 @@ while (Date.now() - started < seconds * 1000) {
 }
 await browser.close();
 const last = samples[samples.length - 1];
-const summary = { match, seconds, meteors, samples: samples.length, maxLiveBodies: maxLive, hashChecks: last.checks, hashMismatches: last.mismatches, decodeErrors: last.decode, renderStalls: stalls, errors: errors.slice(0, 10), errorCount: errors.length };
+const summary = { match, seconds, flagsOff: off, meteors, samples: samples.length, maxLiveBodies: maxLive, hashChecks: last.checks, hashMismatches: last.mismatches, decodeErrors: last.decode, renderStalls: stalls, errors: errors.slice(0, 10), errorCount: errors.length };
 console.log(JSON.stringify(summary));
 if (failed || stalls > 0 || errors.length > 0 || maxLive === 0) {
   console.error('web-core-soak: FAILED');

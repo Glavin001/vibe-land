@@ -1,15 +1,20 @@
-// Flags for modules of the shared client core the web uses outside clientCore.ts's own installs
-// (which load the WASM up front). Each reads `?name=1` or its VITE_ variable.
-function flag(urlName: string, envValue: string | undefined): boolean {
-  if (envValue === '1') return true;
+// The web's modules from the shared client core (client-core via client-core-wasm, the Rust the
+// Unreal client links), each behind a flag. Every flag is on by default: each module matched the
+// TypeScript it replaces in a parity test and ran a 5-minute soak with all of them on
+// (scripts/web-core-soak.mjs). `?name=0` on the page URL, or its VITE_ variable set to 0 at build
+// time, puts that module back on its TypeScript.
+
+/** A shared-core flag: on unless `?<urlName>=0` or `envValue` is '0'. */
+export function coreFlag(urlName: string, envValue: string | undefined): boolean {
+  if (envValue === '0') return false;
   try {
-    return new URLSearchParams(globalThis.location?.search ?? '').get(urlName) === '1';
+    return new URLSearchParams(globalThis.location?.search ?? '').get(urlName) !== '0';
   } catch {
-    return false;
+    return true;
   }
 }
 
-/** `?coreGrass=1` (or `VITE_CORE_GRASS=1`): grass patches from the core (scene/grass/coreGrass.ts). */
+/** Grass patches from the core (scene/grass/coreGrass.ts); off with `?coreGrass=0` or `VITE_CORE_GRASS=0`. */
 export function coreGrassEnabled(): boolean {
-  return flag('coreGrass', import.meta.env?.VITE_CORE_GRASS);
+  return coreFlag('coreGrass', import.meta.env?.VITE_CORE_GRASS);
 }
