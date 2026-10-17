@@ -858,6 +858,10 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 		const int32 Posings = Vehicles()->RigPosings(S->Car) - S->ParkedPosings;
 		AddInfo(FString::Printf(TEXT("parked car %u: rig posed %d times in %d frames"), S->Car, Posings, Frames));
 		TestTrue(TEXT("a parked car's rig is not posed every frame"), Frames > 0 && Posings < Frames);
+		// Still cars draw as one mesh each: their rig parts are baked, not ~58 components apiece
+		// (which halved the frame rate in 5684dd1f).
+		AddInfo(FString::Printf(TEXT("cars with moving rig parts: %d; rig components: %d"), Vehicles()->ActiveRigs(), Vehicles()->RigComponents()));
+		TestEqual(TEXT("no parked car draws its rig as separate components"), Vehicles()->ActiveRigs(), 0);
 		Click();
 		Key(EKeys::E, true);
 		Key(EKeys::E, false);

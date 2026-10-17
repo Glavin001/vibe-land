@@ -143,7 +143,7 @@ void AVibeVehicles::OnFrame(const VlFrameView& Frame)
 		Car.Root->SetVisibility(true, true);
 		if ((C.flags & VL_CAR_HAS_WHEELS) && Car.bBuilt)
 		{
-			PoseRig(Car, C);
+			PoseRig(C.handle, Car, C);
 		}
 	}
 	for (TPair<uint32, FCar>& Pair : Cars)
@@ -252,23 +252,79 @@ void AVibeVehicles::RequestMesh(uint32 Handle)
 	Request->ProcessRequest();
 }
 
-void AVibeVehicles::PoseRig(FCar& Car, const VlCar& C)
+namespace
+{
+	/** A car whose wheels have been still this long has its rig baked back into its chassis mesh.
+	 * Baking rebuilds the mesh, so a car stopping for a moment is not rebaked each time. */
+	constexpr double RigIdleBakeS = 1.0;
+}
+
+void AVibeVehicles::EnsureRigComponents(uint32 Handle, FCar& Car)
+{
+	for (int32 i = Car.PosedMeshes.Num(); i < Car.Posed.Num(); ++i)
+	{
+		UProceduralMeshComponent* C = NewObject<UProceduralMeshComponent>(this, *FString::Printf(TEXT("Car%uRig%d"), Handle, i));
+		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		C->SetMobility(EComponentMobility::Movable);
+		C->SetupAttachment(Car.Root);
+		C->RegisterComponent();
+		Car.PosedMeshes.Add(C);
+	}
+}
+
+void AVibeVehicles::SetRigActive(uint32 Handle, FCar& Car, bool bActive)
+{
+	if (bActive)
+	{
+		EnsureRigComponents(Handle, Car);
+	}
+	Car.bRigActive = bActive;
+	for (int32 i = 0; i < Car.PosedMeshes.Num(); ++i)
+	{
+		Car.PosedMeshes[i]->SetVisibility(bActive && i < Car.Posed.Num());
+		if (bActive && Car.Poses.IsValidIndex(i))
+		{
+			const VlPartPose& P = Car.Poses[i];
+			Car.PosedMeshes[i]->SetRelativeTransform(PartTransform(P.pos, P.quat, P.scale));
+		}
+	}
+	Rebuild(Handle, Car);
+}
+
+void AVibeVehicles::PoseRig(uint32 Handle, FCar& Car, const VlCar& C)
 {
 	if (!Car.Mesh || Car.Posed.Num() == 0)
 	{
 		return;
 	}
+	const double Now = FPlatformTime::Seconds();
 	// The rig is a function of the four wheel states alone: unchanged wheels, unchanged parts.
 	if (Car.bRigPosed && FMemory::Memcmp(Car.PosedWheels, C.wheels, sizeof(Car.PosedWheels)) == 0)
 	{
+		if (Car.bRigActive && Now - Car.LastWheelChangeS > RigIdleBakeS)
+		{
+			SetRigActive(Handle, Car, false); // still: one mesh again, at this pose
+		}
 		return;
 	}
+	const bool bFirst = !Car.bRigPosed;
 	FMemory::Memcpy(Car.PosedWheels, C.wheels, sizeof(Car.PosedWheels));
 	Car.bRigPosed = true;
+	Car.LastWheelChangeS = Now;
 	++Car.RigPosings;
 	const TArray<VlPartPose> Previous = Car.Poses;
 	Car.Poses.SetNumZeroed(Car.Posed.Num(), EAllowShrinking::No);
 	const int32 N = vl_vehicle_mesh_pose(Car.Mesh, C.wheels, Car.Poses.GetData(), Car.Poses.Num());
+	if (bFirst)
+	{
+		Rebuild(Handle, Car); // a car's first wheel states: baked into its one mesh
+		return;
+	}
+	if (!Car.bRigActive)
+	{
+		SetRigActive(Handle, Car, true); // moving: its parts move on their own
+		return;
+	}
 	for (int32 i = 0; i < FMath::Min(N, Car.PosedMeshes.Num()); ++i)
 	{
 		const VlPartPose& P = Car.Poses[i];
@@ -288,6 +344,26 @@ int32 AVibeVehicles::RigPosings(uint32 Handle) const
 	return Car ? Car->RigPosings : 0;
 }
 
+int32 AVibeVehicles::ActiveRigs() const
+{
+	int32 Count = 0;
+	for (const TPair<uint32, FCar>& Pair : Cars)
+	{
+		Count += Pair.Value.bRigActive ? 1 : 0;
+	}
+	return Count;
+}
+
+int32 AVibeVehicles::RigComponents() const
+{
+	int32 Count = 0;
+	for (const TPair<uint32, FCar>& Pair : Cars)
+	{
+		Count += Pair.Value.PosedMeshes.Num();
+	}
+	return Count;
+}
+
 TPair<int32, int32> AVibeVehicles::PosedPartsMoved(uint32 Handle) const
 {
 	const FCar* Car = Cars.Find(Handle);
@@ -296,10 +372,11 @@ TPair<int32, int32> AVibeVehicles::PosedPartsMoved(uint32 Handle) const
 		return {0, 0};
 	}
 	int32 Moved = 0;
-	for (int32 i = 0; i < FMath::Min(Car->Posed.Num(), Car->PosedMeshes.Num()); ++i)
+	for (int32 i = 0; i < FMath::Min(Car->Posed.Num(), Car->Poses.Num()); ++i)
 	{
 		const VlPosedPart& R = Car->Posed[i];
-		const FTransform Now = Car->PosedMeshes[i]->GetRelativeTransform();
+		const VlPartPose& P = Car->Poses[i];
+		const FTransform Now = PartTransform(P.pos, P.quat, P.scale);
 		const FTransform Rest = PartTransform(R.rest_pos, R.rest_quat, R.rest_scale);
 		if (FVector::Dist(Now.GetLocation(), Rest.GetLocation()) > 0.1 || Now.GetRotation().AngularDistance(Rest.GetRotation()) > FMath::DegreesToRadians(0.5))
 		{
@@ -326,23 +403,11 @@ void AVibeVehicles::ApplyMesh(uint32 Handle, VlVehicleMesh* Mesh)
 	Car.Vertices = TArray<VlVehicleVertex>(View.vertices, static_cast<int32>(View.vertex_count));
 	Car.OriginHeight = View.origin_height;
 	Car.Posed = TArray<VlPosedPart>(View.posed, static_cast<int32>(View.posed_count));
-	for (int32 i = Car.PosedMeshes.Num(); i < Car.Posed.Num(); ++i)
+	// One mesh until its wheels move (PoseRig): no rig components for a parked car.
+	Car.bRigActive = false;
+	for (UProceduralMeshComponent* C : Car.PosedMeshes)
 	{
-		UProceduralMeshComponent* C = NewObject<UProceduralMeshComponent>(this, *FString::Printf(TEXT("Car%uRig%d"), Handle, i));
-		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-		C->SetMobility(EComponentMobility::Movable);
-		C->SetupAttachment(Car.Root);
-		C->RegisterComponent();
-		Car.PosedMeshes.Add(C);
-	}
-	for (int32 i = 0; i < Car.PosedMeshes.Num(); ++i)
-	{
-		Car.PosedMeshes[i]->SetVisibility(i < Car.Posed.Num());
-		if (i < Car.Posed.Num())
-		{
-			const VlPosedPart& R = Car.Posed[i];
-			Car.PosedMeshes[i]->SetRelativeTransform(PartTransform(R.rest_pos, R.rest_quat, R.rest_scale));
-		}
+		C->SetVisibility(false);
 	}
 	if (Car.Mesh)
 	{
@@ -378,6 +443,24 @@ void AVibeVehicles::Rebuild(uint32 Handle, FCar& Car)
 		}
 		const uint32 Color = Car.Vertices[i].color_rgba;
 		const int32* Posed = Car.Vertices[i].section == VL_VEHICLE_SECTION_POSED ? PosedIndex.Find(Car.Vertices[i].part) : nullptr;
+		if (Posed && !Car.bRigActive)
+		{
+			// Baked: the part where its current pose puts it (at rest before the first posing), in the
+			// chassis mesh. Normals by the inverse transpose of rest-to-pose.
+			const FTransform& R = Rest[*Posed];
+			const FTransform Pose = Car.Poses.IsValidIndex(*Posed)
+				? PartTransform(Car.Poses[*Posed].pos, Car.Poses[*Posed].quat, Car.Poses[*Posed].scale) : R;
+			for (int32 k = 0; k < 3; ++k)
+			{
+				const VlVehicleVertex& V = Car.Vertices[i + k];
+				const FVector P(V.pos[0], V.pos[1], V.pos[2]);
+				const FVector Nrm(V.normal[0], V.normal[1], V.normal[2]);
+				const FVector LocalN = R.GetRotation().UnrotateVector(Nrm) * R.GetScale3D();
+				Chassis.Positions.FindOrAdd(Color).Add(Pose.TransformPosition(R.InverseTransformPosition(P)));
+				Chassis.Normals.FindOrAdd(Color).Add(Pose.GetRotation().RotateVector(LocalN / Pose.GetScale3D()).GetSafeNormal());
+			}
+			continue;
+		}
 		FSectionMesh& S = Posed ? Parts[*Posed] : Chassis;
 		for (int32 k = 0; k < 3; ++k)
 		{
@@ -416,9 +499,12 @@ void AVibeVehicles::Rebuild(uint32 Handle, FCar& Car)
 		}
 	};
 	Fill(Car.Chassis, Chassis);
-	for (int32 i = 0; i < FMath::Min(Parts.Num(), Car.PosedMeshes.Num()); ++i)
+	if (Car.bRigActive)
 	{
-		Fill(Car.PosedMeshes[i], Parts[i]);
+		for (int32 i = 0; i < FMath::Min(Parts.Num(), Car.PosedMeshes.Num()); ++i)
+		{
+			Fill(Car.PosedMeshes[i], Parts[i]);
+		}
 	}
 }
 

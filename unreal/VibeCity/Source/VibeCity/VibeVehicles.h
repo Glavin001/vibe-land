@@ -36,10 +36,13 @@ public:
 	TOptional<FQuat> CarRotation(uint32 Handle) const;
 	/** A wheel's hub in the world at rest height (tests). */
 	TOptional<FVector> WheelPosition(uint32 Handle, int32 Wheel) const;
-	/** How many of a car's posed parts are away from rest now (more than 1 mm or 0.5 deg), and how many it has (tests). */
+	/** How many of a car's rig parts its current pose puts away from rest (more than 1 mm or 0.5 deg), and how many it has (tests). */
 	TPair<int32, int32> PosedPartsMoved(uint32 Handle) const;
 	/** How many times a car's rig has been posed (tests). */
 	int32 RigPosings(uint32 Handle) const;
+	/** Cars whose rig parts are drawn as moving components now, and rig components in all (tests). */
+	int32 ActiveRigs() const;
+	int32 RigComponents() const;
 	/** The last wheel states drawn for a car, for tests. */
 	TOptional<VlCar> LastCar(uint32 Handle) const;
 	int32 CarCount() const { return Cars.Num(); }
@@ -66,6 +69,10 @@ private:
 		 * car) is not posed again, and only parts whose pose changed are moved. */
 		VlWheel PosedWheels[4] = {};
 		bool bRigPosed = false;
+		/** Whether the rig's parts are drawn as their own moving components (while the car's wheels
+		 * are changing); otherwise they are baked into the chassis mesh at their current pose. */
+		bool bRigActive = false;
+		double LastWheelChangeS = 0.0;
 		/** Rig posings and part moves (tests: parked cars must cost nothing). */
 		int32 RigPosings = 0;
 		FVector Hubs[4];
@@ -87,7 +94,9 @@ private:
 	FCar& CarFor(uint32 Handle);
 	void RequestMesh(uint32 Handle);
 	void ApplyMesh(uint32 Handle, VlVehicleMesh* Mesh);
-	void PoseRig(FCar& Car, const VlCar& C);
+	void PoseRig(uint32 Handle, FCar& Car, const VlCar& C);
+	void EnsureRigComponents(uint32 Handle, FCar& Car);
+	void SetRigActive(uint32 Handle, FCar& Car, bool bActive);
 	UMaterialInstanceDynamic* MaterialFor(uint32 Rgba);
 
 	TMap<uint32, FCar> Cars;
