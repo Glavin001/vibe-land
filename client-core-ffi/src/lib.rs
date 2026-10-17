@@ -16,13 +16,15 @@ use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use vibe_client_core::coords::Space;
+use vibe_client_core::geometry::VlMeshRange;
+use vibe_client_core::materials::{Catalog, VlChunkSurface, VlMaterial};
 use vibe_client_core::frame::{VlBodyPose, VlChunk, VlChunkAssignment, VlEvent, VlInput, VlLocal, VlPlayer, VlStats};
 use vibe_client_core::{ClientCore, Lane};
 use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportConfig, TransportState};
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 3;
+pub const VL_ABI_VERSION: u32 = 4;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -72,6 +74,19 @@ pub const VL_EVENT_SHOT_FIRED: u32 = 1;
 pub const VL_EVENT_SHOT_RESULT: u32 = 2;
 pub const VL_EVENT_DAMAGE: u32 = 3;
 pub const VL_EVENT_LOCAL_SHOT: u32 = 4;
+/// `VlMeshRange::flags`: the mesh is the chunk's convex hull (else its box).
+pub const VL_MESH_HULL: u32 = 1;
+/// `VlMaterial::flags`.
+pub const VL_MATERIAL_DIRECTIONAL: u32 = 1;
+pub const VL_MATERIAL_GLASS: u32 = 2;
+pub const VL_MATERIAL_WALL: u32 = 4;
+pub const VL_MATERIAL_FLOOR: u32 = 8;
+const _: () = {
+    use vibe_client_core::{geometry as g, materials as m};
+    assert!(VL_MESH_HULL == g::VL_MESH_HULL);
+    assert!(VL_MATERIAL_DIRECTIONAL == m::VL_MATERIAL_DIRECTIONAL && VL_MATERIAL_GLASS == m::VL_MATERIAL_GLASS);
+    assert!(VL_MATERIAL_WALL == m::VL_MATERIAL_WALL && VL_MATERIAL_FLOOR == m::VL_MATERIAL_FLOOR);
+};
 const _: () = {
     use vibe_client_core::frame as f;
     assert!(VL_STATE_ON_GROUND == f::VL_STATE_ON_GROUND && VL_STATE_IN_VEHICLE == f::VL_STATE_IN_VEHICLE);
@@ -132,6 +147,23 @@ pub struct VlFrameView {
     pub events: *const VlEvent,
     pub event_count: usize,
     pub stats: VlStats,
+}
+
+/// Chunk meshes as flat arrays (`vl_client_chunk_meshes`).
+#[repr(C)]
+pub struct VlMeshView {
+    pub ranges: *const VlMeshRange,
+    pub range_count: usize,
+    pub positions: *const [f32; 3],
+    pub normals: *const [f32; 3],
+    /// xyz: unit direction of +u along the face; w: sign with `+v = w · (normal × tangent)`.
+    pub tangents: *const [f32; 4],
+    pub tile_uvs: *const [f32; 2],
+    /// Catalog index per vertex.
+    pub materials: *const u32,
+    pub vertex_count: usize,
+    pub indices: *const u32,
+    pub index_count: usize,
 }
 
 /// A client: the native transport and the shared core. Opaque to C.
@@ -344,6 +376,91 @@ pub unsafe extern "C" fn vl_client_chunks(client: *mut VlClient, out_chunks: *mu
     })
 }
 
+/// Every chunk's mesh, as flat arrays (see client-core `geometry.rs`): `ranges[i]` locates chunk
+/// `i`'s vertices and its indices (relative to the range's first vertex). Positions, normals and
+/// tangents are in the chunk's frame (its structure's axes, origin at the chunk's centre), so a
+/// standing chunk's vertex is at `rest_pos + rest_quat * v` and one on a body at
+/// `body.pos + body.quat * (local_pos + v)`. `tile_uvs` are in tiles of the face's catalog
+/// material (`materials`, per vertex). Fixed for the life of the client; valid until
+/// `vl_client_destroy`. `VL_ERR_STATE` until the manifest has arrived.
+///
+/// # Safety
+/// `client` must be a live client; `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_chunk_meshes(client: *mut VlClient, out: *mut VlMeshView) -> i32 {
+    if out.is_null() {
+        return VL_ERR_ARG;
+    }
+    guard(client, |c| {
+        let Some(m) = c.core.chunk_meshes() else { return VL_ERR_STATE };
+        out.write(VlMeshView {
+            ranges: m.ranges.as_ptr(),
+            range_count: m.ranges.len(),
+            positions: m.positions.as_ptr(),
+            normals: m.normals.as_ptr(),
+            tangents: m.tangents.as_ptr(),
+            tile_uvs: m.tile_uvs.as_ptr(),
+            materials: m.materials.as_ptr(),
+            vertex_count: m.positions.len(),
+            indices: m.indices.as_ptr(),
+            index_count: m.indices.len(),
+        });
+        VL_OK
+    })
+}
+
+/// Every chunk's catalog materials (wall, floor, authored tint), in chunk-table order. Valid until
+/// `vl_client_destroy`; empty until the manifest has arrived.
+///
+/// # Safety
+/// `client` must be a live client; `out_surfaces` and `out_count` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_chunk_surfaces(
+    client: *mut VlClient,
+    out_surfaces: *mut *const VlChunkSurface,
+    out_count: *mut usize,
+) -> i32 {
+    if out_surfaces.is_null() || out_count.is_null() {
+        return VL_ERR_ARG;
+    }
+    guard(client, |c| {
+        let s = c.core.chunk_surfaces();
+        out_surfaces.write(s.as_ptr());
+        out_count.write(s.len());
+        VL_OK
+    })
+}
+
+/// The material catalog (`shared/assets/materials/catalog.json`), indexed by the ids chunk meshes
+/// and surfaces carry. Static for the life of the process.
+///
+/// # Safety
+/// `out_materials` and `out_count` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_catalog(out_materials: *mut *const VlMaterial, out_count: *mut usize) -> i32 {
+    if out_materials.is_null() || out_count.is_null() {
+        return VL_ERR_ARG;
+    }
+    match catch_unwind(|| Catalog::get().materials.as_slice()) {
+        Ok(m) => {
+            out_materials.write(m.as_ptr());
+            out_count.write(m.len());
+            VL_OK
+        }
+        Err(_) => VL_ERR_PANIC,
+    }
+}
+
+/// A catalog entry's stable id (e.g. "brick"), NUL-terminated; null past the end. Static.
+#[no_mangle]
+pub extern "C" fn vl_catalog_id(index: u32) -> *const c_char {
+    static IDS: std::sync::OnceLock<Vec<std::ffi::CString>> = std::sync::OnceLock::new();
+    let ids = IDS.get_or_init(|| {
+        Catalog::get().ids.iter().map(|id| std::ffi::CString::new(id.as_str()).unwrap_or_default()).collect()
+    });
+    ids.get(index as usize).map_or(std::ptr::null(), |id| id.as_ptr())
+}
+
 /// Copy the last error (UTF-8, NUL-terminated, truncated to `capacity`) into `buffer`. Returns the
 /// full length in bytes, excluding the NUL; 0 when there is none.
 ///
@@ -483,5 +600,38 @@ mod tests {
         let mut p = [0f32; 3];
         vl_coords_pos_to_unreal(1.0, 2.0, 3.0, p.as_mut_ptr());
         assert_eq!(p, [300.0, -100.0, 200.0]);
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    //! The catalog through the C ABI: every entry has an id, and ids and records agree with the
+    //! catalog the core resolves chunk materials from.
+    use std::ffi::CStr;
+
+    use super::{vl_catalog, vl_catalog_id, VL_MATERIAL_GLASS, VL_OK};
+
+    #[test]
+    fn catalog_through_the_c_abi() {
+        let mut materials = std::ptr::null();
+        let mut count = 0usize;
+        assert_eq!(unsafe { vl_catalog(&mut materials, &mut count) }, VL_OK);
+        assert!(count >= 16);
+        let records = unsafe { std::slice::from_raw_parts(materials, count) };
+        let ids: Vec<String> = (0..count as u32)
+            .map(|i| unsafe { CStr::from_ptr(vl_catalog_id(i)) }.to_str().unwrap().to_owned())
+            .collect();
+        assert!(vl_catalog_id(count as u32).is_null());
+        assert_eq!(ids[0], "concrete-wall");
+        assert_eq!(ids[4], "brick");
+        let glass = ids.iter().position(|id| id == "glass").unwrap();
+        assert_eq!(records[glass].flags & VL_MATERIAL_GLASS, VL_MATERIAL_GLASS);
+        assert_eq!(records[glass].layer, -1);
+        for (i, r) in records.iter().enumerate() {
+            assert!(r.metres_per_tile > 0.0, "{}", ids[i]);
+            if r.layer >= 0 {
+                assert_eq!(r.layer, i as i32, "layer order");
+            }
+        }
     }
 }

@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 3
+#define VL_ABI_VERSION 4
 
 #define VL_OK 0
 
@@ -120,6 +120,22 @@
 #define VL_EVENT_DAMAGE 3
 
 #define VL_EVENT_LOCAL_SHOT 4
+
+/**
+ * `VlMeshRange::flags`: the mesh is the chunk's convex hull (else its box).
+ */
+#define VL_MESH_HULL 1
+
+/**
+ * `VlMaterial::flags`.
+ */
+#define VL_MATERIAL_DIRECTIONAL 1
+
+#define VL_MATERIAL_GLASS 2
+
+#define VL_MATERIAL_WALL 4
+
+#define VL_MATERIAL_FLOOR 8
 
 /**
  * `VlFrameView::transport_state`.
@@ -384,6 +400,91 @@ typedef struct VlChunk {
   uint32_t flags;
 } VlChunk;
 
+/**
+ * Where one chunk's triangles live in a [`ChunkMeshes`].
+ */
+typedef struct VlMeshRange {
+  uint32_t first_vertex;
+  uint32_t vertex_count;
+  /**
+   * Into [`ChunkMeshes::indices`]; the indices are relative to `first_vertex`.
+   */
+  uint32_t first_index;
+  uint32_t index_count;
+  /**
+   * Index into the manifest's material table (`material_appearance`).
+   */
+  uint32_t material;
+  /**
+   * [`VL_MESH_HULL`] when the mesh is the chunk's convex hull, else its box.
+   */
+  uint32_t flags;
+} VlMeshRange;
+
+/**
+ * Chunk meshes as flat arrays (`vl_client_chunk_meshes`).
+ */
+typedef struct VlMeshView {
+  const struct VlMeshRange *ranges;
+  size_t range_count;
+  const float (*positions)[3];
+  const float (*normals)[3];
+  /**
+   * xyz: unit direction of +u along the face; w: sign with `+v = w · (normal × tangent)`.
+   */
+  const float (*tangents)[4];
+  const float (*tile_uvs)[2];
+  /**
+   * Catalog index per vertex.
+   */
+  const uint32_t *materials;
+  size_t vertex_count;
+  const uint32_t *indices;
+  size_t index_count;
+} VlMeshView;
+
+/**
+ * One chunk's materials.
+ */
+typedef struct VlChunkSurface {
+  /**
+   * Catalog index for side faces.
+   */
+  uint16_t wall;
+  /**
+   * Catalog index for top- (and bottom-) facing faces.
+   */
+  uint16_t floor;
+  /**
+   * The manifest material's authored colour, 0xRRGGBBAA (0 when unauthored).
+   */
+  uint32_t tint_rgba;
+} VlChunkSurface;
+
+/**
+ * One catalog entry, as renderers read it.
+ */
+typedef struct VlMaterial {
+  /**
+   * Real-world size of one texture tile, metres.
+   */
+  float metres_per_tile;
+  float roughness;
+  float metalness;
+  /**
+   * 0xRRGGBBAA.
+   */
+  uint32_t base_color_rgba;
+  /**
+   * The web texture-array layer, or -1 (glass).
+   */
+  int32_t layer;
+  /**
+   * `VL_MATERIAL_*` bits.
+   */
+  uint32_t flags;
+} VlMaterial;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -452,6 +553,45 @@ int32_t vl_client_fire(struct VlClient *client, uint32_t weapon, uint32_t *out_s
 int32_t vl_client_chunks(struct VlClient *client,
                          const struct VlChunk **out_chunks,
                          size_t *out_count);
+
+/**
+ * Every chunk's mesh, as flat arrays (see client-core `geometry.rs`): `ranges[i]` locates chunk
+ * `i`'s vertices and its indices (relative to the range's first vertex). Positions, normals and
+ * tangents are in the chunk's frame (its structure's axes, origin at the chunk's centre), so a
+ * standing chunk's vertex is at `rest_pos + rest_quat * v` and one on a body at
+ * `body.pos + body.quat * (local_pos + v)`. `tile_uvs` are in tiles of the face's catalog
+ * material (`materials`, per vertex). Fixed for the life of the client; valid until
+ * `vl_client_destroy`. `VL_ERR_STATE` until the manifest has arrived.
+ *
+ * # Safety
+ * `client` must be a live client; `out` must be writable.
+ */
+int32_t vl_client_chunk_meshes(struct VlClient *client, struct VlMeshView *out);
+
+/**
+ * Every chunk's catalog materials (wall, floor, authored tint), in chunk-table order. Valid until
+ * `vl_client_destroy`; empty until the manifest has arrived.
+ *
+ * # Safety
+ * `client` must be a live client; `out_surfaces` and `out_count` must be writable.
+ */
+int32_t vl_client_chunk_surfaces(struct VlClient *client,
+                                 const struct VlChunkSurface **out_surfaces,
+                                 size_t *out_count);
+
+/**
+ * The material catalog (`shared/assets/materials/catalog.json`), indexed by the ids chunk meshes
+ * and surfaces carry. Static for the life of the process.
+ *
+ * # Safety
+ * `out_materials` and `out_count` must be writable.
+ */
+int32_t vl_catalog(const struct VlMaterial **out_materials, size_t *out_count);
+
+/**
+ * A catalog entry's stable id (e.g. "brick"), NUL-terminated; null past the end. Static.
+ */
+const char *vl_catalog_id(uint32_t index);
 
 /**
  * Copy the last error (UTF-8, NUL-terminated, truncated to `capacity`) into `buffer`. Returns the

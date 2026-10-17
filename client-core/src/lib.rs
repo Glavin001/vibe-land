@@ -62,6 +62,8 @@ pub struct ClientCore {
     space: Space,
     config: Option<SessionConfig>,
     city: Option<CityStream>,
+    meshes: Option<geometry::ChunkMeshes>,
+    surfaces: Vec<materials::VlChunkSurface>,
     players: Option<Players>,
     frame: SceneFrame,
     outgoing: Vec<Outgoing>,
@@ -86,6 +88,8 @@ impl ClientCore {
             space,
             config: None,
             city: None,
+            meshes: None,
+            surfaces: Vec::new(),
             players: None,
             frame: SceneFrame::default(),
             outgoing: Vec::new(),
@@ -149,6 +153,13 @@ impl ClientCore {
         match decode_manifest(bytes, config.city_manifest_hash.as_deref()) {
             Ok(manifest) => {
                 self.city = Some(CityStream::new(&manifest, u32::from(config.sim_hz), self.space));
+                let catalog = materials::Catalog::get();
+                self.surfaces = materials::chunk_surfaces(&manifest, catalog);
+                self.meshes = Some(geometry::ChunkMeshes::build_with_surfaces(
+                    &manifest,
+                    self.space,
+                    Some((&self.surfaces, catalog)),
+                ));
                 if self.state == VlCoreState::WaitingForManifest {
                     self.state = VlCoreState::WaitingForWelcome;
                 }
@@ -160,6 +171,17 @@ impl ClientCore {
     /// The city's chunk table (empty until the manifest arrives). Fixed for the session.
     pub fn chunks(&self) -> &[VlChunk] {
         self.city.as_ref().map_or(&[], |c| c.chunks())
+    }
+
+    /// Every chunk's mesh, in chunk-table order (`None` until the manifest arrives). Fixed for the
+    /// session.
+    pub fn chunk_meshes(&self) -> Option<&geometry::ChunkMeshes> {
+        self.meshes.as_ref()
+    }
+
+    /// Every chunk's catalog materials, in chunk-table order (empty until the manifest arrives).
+    pub fn chunk_surfaces(&self) -> &[materials::VlChunkSurface] {
+        &self.surfaces
     }
 
     /// One server packet.
