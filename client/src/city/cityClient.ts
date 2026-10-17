@@ -814,7 +814,7 @@ export class CityClient {
   private renderClockMs = 0;
   /** Wire v3: the wasm debris decoder; null means this match speaks v2. */
   private readonly debris: DebrisDecoder | null;
-  private readonly simHz: number;
+  protected readonly simHz: number;
   /** Wire v3: lane -> body entity, from the reliable PKT_CITY_LANES stream. */
   private readonly laneToEntity: Map<number, number> = new Map();
   private readonly entityToLane: Map<number, number> = new Map();
@@ -1580,15 +1580,15 @@ export class CityClient {
   private dustSourcesTotal = 0;
   private dustSourcesDroppedByCap = 0;
 
-  private readonly dustImpacts = new DustImpactDetector();
-  private readonly dustSamplePrev = new Map<number, [number, number, number, number]>();
+  protected readonly dustImpacts = new DustImpactDetector();
+  protected readonly dustSamplePrev = new Map<number, [number, number, number, number]>();
 
   /**
    * A body's velocity sample from the wire (or differenced from samples on
    * v3). The impact detector raises a dust source when the body just lost a
    * lot of speed -- it hit something.
    */
-  private noteDustVelocity(
+  protected noteDustVelocity(
     key: number, body: LedgerBody, tick: number,
     x: number, y: number, z: number, vx: number, vy: number, vz: number,
   ): void {
@@ -1626,7 +1626,7 @@ export class CityClient {
     }
   }
 
-  private extractDust(message: TopologyMessage): void {
+  protected extractDust(message: TopologyMessage): void {
     if (!dustEnabled() && !this.audioObserving) return;
     // How far this message's tick is ahead of what is on screen. Wire v3 and
     // holdTopology apply at the sample clock, so ~0; wire v2 applies at

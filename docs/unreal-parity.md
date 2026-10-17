@@ -116,10 +116,12 @@ does better and match /city's function.
   same ones (in view, within the fog's cull distance, at least 3 px, distant ones thinned by serial,
   the nearest 1024). The web raymarches them as fluid volumes under a per-frame sample budget;
   Unreal draws each as a translucent, volume-lit ellipsoid with the web sprite's opacity, so its
-  clouds read thicker. Filmed together in one match (`compare-web.mjs --frames` beside
-  `VibeCity.Render.Showcase`, 2026-10-17), the headless web showed no dust at all in either mode
-  (sprites: 410 live, 0 drawn; volumetric: 72 drawn, none visible), so a headless capture is not a
-  reference for the web's dust; the shared parcels and the selection are what the tests compare.
+  clouds read thicker. Filming one meteor from both clients (2026-10-17) found the web's wire 4
+  client making no destruction dust at all: it applied each break to its ledger past the city
+  client's dust and sound extraction, and never gave the impact detector its bodies' motion. Fixed
+  (`perPlayerDust.test.ts`: the recorded meteor now yields 32 fracture, 874 impact and 19 wave
+  sources); in a browser the same meteor makes about 300 parcels on each client. Headless Chromium
+  shows no dust in either mode, so the comparison is made in a real browser.
 
 ## The plan, milestone by milestone
 

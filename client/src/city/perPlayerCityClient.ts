@@ -257,6 +257,7 @@ export class PerPlayerCityClient extends CityClient {
       if (settled && this.settled.get(key) === restsFrom) continue;
       // Fresh arrays, handed over: the topology keeps them as they are.
       topology.updateBodyPose(key, [poses[i + 2], poses[i + 3], poses[i + 4]], [poses[i + 5], poses[i + 6], poses[i + 7], poses[i + 8]], 'presented', true);
+      this.noteMotion(key, poses[i + 2], poses[i + 3], poses[i + 4], r);
       if (settled) {
         // One last write when it comes to rest, then nothing.
         if (this.settled.get(key) !== restsFrom) {
@@ -270,6 +271,24 @@ export class PerPlayerCityClient extends CityClient {
     }
     this.live = live;
     return live;
+  }
+
+  /**
+   * A body's velocity for the dust impact detector, differenced from where it was presented on the
+   * render clock last time, as the city client does for wire 3's samples (this wire carries no
+   * velocities): debris that lands raises impact dust and, in a crowd, a collapse wave.
+   */
+  private noteMotion(key: number, x: number, y: number, z: number, tick: number): void {
+    const body = this.topology.body(key);
+    if (!body) return;
+    const prev = this.dustSamplePrev.get(key);
+    if (!prev) {
+      this.dustSamplePrev.set(key, [x, y, z, tick]);
+    } else if (tick > prev[3]) {
+      const dtS = (tick - prev[3]) / this.simHz;
+      this.noteDustVelocity(key, body, tick, x, y, z, (x - prev[0]) / dtS, (y - prev[1]) / dtS, (z - prev[2]) / dtS);
+      prev[0] = x; prev[1] = y; prev[2] = z; prev[3] = tick;
+    }
   }
 
   /**
@@ -435,6 +454,9 @@ export class PerPlayerCityClient extends CityClient {
       this.topoSeq += 1;
       const message: TopologyMessage = { topoSeq: this.topoSeq, simTick: tick, batches: [batch], settled: [], wakes: [] };
       topology.apply(message);
+      // Breaks become dust and sound sources, as the city client's own topology path does
+      // (applyTopologyMessage): the ledger above is what dust and audio read.
+      this.extractDust(message);
     }
   }
 
@@ -442,6 +464,9 @@ export class PerPlayerCityClient extends CityClient {
   private rebuildLedger(poses: Float32Array, poseOf: Map<number, number>): void {
     const topology = this.topology as CityTopology;
     topology.reset();
+    // A new ledger: no body's last motion is the same body's.
+    this.dustImpacts.clear();
+    this.dustSamplePrev.clear();
     // The ledger keeps its sequence across a reset: carry on from it, or a
     // second bootstrap (resync, reset) would be dropped as a duplicate.
     this.topoSeq += 1;
