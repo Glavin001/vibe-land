@@ -26,6 +26,11 @@ pub struct WorldConfig {
     pub max_bodies: u32,
     pub max_colliders: u32,
     pub max_contacts: u32,
+    /// rubble's hierarchical broadphase grid (levels sized from every
+    /// collider). On by default: vibe-land's worlds mix scales -- metre-scale
+    /// chunks and terrain beside 0.3 m balls -- which overflow the uniform
+    /// grid's oversized-static list.
+    pub hierarchical_grid: bool,
 }
 
 impl Default for WorldConfig {
@@ -37,6 +42,7 @@ impl Default for WorldConfig {
             max_bodies: 16_384,
             max_colliders: 65_536,
             max_contacts: 262_144,
+            hierarchical_grid: true,
         }
     }
 }
@@ -121,6 +127,9 @@ impl RubbleWorld {
         params.gravity_y = config.gravity_y;
         params.iterations = config.iterations;
         sim.set_params(params);
+        if config.hierarchical_grid {
+            sim.set_grid_levels(Some(true));
+        }
         Ok(Self { sim, collider_body: Vec::new(), config })
     }
 
@@ -422,6 +431,28 @@ mod tests {
         }
         let revived = world.body(ball);
         assert!(revived.dynamic && revived.position[1] < 5.0 && (revived.position[0] - 4.0).abs() < 1e-4, "{revived:?}");
+    }
+
+    /// A city: thousands of static chunk boxes far larger than the small
+    /// dynamic bodies (balls) beside them. The step must not overflow rubble's
+    /// oversized-static list (1024 entries, which a uniform grid sized from a
+    /// 0.3 m ball fills with every 2 m chunk), and the ball must still land on
+    /// one of them.
+    #[test]
+    fn a_city_of_large_statics_steps_beside_small_balls() {
+        let mut world = RubbleWorld::new(WorldConfig::default()).expect("wgpu device");
+        ground(&mut world);
+        for i in 0..1100 {
+            let (x, z) = ((i % 40) as f32 * 4.0 - 80.0, (i / 40) as f32 * 4.0 - 60.0);
+            world.add_static_box([x, 1.0, z], IDENTITY, [1.0, 1.0, 1.0], 0);
+        }
+        // Above the box at (0, 1, 0), whose top is y = 2.
+        let ball = world.add_dynamic_sphere([0.0, 4.0, 0.0], 0.3, 50.0, 0);
+        for _ in 0..120 {
+            world.step().expect("a city-scale step");
+        }
+        let y = world.body(ball).position[1];
+        assert!(y > 2.0 && y < 2.6, "the ball rests on the box top: y {y}");
     }
 
     #[test]

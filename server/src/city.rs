@@ -3668,6 +3668,7 @@ mod tests {
             }
             client.advance(ms(tick));
         }
+        assert_eq!(arena.health().gpu_warning_count, 0, "rubble refused steps");
         let stats = city.per_player_stats().expect("wire-4 stats");
         assert_eq!(stats.fractures, 0, "nothing decides fracture yet: {stats:?}");
         assert!(events > 0, "no events reached the client");
@@ -3682,29 +3683,34 @@ mod tests {
     #[test]
     fn a_cannonball_stops_at_a_rubble_building() {
         let (mut arena, city) = rubble_city();
-        let structure = &city.manifest.structures[0];
-        // The building's +x extent in world space (chunks are boxes about the
-        // structure origin; the default pack has no rotation).
+        // The westernmost building, shot from open ground to its west. Its
+        // chunks are boxes about the structure origin (no rotation in the pack).
+        let structure = city
+            .manifest
+            .structures
+            .iter()
+            .min_by(|a, b| a.world_position[0].total_cmp(&b.world_position[0]))
+            .expect("a building");
         let face_x = structure
             .chunks
             .iter()
-            .map(|c| c.centroid[0] + c.size[0] * 0.5)
-            .fold(f32::NEG_INFINITY, f32::max)
+            .map(|c| c.centroid[0] - c.size[0] * 0.5)
+            .fold(f32::INFINITY, f32::min)
             + structure.world_position[0];
         let height = structure.chunks.iter().map(|c| c.centroid[1]).fold(0.0_f32, f32::max) * 0.5;
-        let start = nalgebra::Vector3::new(face_x + 20.0, structure.world_position[1] + height.max(1.0), structure.world_position[2]);
+        let start = nalgebra::Vector3::new(face_x - 10.0, structure.world_position[1] + height.max(1.0), structure.world_position[2]);
         let id = arena
-            .launch_ball_from_muzzle(start, nalgebra::Vector3::new(-30.0, 0.0, 0.0), 0.3, 50.0, 600)
+            .launch_ball_from_muzzle(start, nalgebra::Vector3::new(30.0, 0.0, 0.0), 0.3, 50.0, 600)
             .expect("launched");
         for _ in 0..90 {
             arena.step_vehicles_and_dynamics(1.0 / 60.0);
         }
+        assert_eq!(arena.health().gpu_warning_count, 0, "rubble refused steps: nothing moved");
         let ball = arena.snapshot_dynamic_bodies().into_iter().find(|s| s.0 == id).expect("ball streams");
-        assert!(
-            ball.1[0] > face_x - 0.3,
-            "the ball passed into the building: x {} vs facade {face_x}",
-            ball.1[0]
-        );
+        // 30 m/s for 1.5 s would carry it 45 m, far through the building; it
+        // must have crossed the 10 m gap and stopped at the facade.
+        assert!(ball.1[0] > start.x + 9.0, "the ball never reached the building: x {} from {}", ball.1[0], start.x);
+        assert!(ball.1[0] < face_x + 0.3, "the ball passed into the building: x {} vs facade {face_x}", ball.1[0]);
     }
 
     /// The default (v2) match is untouched: v2 reliable packets, no wire-4 ones.

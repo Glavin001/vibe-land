@@ -86,6 +86,9 @@ pub struct RubblePhysicsArena {
     /// Top of the lowest static surface, for "fell through the ground" checks.
     lowest_ground_y: Option<f32>,
     last_step_ms: f32,
+    /// Steps rubble refused (a capacity overflow): nothing moved those ticks.
+    /// Reported as `PhysicsHealth::gpu_warning_count`.
+    failed_steps: u32,
 }
 
 fn env_f32(name: &str, default: f32) -> f32 {
@@ -131,6 +134,7 @@ impl RubblePhysicsArena {
             runtime_statics: HashMap::new(),
             lowest_ground_y: None,
             last_step_ms: 0.0,
+            failed_steps: 0,
         })
     }
 
@@ -343,8 +347,10 @@ impl RubblePhysicsArena {
     pub fn step_vehicles_and_dynamics(&mut self, dt: f32) -> (f32, f32) {
         self.expire_launched_balls();
         let started = std::time::Instant::now();
-        if let Err(error) = self.world().step() {
-            tracing::error!(%error, "rubble step failed");
+        let stepped = self.world().step();
+        if let Err(error) = stepped {
+            self.failed_steps = self.failed_steps.saturating_add(1);
+            tracing::error!(%error, failed_steps = self.failed_steps, "rubble step failed");
         }
         self.last_step_ms = started.elapsed().as_secs_f32() * 1000.0;
         self.sync_mirrors();
@@ -408,7 +414,12 @@ impl RubblePhysicsArena {
     }
 
     pub fn health(&self) -> PhysicsHealth {
-        PhysicsHealth { gpu_active: true, last_step_ms: self.last_step_ms, ..PhysicsHealth::default() }
+        PhysicsHealth {
+            gpu_active: true,
+            gpu_warning_count: self.failed_steps,
+            last_step_ms: self.last_step_ms,
+            ..PhysicsHealth::default()
+        }
     }
 
     // ── Runtime static cuboids (both worlds) ─────────────────────────────
