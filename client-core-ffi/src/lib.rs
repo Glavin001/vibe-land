@@ -19,6 +19,7 @@ use vibe_client_core::coords::Space;
 use vibe_client_core::audio::VlSound;
 use vibe_client_core::effects::VlDust;
 use vibe_client_core::geometry::VlMeshRange;
+use vibe_client_core::grass::{VlGrassBlade, VlGrassExclusion};
 use vibe_client_core::materials::{Catalog, VlChunkSurface, VlMaterial};
 use vibe_client_core::frame::{VlAudioContact, VlBodyPose, VlCar, VlChunk, VlChunkAssignment, VlDynamicBody, VlEvent, VlInput, VlLocal, VlMeteor, VlPlayer, VlStats};
 use vibe_client_core::{ClientCore, Lane};
@@ -26,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 9;
+pub const VL_ABI_VERSION: u32 = 10;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -683,6 +684,58 @@ pub extern "C" fn vl_audio_clip_id(index: u32) -> *const c_char {
         vibe_client_core::audio::Clips::get().ids.iter().map(|id| std::ffi::CString::new(id.as_str()).unwrap_or_default()).collect()
     });
     ids.get(index as usize).map_or(std::ptr::null(), |id| id.as_ptr())
+}
+
+/// Where the meadow is bare (each building's original footprint plus a verge), in server space
+/// (x, z metres), for `vl_grass_patch`. Valid until `vl_client_destroy`; empty until the manifest
+/// has arrived.
+///
+/// # Safety
+/// `client` must be a live client; `out_exclusions` and `out_count` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_grass_exclusions(
+    client: *mut VlClient,
+    out_exclusions: *mut *const VlGrassExclusion,
+    out_count: *mut usize,
+) -> i32 {
+    if out_exclusions.is_null() || out_count.is_null() {
+        return VL_ERR_ARG;
+    }
+    guard(client, |c| {
+        let e = c.core.grass_exclusions();
+        out_exclusions.write(e.as_ptr());
+        out_count.write(e.len());
+        VL_OK
+    })
+}
+
+/// The web's meadow blades of 8 m patch (`px`, `pz`) at `density` blades per m² (150 at most; the
+/// renderer's distance LOD draws a prefix), in server space (client-core grass.rs). Writes at most
+/// `capacity` blades to `out` and returns how many the patch has. Touches no client: safe from any
+/// thread.
+///
+/// # Safety
+/// `exclusions` must be readable for `exclusion_count` records; `out` writable for `capacity`.
+#[no_mangle]
+pub unsafe extern "C" fn vl_grass_patch(
+    exclusions: *const VlGrassExclusion,
+    exclusion_count: usize,
+    px: i32,
+    pz: i32,
+    density: f32,
+    out: *mut VlGrassBlade,
+    capacity: usize,
+) -> usize {
+    let ex = if exclusions.is_null() { &[][..] } else { std::slice::from_raw_parts(exclusions, exclusion_count) };
+    catch_unwind(|| {
+        let mut blades = Vec::new();
+        vibe_client_core::grass::generate_patch(px, pz, density, ex, &mut blades);
+        if !out.is_null() {
+            std::ptr::copy_nonoverlapping(blades.as_ptr(), out, blades.len().min(capacity));
+        }
+        blades.len()
+    })
+    .unwrap_or(0)
 }
 
 /// `VlSound::flags`: a sound the player must hear (a near threat).

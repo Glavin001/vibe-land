@@ -72,6 +72,7 @@ pub struct ClientCore {
     config: Option<SessionConfig>,
     city: Option<CityStream>,
     meshes: Option<geometry::ChunkMeshes>,
+    grass_exclusions: Vec<grass::VlGrassExclusion>,
     surfaces: Vec<materials::VlChunkSurface>,
     players: Option<Players>,
     frame: SceneFrame,
@@ -120,6 +121,7 @@ impl ClientCore {
             config: None,
             city: None,
             meshes: None,
+            grass_exclusions: Vec::new(),
             surfaces: Vec::new(),
             players: None,
             frame: SceneFrame::default(),
@@ -197,6 +199,7 @@ impl ClientCore {
                 self.city = Some(CityStream::new(&manifest, u32::from(config.sim_hz), self.space));
                 let catalog = materials::Catalog::get();
                 self.surfaces = materials::chunk_surfaces(&manifest, catalog);
+                self.grass_exclusions = grass::exclusions_from_manifest(&manifest);
                 self.meshes = Some(geometry::ChunkMeshes::build_with_surfaces(
                     &manifest,
                     self.space,
@@ -219,6 +222,12 @@ impl ClientCore {
     /// session.
     pub fn chunk_meshes(&self) -> Option<&geometry::ChunkMeshes> {
         self.meshes.as_ref()
+    }
+
+    /// Where the meadow is bare: each building's original footprint plus a verge (grass.rs), server
+    /// space. Empty until the manifest arrives.
+    pub fn grass_exclusions(&self) -> &[grass::VlGrassExclusion] {
+        &self.grass_exclusions
     }
 
     /// Every chunk's catalog materials, in chunk-table order (empty until the manifest arrives).

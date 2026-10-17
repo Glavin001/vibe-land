@@ -24,8 +24,9 @@ const CHANNELS: usize = 12;
 const GRASS_STIFFNESS: f32 = 0.3;
 
 /// A building's original footprint, grown by the verge: no grass inside.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GrassExclusion {
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlGrassExclusion {
     pub min_x: f32,
     pub min_z: f32,
     pub max_x: f32,
@@ -33,7 +34,7 @@ pub struct GrassExclusion {
 }
 
 /// `grassExclusionsFromManifest`: each structure's chunk-box bounds, rotated, plus 0.65 m.
-pub fn exclusions_from_manifest(manifest: &DestructionManifest) -> Vec<GrassExclusion> {
+pub fn exclusions_from_manifest(manifest: &DestructionManifest) -> Vec<VlGrassExclusion> {
     let mut out = Vec::new();
     for s in &manifest.structures {
         let q = Quat::from_array(s.world_rotation).normalize();
@@ -49,7 +50,7 @@ pub fn exclusions_from_manifest(manifest: &DestructionManifest) -> Vec<GrassExcl
             }
         }
         if lo.x.is_finite() {
-            out.push(GrassExclusion { min_x: lo.x - 0.65, min_z: lo.z - 0.65, max_x: hi.x + 0.65, max_z: hi.z + 0.65 });
+            out.push(VlGrassExclusion { min_x: lo.x - 0.65, min_z: lo.z - 0.65, max_x: hi.x + 0.65, max_z: hi.z + 0.65 });
         }
     }
     out
@@ -124,7 +125,7 @@ fn default_cell(x: f32, z: f32, out: &mut [f32]) {
 }
 
 /// One patch's blades at `density` blades per m² (≤ the pretty density), as the web generates them.
-pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[GrassExclusion], out: &mut Vec<VlGrassBlade>) {
+pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[VlGrassExclusion], out: &mut Vec<VlGrassBlade>) {
     out.clear();
     // The default paint grid for the patch, with a one-cell border, as GrassPaint.sampler builds it.
     let stride = (CELLS + 2) as usize;
@@ -157,7 +158,7 @@ pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[GrassExclusi
     let grass_limit = (density.min(GRASS_DENSITY_PRETTY) * GRASS_PATCH_SIZE * GRASS_PATCH_SIZE) as usize;
     let mut random = PatchRandom::new(px, pz);
     let (ox, oz) = (px as f32 * GRASS_PATCH_SIZE, pz as f32 * GRASS_PATCH_SIZE);
-    let nearby: Vec<&GrassExclusion> = exclusions
+    let nearby: Vec<&VlGrassExclusion> = exclusions
         .iter()
         .filter(|b| b.max_x >= ox && b.min_x <= ox + GRASS_PATCH_SIZE && b.max_z >= oz && b.min_z <= oz + GRASS_PATCH_SIZE)
         .collect();
@@ -251,7 +252,7 @@ mod tests {
 
     #[test]
     fn exclusions_keep_footprints_bare() {
-        let ex = [GrassExclusion { min_x: 1.0, min_z: 1.0, max_x: 6.0, max_z: 6.0 }];
+        let ex = [VlGrassExclusion { min_x: 1.0, min_z: 1.0, max_x: 6.0, max_z: 6.0 }];
         let mut out = Vec::new();
         generate_patch(0, 0, GRASS_DENSITY_PRETTY, &ex, &mut out);
         assert!(!out.is_empty());

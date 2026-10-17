@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 9
+#define VL_ABI_VERSION 10
 
 #define VL_OK 0
 
@@ -739,6 +739,37 @@ typedef struct VlMaterial {
   float hd_metres_per_tile;
 } VlMaterial;
 
+/**
+ * A building's original footprint, grown by the verge: no grass inside.
+ */
+typedef struct VlGrassExclusion {
+  float min_x;
+  float min_z;
+  float max_x;
+  float max_z;
+} VlGrassExclusion;
+
+/**
+ * One blade. `x`, `z` are world metres; colour is linear RGB.
+ */
+typedef struct VlGrassBlade {
+  float x;
+  float z;
+  float height;
+  /**
+   * Facing, radians about +y.
+   */
+  float yaw;
+  float width;
+  /**
+   * How far the tip leans, as a fraction of the height.
+   */
+  float lean;
+  float variation;
+  float color[3];
+  float stiffness;
+} VlGrassBlade;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -932,6 +963,35 @@ int32_t vl_client_set_listener(struct VlClient *client, float x, float y, float 
  * past the end. Static. `VlSound::clip` indexes these.
  */
 const char *vl_audio_clip_id(uint32_t index);
+
+/**
+ * Where the meadow is bare (each building's original footprint plus a verge), in server space
+ * (x, z metres), for `vl_grass_patch`. Valid until `vl_client_destroy`; empty until the manifest
+ * has arrived.
+ *
+ * # Safety
+ * `client` must be a live client; `out_exclusions` and `out_count` must be writable.
+ */
+int32_t vl_client_grass_exclusions(struct VlClient *client,
+                                   const struct VlGrassExclusion **out_exclusions,
+                                   size_t *out_count);
+
+/**
+ * The web's meadow blades of 8 m patch (`px`, `pz`) at `density` blades per m² (150 at most; the
+ * renderer's distance LOD draws a prefix), in server space (client-core grass.rs). Writes at most
+ * `capacity` blades to `out` and returns how many the patch has. Touches no client: safe from any
+ * thread.
+ *
+ * # Safety
+ * `exclusions` must be readable for `exclusion_count` records; `out` writable for `capacity`.
+ */
+size_t vl_grass_patch(const struct VlGrassExclusion *exclusions,
+                      size_t exclusion_count,
+                      int32_t px,
+                      int32_t pz,
+                      float density,
+                      struct VlGrassBlade *out,
+                      size_t capacity);
 
 /**
  * A catalog entry's stable id (e.g. "brick"), NUL-terminated; null past the end. Static.
