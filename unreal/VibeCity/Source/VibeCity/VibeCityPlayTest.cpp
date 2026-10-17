@@ -930,3 +930,100 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 }
 
 #endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+#include "VibeRemotePlayers.h"
+
+// VibeCity.Play.LookAtRemote: walk up to (drop 5 m from) the nearest other player, face them and
+// take a screenshot (-VibeShotDir=<dir>, remote.png); the other player is drawn by AVibeRemotePlayers.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayLookAtRemote, "VibeCity.Play.LookAtRemote",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayLookAtRemote::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		VlLocal Local = {};
+		TArray<VlPlayer> Remote;
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+		FVector Target = FVector::ZeroVector;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 90.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
+			{
+				S->Local = Frame.local;
+				S->Remote = TArray<VlPlayer>(Frame.remote_players, static_cast<int32>(Frame.remote_player_count));
+			});
+		}
+		if ((S->Local.player.flags & VL_PLAYER_VALID) && S->Remote.Num() > 0)
+		{
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("no other player in interest"));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		const VlPlayer& P = S->Remote[0];
+		S->Target = FVector(P.pos[0], P.pos[1], P.pos[2]);
+		const FVector Me(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		const FVector Toward = (S->Target - Me).GetSafeNormal2D();
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->CameraDrop(S->Target - Toward * 500.0 + FVector(0.0, 0.0, 50.0), static_cast<float>(Toward.Rotation().Yaw), 0.0f);
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		const FVector Eye(S->Local.eye[0], S->Local.eye[1], S->Local.eye[2]);
+		if (APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0))
+		{
+			PC->SetControlRotation((S->Target - Eye).Rotation());
+		}
+		TActorIterator<AVibeRemotePlayers> Players(GameWorld());
+		AddInfo(FString::Printf(TEXT("%.1f m from player %u; %d drawn, mannequin %d"), FVector::Dist(Eye, S->Target) / 100.0,
+			S->Remote[0].player_id, Players ? Players->VisiblePlayers() : -1, Players && Players->UsesMannequin() ? 1 : 0));
+		TestTrue(TEXT("the other player is drawn"), Players && Players->VisiblePlayers() > 0);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("remote.png"), false, false);
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif
