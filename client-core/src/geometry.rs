@@ -14,7 +14,11 @@
 //!
 //! Texture coordinates are box-projected in metres from the chunk's position in its structure
 //! (`centroid + v`), so a wall's texture runs continuously across the chunks that make it up and
-//! stays fixed to a chunk when it breaks away. A material scales them by its tile size.
+//! stays fixed to a chunk when it breaks away. A material scales them by its tile size. They follow
+//! the image convention Unreal and Direct3D use (v grows downward in the image): seen from outside,
+//! u runs right and v runs down a wall, so textures read upright and unmirrored. Each vertex has a
+//! tangent (the direction of +u along its face) and the sign that, with the normal, gives the
+//! direction of +v (`v_dir = w · normal × tangent`), for normal maps.
 
 use glam::{Quat, Vec3};
 use vibe_land_destruction::manifest::{ChunkDef, ChunkGeometry, DestructionManifest};
@@ -51,6 +55,9 @@ pub struct ChunkMeshes {
     pub normals: Vec<[f32; 3]>,
     /// Metres, box-projected in the structure frame.
     pub uvs: Vec<[f32; 2]>,
+    /// Per vertex: the unit direction of +u along the face (xyz) and the sign `w` with
+    /// `+v direction = w · (normal × tangent)`, in the target space.
+    pub tangents: Vec<[f32; 4]>,
     /// Per vertex: the catalog material its face wears (the chunk's floor material on faces that
     /// mostly face up or down, its wall material otherwise). Empty without surfaces.
     pub materials: Vec<u32>,
@@ -127,11 +134,13 @@ impl ChunkMeshes {
                 let tile = catalog.materials.get(id as usize).map_or(1.0, |m| m.metres_per_tile).max(1e-3);
                 (u32::from(id), tile)
             });
+            let tangent = face_tangent(normal, space);
             for corner in tri {
                 let uv = box_uv(centroid + *corner, normal);
                 self.positions.push(space.pos(*corner));
                 self.normals.push(target_normal);
                 self.uvs.push(uv);
+                self.tangents.push(tangent);
                 if let Some((id, tile)) = material {
                     self.materials.push(id);
                     self.tile_uvs.push([uv[0] / tile, uv[1] / tile]);
@@ -242,17 +251,37 @@ fn box_triangles(h: Vec3, out: &mut Vec<[Vec3; 3]>) {
     }
 }
 
-/// Box projection in metres: drop the axis the face mostly points along, keep the other two,
-/// oriented so the texture reads the right way round from outside and "up" stays up on walls.
-fn box_uv(p: Vec3, n: Vec3) -> [f32; 2] {
+/// The box projection's axes for a face with server normal `n`: the face's dominant axis is dropped
+/// and `(u_dir, v_dir)` are the directions of +u and +v in the structure frame, chosen so that seen
+/// from outside u runs right and v runs down (up on a wall is −v), never mirrored.
+fn box_axes(n: Vec3) -> (Vec3, Vec3) {
     let a = n.abs();
     if a.y >= a.x && a.y >= a.z {
-        [p.x, if n.y >= 0.0 { -p.z } else { p.z }]
+        // Tops seen from above with −z up the image; bottoms seen from below with +z up.
+        if n.y >= 0.0 { (Vec3::X, Vec3::Z) } else { (Vec3::X, Vec3::NEG_Z) }
     } else if a.x >= a.z {
-        [if n.x >= 0.0 { -p.z } else { p.z }, p.y]
+        if n.x >= 0.0 { (Vec3::NEG_Z, Vec3::NEG_Y) } else { (Vec3::Z, Vec3::NEG_Y) }
+    } else if n.z >= 0.0 {
+        (Vec3::X, Vec3::NEG_Y)
     } else {
-        [if n.z >= 0.0 { p.x } else { -p.x }, p.y]
+        (Vec3::NEG_X, Vec3::NEG_Y)
     }
+}
+
+/// Box projection in metres of structure-frame point `p` on a face with normal `n`.
+fn box_uv(p: Vec3, n: Vec3) -> [f32; 2] {
+    let (u, v) = box_axes(n);
+    [p.dot(u), p.dot(v)]
+}
+
+/// The face's tangent in `space`: +u projected onto the face, with the sign that recovers +v.
+fn face_tangent(n: Vec3, space: Space) -> [f32; 4] {
+    let (u, v) = box_axes(n);
+    let t = (u - n * n.dot(u)).normalize_or_zero();
+    let to = |d: Vec3| Vec3::from_array(space.pos(d)).normalize_or_zero();
+    let (nt, tt, vt) = (to(n), to(t), to(v));
+    let w = if nt.cross(tt).dot(vt) >= 0.0 { 1.0 } else { -1.0 };
+    [tt.x, tt.y, tt.z, w]
 }
 
 /// The rotation of a chunk at rest (its structure's), for callers composing poses themselves.
@@ -409,6 +438,44 @@ mod tests {
         };
         let shared = Vec3::new(0.5, 0.5, 0.5);
         assert_eq!(uv_at(&a, shared), uv_at(&b, shared));
-        assert_eq!(uv_at(&a, shared), [0.5, 0.5]);
+        // +z face seen from outside: u = x to the right, v = −y downward.
+        assert_eq!(uv_at(&a, shared), [0.5, -0.5]);
+    }
+
+    #[test]
+    fn tangents_follow_u_and_signs_recover_v_in_both_spaces() {
+        // For every face of a hull and a box: the tangent lies in the face, points along +u (the uv
+        // increases along it), and w·(n × t) points along +v.
+        let pts: Vec<f32> = vec![0.7, 0.0, 0.0, -0.4, 0.1, 0.0, 0.0, 0.9, 0.1, 0.1, -0.6, 0.0, 0.0, 0.0, 0.5, 0.05, 0.1, -0.8];
+        for space in [Space::Server, Space::Unreal] {
+            for c in [cuboid([0.5, 1.0, 1.5]), chunk(ChunkGeometry::ConvexHull { points: pts.clone(), shape_id: None }, [1.0; 3])] {
+                let mut tris = Vec::new();
+                let hull = server_triangles(&c, &[], &mut tris);
+                let mut m = ChunkMeshes::default();
+                m.push_chunk(&c, &tris, space, flips_handedness(space), hull);
+                for tri in m.positions.chunks_exact(3).zip(m.tangents.chunks_exact(3)).zip(m.uvs.chunks_exact(3)).zip(m.normals.chunks_exact(3)) {
+                    let (((p, tg), uv), n) = tri;
+                    let p: Vec<Vec3> = p.iter().map(|v| Vec3::from_array(*v)).collect();
+                    let n = Vec3::from_array(n[0]);
+                    let t = Vec3::new(tg[0][0], tg[0][1], tg[0][2]);
+                    assert!(t.dot(n).abs() < 1e-4, "tangent leaves the face");
+                    // Solve the face's uv gradient: d(uv) = J · d(p) over two edges.
+                    let (e1, e2) = (p[1] - p[0], p[2] - p[0]);
+                    let (du1, du2) = (uv[1][0] - uv[0][0], uv[2][0] - uv[0][0]);
+                    let (dv1, dv2) = (uv[1][1] - uv[0][1], uv[2][1] - uv[0][1]);
+                    // Gradient of u and v within the face plane.
+                    let g = |d1: f32, d2: f32| {
+                        let (a, b, c2) = (e1.dot(e1), e1.dot(e2), e2.dot(e2));
+                        let det = a * c2 - b * b;
+                        let (x, y) = ((d1 * c2 - d2 * b) / det, (d2 * a - d1 * b) / det);
+                        e1 * x + e2 * y
+                    };
+                    let (gu, gv) = (g(du1, du2), g(dv1, dv2));
+                    assert!(t.dot(gu) > 0.0, "tangent does not run along +u ({space:?})");
+                    let bit = n.cross(t) * tg[0][3];
+                    assert!(bit.dot(gv) > 0.0, "w·(n×t) does not run along +v ({space:?})");
+                }
+            }
+        }
     }
 }
