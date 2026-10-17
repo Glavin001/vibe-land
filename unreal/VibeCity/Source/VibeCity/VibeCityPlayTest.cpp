@@ -479,3 +479,146 @@ bool FVibeCityPlayAimAndReset::RunTest(const FString& Parameters)
 }
 
 #endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+#include "VibeDynamicBodies.h"
+
+// VibeCity.Play.CannonAndMeteor: weapons 2 and 3 through the real input path. The cannon's ball must
+// appear among the snapshot's bodies (drawn by AVibeDynamicBodies); a meteor called on the city must
+// be announced (its flight drawn) and break something (the city stream's fracture count rises).
+// Needs a PhysX server (the synthetic city has no colliders: no meteor is launched there).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayCannonAndMeteor, "VibeCity.Play.CannonAndMeteor",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayCannonAndMeteor::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		VlLocal Local = {};
+		uint64 Fractures = 0;
+		uint64 FracturesBefore = 0;
+		int32 MaxBodies = 0;
+		float MaxBallRadiusCm = 0.0f;
+		int32 Meteors = 0;
+		int32 MaxFlights = 0;
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	auto Bodies = []() -> AVibeDynamicBodies*
+	{
+		TActorIterator<AVibeDynamicBodies> It(GameWorld());
+		return It ? *It : nullptr;
+	};
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 90.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
+			{
+				S->Local = Frame.local;
+				S->Fractures = Frame.stats.fractures;
+				S->MaxBodies = FMath::Max(S->MaxBodies, static_cast<int32>(Frame.dynamic_body_count));
+				for (size_t i = 0; i < Frame.dynamic_body_count; ++i)
+				{
+					S->MaxBallRadiusCm = FMath::Max(S->MaxBallRadiusCm, Frame.dynamic_bodies[i].half_extents[0]);
+				}
+				S->Meteors += static_cast<int32>(Frame.meteor_count);
+			});
+		}
+		if (S->Local.player.flags & VL_PLAYER_VALID)
+		{
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("never joined"));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
+	// Face the city's centre, a little down: a building or the street is in the line of fire.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Click();
+		const FVector Eye(S->Local.eye[0], S->Local.eye[1], S->Local.eye[2]);
+		const FVector Target(0.0, 0.0, 400.0);
+		if (APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0))
+		{
+			PC->SetControlRotation((Target - Eye).Rotation());
+		}
+		Key(EKeys::Two, true);
+		Key(EKeys::Two, false);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Click(); // fire the cannon
+		S->Deadline = Now() + 4.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Bodies]()
+	{
+		if (const AVibeDynamicBodies* B = Bodies())
+		{
+			S->MaxBodies = FMath::Max(S->MaxBodies, B->VisibleBodies());
+		}
+		if (S->MaxBodies > 0 || Now() > S->Deadline)
+		{
+			TestTrue(TEXT("the cannonball appeared among the snapshot's bodies"), S->MaxBodies > 0);
+			AddInfo(FString::Printf(TEXT("cannon: %d body(ies), radius %.1f cm"), S->MaxBodies, S->MaxBallRadiusCm));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Key(EKeys::Three, true);
+		Key(EKeys::Three, false);
+		S->FracturesBefore = S->Fractures;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.3f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Click(); // call the meteor
+		S->Deadline = Now() + 30.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Bodies]()
+	{
+		if (const AVibeDynamicBodies* B = Bodies())
+		{
+			S->MaxFlights = FMath::Max(S->MaxFlights, B->FlyingMeteors());
+		}
+		if ((S->Meteors > 0 && S->Fractures > S->FracturesBefore) || Now() > S->Deadline)
+		{
+			TestTrue(TEXT("the meteor launch was announced"), S->Meteors > 0);
+			TestTrue(TEXT("its flight was drawn"), S->MaxFlights > 0);
+			TestTrue(FString::Printf(TEXT("the meteor broke something (fractures %llu -> %llu)"), S->FracturesBefore, S->Fractures), S->Fractures > S->FracturesBefore);
+			AddInfo(FString::Printf(TEXT("meteor: %d launch(es), fractures %llu -> %llu"), S->Meteors, S->FracturesBefore, S->Fractures));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif
