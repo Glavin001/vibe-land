@@ -9,8 +9,9 @@
 //! Each chunk's mesh is in the chunk's frame: its structure's axes, origin at the chunk's `centroid`
 //! (where [`crate::frame::VlChunk::rest_pos`] puts it). A standing chunk's vertex is therefore at
 //! `rest_pos + rest_quat * v` and a chunk riding a body at `body.pos + body.quat * (local_pos + v)`.
-//! Faces are flat-shaded (each triangle has its own three vertices) and wound counter-clockwise
-//! seen from outside in the target space's own handedness.
+//! Faces are flat-shaded (each triangle has its own three vertices) and keep the server's order,
+//! counter-clockwise seen from outside in the server's right-handed frame, in every target space
+//! ([`reverses_winding`]).
 //!
 //! Texture coordinates are box-projected in metres from the chunk's position in its structure
 //! (`centroid + v`), so a wall's texture runs continuously across the chunks that make it up and
@@ -81,7 +82,7 @@ impl ChunkMeshes {
         surfaces: Option<(&[VlChunkSurface], &Catalog)>,
     ) -> Self {
         let mut out = Self::default();
-        let flip = flips_handedness(space);
+        let flip = reverses_winding(space);
         let mut scratch = Vec::new();
         let mut slot = 0usize;
         for structure in &manifest.structures {
@@ -164,12 +165,22 @@ impl ChunkMeshes {
     }
 }
 
-/// Whether `space` mirrors the server's right-handed frame (then winding must be reversed to stay
-/// counter-clockwise from outside). The sign of the map's determinant on the basis vectors.
+/// Whether `space` mirrors the server's right-handed frame (the sign of the map's determinant on
+/// the basis vectors). Unreal's does.
 pub fn flips_handedness(space: Space) -> bool {
     let col = |v: Vec3| Vec3::from_array(space.pos(v));
     let (x, y, z) = (col(Vec3::X), col(Vec3::Y), col(Vec3::Z));
     x.dot(y.cross(z)) < 0.0
+}
+
+/// Whether triangles must be re-ordered for `space`'s renderer to treat outward faces as front
+/// faces. Never, for the spaces there are: Unreal's mirrored axes and its rasterizer's front-face
+/// convention cancel, so the server's order draws outward faces as front faces there. Checked on
+/// screen (VibeCity, 2026-10-17): reversed, every chunk drew inside out.
+pub fn reverses_winding(space: Space) -> bool {
+    match space {
+        Space::Server | Space::Unreal => false,
+    }
 }
 
 /// A chunk's points (resolving a shape-library id), or `None` for a box chunk.
@@ -207,7 +218,7 @@ fn server_triangles(chunk: &ChunkDef, shape_library: &[Vec<f32>], out: &mut Vec<
 
 /// The convex hull of flat xyz `points` (parry's quickhull, as `destruction::variants` uses for the
 /// hull's centre of mass), oriented outward. False when the points span no volume.
-fn convex_hull_triangles(points: &[f32], out: &mut Vec<[Vec3; 3]>) -> bool {
+pub(crate) fn convex_hull_triangles(points: &[f32], out: &mut Vec<[Vec3; 3]>) -> bool {
     use rapier3d::na::Point3;
     let input: Vec<Point3<f32>> = points.chunks_exact(3).map(|p| Point3::new(p[0], p[1], p[2])).collect();
     if input.len() < 4 || input.iter().any(|p| !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite())) {
@@ -317,7 +328,7 @@ mod tests {
         let mut tris = Vec::new();
         let hull = server_triangles(chunk, library, &mut tris);
         let mut m = ChunkMeshes::default();
-        m.push_chunk(chunk, &tris, space, flips_handedness(space), hull);
+        m.push_chunk(chunk, &tris, space, reverses_winding(space), hull);
         let (p, _, i) = m.chunk(0).unwrap();
         (p.iter().map(|v| Vec3::from_array(*v)).collect(), i.to_vec(), hull)
     }
@@ -357,15 +368,15 @@ mod tests {
     }
 
     #[test]
-    fn unreal_box_keeps_outward_winding_in_a_left_handed_frame() {
+    fn unreal_box_keeps_the_server_order_through_the_mirror() {
         assert!(flips_handedness(Space::Unreal));
         assert!(!flips_handedness(Space::Server));
         let c = cuboid([0.5, 1.5, 2.0]);
         let (p, idx, _) = mesh_of(&c, &[], Space::Unreal);
         assert_closed(&p, &idx);
-        // Centimetres, and the mirror's negative determinant cancelled by the reversed winding:
-        // the right-hand rule still gives outward normals, so the volume reads +V·100³.
-        let expected = 8.0 * 0.5 * 1.5 * 2.0 * 1e6;
+        // Centimetres, in the server's order through a mirror: the right-hand rule now reads the
+        // outward faces as inward, so the volume reads −V·100³.
+        let expected = -8.0 * 0.5 * 1.5 * 2.0 * 1e6;
         assert!((signed_volume(&p, &idx) - expected).abs() < 1e-4 * expected.abs());
     }
 
@@ -452,7 +463,7 @@ mod tests {
                 let mut tris = Vec::new();
                 let hull = server_triangles(&c, &[], &mut tris);
                 let mut m = ChunkMeshes::default();
-                m.push_chunk(&c, &tris, space, flips_handedness(space), hull);
+                m.push_chunk(&c, &tris, space, reverses_winding(space), hull);
                 for tri in m.positions.chunks_exact(3).zip(m.tangents.chunks_exact(3)).zip(m.uvs.chunks_exact(3)).zip(m.normals.chunks_exact(3)) {
                     let (((p, tg), uv), n) = tri;
                     let p: Vec<Vec3> = p.iter().map(|v| Vec3::from_array(*v)).collect();

@@ -1,0 +1,185 @@
+"""Build VibeCity's city materials from the web client's texture sheets and the material catalog.
+
+Run by scripts/unreal/import-city-materials.sh (a headless commandlet), which first cuts the web's
+array sheets (client/public/textures/city) into per-layer PNGs in $VIBE_CITY_TEXTURES. Generated,
+not committed: the inputs are (the sheets, shared/assets/materials/catalog.json, this script).
+
+Creates under /Game/VibeCity:
+  Textures/Layers/T_CityAlbedo_NN, T_CitySurface_NN   one per catalog layer, as imported
+  Textures/T_CityAlbedoArray, T_CitySurfaceArray      Texture2DArrays, slice = catalog layer
+  Materials/M_VibeCityChunk                           opaque PBR, samples both arrays
+  Materials/M_VibeCityGlass                           translucent glass
+
+M_VibeCityChunk reads what the client core puts on every chunk vertex:
+  UV0 = texture coordinates in tiles of the face's material (core geometry.rs `tile_uvs`)
+  UV1 = (catalog layer, metalness)
+and decodes the surface sheet the way the web shader does (client/scripts/build-city-textures.py):
+RG = tangent-space normal XY (OpenGL convention; Unreal's is DirectX, so green flips), B = roughness,
+A = ambient occlusion. The albedo sheet's alpha is height, unused here.
+"""
+
+import json
+import os
+
+import unreal
+
+ROOT = "/Game/VibeCity"
+LAYERS = f"{ROOT}/Textures/Layers"
+TEXTURES = f"{ROOT}/Textures"
+MATERIALS = f"{ROOT}/Materials"
+
+src = os.environ["VIBE_CITY_TEXTURES"]
+catalog = json.load(open(os.environ["VIBE_MATERIAL_CATALOG"]))
+layered = [m for m in catalog["materials"] if m.get("layer") is not None]
+for index, m in enumerate(layered):
+    assert m["layer"] == index, f"catalog layer order: {m['id']}"
+
+tools = unreal.AssetToolsHelpers.get_asset_tools()
+assets = unreal.EditorAssetLibrary
+mel = unreal.MaterialEditingLibrary
+
+
+def import_layers(kind: str, srgb: bool) -> list:
+    tasks = []
+    for m in layered:
+        task = unreal.AssetImportTask()
+        task.filename = os.path.join(src, f"{kind}_{m['layer']:02d}.png")
+        task.destination_path = LAYERS
+        task.destination_name = f"T_City{kind.capitalize()}_{m['layer']:02d}"
+        task.replace_existing = True
+        task.automated = True
+        task.save = False
+        tasks.append(task)
+    tools.import_asset_tasks(tasks)
+    textures = []
+    for task, m in zip(tasks, layered):
+        texture = unreal.load_asset(f"{LAYERS}/{task.destination_name}")
+        assert texture, f"import failed: {task.filename}"
+        texture.set_editor_property("srgb", srgb)
+        if not srgb:
+            texture.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_VECTOR_DISPLACEMENTMAP)
+        textures.append(texture)
+    return textures
+
+
+def texture_array(name: str, textures: list, srgb: bool):
+    path = f"{TEXTURES}/{name}"
+    array = unreal.load_asset(path) if assets.does_asset_exist(path) else None
+    if array is None:
+        array = tools.create_asset(name, TEXTURES, unreal.Texture2DArray, unreal.Texture2DArrayFactory())
+    array.set_editor_property("srgb", srgb)
+    if not srgb:
+        array.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_VECTOR_DISPLACEMENTMAP)
+    # Setting SourceTextures through the editor-property path runs PostEditChangeProperty, which
+    # rebuilds the array's source from them (UTexture2DArray::UpdateSourceFromSourceTextures).
+    array.set_editor_property("source_textures", textures)
+    return array
+
+
+def fresh_material(name: str):
+    path = f"{MATERIALS}/{name}"
+    # Recreate rather than clear: DeleteAllMaterialExpressions asserts (!IsRooted) on a material a
+    # commandlet loaded.
+    if assets.does_asset_exist(path):
+        assets.delete_asset(path)
+    return tools.create_asset(name, MATERIALS, unreal.Material, unreal.MaterialFactoryNew())
+
+
+def expr(material, cls, x, y):
+    return mel.create_material_expression(material, cls, x, y)
+
+
+def mask(material, channels: str, x, y):
+    """A ComponentMask passing exactly `channels` (the node's defaults pass R and G)."""
+    e = expr(material, unreal.MaterialExpressionComponentMask, x, y)
+    for c in "rgba":
+        e.set_editor_property(c, c in channels)
+    return e
+
+
+def chunk_material(albedo_array, surface_array):
+    m = fresh_material("M_VibeCityChunk")
+    uv0 = expr(m, unreal.MaterialExpressionTextureCoordinate, -1400, 0)
+    uv1 = expr(m, unreal.MaterialExpressionTextureCoordinate, -1400, 200)
+    uv1.set_editor_property("coordinate_index", 1)
+    layer = mask(m, "r", -1200, 200)
+    mel.connect_material_expressions(uv1, "", layer, "")
+    metal = mask(m, "g", -1200, 320)
+    mel.connect_material_expressions(uv1, "", metal, "")
+    uvw = expr(m, unreal.MaterialExpressionAppendVector, -1000, 100)
+    mel.connect_material_expressions(uv0, "", uvw, "A")
+    mel.connect_material_expressions(layer, "", uvw, "B")
+
+    albedo = expr(m, unreal.MaterialExpressionTextureSample, -800, -100)
+    albedo.set_editor_property("texture", albedo_array)
+    albedo.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_COLOR)
+    mel.connect_material_expressions(uvw, "", albedo, "UVs")
+    mel.connect_material_property(albedo, "RGB", unreal.MaterialProperty.MP_BASE_COLOR)
+
+    surface = expr(m, unreal.MaterialExpressionTextureSample, -800, 200)
+    surface.set_editor_property("texture", surface_array)
+    surface.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
+    mel.connect_material_expressions(uvw, "", surface, "UVs")
+    mel.connect_material_property(surface, "B", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.connect_material_property(surface, "A", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
+    mel.connect_material_expressions(metal, "", m_metal := expr(m, unreal.MaterialExpressionSaturate, -600, 420), "")
+    mel.connect_material_property(m_metal, "", unreal.MaterialProperty.MP_METALLIC)
+
+    # Normal: xy = (r, g) * 2 - 1 with green flipped (OpenGL -> DirectX), z = sqrt(1 - x^2 - y^2).
+    rg = mask(m, "rg", -600, 200)
+    mel.connect_material_expressions(surface, "RGB", rg, "")
+    scale = expr(m, unreal.MaterialExpressionMultiply, -450, 200)
+    two_neg = expr(m, unreal.MaterialExpressionConstant2Vector, -600, 300)
+    two_neg.set_editor_property("r", 2.0)
+    two_neg.set_editor_property("g", -2.0)
+    mel.connect_material_expressions(rg, "", scale, "A")
+    mel.connect_material_expressions(two_neg, "", scale, "B")
+    bias = expr(m, unreal.MaterialExpressionAdd, -300, 200)
+    offset = expr(m, unreal.MaterialExpressionConstant2Vector, -450, 300)
+    offset.set_editor_property("r", -1.0)
+    offset.set_editor_property("g", 1.0)
+    mel.connect_material_expressions(scale, "", bias, "A")
+    mel.connect_material_expressions(offset, "", bias, "B")
+    derive_z = expr(m, unreal.MaterialExpressionDeriveNormalZ, -150, 200)
+    mel.connect_material_expressions(bias, "", derive_z, "")
+    mel.connect_material_property(derive_z, "", unreal.MaterialProperty.MP_NORMAL)
+
+    m.set_editor_property("two_sided", False)
+    mel.recompile_material(m)
+    return m
+
+
+def glass_material():
+    m = fresh_material("M_VibeCityGlass")
+    m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
+    m.set_editor_property("translucency_lighting_mode", unreal.TranslucencyLightingMode.TLM_SURFACE)
+    glass = next(e for e in catalog["materials"] if e["id"] == "glass")
+    hex_ = glass["baseColor"].lstrip("#")
+    rgb = [int(hex_[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    color = expr(m, unreal.MaterialExpressionVectorParameter, -600, 0)
+    color.set_editor_property("parameter_name", "Color")
+    color.set_editor_property("default_value", unreal.LinearColor(*[c ** 2.2 for c in rgb], 1.0))
+    mel.connect_material_property(color, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    rough = expr(m, unreal.MaterialExpressionConstant, -600, 200)
+    rough.set_editor_property("r", glass["roughness"])
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    # The scene packs author glazing at opacity 0.55 (minas-tirith.json, house-1story.json).
+    opacity = expr(m, unreal.MaterialExpressionScalarParameter, -600, 300)
+    opacity.set_editor_property("parameter_name", "Opacity")
+    opacity.set_editor_property("default_value", 0.55)
+    mel.connect_material_property(opacity, "", unreal.MaterialProperty.MP_OPACITY)
+    spec = expr(m, unreal.MaterialExpressionConstant, -600, 400)
+    spec.set_editor_property("r", 1.0)
+    mel.connect_material_property(spec, "", unreal.MaterialProperty.MP_SPECULAR)
+    mel.recompile_material(m)
+    return m
+
+
+albedo_layers = import_layers("albedo", srgb=True)
+surface_layers = import_layers("surface", srgb=False)
+albedo_array = texture_array("T_CityAlbedoArray", albedo_layers, srgb=True)
+surface_array = texture_array("T_CitySurfaceArray", surface_layers, srgb=False)
+chunk = chunk_material(albedo_array, surface_array)
+glass = glass_material()
+saved = assets.save_directory(ROOT, only_if_is_dirty=False, recursive=True)
+unreal.log(f"VIBE_IMPORT_OK layers={len(layered)} saved={saved} chunk={chunk.get_path_name()} glass={glass.get_path_name()}")
