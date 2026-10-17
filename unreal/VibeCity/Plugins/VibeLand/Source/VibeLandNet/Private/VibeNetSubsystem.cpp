@@ -118,6 +118,11 @@ const VlFrameView* UVibeNetSubsystem::Poll()
 
 void UVibeNetSubsystem::DropForReconnect(double Now)
 {
+	LastDropReason = LastError();
+	if (LastDropReason.IsEmpty())
+	{
+		LastDropReason = TEXT("the connection closed");
+	}
 	const bool bWanted = bWantConnected;
 	Disconnect();
 	bWantConnected = bWanted;
@@ -285,6 +290,16 @@ TArrayView<const VlChunk> UVibeNetSubsystem::Chunks() const
 		return {};
 	}
 	return TArrayView<const VlChunk>(Data, static_cast<int32>(Count));
+}
+
+VlNetStats UVibeNetSubsystem::NetStats() const
+{
+	VlNetStats Stats = {};
+	if (Client)
+	{
+		vl_client_net_stats(Client, &Stats);
+	}
+	return Stats;
 }
 
 FString UVibeNetSubsystem::LastError() const

@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 18
+#define VL_ABI_VERSION 19
 
 #define VL_OK 0
 
@@ -893,6 +893,27 @@ typedef struct VlMaterial {
 } VlMaterial;
 
 /**
+ * The link's numbers for a renderer's overlay (the web's performance pill): QUIC's smoothed round
+ * trip, and what has arrived so far.
+ */
+typedef struct VlNetStats {
+  /**
+   * Smoothed round-trip time, microseconds (0 before the first sample).
+   */
+  uint64_t rtt_us;
+  /**
+   * Bytes received so far (datagrams and the reliable stream).
+   */
+  uint64_t bytes_in;
+  uint64_t datagrams_in;
+  uint64_t reliable_in;
+  /**
+   * `VL_TRANSPORT_*`.
+   */
+  uint32_t transport_state;
+} VlNetStats;
+
+/**
  * One preset (weatherPresets.ts `WeatherPresetConfig`), in SI units and linear-free sRGB colours.
  */
 typedef struct VlWeather {
@@ -1184,6 +1205,14 @@ int32_t vl_client_chunk_surfaces(struct VlClient *client,
  * `out_materials` and `out_count` must be writable.
  */
 int32_t vl_catalog(const struct VlMaterial **out_materials, size_t *out_count);
+
+/**
+ * The link's numbers now (zero when not connected).
+ *
+ * # Safety
+ * `client` must be live; `out` writable.
+ */
+int32_t vl_client_net_stats(const struct VlClient *client, struct VlNetStats *out);
 
 /**
  * What a shot along (origin, dir) in the renderer's space would hit among the other players drawn

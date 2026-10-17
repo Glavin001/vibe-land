@@ -27,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 18;
+pub const VL_ABI_VERSION: u32 = 19;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -730,6 +730,41 @@ pub unsafe extern "C" fn vl_catalog(out_materials: *mut *const VlMaterial, out_c
         }
         Err(_) => VL_ERR_PANIC,
     }
+}
+
+/// The link's numbers for a renderer's overlay (the web's performance pill): QUIC's smoothed round
+/// trip, and what has arrived so far.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VlNetStats {
+    /// Smoothed round-trip time, microseconds (0 before the first sample).
+    pub rtt_us: u64,
+    /// Bytes received so far (datagrams and the reliable stream).
+    pub bytes_in: u64,
+    pub datagrams_in: u64,
+    pub reliable_in: u64,
+    /// `VL_TRANSPORT_*`.
+    pub transport_state: u32,
+}
+
+/// The link's numbers now (zero when not connected).
+///
+/// # Safety
+/// `client` must be live; `out` writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_net_stats(client: *const VlClient, out: *mut VlNetStats) -> i32 {
+    let (Some(c), false) = (client.as_ref(), out.is_null()) else { return VL_ERR_ARG };
+    let mut s = VlNetStats { transport_state: c.transport_state, ..Default::default() };
+    if let Some(t) = c.transport.as_ref() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let st = t.stats();
+        s.rtt_us = st.rtt_us.load(Relaxed);
+        s.bytes_in = st.datagram_bytes_in.load(Relaxed) + st.reliable_bytes_in.load(Relaxed);
+        s.datagrams_in = st.datagrams_in.load(Relaxed);
+        s.reliable_in = st.reliable_in.load(Relaxed);
+    }
+    *out = s;
+    VL_OK
 }
 
 /// What a shot along (origin, dir) in the renderer's space would hit among the other players drawn

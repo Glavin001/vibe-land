@@ -88,6 +88,12 @@ public:
 	TArrayView<const VlGrassExclusion> GrassExclusions() const;
 
 	FString LastError() const;
+	/** The link's numbers now (round trip, bytes in, transport state); zeros when not connected. */
+	VlNetStats NetStats() const;
+	/** Why the last session ended (empty if none has), and when the next rejoin is tried. */
+	const FString& DropReason() const { return LastDropReason; }
+	double ReconnectAtSeconds() const { return ReconnectAt; }
+	bool WantsConnection() const { return bWantConnected; }
 	const FString& CurrentMatchId() const { return MatchId; }
 	const FString& CurrentApiBaseUrl() const { return ApiBaseUrl; }
 
@@ -98,6 +104,7 @@ private:
 	void DropForReconnect(double Now);
 
 	VlClient* Client = nullptr;
+	FString LastDropReason;
 	/** Connected by the game (not by vibe.disconnect): a dropped session is rejoined. */
 	bool bWantConnected = false;
 	double ReconnectAt = 0.0;

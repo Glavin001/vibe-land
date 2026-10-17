@@ -12,7 +12,9 @@
  * weapon (ui/WeaponHud); damage from where it came (ui/useDamageFeedback: front/back/left/right
  * lobes and a vignette, held while dead); the scope's darkening and reticle while aiming; the melee
  * cooldown (ui/MeleeHUD); the low-energy warning; spawn protection's countdown
- * (ui/SpawnProtectionHUD); death; and a note when the city resets. Values come from the core.
+ * (ui/SpawnProtectionHUD); death; a note when the city resets; the performance pill (fps, server
+ * tick rate, ping, download) and the connection banner (connecting, or why it dropped and when it
+ * rejoins). Values come from the core.
  * While the aerial camera flies (or a drop is on its way) it draws no crosshair or weapon and shows
  * the web's flight panel instead (CityFlightControls.tsx).
  */
@@ -53,6 +55,13 @@ private:
 	uint64 Bootstraps = 0;
 	double ResetNoteUntil = 0.0;
 	uint32 LastZone = 0;
+	/** The performance pill's running numbers (CityStatsOverlay's fps / server Hz / ping / Mbps). */
+	double PillSince = 0.0;
+	int32 PillFrames = 0;
+	uint32 PillTick0 = 0;
+	uint64 PillBytes0 = 0;
+	FString PillText;
+	void DrawStatus(float W, float H, float Scale, double Now, float Dt);
 	double LastDrawTime = 0.0;
 	FDelegateHandle FrameHandle;
 	bool bDrewCrosshair = false;

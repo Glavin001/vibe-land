@@ -131,6 +131,65 @@ void AVibeCityHUD::Bar(float X, float Y, float W, float H, float Fraction, const
 	DrawText(Label, FLinearColor::White, X + 8.0f, Y + (H - TextH) * 0.5f, Font);
 }
 
+void AVibeCityHUD::DrawStatus(float W, float H, float Scale, double Now, float Dt)
+{
+	const UGameInstance* GameInstance = GetGameInstance();
+	const UVibeNetSubsystem* Net = GameInstance ? GameInstance->GetSubsystem<UVibeNetSubsystem>() : nullptr;
+	if (!Net)
+	{
+		return;
+	}
+	UFont* Small = GEngine->GetSmallFont();
+	// The pill, top left: refreshed once a second.
+	const VlNetStats Link = Net->NetStats();
+	const VlFrameView& F = Net->LastFrame();
+	++PillFrames;
+	if (Now - PillSince >= 1.0)
+	{
+		const double Span = PillSince > 0.0 ? Now - PillSince : 0.0;
+		if (Span > 0.0)
+		{
+			const double Hz = (F.stats.newest_server_tick - PillTick0) / Span;
+			const double Mbps = (Link.bytes_in - PillBytes0) * 8.0 / Span / 1e6;
+			PillText = FString::Printf(TEXT("%d fps · server %.0f Hz · ping %.1f ms · %.2f Mbps"),
+				FMath::RoundToInt(PillFrames / Span), Hz, Link.rtt_us / 1000.0, Mbps);
+		}
+		PillSince = Now;
+		PillFrames = 0;
+		PillTick0 = F.stats.newest_server_tick;
+		PillBytes0 = Link.bytes_in;
+	}
+	if (!PillText.IsEmpty() && Net->IsConnected())
+	{
+		float TW = 0.0f, TH = 0.0f;
+		GetTextSize(PillText, TW, TH, Small);
+		const float X = 16.0f * Scale, Y = 14.0f * Scale;
+		DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.45f), X - 6.0f, Y - 3.0f, TW + 12.0f, TH + 6.0f);
+		DrawText(PillText, FLinearColor(0.85f, 0.95f, 1.0f), X, Y, Small);
+	}
+	// The banner (App.tsx's status line): joining, or why the session dropped and when it rejoins.
+	FString Banner;
+	if (!Net->IsConnected() && Net->WantsConnection())
+	{
+		const double In = FMath::Max(0.0, Net->ReconnectAtSeconds() - FPlatformTime::Seconds());
+		Banner = Net->DropReason().IsEmpty() ? FString::Printf(TEXT("Connecting… (retry in %.0f s)"), In)
+			: FString::Printf(TEXT("Connection lost: %s. Rejoining in %.0f s"), *Net->DropReason(), In);
+	}
+	else if (Net->IsConnected() && F.stats.state != 3)
+	{
+		static const TCHAR* Phases[] = { TEXT("Starting"), TEXT("Fetching the session"), TEXT("Loading the city"), TEXT("Connecting"), TEXT("Connected"), TEXT("Closed"), TEXT("Failed") };
+		const uint32 P = FMath::Min<uint32>(F.transport_state, UE_ARRAY_COUNT(Phases) - 1);
+		Banner = FString::Printf(TEXT("%s…"), Phases[P]);
+	}
+	if (!Banner.IsEmpty())
+	{
+		float TW = 0.0f, TH = 0.0f;
+		GetTextSize(Banner, TW, TH, GEngine->GetMediumFont());
+		DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.55f), (W - TW) * 0.5f - 12.0f, H * 0.08f - 6.0f, TW + 24.0f, TH + 12.0f);
+		DrawText(Banner, FLinearColor(1.0f, 0.9f, 0.6f), (W - TW) * 0.5f, H * 0.08f, GEngine->GetMediumFont());
+	}
+}
+
 void AVibeCityHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -141,6 +200,7 @@ void AVibeCityHUD::DrawHUD()
 	const double Now = GetWorld()->GetRealTimeSeconds();
 	const float Dt = LastDrawTime > 0.0 ? static_cast<float>(Now - LastDrawTime) : 0.0f;
 	LastDrawTime = Now;
+	DrawStatus(Canvas->ClipX, Canvas->ClipY, Canvas->ClipY / 1080.0f, Now, Dt);
 
 	const float W = Canvas->ClipX;
 	const float H = Canvas->ClipY;
