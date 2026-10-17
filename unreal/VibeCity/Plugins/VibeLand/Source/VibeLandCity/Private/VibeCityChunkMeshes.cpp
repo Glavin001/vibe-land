@@ -3,6 +3,10 @@
 
 #include "VibeCityDirector.h"
 
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "VibeCityGrass.h"
+
 #include "Engine/World.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
@@ -105,6 +109,14 @@ void AVibeCityDirector::BuildCity(UVibeNetSubsystem* NetSubsystem)
 		RebuildCell(Cell);
 	}
 	bCityBuilt = true;
+	// The web's meadow over the ground (?grass=off there; -VibeNoGrass here).
+	if (!FParse::Param(FCommandLine::Get(), TEXT("VibeNoGrass")))
+	{
+		if (AVibeCityGrass* Grass = GetWorld()->SpawnActor<AVibeCityGrass>())
+		{
+			Grass->SetExclusions(NetSubsystem->GrassExclusions());
+		}
+	}
 	UE_LOG(LogVibeLand, Display, TEXT("city built: %d chunks (%llu vertices) in %d cells, %.1f ms; bounds %s"),
 		Chunks.Num(), static_cast<unsigned long long>(Meshes.vertex_count), CellChunks.Num(),
 		(FPlatformTime::Seconds() - Started) * 1000.0, *Bounds.ToString());

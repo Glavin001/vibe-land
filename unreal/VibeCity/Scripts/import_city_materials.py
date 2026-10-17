@@ -11,6 +11,7 @@ Creates under /Game/VibeCity:
   Materials/M_VibeCityChunkFlat                       the same without the normal map
   Materials/M_VibeCityGlass                           translucent glass
   Materials/M_VibeCityDust                            dust puffs
+  Materials/M_VibeCityGrass                           meadow blades
   Materials/M_VibeCityChunkHD                         2K Poly Haven sources (with --hd)
 
 M_VibeCityChunk reads what the client core puts on every chunk vertex:
@@ -240,6 +241,52 @@ def dust_material():
     return m
 
 
+def grass_material():
+    """Meadow blades (client-core grass.rs): coloured by vertex colour (RGB, linear),
+    with a gentle wind sway that bends tips (vertex colour A = height fraction) and not roots."""
+    m = fresh_material("M_VibeCityGrass")
+    # One-sided: the renderer emits both faces of a blade with the same up-leaning normal, so a
+    # blade seen from behind is lit like its front (a two-sided material would flip it downward).
+    m.set_editor_property("two_sided", False)
+    vc = expr(m, unreal.MaterialExpressionVertexColor, -900, 0)
+    # VertexColor's colour output is the unnamed first pin ("RGB" names nothing and leaves base
+    # colour unconnected).
+    mel.connect_material_property(vc, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    rough = expr(m, unreal.MaterialExpressionConstant, -900, 200)
+    rough.set_editor_property("r", 0.85)
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    # Sway: tip offset along +X and +Y = sin(time * 1.6 + world phase) * 8 cm * tip^2.
+    time = expr(m, unreal.MaterialExpressionTime, -1300, 400)
+    world = expr(m, unreal.MaterialExpressionWorldPosition, -1300, 500)
+    wx = mask(m, "r", -1150, 500)
+    mel.connect_material_expressions(world, "", wx, "")
+    phase = expr(m, unreal.MaterialExpressionMultiply, -1000, 500)
+    phase.set_editor_property("const_b", 0.004)
+    mel.connect_material_expressions(wx, "", phase, "A")
+    speed = expr(m, unreal.MaterialExpressionMultiply, -1150, 400)
+    speed.set_editor_property("const_b", 1.6)
+    mel.connect_material_expressions(time, "", speed, "A")
+    arg = expr(m, unreal.MaterialExpressionAdd, -850, 450)
+    mel.connect_material_expressions(speed, "", arg, "A")
+    mel.connect_material_expressions(phase, "", arg, "B")
+    wave = expr(m, unreal.MaterialExpressionSine, -720, 450)
+    mel.connect_material_expressions(arg, "", wave, "")
+    tip2 = expr(m, unreal.MaterialExpressionMultiply, -720, 650)
+    mel.connect_material_expressions(vc, "A", tip2, "A")
+    mel.connect_material_expressions(vc, "A", tip2, "B")
+    amp = expr(m, unreal.MaterialExpressionMultiply, -580, 550)
+    mel.connect_material_expressions(wave, "", amp, "A")
+    mel.connect_material_expressions(tip2, "", amp, "B")
+    scale = expr(m, unreal.MaterialExpressionConstant3Vector, -580, 700)
+    scale.set_editor_property("constant", unreal.LinearColor(8.0, 5.0, 0.0, 0.0))
+    offset = expr(m, unreal.MaterialExpressionMultiply, -420, 600)
+    mel.connect_material_expressions(amp, "", offset, "A")
+    mel.connect_material_expressions(scale, "", offset, "B")
+    mel.connect_material_property(offset, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
+    mel.recompile_material(m)
+    return m
+
+
 def glass_material():
     m = fresh_material("M_VibeCityGlass")
     m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
@@ -275,6 +322,7 @@ chunk = chunk_material(albedo_array, surface_array)
 chunk_material(albedo_array, surface_array, "M_VibeCityChunkFlat", normal_map=False)
 glass = glass_material()
 dust_material()
+grass_material()
 hd_dir = os.environ.get("VIBE_CITY_HD_TEXTURES", "")
 if hd_dir:
     hd_albedo = import_layers("albedo", srgb=True, directory=hd_dir, ext="jpg", suffix="HD")
