@@ -1,5 +1,6 @@
 #include "VibeCityDirector.h"
 
+#include "Camera/PlayerCameraManager.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/Engine.h"
@@ -71,6 +72,16 @@ void AVibeCityDirector::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	UVibeNetSubsystem* NetSubsystem = Net();
+	// Sounds are heard from the camera (GameAudioLayer.tsx listens at the camera): first person,
+	// the chase camera, the aerial camera or a parked capture camera alike.
+	if (NetSubsystem)
+	{
+		const APlayerController* Controller = GetWorld()->GetFirstPlayerController();
+		if (Controller && Controller->PlayerCameraManager)
+		{
+			NetSubsystem->SetListener(Controller->PlayerCameraManager->GetCameraLocation());
+		}
+	}
 	const VlFrameView* Frame = NetSubsystem ? NetSubsystem->Poll() : nullptr;
 	if (!Frame)
 	{

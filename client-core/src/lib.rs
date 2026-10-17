@@ -100,6 +100,8 @@ pub struct ClientCore {
     audio_contacts: Vec<crate::frame::VlAudioContact>,
     audio: audio::AudioDirector,
     flybys: audio::FlybyTracker,
+    /// Debris energy per region, for the continuous debris beds (destructionActivity.ts).
+    activity: audio::Activity,
     loops: audio::Loops,
     /// Free dynamic bodies' last drawn position and time (server space, ms), for their velocity.
     dynamic_previous: std::collections::HashMap<u32, (Vec3, f64)>,
@@ -161,6 +163,7 @@ impl ClientCore {
             audio_contacts: Vec::new(),
             audio: audio::AudioDirector::default(),
             flybys: audio::FlybyTracker::default(),
+            activity: audio::Activity::default(),
             loops: audio::Loops::default(),
             dynamic_previous: Default::default(),
             meteor_bodies: Default::default(),
@@ -616,7 +619,7 @@ impl ClientCore {
             for source in &sources {
                 let acoustic = table.acoustic(source.material);
                 if let Some(sound) = effects::sound_from_source(source, acoustic, now_ms) {
-                    self.audio.enqueue(sound);
+                    emit_sound(&mut self.audio, &mut self.activity, sound, listener, now_ms);
                 }
                 // Dust in the material's colour (authored, else concrete).
                 let mut dust = source.dust(table.color(source.material));
@@ -636,7 +639,7 @@ impl ClientCore {
                 _ => None,
             };
             if let Some(s) = shot {
-                self.audio.enqueue(s);
+                emit_sound(&mut self.audio, &mut self.activity, s, listener, now_ms);
             }
         }
         // Free dynamic bodies (cannonballs, meteors): velocity from their drawn motion, fly-bys and
@@ -669,7 +672,7 @@ impl ClientCore {
         self.meteor_bodies.retain(|id| seen.contains(id) || self.meteors.iter().any(|(m, _)| m.body_id == *id) || self.frame.meteors.iter().any(|m| m.body_id == *id));
         self.flybys.prune(now_ms);
         for e in near_misses {
-            self.audio.enqueue(e);
+            emit_sound(&mut self.audio, &mut self.activity, e, listener, now_ms);
         }
         // The server's audible contacts (GameAudioLayer.tsx): impacts as one-shots, scrapes as loops.
         for c in &self.frame.audio_contacts {
@@ -690,11 +693,30 @@ impl ClientCore {
                 let id = (lo.wrapping_mul(0x9E37_79B1) ^ hi) & 0x7FFF_FFFF;
                 self.loops.scrape(id, contact.position, audio::AcousticMaterial::Concrete, contact.tangent_speed, contact.intensity, listener, now_ms, audio::DEFAULT_MIX);
             } else if let Some(s) = audio::sound_from_contact(&contact, audio::AcousticMaterial::Concrete, false, now_ms) {
-                self.audio.enqueue(s);
+                emit_sound(&mut self.audio, &mut self.activity, s, listener, now_ms);
+            }
+        }
+        // Car engines (GameAudioLayer.tsx: the first 64 cars within 80 m).
+        let mut engines = 0;
+        for car in &self.frame.cars {
+            let position = space.pos_to_server(car.pos);
+            let speed = Vec3::from_array(car.vel).length() / space.metres();
+            if position.distance(listener) > 80.0 || engines >= 64 {
+                continue;
+            }
+            engines += 1;
+            if let Some(intensity) = audio::engine_intensity(speed) {
+                self.loops.engine(0x2000_0000 | (car.handle & 0x1FFF_FFFF), position, speed, intensity, listener, now_ms, audio::DEFAULT_MIX);
             }
         }
         let mut loops = Vec::new();
         self.loops.current(now_ms, &mut loops);
+        // Debris beds (engine.ts update): the strongest four regions of breaking debris.
+        for bed in self.activity.sample(now_ms, listener) {
+            if let Some(l) = audio::bed_loop(&bed, listener, audio::DEFAULT_MIX) {
+                loops.push(l);
+            }
+        }
         for mut l in loops {
             l.position = space.pos(Vec3::from_array(l.position));
             self.frame.loops.push(l);
@@ -869,4 +891,12 @@ impl ClientCore {
     pub fn chunk_world_server(&self, structure: u32, node: u32) -> Option<(glam::Vec3, glam::Quat)> {
         self.city.as_ref()?.chunk_world_server(structure, node)
     }
+}
+
+/// engine.ts `emit`: every sound goes to the director, and its energy (at its arrival time) to the
+/// debris beds.
+fn emit_sound(director: &mut audio::AudioDirector, activity: &mut audio::Activity, e: audio::SoundEvent, listener: Vec3, now_ms: f64) {
+    let arrival = audio::SoundEvent { at_ms: e.at_ms + f64::from(audio::propagation_delay_ms(e.position.distance(listener))), ..e.clone() };
+    activity.add(&arrival, listener, now_ms);
+    director.enqueue(e);
 }

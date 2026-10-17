@@ -129,6 +129,14 @@ void UVibeNetSubsystem::SetInput(const VlInput& Input)
 	}
 }
 
+void UVibeNetSubsystem::SetListener(const FVector& Position)
+{
+	if (Client)
+	{
+		vl_client_set_listener(Client, Position.X, Position.Y, Position.Z);
+	}
+}
+
 void UVibeNetSubsystem::EnterVehicle(uint32 Handle)
 {
 	if (Client)

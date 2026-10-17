@@ -41,6 +41,8 @@ public:
 	/** What the local player is doing (Unreal space: degrees, axes in [-1, 1]); held until changed and
 	 * sent as 60 Hz input frames by the next polls. */
 	void SetInput(const VlInput& Input);
+	/** Where sounds are heard from (Unreal space): the camera, as the web hears from its camera. */
+	void SetListener(const FVector& Position);
 
 	/** Fire a weapon (VL_WEAPON_*) along the view last given to SetInput. Returns the shot id, or 0
 	 * when nothing was fired (not playing yet, or inside the fire interval). */

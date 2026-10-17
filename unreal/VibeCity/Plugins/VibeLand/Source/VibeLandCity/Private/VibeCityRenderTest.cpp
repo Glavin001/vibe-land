@@ -4,8 +4,8 @@
 //    meshes' vertices less the removed chunks', before and after a fracture;
 //  * chunks wear the generated catalog material (not the fallback);
 //  * the meadow has patches drawn around the camera;
-//  * a meteor's fractures reach the frame as sounds and dust, and dust puffs appear; the loops it
-//    raises (air, scrapes) are counted.
+//  * a meteor's fractures, watched from 35 m by the camera (the listener), reach the frame as
+//    sounds, loops (air, scrapes, debris beds) and dust, and dust puffs appear.
 //
 // Run in the game on a citypp match (scripts/unreal/play-tests.sh --only VibeCity.Render.CityAndEffects).
 
@@ -163,7 +163,10 @@ bool FVibeCityRenderCityAndEffects::RunTest(const FString& Parameters)
 			}
 		}
 		// Unreal (cm, x fwd, y right, z up) to server (m): x = −Y/100, y = Z/100, z = X/100.
-		const FString Body = FString::Printf(TEXT("{\"targets\":[[%f,%f,%f]]}"), -Top->rest_pos[1] / 100.0, Top->rest_pos[2] / 100.0, Top->rest_pos[0] / 100.0);
+		const FVector3f Target(-Top->rest_pos[1] / 100.0f, Top->rest_pos[2] / 100.0f, Top->rest_pos[0] / 100.0f);
+		const FString Body = FString::Printf(TEXT("{\"targets\":[[%f,%f,%f]]}"), Target.X, Target.Y, Target.Z);
+		// Watch (and listen) from 35 m off: sounds are heard from the camera, as on the web.
+		VibeCityCapture::Park(GameWorld(), Target + FVector3f(25.0f, 8.0f, 25.0f), Target, 0.0f);
 		Post(N->CurrentApiBaseUrl() / TEXT("city-meteor") / N->CurrentMatchId(), Body);
 		State->SoundsAtMeteor = Director->SoundsSeen();
 		State->DustAtMeteor = Director->DustSeen();
@@ -201,7 +204,8 @@ bool FVibeCityRenderCityAndEffects::RunTest(const FString& Parameters)
 		TestEqual(TEXT("every remaining chunk's vertices are drawn after the fracture"),
 			Director->DrawnCellVertices() + Director->DrawnBodyVertices(), Director->ExpectedVertices());
 		TestTrue(TEXT("debris drawn on bodies"), Director->DrawnBodyVertices() > 0);
-		AddInfo(FString::Printf(TEXT("loops (scrapes, air) over the meteor: %lld loop-frames"), Director->LoopsSeen() - State->LoopsAtMeteor));
+		AddInfo(FString::Printf(TEXT("loops (air, scrapes, debris beds) over the meteor: %lld loop-frames"), Director->LoopsSeen() - State->LoopsAtMeteor));
+		TestTrue(TEXT("loops (air, scrapes, debris beds) heard near the impact"), Director->LoopsSeen() > State->LoopsAtMeteor);
 		AddInfo(FString::Printf(TEXT("after the meteor: %llu fractures, %lld sounds, %lld dust (peak %d live), %lld body vertices"),
 			Fractures, Director->SoundsSeen() - State->SoundsAtMeteor, Director->DustSeen() - State->DustAtMeteor, State->PeakDust, Director->DrawnBodyVertices()));
 		return true;

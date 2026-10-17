@@ -945,6 +945,9 @@ pub unsafe extern "C" fn vl_grass_patch(
 /// `VlSound::flags`: a sound the player must hear (a near threat).
 pub const VL_SOUND_PROTECTED: u32 = 1;
 const _: () = assert!(VL_SOUND_PROTECTED == vibe_client_core::audio::VL_SOUND_PROTECTED);
+/// `VlLoop::flags`: a debris bed (the web's activity voices), beside the continuous loops.
+pub const VL_LOOP_BED: u32 = 1;
+const _: () = assert!(VL_LOOP_BED == vibe_client_core::audio::VL_LOOP_BED);
 
 /// A catalog entry's stable id (e.g. "brick"), NUL-terminated; null past the end. Static.
 #[no_mangle]

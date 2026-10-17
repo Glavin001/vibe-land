@@ -197,6 +197,11 @@
 #define VL_SOUND_PROTECTED 1
 
 /**
+ * `VlLoop::flags`: a debris bed (the web's activity voices), beside the continuous loops.
+ */
+#define VL_LOOP_BED 1
+
+/**
  * Where the session is, as the core sees it.
  */
 enum VlCoreState

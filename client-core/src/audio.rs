@@ -449,6 +449,12 @@ impl Loops {
         self.feed(id, &format!("{}-scrape", material.name()), false, position, speed, intensity, rate, listener, now_ms, mix);
     }
 
+    /// A car's engine: the `rumble` clip, rate with speed as every continuous voice.
+    pub fn engine(&mut self, id: u32, position: Vec3, speed: f32, intensity: f32, listener: Vec3, now_ms: f64, mix: Mix) {
+        let rate = (0.62 + speed * 0.045).clamp(0.55, 1.65);
+        self.feed(id, "rumble", false, position, speed, intensity, rate, listener, now_ms, mix);
+    }
+
     /// Air rushing past a fast body (meteors over 8 m/s, other bodies over 20 m/s): the `air` clip,
     /// Doppler-shifted by the radial speed, 343 / (343 + v_r).
     pub fn air(&mut self, id: u32, position: Vec3, velocity: Vec3, intensity: f32, listener: Vec3, now_ms: f64, mix: Mix) {
@@ -489,6 +495,187 @@ impl Loops {
     pub fn clear(&mut self) {
         self.live.clear();
     }
+}
+
+/// destructionActivity.ts: the energy of breaking debris, pooled per 10 m region and material,
+/// decaying over about a second, sampled as at most four continuous debris beds.
+const ACTIVITY_SLOTS: usize = 64;
+const ACTIVITY_BINS: usize = 32;
+const ACTIVITY_BIN_MS: f64 = 32.0;
+const ACTIVITY_DECAY_MS: f64 = 1050.0;
+
+#[derive(Clone)]
+struct Region {
+    key: String,
+    position: Vec3,
+    material: AcousticMaterial,
+    energy: f64,
+    time: f64,
+    last_event: f64,
+    strength: f64,
+    pending: [f32; ACTIVITY_BINS],
+    due: [f64; ACTIVITY_BINS],
+}
+
+/// One debris bed this poll (`ActivityEmitter`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bed {
+    pub key: String,
+    pub position: Vec3,
+    pub material: AcousticMaterial,
+    pub intensity: f32,
+}
+
+#[derive(Default)]
+pub struct Activity {
+    regions: Vec<Option<Region>>,
+    recent: HashMap<u64, f64>,
+    history: Vec<Option<(u64, f64)>>,
+    history_index: usize,
+    selected: std::collections::HashSet<String>,
+}
+
+fn fnv(key: &str) -> u32 {
+    // destructionActivity.ts `hash` (over UTF-16 code units; the keys are ASCII).
+    let mut n: u32 = 2166136261;
+    for b in key.bytes() {
+        n = (n ^ u32::from(b)).wrapping_mul(16777619);
+    }
+    n
+}
+
+impl Activity {
+    /// `add`: an impact, fracture or collapse at its arrival time.
+    pub fn add(&mut self, e: &SoundEvent, listener: Vec3, now_ms: f64) {
+        if self.regions.is_empty() {
+            self.regions = vec![None; ACTIVITY_SLOTS];
+            self.history = vec![None; 2048];
+        }
+        if !matches!(e.kind, SoundKind::Impact | SoundKind::Fracture | SoundKind::Collapse) {
+            return;
+        }
+        if !(e.at_ms.is_finite() && e.size.is_finite() && e.intensity.is_finite() && e.position.is_finite()) {
+            return;
+        }
+        let previous = self.recent.get(&e.id).copied();
+        if e.at_ms < now_ms - 300.0 || e.at_ms > now_ms + 750.0 || e.position.distance(listener) > 120.0 || e.intensity < 0.2 || previous.is_some_and(|p| now_ms - p < 3000.0) {
+            return;
+        }
+        if let Some((id, time)) = self.history[self.history_index] {
+            if self.recent.get(&id) == Some(&time) {
+                self.recent.remove(&id);
+            }
+        }
+        self.recent.insert(e.id, e.at_ms);
+        self.history[self.history_index] = Some((e.id, e.at_ms));
+        self.history_index = (self.history_index + 1) % 2048;
+        let kind_weight = match e.kind {
+            SoundKind::Collapse => 1.7,
+            SoundKind::Fracture => 1.25,
+            _ => 1.0,
+        };
+        let contribution = f64::from(clamp01(e.intensity)).powi(2) * (0.2 + f64::from(e.size.max(0.0)).sqrt() * 0.7).min(2.5) * kind_weight;
+        let cell = |v: f32| (v / 10.0).floor() as i64;
+        let key = format!("{}:{}:{}:{}", e.material.name(), cell(e.position.x), cell(e.position.y), cell(e.position.z));
+        let h = fnv(&key) as usize;
+        let a = h % ACTIVITY_SLOTS;
+        let b = (a + 1 + ((h >> 8) % (ACTIVITY_SLOTS - 1))) % ACTIVITY_SLOTS;
+        let strength = contribution * f64::from(source_attenuation(e.position.distance(listener), 4.0));
+        let at = |i: usize| self.regions[i].as_ref().is_some_and(|r| r.key == key);
+        let index = if at(a) {
+            a
+        } else if at(b) {
+            b
+        } else {
+            let rank = |r: &Option<Region>| r.as_ref().map_or(0.0, |r| r.strength * (-(now_ms - r.last_event).max(0.0) / ACTIVITY_DECAY_MS).exp());
+            let index = if rank(&self.regions[a]) <= rank(&self.regions[b]) { a } else { b };
+            if rank(&self.regions[index]) > strength {
+                return;
+            }
+            self.regions[index] = Some(Region {
+                key: key.clone(),
+                position: e.position,
+                material: e.material,
+                energy: 0.0,
+                time: now_ms,
+                last_event: e.at_ms,
+                strength,
+                pending: [0.0; ACTIVITY_BINS],
+                due: [0.0; ACTIVITY_BINS],
+            });
+            index
+        };
+        let region = self.regions[index].as_mut().expect("placed");
+        // A gentle weighted centroid, never pulled to another cell.
+        let blend = (contribution / (region.energy + contribution + 1.0)).min(0.25) as f32;
+        region.position += (e.position - region.position) * blend;
+        region.strength = (region.strength * (-(e.at_ms - region.last_event).max(0.0) / ACTIVITY_DECAY_MS).exp()).max(strength);
+        region.last_event = region.last_event.max(e.at_ms);
+        let due = e.at_ms;
+        let slot = (((due / ACTIVITY_BIN_MS).floor() as i64).rem_euclid(ACTIVITY_BINS as i64)) as usize;
+        if region.due[slot] != 0.0 && (region.due[slot] - due).abs() > ACTIVITY_BIN_MS {
+            region.pending[slot] = 0.0;
+        }
+        region.pending[slot] = (f64::from(region.pending[slot]) + contribution).min(20.0) as f32;
+        region.due[slot] = region.due[slot].max(due);
+    }
+
+    /// `sample`: the strongest four beds now.
+    pub fn sample(&mut self, now_ms: f64, listener: Vec3) -> Vec<Bed> {
+        let mut candidates: Vec<(Bed, f32)> = Vec::new();
+        for slot in self.regions.iter_mut() {
+            let Some(r) = slot.as_mut() else { continue };
+            r.energy *= (-(now_ms - r.time).max(0.0) / ACTIVITY_DECAY_MS).exp();
+            r.time = now_ms;
+            for i in 0..ACTIVITY_BINS {
+                if r.pending[i] > 0.0 && r.due[i] <= now_ms {
+                    r.energy = (r.energy + f64::from(r.pending[i]) * (-(now_ms - r.due[i]).max(0.0) / ACTIVITY_DECAY_MS).exp()).min(20.0);
+                    r.pending[i] = 0.0;
+                    r.due[i] = 0.0;
+                }
+            }
+            if now_ms - r.last_event > 6000.0 {
+                *slot = None;
+                continue;
+            }
+            let intensity = (1.0 - (-(r.energy - 0.35).max(0.0) * 0.35).exp()) as f32;
+            let d = r.position.distance(listener);
+            if intensity < 0.035 || d > 150.0 {
+                continue;
+            }
+            let bonus = if self.selected.contains(&r.key) { 1.2 } else { 1.0 };
+            candidates.push((Bed { key: r.key.clone(), position: r.position, material: r.material, intensity }, intensity * source_attenuation(d, 5.0) * bonus));
+        }
+        candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.key.cmp(&b.0.key)));
+        candidates.truncate(4);
+        self.selected = candidates.iter().map(|(b, _)| b.key.clone()).collect();
+        candidates.into_iter().map(|(b, _)| b).collect()
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// A debris bed's loop (engine.ts `update`): `debris-<material>` at 0.88 rate, gain intensity ×
+/// 1.25 × (0.45 detail + 0.55 bass), attenuated as a size-5 source. Its id is stable per region.
+pub fn bed_loop(bed: &Bed, listener: Vec3, mix: Mix) -> Option<VlLoop> {
+    let amount = bed.intensity * 1.25 * (0.45 * mix.detail + 0.55 * mix.bass);
+    if amount < 0.015 {
+        return None;
+    }
+    let clip = Clips::get().index(&format!("debris-{}", bed.material.name()))?;
+    let gain = amount * source_attenuation(bed.position.distance(listener), 5.0);
+    Some(VlLoop { id: 0x4000_0000 | (fnv(&bed.key) & 0x3FFF_FFFF), clip, position: bed.position.to_array(), gain, rate: 0.88, flags: VL_LOOP_BED })
+}
+
+/// `VlLoop::flags`: a debris bed (not counted against the ten continuous loops).
+pub const VL_LOOP_BED: u32 = 1;
+
+/// A moving car's engine (GameAudioLayer.tsx -> engine.ts `continuous`, kind `engine`): the
+/// `rumble` clip above 0.7 m/s, intensity 0.08 + speed / 55, within 80 m.
+pub fn engine_intensity(speed: f32) -> Option<f32> {
+    (speed > 0.7).then(|| clamp01(0.08 + speed / 55.0))
 }
 
 /// `closestPass` (model.ts): the closest approach of a body moving a -> b to a listener moving
@@ -868,5 +1055,32 @@ mod tests {
         loops.current(0.0, &mut out);
         assert_eq!(Clips::get().ids[out[0].clip as usize], "air");
         assert!((out[0].rate - 343.0 / (343.0 - 60.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn debris_beds_match_the_web() {
+        // destructionActivity.ts with the same events and samples, run with tsx: the concrete
+        // region's bed intensity at 1050, 1200, 1600 and 3000 ms; the quiet metal hit and the
+        // repeated id add nothing; the far wood hit stays under the threshold.
+        let mut a = Activity::default();
+        let l = Vec3::new(0.0, 1.6, 0.0);
+        let ev = |id: u64, kind, material, p: [f32; 3], intensity, size, at_ms| SoundEvent { id, kind, position: Vec3::from_array(p), material, intensity, size, seed: 1, at_ms, protected: false };
+        use AcousticMaterial::*;
+        a.add(&ev(1, SoundKind::Fracture, Concrete, [12.0, 3.0, 4.0], 0.9, 2.0, 1000.0), l, 1000.0);
+        a.add(&ev(2, SoundKind::Collapse, Concrete, [14.0, 2.0, 6.0], 1.0, 6.0, 1040.0), l, 1000.0);
+        a.add(&ev(3, SoundKind::Impact, Wood, [-20.0, 1.0, 30.0], 0.7, 1.0, 1100.0), l, 1000.0);
+        a.add(&ev(4, SoundKind::Impact, Metal, [5.0, 1.0, 5.0], 0.1, 1.0, 1000.0), l, 1000.0);
+        a.add(&ev(1, SoundKind::Fracture, Concrete, [12.0, 3.0, 4.0], 0.9, 2.0, 1200.0), l, 1100.0);
+        for (t, want) in [(1050.0, 0.755366f32), (1200.0, 0.700083), (1600.0, 0.543401), (3000.0, 0.109914)] {
+            let beds = a.sample(t, l);
+            assert_eq!(beds.len(), 1, "at {t}");
+            assert_eq!(beds[0].key, "concrete:1:0:0");
+            assert!((beds[0].intensity - want).abs() < 2e-5, "at {t}: {} vs {want}", beds[0].intensity);
+            assert!(beds[0].position.distance(Vec3::new(12.5, 2.75, 4.5)) < 1e-3);
+        }
+        let bed = &a.sample(3000.0, l)[0];
+        let l = bed_loop(bed, Vec3::ZERO, DEFAULT_MIX).expect("audible");
+        assert_eq!(Clips::get().ids[l.clip as usize], "debris-concrete");
+        assert_eq!(engine_intensity(0.5), None);
     }
 }
