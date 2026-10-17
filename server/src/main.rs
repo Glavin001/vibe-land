@@ -2205,9 +2205,17 @@ async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthRespo
         udp_verified: state.inner.wt_attempts.load(Ordering::Relaxed) > 0,
         wt_connection_attempts: state.inner.wt_attempts.load(Ordering::Relaxed),
         session_configs_served: state.inner.session_configs_served.load(Ordering::Relaxed),
-        destruction_backend: city::selected_backend()
-            .map(|backend| backend.as_str().to_string())
-            .unwrap_or_else(|error| format!("invalid: {error}")),
+        // A rubble server opens its city on rubble (CityRuntime::open_for),
+        // whatever VIBE_CITY_DESTRUCTION says about the PhysX backends.
+        destruction_backend: if state.inner.physics.backend
+            == vibe_netcode::physics_backend::PhysicsBackendKind::Rubble
+        {
+            "rubble".to_string()
+        } else {
+            city::selected_backend()
+                .map(|backend| backend.as_str().to_string())
+                .unwrap_or_else(|error| format!("invalid: {error}"))
+        },
         physx_sdk: linked_physx_sdk(),
     })
 }
