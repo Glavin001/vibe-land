@@ -780,6 +780,9 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 		FVector CarStart = FVector::ZeroVector;
 		float Tick = 0.0f;
 		float TickStart = 0.0f;
+		int32 Frames = 0;
+		int32 ParkedFrames = 0;
+		int32 ParkedPosings = 0;
 	};
 	TSharedRef<FState> S = MakeShared<FState>();
 	auto Vehicles = []() -> AVibeVehicles*
@@ -803,6 +806,7 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 			{
 				S->Local = Frame.local;
 				S->Tick = Frame.stats.player_render_tick;
+				++S->Frames;
 			});
 		}
 		const AVibeVehicles* V = Vehicles();
@@ -838,9 +842,22 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("car %u at %s"), *Car, *At.ToString()));
 		return true;
 	}));
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S, Vehicles]()
 	{
+		S->ParkedFrames = S->Frames;
+		S->ParkedPosings = Vehicles()->RigPosings(S->Car);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
+	{
+		// A parked car's wheels do not change, so its rig is not posed again: posing ~58 parts of
+		// every car every frame halved the frame rate (5684dd1f).
+		const int32 Frames = S->Frames - S->ParkedFrames;
+		const int32 Posings = Vehicles()->RigPosings(S->Car) - S->ParkedPosings;
+		AddInfo(FString::Printf(TEXT("parked car %u: rig posed %d times in %d frames"), S->Car, Posings, Frames));
+		TestTrue(TEXT("a parked car's rig is not posed every frame"), Frames > 0 && Posings < Frames);
 		Click();
 		Key(EKeys::E, true);
 		Key(EKeys::E, false);

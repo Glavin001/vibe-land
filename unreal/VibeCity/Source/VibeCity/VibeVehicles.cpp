@@ -258,13 +258,34 @@ void AVibeVehicles::PoseRig(FCar& Car, const VlCar& C)
 	{
 		return;
 	}
-	Car.Poses.SetNumUninitialized(Car.Posed.Num(), EAllowShrinking::No);
+	// The rig is a function of the four wheel states alone: unchanged wheels, unchanged parts.
+	if (Car.bRigPosed && FMemory::Memcmp(Car.PosedWheels, C.wheels, sizeof(Car.PosedWheels)) == 0)
+	{
+		return;
+	}
+	FMemory::Memcpy(Car.PosedWheels, C.wheels, sizeof(Car.PosedWheels));
+	Car.bRigPosed = true;
+	++Car.RigPosings;
+	const TArray<VlPartPose> Previous = Car.Poses;
+	Car.Poses.SetNumZeroed(Car.Posed.Num(), EAllowShrinking::No);
 	const int32 N = vl_vehicle_mesh_pose(Car.Mesh, C.wheels, Car.Poses.GetData(), Car.Poses.Num());
 	for (int32 i = 0; i < FMath::Min(N, Car.PosedMeshes.Num()); ++i)
 	{
 		const VlPartPose& P = Car.Poses[i];
+		// Moving a component dirties its render state: only parts whose pose changed (a steering
+		// wheel or arm on the other axle may not have).
+		if (Previous.IsValidIndex(i) && FMemory::Memcmp(&Previous[i], &P, sizeof(VlPartPose)) == 0)
+		{
+			continue;
+		}
 		Car.PosedMeshes[i]->SetRelativeTransform(PartTransform(P.pos, P.quat, P.scale));
 	}
+}
+
+int32 AVibeVehicles::RigPosings(uint32 Handle) const
+{
+	const FCar* Car = Cars.Find(Handle);
+	return Car ? Car->RigPosings : 0;
 }
 
 TPair<int32, int32> AVibeVehicles::PosedPartsMoved(uint32 Handle) const
@@ -328,6 +349,8 @@ void AVibeVehicles::ApplyMesh(uint32 Handle, VlVehicleMesh* Mesh)
 		vl_vehicle_mesh_destroy(Car.Mesh);
 	}
 	Car.Mesh = Mesh;
+	Car.bRigPosed = false; // a new mesh: pose its rig at the next wheel states
+	Car.Poses.Reset();
 	Rebuild(Handle, Car);
 	Car.bBuilt = true;
 	UE_LOG(LogVibeLand, Display, TEXT("car %u: built %zu triangles, %zu rig parts"), Handle, View.vertex_count / 3, View.posed_count);

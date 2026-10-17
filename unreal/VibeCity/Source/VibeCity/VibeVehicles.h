@@ -38,6 +38,8 @@ public:
 	TOptional<FVector> WheelPosition(uint32 Handle, int32 Wheel) const;
 	/** How many of a car's posed parts are away from rest now (more than 1 mm or 0.5 deg), and how many it has (tests). */
 	TPair<int32, int32> PosedPartsMoved(uint32 Handle) const;
+	/** How many times a car's rig has been posed (tests). */
+	int32 RigPosings(uint32 Handle) const;
 	/** The last wheel states drawn for a car, for tests. */
 	TOptional<VlCar> LastCar(uint32 Handle) const;
 	int32 CarCount() const { return Cars.Num(); }
@@ -60,6 +62,12 @@ private:
 		TArray<VlPosedPart> Posed;
 		TArray<TObjectPtr<UProceduralMeshComponent>> PosedMeshes;
 		TArray<VlPartPose> Poses;
+		/** The wheel states the rig was last posed for: a car whose wheels have not changed (a parked
+		 * car) is not posed again, and only parts whose pose changed are moved. */
+		VlWheel PosedWheels[4] = {};
+		bool bRigPosed = false;
+		/** Rig posings and part moves (tests: parked cars must cost nothing). */
+		int32 RigPosings = 0;
 		FVector Hubs[4];
 		bool bBuilt = false;
 		bool bRequested = false;
