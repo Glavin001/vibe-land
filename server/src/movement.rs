@@ -333,6 +333,16 @@ impl PhysicsArena {
         }
     }
 
+    /// The rubble world, when this arena runs on rubble: the city builds its
+    /// structures in it (`city::CityRuntime::rubble`).
+    #[cfg(feature = "rubble")]
+    pub fn rubble_world(&self) -> Option<std::sync::Arc<std::sync::Mutex<vibe_land_rubble_bridge::RubbleWorld>>> {
+        match &self.backend {
+            PhysicsBackend::Rubble(arena) => Some(arena.shared_world()),
+            _ => None,
+        }
+    }
+
     /// No PhysX world in this build; the city takes `Option<()>` instead.
     #[cfg(not(feature = "physx-city"))]
     pub fn physx_world_mut(&mut self) -> Option<()> {

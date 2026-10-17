@@ -13,7 +13,7 @@
 //! No PhysX anywhere: this module and `vibe-land-rubble-bridge` are the whole
 //! engine side of `--features rubble`.
 
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::collections::{HashMap, VecDeque};
 
 use anyhow::Result;
@@ -65,9 +65,10 @@ pub struct RubblePhysicsArena {
     /// Players, stock vehicles, batteries and the static world for the
     /// character controller. Its own dynamic arena holds only mirrors.
     pub rapier: RapierPhysicsArena,
-    /// RefCell: rubble's ray casts dispatch GPU work, and the facade's ray
-    /// queries take `&self`. The match loop owns the arena on one thread.
-    world: RefCell<RubbleWorld>,
+    /// Shared with the city (`rubble_city`), which builds its structures in
+    /// the same world. A mutex because rubble's ray casts dispatch GPU work
+    /// while the facade's ray queries take `&self`; never held across calls.
+    world: Arc<Mutex<RubbleWorld>>,
     bodies: HashMap<u32, RubbleBody>,
     /// rubble body -> game id, for ray hits.
     by_body: HashMap<BodyId, u32>,
@@ -116,7 +117,7 @@ impl RubblePhysicsArena {
         world.set_material(0, env_f32("VIBE_WORLD_FRICTION", 0.5), env_f32("VIBE_WORLD_RESTITUTION", 0.1));
         Ok(Self {
             rapier: RapierPhysicsArena::new(config),
-            world: RefCell::new(world),
+            world: Arc::new(Mutex::new(world)),
             bodies: HashMap::new(),
             by_body: HashMap::new(),
             free_spheres: Vec::new(),
@@ -133,8 +134,13 @@ impl RubblePhysicsArena {
         })
     }
 
-    pub fn world_mut(&mut self) -> &mut RubbleWorld {
-        self.world.get_mut()
+    /// The world, for the city to build its structures in.
+    pub fn shared_world(&self) -> Arc<Mutex<RubbleWorld>> {
+        self.world.clone()
+    }
+
+    fn world(&self) -> MutexGuard<'_, RubbleWorld> {
+        self.world.lock().expect("rubble world poisoned")
     }
 
     fn note_ground(&mut self, top: f32) {
@@ -164,7 +170,7 @@ impl RubblePhysicsArena {
     }
 
     fn sync_mirrors(&mut self) {
-        let poses = self.world.get_mut().bodies();
+        let poses = self.world().bodies();
         let sim = &mut self.rapier.dynamic.sim;
         for body in self.bodies.values() {
             let Some(pose) = poses.get(body.body as usize) else { continue };
@@ -187,20 +193,19 @@ impl RubblePhysicsArena {
     fn spawn_box(&mut self, id: u32, position: Vec3, rotation: [f32; 4], half: Vec3) {
         // The PhysX arena's mass for a world-document box (its volume, >= 1 kg).
         let mass = (half.x * half.y * half.z * 8.0).max(1.0);
-        let body = self.world.get_mut().add_dynamic_box(position.into(), rotation, half.into(), mass, 0);
+        let body = self.world().add_dynamic_box(position.into(), rotation, half.into(), mass, 0);
         self.register(id, body, position, rotation, half.into(), SHAPE_BOX);
     }
 
     fn spawn_sphere(&mut self, id: u32, position: Vec3, radius: f32, mass: f32) -> BodyId {
-        let world = self.world.get_mut();
-        let body = match self.free_spheres.iter().position(|&(r, _)| r == radius) {
+        let reuse = self.free_spheres.iter().position(|&(r, _)| r == radius).map(|i| self.free_spheres.swap_remove(i).1);
+        let body = match reuse {
             // A parked sphere of this radius: give it the new mass and bring it back.
-            Some(i) => {
-                let (_, body) = self.free_spheres.swap_remove(i);
-                world.revive_sphere(body, position.into(), radius, mass);
+            Some(body) => {
+                self.world().revive_sphere(body, position.into(), radius, mass);
                 body
             }
-            None => world.add_dynamic_sphere(position.into(), radius, mass, 0),
+            None => self.world().add_dynamic_sphere(position.into(), radius, mass, 0),
         };
         self.register(id, body, position, [0.0, 0.0, 0.0, 1.0], [radius; 3], SHAPE_SPHERE);
         body
@@ -218,8 +223,7 @@ impl RubblePhysicsArena {
             &mut self.rapier.dynamic.multibody_joints,
             true,
         );
-        let world = self.world.get_mut();
-        world.park(body.body, [0.0, PARKED_Y, 0.0]);
+        self.world().park(body.body, [0.0, PARKED_Y, 0.0]);
         if body.shape_type == SHAPE_SPHERE {
             self.free_spheres.push((body.half_extents[0], body.body));
         }
@@ -233,7 +237,7 @@ impl RubblePhysicsArena {
     }
 
     pub fn wake_bodies_near(&mut self, center: Vec3, radius: f32) {
-        let world = self.world.get_mut();
+        let mut world = self.world();
         for pose in world.bodies() {
             let d = Vec3::from(pose.position) - center;
             if pose.dynamic && pose.sleeping && d.norm_squared() < radius * radius {
@@ -280,7 +284,7 @@ impl RubblePhysicsArena {
 
     fn launch_body(&mut self, id: u32, position: Vec3, velocity: Vec3, radius: f32, mass: f32, ttl_ticks: u32) -> Option<u32> {
         let body = self.spawn_sphere(id, position, radius, mass);
-        self.world.get_mut().set_velocity(body, velocity.into(), [0.0; 3]);
+        self.world().set_velocity(body, velocity.into(), [0.0; 3]);
         self.launched_balls.push_back(LaunchedBall { id, expires_at: self.launch_tick + u64::from(ttl_ticks.max(1)) });
         while self.launched_balls.len() > MAX_LIVE_LAUNCHED_BALLS {
             if let Some(oldest) = self.launched_balls.pop_front() {
@@ -339,7 +343,7 @@ impl RubblePhysicsArena {
     pub fn step_vehicles_and_dynamics(&mut self, dt: f32) -> (f32, f32) {
         self.expire_launched_balls();
         let started = std::time::Instant::now();
-        if let Err(error) = self.world.get_mut().step() {
+        if let Err(error) = self.world().step() {
             tracing::error!(%error, "rubble step failed");
         }
         self.last_step_ms = started.elapsed().as_secs_f32() * 1000.0;
@@ -349,7 +353,7 @@ impl RubblePhysicsArena {
     }
 
     pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {
-        let poses = self.world.borrow().bodies();
+        let poses = self.world().bodies();
         self.bodies
             .iter()
             .filter_map(|(&id, body)| {
@@ -362,20 +366,20 @@ impl RubblePhysicsArena {
     /// The first rubble body along the ray, when it is a dynamic one:
     /// `(id, distance, point)`. A static surface in front blocks it.
     pub fn cast_dynamic_body_ray(&self, origin: [f32; 3], direction: [f32; 3], max_distance: f32, _exclude_player: Option<u32>) -> Option<(u32, f32, [f32; 3])> {
-        let hit = self.world.borrow_mut().raycast(&[(origin, direction, max_distance, None)])[0]?;
+        let hit = self.world().raycast(&[(origin, direction, max_distance, None)])[0]?;
         let id = *self.by_body.get(&hit.body)?;
         Some((id, hit.distance, hit.point))
     }
 
     /// The first solid point along a ray (terrain, structure or body).
     pub fn cast_solid_ray_point(&self, origin: [f32; 3], direction: [f32; 3], max_distance: f32) -> Option<[f32; 3]> {
-        let hit = self.world.borrow_mut().raycast(&[(origin, direction, max_distance, None)])[0]?;
+        let hit = self.world().raycast(&[(origin, direction, max_distance, None)])[0]?;
         Some(hit.point)
     }
 
     pub fn apply_dynamic_body_impulse(&mut self, body_id: u32, impulse: [f32; 3], point: [f32; 3]) -> bool {
         let Some(body) = self.bodies.get(&body_id) else { return false };
-        self.world.get_mut().apply_impulse(body.body, impulse, point);
+        self.world().apply_impulse(body.body, impulse, point);
         true
     }
 
@@ -388,7 +392,7 @@ impl RubblePhysicsArena {
     }
 
     pub fn awake_dynamic_body_counts(&self, player_centers: &[[f32; 3]], near_radius: f32) -> (u32, u32) {
-        let poses = self.world.borrow().bodies();
+        let poses = self.world().bodies();
         let (mut total, mut near) = (0, 0);
         for body in self.bodies.values() {
             let Some(p) = poses.get(body.body as usize) else { continue };
@@ -411,7 +415,7 @@ impl RubblePhysicsArena {
 
     pub fn add_static_cuboid(&mut self, center: Vec3, half_extents: Vec3, user_data: u128) -> ColliderHandle {
         let native = self.rapier.add_static_cuboid(center, half_extents, user_data);
-        let body = self.world.get_mut().add_static_box(center.into(), [0.0, 0.0, 0.0, 1.0], half_extents.into(), 0);
+        let body = self.world().add_static_box(center.into(), [0.0, 0.0, 0.0, 1.0], half_extents.into(), 0);
         self.runtime_statics.insert(native, body);
         native
     }
@@ -419,7 +423,7 @@ impl RubblePhysicsArena {
     pub fn remove_collider(&mut self, native: ColliderHandle) {
         self.rapier.remove_collider(native);
         if let Some(body) = self.runtime_statics.remove(&native) {
-            self.world.get_mut().park(body, [0.0, PARKED_Y, 0.0]);
+            self.world().park(body, [0.0, PARKED_Y, 0.0]);
         }
     }
 }
@@ -433,7 +437,7 @@ impl WorldDocumentArena for RubblePhysicsArena {
         if min.is_finite() && min == max {
             let top = center.y + min * scale.y;
             let half = [scale.x * 0.5, 5.0, scale.z * 0.5];
-            self.world.get_mut().add_static_box([center.x, top - half[1], center.z], [0.0, 0.0, 0.0, 1.0], half, 0);
+            self.world().add_static_box([center.x, top - half[1], center.z], [0.0, 0.0, 0.0, 1.0], half, 0);
             self.note_ground(top);
         } else {
             tracing::warn!("rubble has no heightfield shape: this sloped terrain collides with players only");
@@ -442,7 +446,7 @@ impl WorldDocumentArena for RubblePhysicsArena {
     }
 
     fn add_static_cuboid(&mut self, center: Vector3<f32>, rotation: [f32; 4], half_extents: Vector3<f32>, user_data: u128) {
-        self.world.get_mut().add_static_box(center.into(), rotation, half_extents.into(), 0);
+        self.world().add_static_box(center.into(), rotation, half_extents.into(), 0);
         self.note_ground(center.y + half_extents.y);
         WorldDocumentArena::add_static_cuboid(&mut self.rapier, center, rotation, half_extents, user_data);
     }

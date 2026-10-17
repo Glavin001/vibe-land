@@ -270,16 +270,21 @@ pub fn is_city_match(match_id: &str) -> bool {
 pub fn city_unavailable_reason(
     backend: vibe_netcode::physics_backend::PhysicsBackendKind,
 ) -> Option<String> {
-    unavailable_reason(backend, prefer_synthetic(), cfg!(feature = "physx-city"))
+    unavailable_reason(backend, prefer_synthetic(), cfg!(feature = "physx-city"), cfg!(feature = "rubble"))
 }
 
 fn unavailable_reason(
     backend: vibe_netcode::physics_backend::PhysicsBackendKind,
     synthetic: bool,
     physx_city_built: bool,
+    rubble_built: bool,
 ) -> Option<String> {
     use vibe_netcode::physics_backend::PhysicsBackendKind;
     if synthetic {
+        return None;
+    }
+    // rubble hosts the city on its own (no PhysX), when it is compiled in.
+    if backend == PhysicsBackendKind::Rubble && rubble_built {
         return None;
     }
     if !physx_city_built {
@@ -654,6 +659,10 @@ enum CityBackend {
     /// made the previous attempt at this port impossible to reason about.
     #[cfg(feature = "native-destruction")]
     Native(vibe_land_destruction::native_runtime::NativeCityDestruction),
+    /// The structures as rubble bodies (`VIBE_PHYSICS_BACKEND=rubble`), with no
+    /// stress solver yet: every structure holds. See `rubble_city`.
+    #[cfg(feature = "rubble")]
+    Rubble(crate::rubble_city::RubbleCityDestruction),
 }
 
 /// City wire 4: the per-player stream (`vibe_land_destruction::per_player`),
@@ -1135,6 +1144,8 @@ fn backend_name_of(backend: &CityBackend) -> &'static str {
         CityBackend::Core(_) => "blast-core",
         #[cfg(feature = "native-destruction")]
         CityBackend::Native(_) => "native",
+        #[cfg(feature = "rubble")]
+        CityBackend::Rubble(_) => "rubble",
     }
 }
 
@@ -1555,6 +1566,38 @@ impl CityRuntime {
     /// Open the PhysX-backed city, or the synthetic one when
     /// `VIBE_CITY_SYNTHETIC=1`. Without a PhysX world (or a build without city
     /// support) this fails rather than quietly serving a city with no physics.
+    /// The city on rubble: its structures built into the arena's rubble world.
+    #[cfg(feature = "rubble")]
+    pub fn rubble(
+        sim_hz: u32,
+        world: std::sync::Arc<std::sync::Mutex<vibe_land_rubble_bridge::RubbleWorld>>,
+    ) -> anyhow::Result<Self> {
+        let (_, manifest, _) =
+            manifest_asset().context("city scene asset unavailable (destruction/assets/scenes)")?;
+        let manifest = manifest.clone();
+        let backend = crate::rubble_city::RubbleCityDestruction::build(&manifest, world);
+        Ok(Self::from_parts(CityBackend::Rubble(backend), manifest, sim_hz))
+    }
+
+    /// Open the city on whichever engine the arena runs: rubble when it is a
+    /// rubble arena, otherwise `open` (PhysX, or the synthetic city).
+    pub fn open_for(sim_hz: u32, arena: &mut crate::movement::PhysicsArena) -> anyhow::Result<Self> {
+        #[cfg(feature = "rubble")]
+        if !prefer_synthetic() {
+            if let Some(world) = arena.rubble_world() {
+                return Self::rubble(sim_hz, world);
+            }
+        }
+        #[cfg(feature = "physx-city")]
+        let world = arena.physx_world_mut();
+        #[cfg(not(feature = "physx-city"))]
+        let world = {
+            let _ = &arena;
+            None
+        };
+        Self::open(sim_hz, world)
+    }
+
     pub fn open(
         sim_hz: u32,
         #[cfg(feature = "physx-city")] world: Option<&mut World>,
@@ -1892,8 +1935,28 @@ impl CityRuntime {
         let clients = self.encoder.clients();
         // A synthetic city was asked for when it was opened; it rebuilds as
         // one rather than re-deciding (and refusing) from the environment.
+        #[cfg(feature = "rubble")]
+        let rubble_world = match &mut self.backend {
+            CityBackend::Rubble(backend) => {
+                backend.release();
+                Some(backend.world())
+            }
+            _ => None,
+        };
+        #[cfg(not(feature = "rubble"))]
+        let rubble_world: Option<()> = None;
         let mut rebuilt = if matches!(self.backend, CityBackend::Synthetic(_)) {
             Self::synthetic(sim_hz)?
+        } else if let Some(world) = rubble_world {
+            #[cfg(feature = "rubble")]
+            {
+                Self::rubble(sim_hz, world)?
+            }
+            #[cfg(not(feature = "rubble"))]
+            {
+                let () = world;
+                unreachable!()
+            }
         } else {
             Self::open(sim_hz, world)?
         };
@@ -1929,6 +1992,8 @@ impl CityRuntime {
             CityBackend::Core(_) => true,
             #[cfg(feature = "native-destruction")]
             CityBackend::Native(_) => true,
+            #[cfg(feature = "rubble")]
+            CityBackend::Rubble(_) => false,
         }
     }
 
@@ -2179,6 +2244,19 @@ impl CityRuntime {
                 );
                 true
             }
+            #[cfg(feature = "rubble")]
+            CityBackend::Rubble(backend) => {
+                // A real ray against the chunk colliders. With no stress solver
+                // there is no load to deliver and nothing breaks: the structure
+                // holds, as it must when the solver breaks nothing.
+                let Some((structure, distance, point)) =
+                    backend.ray_hit(origin.to_array(), direction.to_array(), shot_max_distance_m())
+                else {
+                    return false;
+                };
+                tracing::debug!(structure, distance, hit = ?point, backend = "rubble", "city shot hit (no stress solver yet)");
+                false
+            }
             CityBackend::Synthetic(backend) => {
                 let Some((distance, point, structure_index)) = sphere_hit() else {
                     return false;
@@ -2407,6 +2485,24 @@ impl CityRuntime {
                 );
                 reliable.extend(self.encoder.take_topology_messages());
                 let _ = post_step_ms;
+            }
+            #[cfg(feature = "rubble")]
+            CityBackend::Rubble(backend) => {
+                // The physics arena stepped rubble already; intact anchored
+                // structures stream no body rows.
+                let output = backend.tick();
+                feed_encoder(
+                    &mut self.capture,
+                    &mut self.encoder,
+                    &mut self.live,
+                    &mut self.per_player,
+                    &self.manifest,
+                    self.pose_feed.as_deref(),
+                    sim_tick,
+                    &[],
+                    &output,
+                );
+                reliable.extend(self.encoder.take_topology_messages());
             }
             CityBackend::Synthetic(backend) => match backend.tick_after_fetch(dt, gravity) {
                 Ok(output) => {
@@ -2914,6 +3010,8 @@ impl CityRuntime {
             // actor list; the snapshot stream is the observation channel.
             #[cfg(feature = "native-destruction")]
             CityBackend::Native(_) => Vec::new(),
+            #[cfg(feature = "rubble")]
+            CityBackend::Rubble(_) => Vec::new(),
         }
     }
 
@@ -2965,6 +3063,8 @@ impl CityRuntime {
     pub fn stats(&self) -> DestructionStats {
         match &self.backend {
             CityBackend::Synthetic(backend) => backend.stats(),
+            #[cfg(feature = "rubble")]
+            CityBackend::Rubble(backend) => backend.stats(),
             #[cfg(feature = "destruction")]
             CityBackend::Physx(backend) => backend.stats(),
             #[cfg(feature = "blast-core")]
@@ -3038,6 +3138,8 @@ impl CityRuntime {
             CityBackend::Core(_) => false,
             #[cfg(feature = "native-destruction")]
             CityBackend::Native(backend) => backend.is_degraded(),
+            #[cfg(feature = "rubble")]
+            CityBackend::Rubble(_) => false,
         }
     }
 
@@ -3289,15 +3391,19 @@ mod tests {
     /// do nothing. It must be refused, not served.
     #[test]
     fn a_city_without_physx_is_refused_unless_synthetic_is_asked_for() {
-        use vibe_netcode::physics_backend::PhysicsBackendKind::{PhysxGpu, Rapier};
-        let rapier = unavailable_reason(Rapier, false, true).expect("rapier refused");
+        use vibe_netcode::physics_backend::PhysicsBackendKind::{PhysxGpu, Rapier, Rubble};
+        let rapier = unavailable_reason(Rapier, false, true, false).expect("rapier refused");
         assert!(rapier.contains("VIBE_PHYSICS_BACKEND=physx_gpu"), "{rapier}");
         assert!(rapier.contains("rapier"), "{rapier}");
-        let unbuilt = unavailable_reason(PhysxGpu, false, false).expect("no city build refused");
+        let unbuilt = unavailable_reason(PhysxGpu, false, false, false).expect("no city build refused");
         assert!(unbuilt.contains("VIBE_CITY_SYNTHETIC=1"), "{unbuilt}");
-        assert_eq!(unavailable_reason(PhysxGpu, false, true), None);
-        assert_eq!(unavailable_reason(Rapier, true, true), None);
-        assert_eq!(unavailable_reason(Rapier, true, false), None);
+        assert_eq!(unavailable_reason(PhysxGpu, false, true, false), None);
+        assert_eq!(unavailable_reason(Rapier, true, true, false), None);
+        assert_eq!(unavailable_reason(Rapier, true, false, false), None);
+        // rubble hosts the city with no PhysX built in, and only when compiled.
+        assert_eq!(unavailable_reason(Rubble, false, false, true), None);
+        assert!(unavailable_reason(Rubble, false, false, false).is_some());
+        assert!(unavailable_reason(Rapier, false, false, true).is_some(), "Rapier still has no city colliders");
     }
 
     /// Opening the city with no PhysX world fails instead of falling back to
@@ -3485,6 +3591,120 @@ mod tests {
         assert!(client.stats.hash_checks > 0, "no hash reached the client");
         assert_eq!(client.stats.hash_mismatches, 0, "the client's structure diverged");
         assert_eq!(client.stats.decode_errors, 0);
+    }
+
+    /// A rubble arena with the city opened in it, ground top at y = 0.
+    #[cfg(feature = "rubble")]
+    fn rubble_city() -> (crate::rubble_runtime::RubblePhysicsArena, CityRuntime) {
+        use vibe_land_shared::world_document::WorldDocumentArena;
+        let mut arena =
+            crate::rubble_runtime::RubblePhysicsArena::new(crate::movement::MoveConfig::default()).expect("wgpu device");
+        WorldDocumentArena::add_static_cuboid(
+            &mut arena,
+            nalgebra::Vector3::new(0.0, -1.0, 0.0),
+            [0.0, 0.0, 0.0, 1.0],
+            nalgebra::Vector3::new(400.0, 1.0, 400.0),
+            0,
+        );
+        let city = CityRuntime::rubble(60, arena.shared_world()).expect("rubble city");
+        (arena, city)
+    }
+
+    /// Wire 4 on rubble: shots strike the real chunk colliders, nothing breaks
+    /// (there is no stress solver yet, and a structure the solver breaks
+    /// nothing in holds), and the per-player stream still bootstraps, streams
+    /// events and keeps the client's structure hash in agreement.
+    #[cfg(feature = "rubble")]
+    #[test]
+    fn a_wire_4_match_on_rubble_streams_and_its_buildings_hold() {
+        use vibe_land_perplayer::wire::{PKT_PP_BOOTSTRAP, PKT_PP_EVENTS, PKT_PP_KEYFRAMES};
+        let (mut arena, mut city) = rubble_city();
+        assert_eq!(city.backend_name(), "rubble");
+        city.set_wire_version(CITY_WIRE_PER_PLAYER);
+        let client_id = 7u64;
+        city.add_client(client_id);
+        let boot = city.per_player_join(client_id, 0);
+        assert_eq!(boot.iter().map(|p| p[0]).collect::<Vec<_>>(), vec![PKT_PP_BOOTSTRAP]);
+        let gravity_y = -(vibe_netcode::movement::GRAVITY as f32);
+        let mut client = vibe_land_perplayer::client::Client::new(
+            vibe_land_destruction::per_player::structure_defs(&city.manifest),
+            vibe_land_perplayer::predict::Physics::at_hz(60, gravity_y),
+            60,
+            5.0,
+        );
+        client.ingest(&boot[0], 0.0);
+
+        let (centre, radius) = city.structure_centers[0];
+        let origin = centre + Vec3::new(radius * 3.0, 0.0, 0.0);
+        let backend_hit = match &city.backend {
+            CityBackend::Rubble(backend) => backend.ray_hit(origin.to_array(), [-1.0, 0.0, 0.0], 1000.0),
+            _ => unreachable!(),
+        };
+        let (_, distance, _) = backend_hit.expect("the shot ray strikes the building's chunk colliders");
+        assert!(distance < radius * 3.0, "hit in front of the centre: {distance}");
+
+        let camera = Camera { eye: origin, direction: Vec3::NEG_X, fov_degrees: 80.0 };
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        let mut events = 0usize;
+        for tick in 1..=240u32 {
+            if tick % 30 == 1 && tick < 200 {
+                assert!(!city.apply_shot_ray(origin, Vec3::NEG_X, None), "no stress solver: a shot breaks nothing");
+            }
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+            for packet in city.step(tick, 1.0 / 60.0, [0.0, gravity_y, 0.0], None) {
+                assert_eq!(packet[0], PKT_PP_EVENTS, "a wire-4 match sent a v2 reliable packet");
+                events += 1;
+                client.ingest(&packet, ms(tick));
+            }
+            if tick % city.send_interval_ticks() == 0 {
+                city.per_player_begin_send(tick);
+                for packet in city.per_player_send(client_id, camera, tick, SendBudget::Full).packets {
+                    assert!(packet.bytes[0] == PKT_PP_KEYFRAMES || packet.bytes[0] == PKT_PP_EVENTS);
+                    client.ingest(&packet.bytes, ms(tick));
+                }
+                if let Some((newest, mask)) = client.ack() {
+                    city.per_player_ack(client_id, newest, mask, Some(client.events_through()), &client.take_missing_baselines());
+                }
+            }
+            client.advance(ms(tick));
+        }
+        let stats = city.per_player_stats().expect("wire-4 stats");
+        assert_eq!(stats.fractures, 0, "nothing decides fracture yet: {stats:?}");
+        assert!(events > 0, "no events reached the client");
+        assert!(client.stats.hash_checks > 0, "no hash reached the client");
+        assert_eq!(client.stats.hash_mismatches, 0, "the client's structure diverged");
+        assert_eq!(client.stats.decode_errors, 0);
+    }
+
+    /// The buildings are rubble colliders: a cannonball fired at one from
+    /// outside stops at its facade instead of passing through.
+    #[cfg(feature = "rubble")]
+    #[test]
+    fn a_cannonball_stops_at_a_rubble_building() {
+        let (mut arena, city) = rubble_city();
+        let structure = &city.manifest.structures[0];
+        // The building's +x extent in world space (chunks are boxes about the
+        // structure origin; the default pack has no rotation).
+        let face_x = structure
+            .chunks
+            .iter()
+            .map(|c| c.centroid[0] + c.size[0] * 0.5)
+            .fold(f32::NEG_INFINITY, f32::max)
+            + structure.world_position[0];
+        let height = structure.chunks.iter().map(|c| c.centroid[1]).fold(0.0_f32, f32::max) * 0.5;
+        let start = nalgebra::Vector3::new(face_x + 20.0, structure.world_position[1] + height.max(1.0), structure.world_position[2]);
+        let id = arena
+            .launch_ball_from_muzzle(start, nalgebra::Vector3::new(-30.0, 0.0, 0.0), 0.3, 50.0, 600)
+            .expect("launched");
+        for _ in 0..90 {
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+        let ball = arena.snapshot_dynamic_bodies().into_iter().find(|s| s.0 == id).expect("ball streams");
+        assert!(
+            ball.1[0] > face_x - 0.3,
+            "the ball passed into the building: x {} vs facade {face_x}",
+            ball.1[0]
+        );
     }
 
     /// The default (v2) match is untouched: v2 reliable packets, no wire-4 ones.

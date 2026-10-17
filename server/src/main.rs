@@ -34,6 +34,8 @@ mod pose_feed;
 #[cfg(feature = "physx-gpu")]
 mod physx_runtime;
 #[cfg(feature = "rubble")]
+mod rubble_city;
+#[cfg(feature = "rubble")]
 mod rubble_runtime;
 mod protocol;
 mod send_log;
@@ -3727,11 +3729,7 @@ async fn run_match_loop(
         .collect();
 
     let city = if city::is_city_match(&match_id) {
-        #[cfg(feature = "physx-city")]
-        let world = arena.physx_world_mut();
-        #[cfg(not(feature = "physx-city"))]
-        let world = None;
-        match city::CityRuntime::open(SIM_HZ as u32, world) {
+        match city::CityRuntime::open_for(SIM_HZ as u32, &mut arena) {
             Ok(mut runtime) => {
                 // Fixed for the life of the match: the version is announced in
                 // the session config, so every client that joins has already
