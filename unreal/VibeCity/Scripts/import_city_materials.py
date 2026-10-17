@@ -605,128 +605,148 @@ def projectile_materials():
     mel.recompile_material(c)
 
 
+DUST_RAYMARCH = r"""
+// The web's volumetric dust (client/src/vfx/dustVolumeShaders.ts), per parcel: the ray through
+// its box, marched in steps through the baked field's density (a noisy ellipsoid that never
+// reaches the box wall), eroded with age, each step absorbing 1 - exp(-dens * densK * stride).
+// Local space is the 100 cm engine cube stretched to the parcel's box: q in [-1, 1]^3.
+float3 ro = LCam / 50.0;
+float3 rd = normalize(LP - LCam);
+// Metres per unit of q along this ray (the box is stretched per axis).
+float mPerQ = length(WP - CP) / max(length(LP - LCam) / 50.0, 1e-4) / 100.0;
+float3 safe = float3(abs(rd.x) < 1e-6 ? 1e-6 : rd.x, abs(rd.y) < 1e-6 ? 1e-6 : rd.y, abs(rd.z) < 1e-6 ? 1e-6 : rd.z);
+float3 inv = 1.0 / safe;
+float3 t0 = (-1.0 - ro) * inv;
+float3 t1 = (1.0 - ro) * inv;
+float3 tmn = min(t0, t1);
+float3 tmx = max(t0, t1);
+bool inside = all(abs(ro) < 1.0);
+// One face draws: the front one from outside, the back one from inside.
+if (inside != (Facing < 0.0)) return float2(0.0, 1.0);
+float enter = max(0.0, max(tmn.x, max(tmn.y, tmn.z)));
+float exitT = min(tmx.x, min(tmx.y, tmx.z));
+// The scene ends the ray (view depth to ray distance).
+exitT = min(exitT, SceneDepthCm / max(RayZ, 1e-4) / 100.0 / max(mPerQ, 1e-6));
+if (exitT <= enter) return float2(0.0, 1.0);
+
+const int STEPS = 20;
+float stride = (exitT - enter) / STEPS;
+float strideM = stride * mPerQ;
+float densK = Density * Fade * 4.0 * 0.24; // DENS_MAX, the web's extinction
+float3 seed = float3(frac(Seed * 7.13), frac(Seed * 3.71), frac(Seed * 5.37)) * 17.0;
+float3 sunQ = normalize(float3(0.25, 0.15, 0.95));
+
+struct F
+{
+    static float H(float3 p) { p = frac(p * 0.3183099 + 0.1); p *= 17.0; return frac(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+    static float N(float3 x)
+    {
+        float3 i = floor(x); float3 f = frac(x); f = f * f * (3.0 - 2.0 * f);
+        return lerp(lerp(lerp(H(i), H(i + float3(1, 0, 0)), f.x), lerp(H(i + float3(0, 1, 0)), H(i + float3(1, 1, 0)), f.x), f.y),
+                    lerp(lerp(H(i + float3(0, 0, 1)), H(i + float3(1, 0, 1)), f.x), lerp(H(i + float3(0, 1, 1)), H(i + float3(1, 1, 1)), f.x), f.y), f.z);
+    }
+    // Four octaves of domain-warped noise (the field bake's fbm).
+    static float Fbm(float3 c)
+    {
+        float a = N(c * 4.0);
+        float b = N(c * 12.0 + a * 0.65 * 4.0);
+        float d = N(c * 28.0 - b * 0.5 * 4.0);
+        float e = N(c * 52.0);
+        return a * 0.5 + b * 0.28 + d * 0.15 + e * 0.07;
+    }
+    // densityAt: the noisy ellipsoid, cut off before the box wall.
+    static float Dens(float3 c, float3 s)
+    {
+        float3 q = c * 2.0 - 1.0;
+        float3 p = float3(q.x / 0.92, q.z * 0.95, q.y / 0.92);
+        float n = Fbm(c * 1.7 + s);
+        float shape = max(0.0, 1.0 - length(p) + (n - 0.5) * 1.05);
+        float edge = saturate((1.0 - max(abs(q.x), max(abs(q.y), abs(q.z)))) * 7.0);
+        return pow(shape, 1.25) * max(0.0, n * 3.4 - 0.9) * edge;
+    }
+};
+
+float alpha = 0.0;
+float lit = 0.0;
+for (int k = 0; k < STEPS; k++)
+{
+    if (alpha > 0.985) break;
+    float t = enter + (k + 0.5) * stride;
+    float3 c = (ro + rd * t) * 0.5 + 0.5;
+    float dens = min(F::Dens(c, seed), 4.0) / 4.0 - Erosion * F::N(c * 5.3 * 4.0 + seed);
+    if (dens < 0.002) continue;
+    // Self-shadow: the optical depth toward the sun (the bake's six taps, as three of twice the step).
+    float od = 2.0 * (F::Dens(c + sunQ * 0.12, seed) + F::Dens(c + sunQ * 0.24, seed) + F::Dens(c + sunQ * 0.36, seed));
+    float light = exp(-od * 0.35) * 0.85 + 0.15;
+    float a = 1.0 - exp(-dens * densK * strideM);
+    lit += light * a * (1.0 - alpha);
+    alpha += a * (1.0 - alpha);
+}
+return float2(alpha, alpha > 0.0 ? lit / alpha : 1.0);
+"""
+
+
 def dust_volume_material():
-    """Dust parcels (client-core dust.rs, the web's dust policy): one instance of a sphere per
-    parcel, stretched to its cloud's box, translucent and lit as a volume. Per-instance custom data:
-    0-2 colour (linear), 3 density D (the web's sprite density), 4 erosion (how much of the cloud
-    the noise has eaten by now), 5 seed, 6 fade (in, then thinning out over its life). The surface billows (smooth 3D noise pushes it along its normal, scaled by the instance's
-    radius), the density is thinned by drifting noise and eroded over its life, the edge softens
-    toward the silhouette, the underside is darker (lit from above), and it fades into the city."""
+    """Dust parcels (client-core dust.rs, the web's dust policy): one instance of the engine cube per
+    parcel, stretched to its cloud's box, raymarched as the web's volumetric dust draws it
+    (DUST_RAYMARCH) and lit by Unreal as a translucent volume. Per-instance custom data: 0-2 colour
+    (linear), 3 density (the web's e.density x its LOD stride), 4 erosion (how much of the cloud the
+    noise has eaten by now), 5 seed, 6 fade. Base colour is the colour times the web's
+    self-shadow light term (0.35 + 0.65 light); opacity is the march's."""
     m = fresh_material("M_VibeCityDustVolume")
     m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
     m.set_editor_property("translucency_lighting_mode", unreal.TranslucencyLightingMode.TLM_VOLUMETRIC_NON_DIRECTIONAL)
     m.set_editor_property("used_with_instanced_static_meshes", True)
+    m.set_editor_property("two_sided", True)
     data = []
-    for i in range(6):
+    for i in range(7):
         c = expr(m, unreal.MaterialExpressionPerInstanceCustomData, -1600, -400 + i * 110)
         c.set_editor_property("data_index", i)
         data.append(c)
 
-    def mul(a, b, x, y):
-        e = expr(m, unreal.MaterialExpressionMultiply, x, y)
-        mel.connect_material_expressions(a, "", e, "A")
-        mel.connect_material_expressions(b, "", e, "B")
-        return e
+    def to_local(position, x, y):
+        t = expr(m, unreal.MaterialExpressionTransformPosition, x, y)
+        t.set_editor_property("transform_source_type", unreal.MaterialPositionTransformSource.TRANSFORMPOSSOURCE_WORLD)
+        # Instance space: an instanced mesh's 'local' is its component's, not the instance's box.
+        t.set_editor_property("transform_type", unreal.MaterialPositionTransformSource.TRANSFORMPOSSOURCE_INSTANCE)
+        mel.connect_material_expressions(position, "", t, "")
+        return t
 
-    def add(a, b, x, y):
-        e = expr(m, unreal.MaterialExpressionAdd, x, y)
-        mel.connect_material_expressions(a, "", e, "A")
-        mel.connect_material_expressions(b, "", e, "B")
-        return e
-
-    def const(v, x, y):
-        e = expr(m, unreal.MaterialExpressionConstant, x, y)
-        e.set_editor_property("r", v)
-        return e
-
-    def noise(position, scale, levels, x, y):
-        n = expr(m, unreal.MaterialExpressionNoise, x, y)
-        n.set_editor_property("scale", scale)
-        n.set_editor_property("levels", levels)
-        n.set_editor_property("turbulence", False)
-        n.set_editor_property("output_min", 0.0)
-        n.set_editor_property("output_max", 1.0)
-        mel.connect_material_expressions(position, "", n, "Position")
-        return n
-
-    # A position that drifts up slowly and differs per parcel (the seed).
-    world = expr(m, unreal.MaterialExpressionWorldPosition, -1600, 300)
-    time = expr(m, unreal.MaterialExpressionTime, -1600, 400)
-    drift = expr(m, unreal.MaterialExpressionConstant3Vector, -1600, 480)
-    drift.set_editor_property("constant", unreal.LinearColor(4.0, 7.0, 25.0, 0.0))
-    moved = add(world, mul(time, drift, -1400, 420), -1250, 340)
-    seeded = add(moved, mul(data[5], const(997.0, -1500, 560), -1350, 540), -1100, 400)
-
-    # Billows: the surface pushed along its normal by smooth noise, up to +-15% of the radius (more
-    # breaks the engine sphere's facets into spikes).
-    radius = expr(m, unreal.MaterialExpressionObjectRadius, -1100, 700)
-    lumps = noise(seeded, 0.003, 2, -900, 600)
-    centred = add(lumps, const(-0.5, -900, 760), -700, 640)
-    push = mul(mul(centred, radius, -550, 660), const(0.3, -550, 760), -400, 680)
-    normal = expr(m, unreal.MaterialExpressionVertexNormalWS, -400, 800)
-    wpo = mul(normal, push, -250, 720)
-    mel.connect_material_property(wpo, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
-
-    # Colour, darker underneath: rgb * (0.55 + 0.45 * (n.z * 0.5 + 0.5)).
+    world = expr(m, unreal.MaterialExpressionWorldPosition, -1600, 500)
+    cam = expr(m, unreal.MaterialExpressionCameraPositionWS, -1600, 600)
+    view = expr(m, unreal.MaterialExpressionCameraVectorWS, -1600, 700)
+    # Ray direction against the camera's forward axis: view depth to distance.
+    forward = custom(m, "return mul(float3(0, 0, 1), (float3x3)ResolvedView.ViewToTranslatedWorld);", [], unreal.CustomMaterialOutputType.CMOT_FLOAT3, -1400, 800)
+    ray_z = custom(m, "return dot(-V, Fwd);", ["V", "Fwd"], unreal.CustomMaterialOutputType.CMOT_FLOAT1, -1250, 760)
+    mel.connect_material_expressions(view, "", ray_z, "V")
+    mel.connect_material_expressions(forward, "", ray_z, "Fwd")
+    depth = expr(m, unreal.MaterialExpressionSceneDepth, -1400, 900)
+    facing = expr(m, unreal.MaterialExpressionTwoSidedSign, -1400, 1000)
+    march = custom(m, DUST_RAYMARCH,
+        ["LP", "LCam", "WP", "CP", "Facing", "SceneDepthCm", "RayZ", "Density", "Fade", "Erosion", "Seed"],
+        unreal.CustomMaterialOutputType.CMOT_FLOAT2, -900, 300)
+    for pin, node in (("LP", to_local(world, -1250, 500)), ("LCam", to_local(cam, -1250, 600)), ("WP", world), ("CP", cam),
+                      ("Facing", facing), ("SceneDepthCm", depth), ("RayZ", ray_z), ("Density", data[3]),
+                      ("Fade", data[6]), ("Erosion", data[4]), ("Seed", data[5])):
+        mel.connect_material_expressions(node, "", march, pin)
+    opacity = mask(m, "r", -650, 300)
+    mel.connect_material_expressions(march, "", opacity, "")
+    light = mask(m, "g", -650, 400)
+    mel.connect_material_expressions(march, "", light, "")
     rg = expr(m, unreal.MaterialExpressionAppendVector, -1350, -380)
     mel.connect_material_expressions(data[0], "", rg, "A")
     mel.connect_material_expressions(data[1], "", rg, "B")
     rgb = expr(m, unreal.MaterialExpressionAppendVector, -1200, -350)
     mel.connect_material_expressions(rg, "", rgb, "A")
     mel.connect_material_expressions(data[2], "", rgb, "B")
-    pixel_normal = expr(m, unreal.MaterialExpressionVertexNormalWS, -1350, -200)
-    up = expr(m, unreal.MaterialExpressionComponentMask, -1200, -200)
-    up.set_editor_property("r", False)
-    up.set_editor_property("g", False)
-    up.set_editor_property("b", True)
-    mel.connect_material_expressions(pixel_normal, "", up, "")
-    lit = add(mul(add(mul(up, const(0.5, -1050, -120), -950, -180), const(0.5, -950, -100), -850, -180), const(0.65, -850, -100), -750, -180), const(0.4, -750, -100), -650, -180)
-    color = mul(rgb, lit, -500, -300)
-    mel.connect_material_property(color, "", unreal.MaterialProperty.MP_BASE_COLOR)
-
-    # Density, the web's sprite (DustSprites.tsx) on the sphere: r is the distance from the cloud's
-    # centre seen in projection (sqrt(1 - (N.V)^2)), disc = 1 - smoothstep(0.25, 1, r),
-    # dens = max(0, disc * (n * 1.6 - 0.3) - erosion * n) for wispy noise n, and the opacity is
-    # (1 - exp(-dens * D * 0.9)) * fade, D and fade per parcel.
-    view = expr(m, unreal.MaterialExpressionCameraVectorWS, -1100, 60)
-    dot = expr(m, unreal.MaterialExpressionDotProduct, -950, 20)
-    mel.connect_material_expressions(pixel_normal, "", dot, "A")
-    mel.connect_material_expressions(view, "", dot, "B")
-    r2 = expr(m, unreal.MaterialExpressionOneMinus, -700, 20)
-    mel.connect_material_expressions(mul(dot, dot, -820, 20), "", r2, "")
-    r2sat = expr(m, unreal.MaterialExpressionSaturate, -620, 20)
-    mel.connect_material_expressions(r2, "", r2sat, "")
-    r = expr(m, unreal.MaterialExpressionSquareRoot, -540, 20)
-    mel.connect_material_expressions(r2sat, "", r, "")
-    step = expr(m, unreal.MaterialExpressionSmoothStep, -460, 20)
-    step.set_editor_property("const_min", 0.25)
-    step.set_editor_property("const_max", 1.0)
-    mel.connect_material_expressions(r, "", step, "Value")
-    disc = expr(m, unreal.MaterialExpressionOneMinus, -380, 20)
-    mel.connect_material_expressions(step, "", disc, "")
-    wisps = noise(seeded, 0.012, 4, -900, 200)
-    body = add(mul(wisps, const(1.6, -800, 300), -700, 240), const(-0.3, -700, 320), -600, 260)
-    eaten = mul(data[4], wisps, -600, 380)
-    dens_raw = expr(m, unreal.MaterialExpressionSubtract, -480, 260)
-    mel.connect_material_expressions(mul(disc, body, -380, 200), "", dens_raw, "A")
-    mel.connect_material_expressions(eaten, "", dens_raw, "B")
-    dens = expr(m, unreal.MaterialExpressionMax, -380, 300)
-    mel.connect_material_expressions(dens_raw, "", dens, "A")
-    mel.connect_material_expressions(const(0.0, -480, 360), "", dens, "B")
-    depth = mul(mul(dens, data[3], -300, 300), const(-0.9, -300, 380), -220, 320)
-    transmit = expr(m, unreal.MaterialExpressionPower, -140, 320)
-    mel.connect_material_expressions(const(2.718281828, -220, 400), "", transmit, "Base")
-    mel.connect_material_expressions(depth, "", transmit, "Exp")
-    absorbed = expr(m, unreal.MaterialExpressionOneMinus, -60, 320)
-    mel.connect_material_expressions(transmit, "", absorbed, "")
-    life = expr(m, unreal.MaterialExpressionPerInstanceCustomData, -200, 460)
-    life.set_editor_property("data_index", 6)
-    density = mul(absorbed, life, -100, 140)
-    fade = expr(m, unreal.MaterialExpressionDepthFade, -60, 120)
-    fade.set_editor_property("fade_distance_default", 200.0)
-    mel.connect_material_expressions(density, "", fade, "Opacity")
-    mel.connect_material_property(fade, "", unreal.MaterialProperty.MP_OPACITY)
-    mel.connect_material_property(const(1.0, -60, 300), "", unreal.MaterialProperty.MP_ROUGHNESS)
+    shade = custom(m, "return C * (0.35 + 0.65 * L);", ["C", "L"], unreal.CustomMaterialOutputType.CMOT_FLOAT3, -500, -200)
+    mel.connect_material_expressions(rgb, "", shade, "C")
+    mel.connect_material_expressions(light, "", shade, "L")
+    mel.connect_material_property(shade, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    mel.connect_material_property(opacity, "", unreal.MaterialProperty.MP_OPACITY)
+    one = expr(m, unreal.MaterialExpressionConstant, -500, 500)
+    one.set_editor_property("r", 1.0)
+    mel.connect_material_property(one, "", unreal.MaterialProperty.MP_ROUGHNESS)
     mel.recompile_material(m)
     return m
 

@@ -58,7 +58,7 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 | Weather presets (clear, dust storm, snow storm): fog colour and thickness, camera-wrapped particles drifting with the wind | done | `client-core/src/weather.rs` (port of `weatherPresets.ts`, `fogSettings.ts`); the particle shader is `WeatherParticles.tsx`'s, as HLSL | `VibeCity.Render.WeatherAndGrass`: 5000 snow particles and the preset fog, then clear |
 | Meadow and shared painted grass (`/match-stats/<id>/grass`, polled every 2 s with If-None-Match) | done: blades per patch, species placed and shaped as the web's (seed heads on reeds and wheat, leaves on corn, fronds on ferns), crop rows, distance LOD, wind, the distant canopy over tall painted stands | `client-core/src/grass.rs` (ports of `grassPlacement.ts`, `GrassPaint.ts`, `foliageProfiles.ts`); shapes from `grassMaterial.ts` | default patches and a painted patch (count, species split, first and last blades) equal to the TypeScript; `WeatherAndGrass`: the stored 84-tile layout loads and every patch regenerates; `VibeCity.Render.Species`: every species drawn (species.png) |
 | Destruction audio (fractures, entry, sheds, collapse waves, impacts, shots, server contacts, scrape loops, air, fly-bys, debris beds, car engines), heard from the camera, occluded by standing buildings, low-passed with distance | done | `client-core/src/audio.rs`, `effects.rs` (ports of `model.ts`, `director.ts`, `destructionMix.ts`, `engine.ts`, `motion.ts`, `destructionSources.ts`, `destructionActivity.ts`, `occlusion.ts`) | mix, intensity, attenuation, random, closest pass, Doppler, debris beds equal to the TypeScript; occlusion through a building and not over it; `CityAndEffects`: sounds and loops heard 35 m from a meteor |
-| Dust where things break | done: the web's dust policy (parcels per source, the per-tick cap, smouldering cells, palettes), drawn on the web's curves as instanced volumes; the web sprite's opacity (`1 - exp(-0.9 dens D)`, its disc and erosion) and the web volumetric renderer's selection (in view, at least 3 px, distant parcels thinned by serial, the nearest 1024) | `client-core/src/dust.rs` (port of `dustPolicy.ts` and `dustParcelStore.ts`'s curves), `vl_dust_eval` | `dust_parity` (every parcel the same as the TypeScript); `VibeCity.Render.Dust` (growth, rise, lifetimes; 1500 clouds draw the nearest 1024, none behind the camera); `CityAndEffects`: 336 live parcels after a meteor |
+| Dust where things break | done: the web's dust policy (parcels per source, the per-tick cap, smouldering cells, palettes), drawn on the web's curves and raymarched as the web's volumetric dust draws them (`dustVolumeShaders.ts`: the noisy-ellipsoid field, erosion, self-shadow toward the sun, each step absorbing `1 - exp(-dens * density * fade * 4 * 0.24 * stride)`), with the web volumetric renderer's selection (in view, at least 3 px, distant parcels thinned by serial, the nearest 1024) | `client-core/src/dust.rs` (port of `dustPolicy.ts` and `dustParcelStore.ts`'s curves), `vl_dust_eval` | `dust_parity` (every parcel the same as the TypeScript); `VibeCity.Render.Dust` (growth, rise, lifetimes; 1500 clouds draw the nearest 1024, none behind the camera); `CityAndEffects`: 336 live parcels after a meteor |
 | City stats (F9) | done: the server's match stats (`/match-stats/<match>`, once a second while open: physics step, tick, players, bodies, cars, batteries, city step p95, server traffic) beside the client's stream counters (fps and frame p95, chunks, bodies, snapshots, keyframes, events, fractures, hash checks, bootstraps, decode errors) | frame `stats` | `VibeCity.Play.Hud`: 7 server rows, 9 client rows (stats.png) |
 | Cursor (Esc frees, click captures, focus loss frees) | done | (Unreal only) | `VibeCity.Cursor` |
 | Session drops | rejoin | `client-core` | (fork commit dd5c0765) |
@@ -112,16 +112,17 @@ does better and match /city's function.
 - **Lighting.** The web lights with its sky gradient's environment map and ACES tone mapping;
   Unreal uses its physical sky, sky light, Lumen global illumination and reflections, and virtual
   shadow maps, over 2K PBR materials (above), so it renders brighter and more physically.
-- **Dust.** Both clients make the same parcels (the web's policy, in the shared core) and draw the
+- **Dust.** Both clients make the same parcels (the web's policy, in the shared core), draw the
   same ones (in view, within the fog's cull distance, at least 3 px, distant ones thinned by serial,
-  the nearest 1024). The web raymarches them as fluid volumes under a per-frame sample budget;
-  Unreal draws each as a translucent, volume-lit ellipsoid with the web sprite's opacity, so its
-  clouds read thicker. Filming one meteor from both clients (2026-10-17) found the web's wire 4
-  client making no destruction dust at all: it applied each break to its ledger past the city
-  client's dust and sound extraction, and never gave the impact detector its bodies' motion. Fixed
-  (`perPlayerDust.test.ts`: the recorded meteor now yields 32 fracture, 874 impact and 19 wave
-  sources); in a browser the same meteor makes about 300 parcels on each client. Headless Chromium
-  shows no dust in either mode, so the comparison is made in a real browser.
+  the nearest 1024) and march each through the same field with the same extinction. What differs
+  is the budget: the web caps its samples per frame (12 M; past it, far clouds drop to half
+  resolution and then are shed), and Unreal's lighting is its own (volumetric translucency under its
+  sky and sun, the web's self-shadow term on the albedo). Filming one meteor from both clients
+  (2026-10-17) found the web's wire 4 client making no destruction dust at all: it applied each
+  break past the city client's dust and sound extraction, and never gave the impact detector its
+  bodies' motion. Fixed (`perPlayerDust.test.ts`: the recorded meteor now yields 32 fracture, 874
+  impact and 19 wave sources); in a browser the same meteor makes about 300 parcels on each client.
+  Headless Chromium shows no dust in either mode, so the comparison is made in a real browser.
 
 ## The plan, milestone by milestone
 

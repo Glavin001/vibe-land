@@ -1,7 +1,8 @@
 // Dust from the client core's dust policy (client-core dust.rs, the web's city/dustPolicy.ts): the
 // parcels each frame brings, kept in a ring of the web's capacity and drawn as the web's curves
-// say (vl_dust_eval: growth, rise, drag, the weather's wind), each one instance of a sphere
-// stretched to its cloud's box in M_VibeCityDustVolume. See AVibeCityDirector.
+// say (vl_dust_eval: growth, rise, drag, the weather's wind), each one instance of a cube stretched
+// to its cloud's box, raymarched by M_VibeCityDustVolume as the web's volumetric dust draws it. See
+// AVibeCityDirector.
 
 #include "VibeCityDirector.h"
 
@@ -21,7 +22,7 @@ namespace
 {
 	// dustParcelStore.ts DUST_CAPACITY.
 	constexpr int32 DustCapacity = 4096;
-	// /Engine/BasicShapes/Sphere is 100 cm across.
+	// /Engine/BasicShapes/Cube is 100 cm across: each parcel's box, which the material raymarches.
 	constexpr double SphereCm = 100.0;
 
 	// dustParcelStore.ts evalParcel: in over the first 1/6 s, then thinning out to nothing.
@@ -29,8 +30,6 @@ namespace
 	{
 		return FMath::Min(1.0f, 6.0f * AgeS) * FMath::Pow(FMath::Max(0.0f, 1.0f - LifeFraction), 1.8f);
 	}
-	// DustSprites.tsx: a near parcel's sprite density is its density x 0.6.
-	constexpr float SpriteDensity = 0.6f;
 
 	// Which parcels are drawn, as the web's volumetric dust picks them (DustVolumeRenderer.ts
 	// select, dustLod.ts): not past the fog's cull distance (where FogExp2 has swallowed 97% of the
@@ -59,7 +58,7 @@ void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
 			UE_LOG(LogVibeLand, Warning, TEXT("M_VibeCityDustVolume is missing: VIBE_MATERIALS_ONLY=dustvolume scripts/unreal/import-city-materials.sh. No dust is drawn."));
 		}
 		DustInstances = NewObject<UInstancedStaticMeshComponent>(this, TEXT("DustParcels"));
-		DustInstances->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")));
+		DustInstances->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Cube.Cube")));
 		DustInstances->SetMaterial(0, DustVolumeMaterial);
 		DustInstances->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		DustInstances->SetCastShadow(false);
@@ -181,9 +180,10 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 		DustInstances->UpdateInstanceTransform(Pick.Slot, FTransform(FQuat::Identity, FVector(E.centre[0], E.centre[1], E.centre[2]), Size / SphereCm),
 			/*bWorldSpace=*/true, /*bMarkRenderStateDirty=*/false, /*bTeleport=*/true);
 		const FLinearColor Color(FColor((D.P.color_rgba >> 24) & 0xFF, (D.P.color_rgba >> 16) & 0xFF, (D.P.color_rgba >> 8) & 0xFF, 0xFF));
-		// The material turns density into opacity as the web's sprite does; its noise eats E.erosion of
-		// the cloud; the seed varies it per parcel.
-		const float Density = D.P.intensity * E.density * SpriteDensity * Pick.Stride;
+		// The material raymarches the parcel as the web's volumetric dust does (DustVolumeRenderer.ts
+		// write: density = e.density x the LOD stride, and the fade); its noise eats E.erosion of the
+		// cloud; the seed varies it per parcel.
+		const float Density = D.P.intensity * E.density * Pick.Stride;
 		DustInstances->SetCustomData(Pick.Slot, { Color.R, Color.G, Color.B, Density, E.erosion, static_cast<float>(D.P.seed % 9973) / 9973.0f, Fade(E.age_s, E.life_fraction) },
 			/*bMarkRenderStateDirty=*/false);
 	}
