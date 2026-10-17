@@ -377,46 +377,107 @@ def hd_ground_material(albedo_array, normal_array, arm_array):
 
 def dust_volume_material():
     """Dust parcels (client-core dust.rs, the web's dust policy): one instance of a sphere per
-    parcel, stretched to its cloud's box, translucent and lit as a volume. Per-instance custom data
-    0-2 is its colour (linear) and 3 its opacity; the edge softens toward the silhouette (the view
-    against the surface normal), and it fades where it meets the city."""
+    parcel, stretched to its cloud's box, translucent and lit as a volume. Per-instance custom data:
+    0-2 colour (linear), 3 opacity, 4 erosion (how much of the cloud the noise has eaten by now),
+    5 seed. The surface billows (smooth 3D noise pushes it along its normal, scaled by the instance's
+    radius), the density is thinned by drifting noise and eroded over its life, the edge softens
+    toward the silhouette, the underside is darker (lit from above), and it fades into the city."""
     m = fresh_material("M_VibeCityDustVolume")
     m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
     m.set_editor_property("translucency_lighting_mode", unreal.TranslucencyLightingMode.TLM_VOLUMETRIC_NON_DIRECTIONAL)
     m.set_editor_property("used_with_instanced_static_meshes", True)
-    channels = []
-    for i in range(4):
-        c = expr(m, unreal.MaterialExpressionPerInstanceCustomData, -900, -200 + i * 120)
+    data = []
+    for i in range(6):
+        c = expr(m, unreal.MaterialExpressionPerInstanceCustomData, -1600, -400 + i * 110)
         c.set_editor_property("data_index", i)
-        channels.append(c)
-    rg = expr(m, unreal.MaterialExpressionAppendVector, -700, -150)
-    mel.connect_material_expressions(channels[0], "", rg, "A")
-    mel.connect_material_expressions(channels[1], "", rg, "B")
-    rgb = expr(m, unreal.MaterialExpressionAppendVector, -550, -120)
+        data.append(c)
+
+    def mul(a, b, x, y):
+        e = expr(m, unreal.MaterialExpressionMultiply, x, y)
+        mel.connect_material_expressions(a, "", e, "A")
+        mel.connect_material_expressions(b, "", e, "B")
+        return e
+
+    def add(a, b, x, y):
+        e = expr(m, unreal.MaterialExpressionAdd, x, y)
+        mel.connect_material_expressions(a, "", e, "A")
+        mel.connect_material_expressions(b, "", e, "B")
+        return e
+
+    def const(v, x, y):
+        e = expr(m, unreal.MaterialExpressionConstant, x, y)
+        e.set_editor_property("r", v)
+        return e
+
+    def noise(position, scale, levels, x, y):
+        n = expr(m, unreal.MaterialExpressionNoise, x, y)
+        n.set_editor_property("scale", scale)
+        n.set_editor_property("levels", levels)
+        n.set_editor_property("turbulence", False)
+        n.set_editor_property("output_min", 0.0)
+        n.set_editor_property("output_max", 1.0)
+        mel.connect_material_expressions(position, "", n, "Position")
+        return n
+
+    # A position that drifts up slowly and differs per parcel (the seed).
+    world = expr(m, unreal.MaterialExpressionWorldPosition, -1600, 300)
+    time = expr(m, unreal.MaterialExpressionTime, -1600, 400)
+    drift = expr(m, unreal.MaterialExpressionConstant3Vector, -1600, 480)
+    drift.set_editor_property("constant", unreal.LinearColor(4.0, 7.0, 25.0, 0.0))
+    moved = add(world, mul(time, drift, -1400, 420), -1250, 340)
+    seeded = add(moved, mul(data[5], const(997.0, -1500, 560), -1350, 540), -1100, 400)
+
+    # Billows: the surface pushed along its normal by smooth noise, up to +-15% of the radius (more
+    # breaks the engine sphere's facets into spikes).
+    radius = expr(m, unreal.MaterialExpressionObjectRadius, -1100, 700)
+    lumps = noise(seeded, 0.003, 2, -900, 600)
+    centred = add(lumps, const(-0.5, -900, 760), -700, 640)
+    push = mul(mul(centred, radius, -550, 660), const(0.3, -550, 760), -400, 680)
+    normal = expr(m, unreal.MaterialExpressionVertexNormalWS, -400, 800)
+    wpo = mul(normal, push, -250, 720)
+    mel.connect_material_property(wpo, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
+
+    # Colour, darker underneath: rgb * (0.55 + 0.45 * (n.z * 0.5 + 0.5)).
+    rg = expr(m, unreal.MaterialExpressionAppendVector, -1350, -380)
+    mel.connect_material_expressions(data[0], "", rg, "A")
+    mel.connect_material_expressions(data[1], "", rg, "B")
+    rgb = expr(m, unreal.MaterialExpressionAppendVector, -1200, -350)
     mel.connect_material_expressions(rg, "", rgb, "A")
-    mel.connect_material_expressions(channels[2], "", rgb, "B")
-    mel.connect_material_property(rgb, "", unreal.MaterialProperty.MP_BASE_COLOR)
-    # Soft silhouette: (N . V)^1.5.
-    normal = expr(m, unreal.MaterialExpressionVertexNormalWS, -1000, 300)
-    view = expr(m, unreal.MaterialExpressionCameraVectorWS, -1000, 400)
-    dot = expr(m, unreal.MaterialExpressionDotProduct, -850, 340)
-    mel.connect_material_expressions(normal, "", dot, "A")
+    mel.connect_material_expressions(data[2], "", rgb, "B")
+    pixel_normal = expr(m, unreal.MaterialExpressionVertexNormalWS, -1350, -200)
+    up = expr(m, unreal.MaterialExpressionComponentMask, -1200, -200)
+    up.set_editor_property("r", False)
+    up.set_editor_property("g", False)
+    up.set_editor_property("b", True)
+    mel.connect_material_expressions(pixel_normal, "", up, "")
+    lit = add(mul(add(mul(up, const(0.5, -1050, -120), -950, -180), const(0.5, -950, -100), -850, -180), const(0.65, -850, -100), -750, -180), const(0.4, -750, -100), -650, -180)
+    color = mul(rgb, lit, -500, -300)
+    mel.connect_material_property(color, "", unreal.MaterialProperty.MP_BASE_COLOR)
+
+    # Density: soft silhouette (N . V)^1.8, thinned by finer noise and eroded over the life:
+    # mask = saturate((wisps - erosion) * 2 + 0.35).
+    view = expr(m, unreal.MaterialExpressionCameraVectorWS, -1100, 60)
+    dot = expr(m, unreal.MaterialExpressionDotProduct, -950, 20)
+    mel.connect_material_expressions(pixel_normal, "", dot, "A")
     mel.connect_material_expressions(view, "", dot, "B")
-    sat = expr(m, unreal.MaterialExpressionSaturate, -720, 340)
+    sat = expr(m, unreal.MaterialExpressionSaturate, -820, 20)
     mel.connect_material_expressions(dot, "", sat, "")
-    soft = expr(m, unreal.MaterialExpressionPower, -600, 340)
-    soft.set_editor_property("const_exponent", 1.5)
+    soft = expr(m, unreal.MaterialExpressionPower, -700, 20)
+    soft.set_editor_property("const_exponent", 1.8)
     mel.connect_material_expressions(sat, "", soft, "Base")
-    mul = expr(m, unreal.MaterialExpressionMultiply, -450, 300)
-    mel.connect_material_expressions(soft, "", mul, "A")
-    mel.connect_material_expressions(channels[3], "", mul, "B")
-    fade = expr(m, unreal.MaterialExpressionDepthFade, -250, 300)
-    fade.set_editor_property("fade_distance_default", 150.0)
-    mel.connect_material_expressions(mul, "", fade, "Opacity")
+    wisps = noise(seeded, 0.012, 4, -900, 200)
+    eroded = expr(m, unreal.MaterialExpressionSubtract, -700, 200)
+    mel.connect_material_expressions(wisps, "", eroded, "A")
+    mel.connect_material_expressions(data[4], "", eroded, "B")
+    sharp = add(mul(eroded, const(2.0, -700, 300), -560, 220), const(0.35, -560, 320), -480, 240)
+    mask = expr(m, unreal.MaterialExpressionSaturate, -440, 220)
+    mel.connect_material_expressions(sharp, "", mask, "")
+    density = mul(mul(soft, mask, -320, 100), data[3], -200, 120)
+    fade = expr(m, unreal.MaterialExpressionDepthFade, -60, 120)
+    fade.set_editor_property("fade_distance_default", 200.0)
+    mel.connect_material_expressions(density, "", fade, "Opacity")
     mel.connect_material_property(fade, "", unreal.MaterialProperty.MP_OPACITY)
-    rough = expr(m, unreal.MaterialExpressionConstant, -700, 500)
-    rough.set_editor_property("r", 1.0)
-    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.connect_material_property(const(1.0, -60, 300), "", unreal.MaterialProperty.MP_ROUGHNESS)
     mel.recompile_material(m)
     return m
 

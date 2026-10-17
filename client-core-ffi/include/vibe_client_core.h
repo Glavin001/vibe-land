@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 21
+#define VL_ABI_VERSION 22
 
 #define VL_OK 0
 
@@ -896,6 +896,11 @@ typedef struct VlDustEval {
    */
   float life_fraction;
   float density;
+  /**
+   * How much of the cloud the erosion noise has eaten by now: the shape's erosion times the
+   * life fraction (dustParcelStore.ts `DustShapeCurve::erosion`).
+   */
+  float erosion;
 } VlDustEval;
 
 /**

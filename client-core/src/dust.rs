@@ -137,6 +137,7 @@ pub fn eval_vl(p: &VlDustParcel, age_s: f32, wind: [f32; 3], space: crate::coord
         age_s: t as f32,
         life_fraction: fraction as f32,
         density: DUST_SHAPES[p.shape as usize].density as f32,
+        erosion: (DUST_SHAPES[p.shape as usize].erosion * fraction) as f32,
     })
 }
 
@@ -192,6 +193,9 @@ pub struct VlDustEval {
     /// age / life, 0..1.
     pub life_fraction: f32,
     pub density: f32,
+    /// How much of the cloud the erosion noise has eaten by now: the shape's erosion times the
+    /// life fraction (dustParcelStore.ts `DustShapeCurve::erosion`).
+    pub erosion: f32,
 }
 
 /// `evalParcel` without the room measurement: where parcel `p` is at `now_ms` in a wind of

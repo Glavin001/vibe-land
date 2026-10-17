@@ -43,7 +43,7 @@ void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
 		DustInstances->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		DustInstances->SetCastShadow(false);
 		DustInstances->SetMobility(EComponentMobility::Movable);
-		DustInstances->NumCustomDataFloats = 4;
+		DustInstances->NumCustomDataFloats = 6;
 		DustInstances->SetupAttachment(RootComponent);
 		DustInstances->RegisterComponent();
 		DustParcels.SetNum(DustCapacity);
@@ -94,7 +94,9 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 			/*bWorldSpace=*/true, /*bMarkRenderStateDirty=*/false, /*bTeleport=*/true);
 		const FLinearColor Color(FColor((D.P.color_rgba >> 24) & 0xFF, (D.P.color_rgba >> 16) & 0xFF, (D.P.color_rgba >> 8) & 0xFF, 0xFF));
 		const float Opacity = FMath::Clamp(D.P.intensity * E.density * 0.35f * Fade(E.life_fraction), 0.0f, 1.0f);
-		DustInstances->SetCustomData(i, { Color.R, Color.G, Color.B, Opacity }, /*bMarkRenderStateDirty=*/false);
+		// The material's noise eats E.erosion of the cloud; the seed varies it per parcel.
+		DustInstances->SetCustomData(i, { Color.R, Color.G, Color.B, Opacity, E.erosion, static_cast<float>(D.P.seed % 9973) / 9973.0f },
+			/*bMarkRenderStateDirty=*/false);
 	}
 	DustInstances->MarkRenderStateDirty();
 }
