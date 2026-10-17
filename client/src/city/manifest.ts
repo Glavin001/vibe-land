@@ -273,6 +273,8 @@ export interface LoadedCityManifest {
   hashHex: string;
   totalChunks: number;
   totalBonds: number;
+  /** The manifest's bytes when it came as binary (VLCM), for the shared core's stream (?coreStream). */
+  binary?: Uint8Array;
 }
 
 /**
@@ -390,5 +392,5 @@ async function parseCityManifest(
     totalChunks += structure.chunks.length;
     totalBonds += bondCountOf(structure);
   }
-  return { manifest, hashHex, totalChunks, totalBonds };
+  return { manifest, hashHex, totalChunks, totalBonds, binary: looksBinary(bytes) ? new Uint8Array(bytes) : undefined };
 }

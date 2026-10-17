@@ -138,6 +138,65 @@ pub fn grass_patch(px: i32, pz: i32, density: f32, exclusions: &[f32], paint: Op
     patch
 }
 
+/// The wire 4 city stream for a manifest, built by the shared core: the manifest bytes decoded and
+/// the structures derived in Rust (`destruction::per_player::structure_defs`, the server's own
+/// derivation, as the Unreal client builds its stream) rather than flattened in TypeScript
+/// (`perPlayerCoreArgs`). The same `PerPlayerClient` surface the web's stream adapter reads.
+/// Behind `?coreStream=1` (`client/src/city/perPlayerWasm.ts`).
+#[wasm_bindgen]
+pub fn core_city_stream(manifest: &[u8], hz: u32, gravity_y: f32, delay_ticks: f32) -> Result<vibe_land_perplayer::wasm::PerPlayerClient, JsValue> {
+    let manifest = vibe_client_core::city::decode_manifest(manifest, None).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let client = vibe_land_perplayer::client::Client::new(
+        vibe_land_destruction::per_player::structure_defs(&manifest),
+        vibe_land_perplayer::predict::Physics::at_hz(hz, gravity_y),
+        hz,
+        delay_ticks,
+    );
+    Ok(vibe_land_perplayer::wasm::PerPlayerClient::from_client(client))
+}
+
+/// The local player's bounded presentation lead (`predictor.rs`, the port of
+/// `physics/thinAuthoritativePredictor.ts`), at the server's walk and sprint speeds. Behind
+/// `?corePredictor=1` (`client/src/runtime/gameRuntime.ts`).
+#[wasm_bindgen]
+pub struct CorePredictor {
+    inner: vibe_client_core::predictor::ThinPredictor,
+}
+
+impl Default for CorePredictor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[wasm_bindgen]
+impl CorePredictor {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self { inner: Default::default() }
+    }
+    pub fn set_speeds(&mut self, walk: f32, sprint: f32) {
+        self.inner.set_speeds(walk, sprint);
+    }
+    pub fn reset(&mut self) {
+        self.inner.reset();
+    }
+    /// The authoritative state this frame: velocity plus the support's (what the player stands on).
+    pub fn observe(&mut self, vx: f32, vy: f32, vz: f32, grounded: bool, in_vehicle: bool, dt_s: f32) {
+        self.inner.observe(glam::Vec3::new(vx, vy, vz), grounded, in_vehicle, dt_s);
+    }
+    /// The presented position: [x, y, z].
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(&mut self, x: f32, y: f32, z: f32, dt_s: f32, move_x: f32, move_y: f32, yaw: f32, buttons: u16) -> Box<[f32]> {
+        let input = vibe_client_core::input::InputState { move_x, move_y, yaw, pitch: 0.0, buttons };
+        let p = self.inner.update(glam::Vec3::new(x, y, z), dt_s, &input);
+        Box::new([p.x, p.y, p.z])
+    }
+    pub fn correction_magnitude(&self) -> f32 {
+        self.inner.offset().length()
+    }
+}
+
 /// One event's voices from the core (`audio::voice_plan`, engine.ts `play` with the original
 /// palette): read with `len()` and the per-voice getters. Behind `?coreAudio=1`
 /// (`client/src/audio/engine.ts`).

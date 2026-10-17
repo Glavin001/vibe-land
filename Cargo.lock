@@ -3238,6 +3238,7 @@ dependencies = [
  "serde_json",
  "vibe-client-core",
  "vibe-land-destruction",
+ "vibe-land-perplayer",
  "vibe-land-shared",
  "wasm-bindgen",
 ]

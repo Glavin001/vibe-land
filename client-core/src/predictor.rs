@@ -92,6 +92,19 @@ impl ThinPredictor {
     pub fn offset(&self) -> Vec3 {
         self.offset
     }
+
+    /// Lead at other walking and sprinting speeds (m/s) than the server's: the web's TypeScript
+    /// predicts sprint at 9, and its parity test pins both to compare the algorithm alone.
+    pub fn set_speeds(&mut self, walk: f32, sprint: f32) {
+        self.walk = walk;
+        self.sprint = sprint;
+    }
+
+    /// Forget the offset and the observed state (a respawn, a teleport).
+    pub fn reset(&mut self) {
+        let (walk, sprint) = (self.walk, self.sprint);
+        *self = Self { walk, sprint, ..Self::default() };
+    }
 }
 
 #[cfg(test)]

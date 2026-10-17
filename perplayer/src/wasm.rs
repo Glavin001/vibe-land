@@ -17,6 +17,14 @@ pub struct PerPlayerClient {
     inner: Client,
 }
 
+impl PerPlayerClient {
+    /// Wrap a client built elsewhere (the shared client core builds one from the manifest bytes,
+    /// the server's way: `client_core_wasm::core_city_stream`).
+    pub fn from_client(inner: Client) -> PerPlayerClient {
+        PerPlayerClient { inner }
+    }
+}
+
 #[wasm_bindgen]
 impl PerPlayerClient {
     /// The structures, flattened: per structure its id, world position (3),

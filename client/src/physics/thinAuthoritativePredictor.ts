@@ -15,6 +15,25 @@ export type AuthoritativePresentationState = {
   inVehicle?: boolean;
 };
 
+/**
+ * The shared core's predictor (client-core predictor.rs via WASM, the Unreal client's), behind
+ * `?corePredictor=1`. It leads sprint at the server's 8.5 m/s, not this file's 9; parity in
+ * thinAuthoritativePredictor.core.test.ts pins both to compare the algorithm.
+ */
+export interface CorePredictorLike {
+  reset(): void;
+  observe(vx: number, vy: number, vz: number, grounded: boolean, inVehicle: boolean, dtSec: number): void;
+  update(x: number, y: number, z: number, dtSec: number, moveX: number, moveY: number, yaw: number, buttons: number): Float32Array;
+  correction_magnitude(): number;
+}
+
+let coreFactory: (() => CorePredictorLike) | null = null;
+
+/** Install (or with null, remove) the core's predictor for predictors that have not yet chosen. */
+export function provideCorePredictor(factory: (() => CorePredictorLike) | null): void {
+  coreFactory = factory;
+}
+
 const MAX_PREDICTION_HORIZON_SEC = 0.05;
 const MAX_HORIZONTAL_OFFSET_M = 0.35;
 const MAX_VERTICAL_OFFSET_M = 0.22;
@@ -36,8 +55,20 @@ export class ThinAuthoritativePredictor {
   private grounded = false;
   private jumpConsumed = false;
   private inVehicle = false;
+  /** The core's predictor, when one was provided by the time this one was first used. */
+  private core: CorePredictorLike | null | undefined = undefined;
+
+  constructor() {
+    if (coreFactory) this.core = coreFactory();
+  }
+
+  private coreImpl(): CorePredictorLike | null {
+    if (this.core === undefined) this.core = coreFactory ? coreFactory() : null;
+    return this.core;
+  }
 
   reset(): void {
+    this.coreImpl()?.reset();
     this.offset = [0, 0, 0];
     this.predictedVelocity = [0, 0, 0];
     this.grounded = false;
@@ -45,6 +76,12 @@ export class ThinAuthoritativePredictor {
   }
 
   observeAuthoritative(state: AuthoritativePresentationState, dtSec: number): void {
+    const core = this.coreImpl();
+    if (core) {
+      const s = state.supportVelocity ?? [0, 0, 0];
+      core.observe(state.velocity[0] + s[0], state.velocity[1] + s[1], state.velocity[2] + s[2], state.grounded, state.inVehicle ?? false, dtSec);
+      return;
+    }
     this.inVehicle = state.inVehicle ?? false;
     this.grounded = state.grounded;
     if (state.grounded) {
@@ -71,6 +108,12 @@ export class ThinAuthoritativePredictor {
     frameDeltaSec: number,
     input: SemanticInputState,
   ): [number, number, number] {
+    const core = this.coreImpl();
+    if (core) {
+      const p = core.update(authoritativePosition[0], authoritativePosition[1], authoritativePosition[2], frameDeltaSec,
+        input.moveX, input.moveY, input.yaw, input.buttons);
+      return [p[0], p[1], p[2]];
+    }
     if (this.inVehicle) {
       this.offset = [0, 0, 0];
       return [...authoritativePosition];
@@ -112,6 +155,8 @@ export class ThinAuthoritativePredictor {
   }
 
   correctionMagnitude(): number {
+    const core = this.coreImpl();
+    if (core) return core.correction_magnitude();
     return Math.hypot(this.offset[0], this.offset[1], this.offset[2]);
   }
 }

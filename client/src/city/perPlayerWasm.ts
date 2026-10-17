@@ -19,6 +19,19 @@ export function initPerPlayerWasm(bytes?: BufferSource): Promise<void> {
   return ready;
 }
 
+/**
+ * The shared core's stream builder (client-core-wasm `core_city_stream`), installed by
+ * core/clientCore.ts behind `?coreStream=1`: the structures derived from the manifest's bytes in
+ * Rust, the server's way, instead of flattened here (perPlayerCoreArgs). Parity in
+ * perPlayerWasm.core.test.ts.
+ */
+type CoreStreamBuilder = (manifest: Uint8Array, simHz: number, gravityY: number, delayTicks: number) => PerPlayerCore;
+let coreStream: CoreStreamBuilder | null = null;
+
+export function provideCoreCityStream(builder: CoreStreamBuilder | null): void {
+  coreStream = builder;
+}
+
 /** The world's gravity (vibe_netcode::movement::GRAVITY), m/s^2, down. */
 const GRAVITY_Y = -9.81;
 
@@ -27,6 +40,7 @@ export function createPerPlayerCore(
   simHz = 60,
   delayTicks = 5,
 ): PerPlayerCore {
+  if (coreStream && manifest.binary) return coreStream(manifest.binary, simHz, GRAVITY_Y, delayTicks);
   const a = perPlayerCoreArgs(manifest.manifest);
   return new PerPlayerClient(a.ids, a.poses, a.nodeCounts, a.bondCounts, a.nodes, a.bonds, simHz, GRAVITY_Y, delayTicks) as unknown as PerPlayerCore;
 }

@@ -59,6 +59,15 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 | Cursor (Esc frees, click captures, focus loss frees) | done | (Unreal only) | `VibeCity.Cursor` |
 | Session drops | rejoin | `client-core` | (fork commit dd5c0765) |
 
+## Gates (2026-10-17, the PhysX server on this Mac)
+
+| Gate | Run | Result |
+|---|---|---|
+| M1: `vl-headless` 60 s | `--seconds 60 --meteor-after 10 --gate` | 3579 of 3578 snapshots, 0 decode errors, 0 hash mismatches, 16 fractures, a freed body fell at −9.810 m/s² |
+| M4: 5 minutes, ≥ 20 fractures | `--seconds 300 --meteor-after 10 --meteor-every 12 --gate --min-fractures 20` | 261 fractures, 0 hash mismatches, 0 decode errors, 17857 of 17856 snapshots, server at 0.993 of real time |
+| Walk displacement | `VibeCity.Play.WalkAndShoot` | server velocity exact; 1.03 input frames applied per server tick |
+| Unreal suite | `scripts/unreal/play-tests.sh` | 15 of 15, and `KillRemote` with a stand-in |
+
 ## Side by side
 
 `VibeCity.Render.Compare` and `scripts/unreal/compare-web.mjs` render the same match from the same
@@ -106,7 +115,16 @@ the web's fog curve (Gaussian) is thinner under 40 m.
   - each sound's voices and debris beds: `?coreAudio=1` (`voicePlan.core.test.ts`, 2000 random
     events);
   - remote players: `?corePlayers=1`;
-  - the city manifest: `?coreManifest=1`.
+  - the city manifest: `?coreManifest=1`;
+  - the local player's presentation lead: `?corePredictor=1` (`thinAuthoritativePredictor.core.test.ts`:
+    20,000 seeded frames, the same position every frame with both at 6 and 9 m/s; by default the
+    core leads sprint at the server's 8.5 m/s, not the TypeScript's 9);
+  - the wire 4 city stream, built by the core from the manifest's bytes (the server's
+    `structure_defs`) instead of flattened in TypeScript: `?coreStream=1`
+    (`perPlayerWasm.core.test.ts`, on a recorded session in `client-core/tests/corpus/citypp-meteor`:
+    1031 packets, up to 290 bodies, every pose, change and ack identical). Both clients already
+    reconstruct the stream with the same Rust (`perplayer`); what stays TypeScript on the web is
+    the adapter into its renderer's ledger.
 
   The weather table is one file both clients read (`shared/assets/weather/presets.json`). Still
   TypeScript on the web, pinned to their Rust ports by fixtures: the destruction sources and dust

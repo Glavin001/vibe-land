@@ -1,7 +1,7 @@
 //! vl-headless: the client core on a real WebTransport session, with no renderer.
 //!
 //!   cargo run -p vibe-client-core --release --example headless -- \
-//!       --api http://127.0.0.1:4001 --match citypp-hl --seconds 30 [--meteor-after 5] [--gate]
+//!       --api http://127.0.0.1:4001 --match citypp-hl --seconds 30 [--meteor-after 5 [--meteor-every 10]] [--gate [--min-fractures 20]]
 //!
 //! Prints a status line a second and the final stats. `--meteor-after S` drops a meteor (POST
 //! /city-meteor/<match>) on the first building's highest chunk S seconds after joining; needs a
@@ -34,6 +34,19 @@ fn main() {
     let match_id = flag("--match").unwrap_or_else(|| "citypp-headless".into());
     let seconds: f64 = flag("--seconds").map_or(30.0, |v| v.parse().expect("--seconds"));
     let meteor_after: Option<f64> = flag("--meteor-after").map(|v| v.parse().expect("--meteor-after"));
+    // A soak: --meteor-every S drops a further meteor every S seconds after the first, on the next
+    // building's highest chunk in turn; --min-fractures N gates on the fractures seen.
+    let meteor_every: Option<f64> = flag("--meteor-every").map(|v| v.parse().expect("--meteor-every"));
+    let min_fractures: u64 = flag("--min-fractures").map_or(0, |v| v.parse().expect("--min-fractures"));
+    let mut meteors_sent = 0u32;
+    // --record DIR: the manifest (manifest.vlcm) and every wire 4 city packet with its arrival
+    // (packets.bin: lane u8, arrival ms f64, length u32, bytes; little-endian), a corpus for the
+    // web's stream parity test (client/src/city/perPlayerWasm.core.test.ts).
+    let record = flag("--record").map(|dir| {
+        std::fs::create_dir_all(&dir).expect("--record dir");
+        (dir.clone(), std::fs::File::create(std::path::Path::new(&dir).join("packets.bin")).expect("packets.bin"))
+    });
+    let mut record = record;
     let gate = std::env::args().any(|a| a == "--gate");
     // A stand-in player for other clients' tests: --jump holds jump (it hops whenever grounded),
     // --drop x,y,z (server metres) places it once joined.
@@ -79,11 +92,22 @@ fn main() {
                     core.on_session_config(config);
                 }
                 Inbound::Manifest(bytes) => {
+                    if let Some((dir, _)) = &record {
+                        std::fs::write(std::path::Path::new(dir).join("manifest.vlcm"), &bytes).expect("manifest.vlcm");
+                    }
                     core.on_manifest(&bytes);
                     eprintln!("vl-headless: manifest {} bytes, {} chunks", bytes.len(), core.chunks().len());
                 }
                 Inbound::Packet { lane, bytes, arrival_us } => {
                     let lane = if lane == WireLane::Reliable { Lane::Reliable } else { Lane::Datagram };
+                    if let (Some((_, file)), Some(&kind)) = (record.as_mut(), bytes.first()) {
+                        if (132..=134).contains(&kind) {
+                            file.write_all(&[u8::from(lane == Lane::Reliable)]).unwrap();
+                            file.write_all(&(arrival_us as f64 / 1000.0).to_le_bytes()).unwrap();
+                            file.write_all(&(bytes.len() as u32).to_le_bytes()).unwrap();
+                            file.write_all(&bytes).unwrap();
+                        }
+                    }
                     core.on_packet(lane, &bytes, arrival_us);
                 }
             }
@@ -142,9 +166,13 @@ fn main() {
         }
 
         if let (Some(after), Some(joined)) = (meteor_after, joined_at) {
-            if !meteor_sent && joined.elapsed().as_secs_f64() >= after {
+            let due = after + meteor_every.map_or(0.0, |every| every * f64::from(meteors_sent));
+            if (!meteor_sent || meteor_every.is_some()) && joined.elapsed().as_secs_f64() >= due {
                 meteor_sent = true;
-                let first = core.chunks().first().map(|c| c.structure);
+                let mut structures: Vec<u32> = core.chunks().iter().map(|c| c.structure).collect();
+                structures.dedup();
+                let first = (!structures.is_empty()).then(|| structures[meteors_sent as usize % structures.len()]);
+                meteors_sent += 1;
                 let target = core
                     .chunks()
                     .iter()
@@ -218,6 +246,9 @@ fn main() {
                 Some(a) if (a + 9.81).abs() < 0.5 => {}
                 other => failures.push(format!("no body fell at 9.81 ± 0.5 m/s² (best {other:?})")),
             }
+        }
+        if stats.fractures < min_fractures {
+            failures.push(format!("{} fractures, fewer than {min_fractures}", stats.fractures));
         }
         if !failures.is_empty() {
             eprintln!("vl-headless: GATE FAILED: {}", failures.join("; "));
