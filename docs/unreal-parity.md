@@ -69,6 +69,7 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 | Web on the shared core: 5 minutes, every core flag on | `node scripts/web-core-soak.mjs` (headless Chromium, a meteor every 12 s) | 25 meteors, up to 1634 live bodies presented, 496 hash checks, 0 mismatches, 0 decode errors, no render stalls, no page errors |
 | Walk displacement | `VibeCity.Play.WalkAndShoot`; `vl-headless --walk` | 6.000 m/s, the server's walk speed, on both (the server's foot input fix, on by default since 2026-10-17; 6.53 m/s before) |
 | Web and Unreal in one match | `node scripts/unreal/cross-client.mjs` (headless Chromium /city + Unreal MeetAndWalk, KillRemote, CannonAndMeteor) | Unreal 3 of 3; the web saw the Unreal player walk, was shot dead by it, and applied 730 destruction events from its meteor; 0 mismatches, 0 decode errors |
+| Big city (`fractured-downtown`, 24 105 chunks) | a second server on side ports; `import-city.sh`; `VibeCity.Perf.Meteor` (8 s after a meteor) | imported as 30 Nanite cells (306 232 triangles, 14 s); city built in 12 ms; game thread: core poll under 0.5 ms, applying frames ~0 ms (p95 0.01, worst 8.8 ms when a struck cell swaps to its runtime mesh), dust 0.1 ms; frames p50 14 ms, p95 57 ms, one 400 ms hitch. The server ran this city at 0.24-0.36 of real time beside the main one on this Mac's GPU, so a meteor freed under 100 bodies: the plan's GPU pose path rule (4 ms at 4000 live bodies) was not reached |
 | Unreal suite | `scripts/unreal/play-tests.sh` (one match on the server) | 17 of 17, and `KillRemote` with a stand-in; `CityAndEffects`: a meteor makes 10 fractures, 291 sounds and 336 live dust parcels from the web's policy |
 
 ## Side by side
@@ -114,6 +115,10 @@ does better and match /city's function.
   server's PhysX tick (about 49 Hz instead of 60). The tests that time the server's input run with
   standard lighting (`play-tests.sh`); for local play, `-dpcvars=r.DynamicGlobalIlluminationMethod=0,r.ReflectionMethod=2,r.Shadow.Virtual.Enable=0`
   does the same. A server on its own machine is unaffected.
+- **Big-city frame tail.** On `fractured-downtown` the frame's 95th percentile was 57 ms and one
+  frame took 400 ms while the game thread's own work (poll, apply, dust) stayed under 9 ms: the
+  rest is the renderer, on a GPU two servers were also using. The 4000-body pose measurement needs
+  a server that runs that city in real time.
 - **Lumen on broken cells.** Lumen global illumination and reflections and virtual shadow maps are
   on, and imported cells carry distance fields. A cell drawing its runtime (procedural) mesh, after
   its first fracture or with no import for the manifest, has none, so Lumen's software tracing

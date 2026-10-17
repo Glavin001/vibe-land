@@ -84,7 +84,11 @@ void AVibeCityDirector::Tick(float DeltaSeconds)
 			NetSubsystem->SetListener(Controller->PlayerCameraManager->GetCameraLocation());
 		}
 	}
+	const double PollStart = FPlatformTime::Seconds();
 	const VlFrameView* Frame = NetSubsystem ? NetSubsystem->Poll() : nullptr;
+	FPerfSample Sample;
+	Sample.FrameMs = DeltaSeconds * 1000.0f;
+	Sample.PollMs = static_cast<float>((FPlatformTime::Seconds() - PollStart) * 1000.0);
 	if (!Frame)
 	{
 		return;
@@ -95,13 +99,29 @@ void AVibeCityDirector::Tick(float DeltaSeconds)
 	}
 	if (bCityBuilt)
 	{
+		const double ApplyStart = FPlatformTime::Seconds();
 		ApplyFrame(*Frame);
+		Sample.ApplyMs = static_cast<float>((FPlatformTime::Seconds() - ApplyStart) * 1000.0);
+		Sample.PosesApplied = static_cast<int32>(Frame->body_pose_count);
 		SpawnDust(*Frame);
 		SoundsSeenCount += static_cast<int64>(Frame->sound_count);
 		LoopsSeenCount += static_cast<int64>(Frame->loop_count);
 		DustSeenCount += static_cast<int64>(Frame->dust_count);
 	}
+	const double DustStart = FPlatformTime::Seconds();
 	TickDust(DeltaSeconds);
+	Sample.DustMs = static_cast<float>((FPlatformTime::Seconds() - DustStart) * 1000.0);
+	Sample.LiveBodies = PosedBodies();
+	Sample.LiveDust = LiveDust();
+	if (PerfSamples.Num() < PerfCapacity)
+	{
+		PerfSamples.Add(Sample);
+	}
+	else
+	{
+		PerfSamples[PerfHead] = Sample;
+	}
+	PerfHead = (PerfHead + 1) % PerfCapacity;
 	ShowStatus(*Frame);
 	LogTransitions(*Frame, DeltaSeconds);
 	MaybeScreenshot(DeltaSeconds);

@@ -73,6 +73,23 @@ public:
 	int64 LoopsSeen() const { return LoopsSeenCount; }
 	int64 DustSeen() const { return DustSeenCount; }
 
+	/** One frame's cost on the game thread (ms): the core's poll (decode, presentation), applying the
+	 * frame to the scene (assignments, body poses, cell rebuilds), and the dust; the frame's time;
+	 * poses the frame carried; live bodies and dust parcels. */
+	struct FPerfSample
+	{
+		float FrameMs = 0.0f;
+		float PollMs = 0.0f;
+		float ApplyMs = 0.0f;
+		float DustMs = 0.0f;
+		int32 PosesApplied = 0;
+		int32 LiveBodies = 0;
+		int32 LiveDust = 0;
+	};
+	/** The last frames' samples (up to 600, oldest overwritten), for tests. */
+	const TArray<FPerfSample>& PerfHistory() const { return PerfSamples; }
+	void ClearPerfHistory() { PerfSamples.Reset(); PerfHead = 0; }
+
 	/** Fired once, when the city has been built from the manifest. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnCityBuilt, const FBox& /*Bounds*/);
 	FOnCityBuilt OnCityBuilt;
@@ -165,6 +182,9 @@ private:
 	bool bCityBuilt = false;
 	UPROPERTY(Transient)
 	TObjectPtr<class AVibeCityBatteries> Batteries;
+	static constexpr int32 PerfCapacity = 600;
+	TArray<FPerfSample> PerfSamples;
+	int32 PerfHead = 0;
 	int64 SoundsSeenCount = 0;
 	int64 LoopsSeenCount = 0;
 	int64 DustSeenCount = 0;

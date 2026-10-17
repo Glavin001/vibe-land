@@ -694,4 +694,133 @@ bool FVibeCityRenderDust::RunTest(const FString& Parameters)
 	return true;
 }
 
+// VibeCity.Perf.Meteor: the game thread's cost of destruction (the plan's M4 measurement). After
+// the city settles, a meteor lands on the highest chunk within 60 m of the camera; 8 s of frames
+// are recorded: frame time, the core's poll, applying the frame (body poses, cell rebuilds), dust.
+// Reports percentiles and peaks, and the plan's GPU-path rule (more than 4 ms applying poses at
+// 4000 live bodies). -VibeShotDir saves perf.png mid-collapse.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPerfMeteor, "VibeCity.Perf.Meteor",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPerfMeteor::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		double Started = 0.0;
+		double MeteorAt = 0.0;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		if (S->Started == 0.0)
+		{
+			S->Started = FPlatformTime::Seconds();
+		}
+		if (!D || !D->IsCityBuilt())
+		{
+			if (FPlatformTime::Seconds() - S->Started > 240.0)
+			{
+				AddError(TEXT("the city was not built"));
+				return true;
+			}
+			return false;
+		}
+		// Settle (a big city sheds what its first ticks break).
+		return FPlatformTime::Seconds() - S->Started > 20.0;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		UVibeNetSubsystem* N = Net();
+		UWorld* World = GameWorld();
+		APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+		if (!D || !N || !PC || !PC->PlayerCameraManager)
+		{
+			AddError(TEXT("no director, net or camera"));
+			return true;
+		}
+		const FVector Eye = PC->PlayerCameraManager->GetCameraLocation();
+		const TArrayView<const VlChunk> Chunks = N->Chunks();
+		FVector Target(0.0, 0.0, -1.0e9);
+		for (const VlChunk& C : Chunks)
+		{
+			const FVector P = VibeCityCells::RestTransform(C).GetLocation();
+			if (FVector::Dist2D(P, Eye) < 6000.0 && P.Z > Target.Z)
+			{
+				Target = P;
+			}
+		}
+		if (Target.Z < -1.0e8)
+		{
+			AddError(TEXT("no chunk within 60 m of the camera"));
+			return true;
+		}
+		D->ClearPerfHistory();
+		Post(N->CurrentApiBaseUrl() / TEXT("city-meteor") / N->CurrentMatchId(),
+			FString::Printf(TEXT("{\"targets\":[[%f,%f,%f]]}"), -Target.Y / 100.0, Target.Z / 100.0, Target.X / 100.0));
+		S->MeteorAt = FPlatformTime::Seconds();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(5.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([]()
+	{
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("perf.png"), false, false);
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(3.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		if (!D)
+		{
+			return true;
+		}
+		TArray<AVibeCityDirector::FPerfSample> Samples = D->PerfHistory();
+		if (!TestTrue(TEXT("frames recorded"), Samples.Num() > 10))
+		{
+			return true;
+		}
+		auto Stat = [&Samples](float AVibeCityDirector::FPerfSample::*Field, double Q)
+		{
+			TArray<float> V;
+			for (const AVibeCityDirector::FPerfSample& X : Samples)
+			{
+				V.Add(X.*Field);
+			}
+			V.Sort();
+			return V[FMath::Clamp(static_cast<int32>(Q * (V.Num() - 1)), 0, V.Num() - 1)];
+		};
+		int32 PeakBodies = 0, PeakPoses = 0, PeakDust = 0;
+		float ApplyAtPeak = 0.0f;
+		for (const AVibeCityDirector::FPerfSample& X : Samples)
+		{
+			PeakPoses = FMath::Max(PeakPoses, X.PosesApplied);
+			PeakDust = FMath::Max(PeakDust, X.LiveDust);
+			if (X.LiveBodies >= PeakBodies)
+			{
+				PeakBodies = X.LiveBodies;
+				ApplyAtPeak = FMath::Max(ApplyAtPeak, X.ApplyMs);
+			}
+		}
+		using FS = AVibeCityDirector::FPerfSample;
+		AddInfo(FString::Printf(TEXT("%d chunks, %d frames over 8 s after the meteor"), Net() ? Net()->Chunks().Num() : 0, Samples.Num()));
+		AddInfo(FString::Printf(TEXT("frame ms p50 %.1f p95 %.1f max %.1f"), Stat(&FS::FrameMs, 0.5), Stat(&FS::FrameMs, 0.95), Stat(&FS::FrameMs, 1.0)));
+		AddInfo(FString::Printf(TEXT("poll ms p50 %.2f p95 %.2f max %.2f"), Stat(&FS::PollMs, 0.5), Stat(&FS::PollMs, 0.95), Stat(&FS::PollMs, 1.0)));
+		AddInfo(FString::Printf(TEXT("apply ms p50 %.2f p95 %.2f max %.2f"), Stat(&FS::ApplyMs, 0.5), Stat(&FS::ApplyMs, 0.95), Stat(&FS::ApplyMs, 1.0)));
+		AddInfo(FString::Printf(TEXT("dust ms p50 %.2f p95 %.2f max %.2f"), Stat(&FS::DustMs, 0.5), Stat(&FS::DustMs, 0.95), Stat(&FS::DustMs, 1.0)));
+		AddInfo(FString::Printf(TEXT("peak: %d live bodies, %d poses in a frame, %d dust parcels; apply at peak bodies %.2f ms"), PeakBodies, PeakPoses, PeakDust, ApplyAtPeak));
+		const bool bGpuPath = PeakBodies >= 4000 ? ApplyAtPeak > 4.0f : false;
+		AddInfo(FString::Printf(TEXT("GPU pose path rule (> 4 ms at 4000 live bodies): %s"),
+			PeakBodies >= 4000 ? (bGpuPath ? TEXT("tripped") : TEXT("not tripped")) : TEXT("not reached (fewer than 4000 live bodies)")));
+		TestTrue(TEXT("the meteor freed bodies"), PeakBodies > 0);
+		return true;
+	}));
+	return true;
+}
+
 #endif
