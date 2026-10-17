@@ -63,6 +63,15 @@ pub fn decode_manifest(bytes: &[u8], expected_hash: Option<&str>) -> Result<Dest
     manifest_binary::decode(bytes).map_err(|e| ManifestError::Decode(format!("{e:?}")))
 }
 
+/// A chunk's rest box (server space).
+struct Occluder {
+    structure: u32,
+    node: u32,
+    centre: Vec3,
+    rotation: Quat,
+    half: Vec3,
+}
+
 pub struct CityStream {
     client: Client,
     space: Space,
@@ -70,6 +79,8 @@ pub struct CityStream {
     chunk_index: HashMap<(u32, u32), u32>,
     /// Per structure, its chunks' indices in node order.
     structure_chunks: HashMap<u32, Vec<(u32, u32)>>,
+    /// Every chunk's box at rest, server space, for sound occlusion while it stands.
+    occluders: Vec<Occluder>,
     /// Last pose written per body, to send only bodies that moved.
     last_pose: HashMap<BodyKey, (Vec3, Quat, bool)>,
     last_ack_ms: f64,
@@ -108,6 +119,7 @@ impl CityStream {
         let mut chunks = Vec::new();
         let mut chunk_index = HashMap::new();
         let mut structure_chunks: HashMap<u32, Vec<(u32, u32)>> = HashMap::new();
+        let mut occluders = Vec::new();
         for s in &manifest.structures {
             let world_p = Vec3::from_array(s.world_position);
             let world_q = Quat::from_array(s.world_rotation).normalize();
@@ -131,6 +143,7 @@ impl CityStream {
                     flags,
                 });
                 chunk_index.insert((s.structure_id, c.node_index), index);
+                occluders.push(Occluder { structure: s.structure_id, node: c.node_index, centre: rest, rotation: world_q, half: Vec3::from_array(c.size) * 0.5 });
                 structure_chunks.entry(s.structure_id).or_default().push((c.node_index, index));
             }
         }
@@ -141,6 +154,7 @@ impl CityStream {
             chunks,
             chunk_index,
             structure_chunks,
+            occluders,
             last_pose: HashMap::new(),
             last_ack_ms: f64::NEG_INFINITY,
             last_resync_ms: f64::NEG_INFINITY,
@@ -289,6 +303,49 @@ impl CityStream {
 
     /// Impacts off the body velocity stream (motion.ts `classifyMotionImpact`): a body whose
     /// velocity drops sharply between render samples hit something; at most one every 220 ms.
+    /// Whether a standing chunk lies on the segment from `from` to within `margin` of `to` (server
+    /// space): the scene ray the web's AcousticOcclusion casts (occlusion.ts), against the boxes of
+    /// the chunks still standing.
+    pub fn segment_blocked(&self, from: Vec3, to: Vec3, margin: f32) -> bool {
+        let d = from.distance(to);
+        if d <= margin {
+            return false;
+        }
+        let dir = (to - from) / d;
+        let reach = d - margin;
+        self.occluders.iter().any(|o| {
+            // Cheap reject by the box's bounding sphere first.
+            let r = o.half.length();
+            let along = (o.centre - from).dot(dir).clamp(0.0, reach);
+            if (from + dir * along).distance_squared(o.centre) > r * r {
+                return false;
+            }
+            if self.client.chunk_body(o.structure, o.node).is_some() {
+                return false; // it has broken loose
+            }
+            // Slab test in the box's frame.
+            let inv = o.rotation.inverse();
+            let (p, v) = (inv * (from - o.centre), inv * dir);
+            let (mut t0, mut t1) = (0.0f32, reach);
+            for k in 0..3 {
+                let (pk, vk, hk) = (p[k], v[k], o.half[k]);
+                if vk.abs() < 1e-8 {
+                    if pk.abs() > hk {
+                        return false;
+                    }
+                } else {
+                    let (a, b) = ((-hk - pk) / vk, (hk - pk) / vk);
+                    t0 = t0.max(a.min(b));
+                    t1 = t1.min(a.max(b));
+                    if t0 > t1 {
+                        return false;
+                    }
+                }
+            }
+            true
+        })
+    }
+
     /// The chunks (node indices) a body holds now.
     fn members_of(&self, key: BodyKey) -> Vec<u32> {
         self.structure_chunks

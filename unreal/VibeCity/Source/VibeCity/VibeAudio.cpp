@@ -63,7 +63,12 @@ void AVibeAudio::Start(const FPending& S)
 {
 	if (USoundBase* Sound = Clip(S.Clip))
 	{
-		UGameplayStatics::SpawnSoundAtLocation(this, Sound, S.Position, FRotator::ZeroRotator, S.Gain, S.Rate, 0.0f, Attenuation);
+		if (UAudioComponent* Component = UGameplayStatics::SpawnSoundAtLocation(this, Sound, S.Position, FRotator::ZeroRotator, S.Gain, S.Rate, 0.0f, Attenuation))
+		{
+			// Air absorption and occlusion, as the core decided (engine.ts placeVoice).
+			Component->SetLowPassFilterEnabled(true);
+			Component->SetLowPassFilterFrequency(S.LowpassHz);
+		}
 		++PlayedCount;
 	}
 	else
@@ -78,7 +83,7 @@ void AVibeAudio::OnFrame(const VlFrameView& Frame)
 	for (size_t i = 0; i < Frame.sound_count; ++i)
 	{
 		const VlSound& S = Frame.sounds[i];
-		const FPending P{ S.clip, FVector(S.position[0], S.position[1], S.position[2]), S.gain, S.rate, Now + FMath::Max(0.0f, S.delay_s) };
+		const FPending P{ S.clip, FVector(S.position[0], S.position[1], S.position[2]), S.gain, S.rate, Now + FMath::Max(0.0f, S.delay_s), S.lowpass_hz };
 		if (S.delay_s <= 0.0f)
 		{
 			Start(P);
@@ -122,6 +127,8 @@ void AVibeAudio::OnFrame(const VlFrameView& Frame)
 		Component->SetWorldLocation(Position);
 		Component->SetVolumeMultiplier(L.gain);
 		Component->SetPitchMultiplier(L.rate);
+		Component->SetLowPassFilterEnabled(true);
+		Component->SetLowPassFilterFrequency(L.lowpass_hz);
 	}
 	for (auto It = Loops.CreateIterator(); It; ++It)
 	{

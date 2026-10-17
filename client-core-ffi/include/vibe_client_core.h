@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 13
+#define VL_ABI_VERSION 14
 
 #define VL_OK 0
 
@@ -482,6 +482,10 @@ typedef struct VlSound {
    * `VL_SOUND_*` bits.
    */
   uint32_t flags;
+  /**
+   * Low-pass cutoff, Hz: air absorption with distance and occlusion (engine.ts `placeVoice`).
+   */
+  float lowpass_hz;
 } VlSound;
 
 /**
@@ -539,6 +543,10 @@ typedef struct VlLoop {
   float gain;
   float rate;
   uint32_t flags;
+  /**
+   * Low-pass cutoff, Hz (as `VlSound::lowpass_hz`).
+   */
+  float lowpass_hz;
 } VlLoop;
 
 /**

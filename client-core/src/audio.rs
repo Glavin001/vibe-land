@@ -178,6 +178,8 @@ pub struct VlSound {
     pub delay_s: f32,
     /// `VL_SOUND_*` bits.
     pub flags: u32,
+    /// Low-pass cutoff, Hz: air absorption with distance and occlusion (engine.ts `placeVoice`).
+    pub lowpass_hz: f32,
 }
 
 pub const VL_SOUND_PROTECTED: u32 = 1;
@@ -228,6 +230,7 @@ pub fn voices(e: &SoundEvent, listener: Vec3, now_ms: f64, mix: Mix, out: &mut V
                 rate,
                 delay_s: delay_s + extra_delay,
                 flags,
+                lowpass_hz: 20000.0,
             });
         }
     };
@@ -244,6 +247,7 @@ pub fn voices(e: &SoundEvent, listener: Vec3, now_ms: f64, mix: Mix, out: &mut V
                     rate: (rate * 1.2).clamp(0.8, 1.5),
                     delay_s,
                     flags: flags | VL_SOUND_PROTECTED,
+                    lowpass_hz: 20000.0,
                 });
             }
             return;
@@ -421,6 +425,8 @@ pub struct VlLoop {
     pub gain: f32,
     pub rate: f32,
     pub flags: u32,
+    /// Low-pass cutoff, Hz (as `VlSound::lowpass_hz`).
+    pub lowpass_hz: f32,
 }
 
 /// The most loops at once (engine.ts keeps ten continuous voices).
@@ -482,7 +488,7 @@ impl Loops {
         }
         let level = clamp01(intensity) * 0.32 * mix.detail;
         let gain = level * source_attenuation(d, 1.0);
-        let record = VlLoop { id, clip, position: position.to_array(), gain, rate, flags: 0 };
+        let record = VlLoop { id, clip, position: position.to_array(), gain, rate, flags: 0, lowpass_hz: 20000.0 };
         self.live.insert(id, Live { record, position, intensity: level, air, at_ms: now_ms });
     }
 
@@ -666,7 +672,7 @@ pub fn bed_loop(bed: &Bed, listener: Vec3, mix: Mix) -> Option<VlLoop> {
     }
     let clip = Clips::get().index(&format!("debris-{}", bed.material.name()))?;
     let gain = amount * source_attenuation(bed.position.distance(listener), 5.0);
-    Some(VlLoop { id: 0x4000_0000 | (fnv(&bed.key) & 0x3FFF_FFFF), clip, position: bed.position.to_array(), gain, rate: 0.88, flags: VL_LOOP_BED })
+    Some(VlLoop { id: 0x4000_0000 | (fnv(&bed.key) & 0x3FFF_FFFF), clip, position: bed.position.to_array(), gain, rate: 0.88, flags: VL_LOOP_BED, lowpass_hz: 20000.0 })
 }
 
 /// `VlLoop::flags`: a debris bed (not counted against the ten continuous loops).
@@ -676,6 +682,62 @@ pub const VL_LOOP_BED: u32 = 1;
 /// `rumble` clip above 0.7 m/s, intensity 0.08 + speed / 55, within 80 m.
 pub fn engine_intensity(speed: f32) -> Option<f32> {
     (speed > 0.7).then(|| clamp01(0.08 + speed / 55.0))
+}
+
+/// occlusion.ts `AcousticOcclusion`: a scene ray from the listener to a source, 0.7 when blocked,
+/// cached 250 ms per 3 m cell pair, at most six new rays per 100 ms.
+#[derive(Default)]
+pub struct Occlusion {
+    cache: HashMap<[i32; 6], (f64, f32)>,
+    order: std::collections::VecDeque<[i32; 6]>,
+    window: f64,
+    queries: u32,
+}
+
+impl Occlusion {
+    pub fn sample(&mut self, listener: Vec3, source: Vec3, now_ms: f64, blocked: impl FnOnce(Vec3, Vec3, f32) -> bool) -> f32 {
+        if now_ms - self.window > 100.0 {
+            self.window = now_ms;
+            self.queries = 0;
+        }
+        let cell = |v: f32| (v / 3.0).floor() as i32;
+        let key = [cell(listener.x), cell(listener.y), cell(listener.z), cell(source.x), cell(source.y), cell(source.z)];
+        let old = self.cache.get(&key).copied();
+        if let Some((at, value)) = old {
+            if now_ms - at < 250.0 {
+                return value;
+            }
+        }
+        if self.queries >= 6 {
+            return old.map_or(0.0, |(_, v)| v);
+        }
+        if source.distance(listener) < 1.0 {
+            return 0.0;
+        }
+        self.queries += 1;
+        let value = if blocked(listener, source, 0.7) { 0.7 } else { 0.0 };
+        if self.cache.insert(key, (now_ms, value)).is_none() {
+            self.order.push_back(key);
+        }
+        if self.cache.len() > 128 {
+            if let Some(k) = self.order.pop_front() {
+                self.cache.remove(&k);
+            }
+        }
+        value
+    }
+
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// engine.ts `placeVoice`: a voice's level and low-pass under `occlusion` at `distance`; beds
+/// (`body`) lose less level and keep more highs.
+pub fn occluded(gain: f32, distance: f32, occlusion: f32, body: bool) -> (f32, f32) {
+    let level = gain * (1.0 - occlusion * if body { 0.4 } else { 0.68 });
+    let cutoff = (if body { 1000.0f32 } else { 650.0 }).max(19000.0 / (1.0 + distance * 0.009) * (1.0 - occlusion * 0.89));
+    (level, cutoff)
 }
 
 /// `closestPass` (model.ts): the closest approach of a body moving a -> b to a listener moving
@@ -1082,5 +1144,27 @@ mod tests {
         let l = bed_loop(bed, Vec3::ZERO, DEFAULT_MIX).expect("audible");
         assert_eq!(Clips::get().ids[l.clip as usize], "debris-concrete");
         assert_eq!(engine_intensity(0.5), None);
+    }
+
+    #[test]
+    fn occlusion_caches_and_budgets_like_the_web() {
+        let mut o = Occlusion::default();
+        let l = Vec3::ZERO;
+        let mut rays = 0;
+        for i in 0..10 {
+            let s = Vec3::new(10.0 + 4.0 * i as f32, 0.0, 0.0);
+            o.sample(l, s, 0.0, |_, _, _| {
+                rays += 1;
+                true
+            });
+        }
+        assert_eq!(rays, 6, "six new rays per 100 ms");
+        assert_eq!(o.sample(l, Vec3::new(10.0, 0.0, 0.0), 50.0, |_, _, _| false), 0.7, "cached for 250 ms");
+        assert_eq!(o.sample(l, Vec3::new(10.0, 0.0, 0.0), 400.0, |_, _, _| false), 0.0, "re-cast after 250 ms");
+        // engine.ts placeVoice at 100 m, fully clear and occluded.
+        let (g, c) = occluded(1.0, 100.0, 0.0, false);
+        assert!((g - 1.0).abs() < 1e-6 && (c - 19000.0 / 1.9).abs() < 1e-2);
+        let (g, c) = occluded(1.0, 100.0, 0.7, false);
+        assert!((g - (1.0 - 0.7 * 0.68)).abs() < 1e-6 && (c - (19000.0f32 / 1.9 * (1.0 - 0.7 * 0.89)).max(650.0)).abs() < 1e-2);
     }
 }

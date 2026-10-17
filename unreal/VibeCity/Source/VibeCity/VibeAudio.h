@@ -15,7 +15,8 @@ class USoundBase;
  * effects.rs, ports of the web's audio policy, so which clip, how loud, its distance falloff and
  * pitch are the web's): clip vl_audio_clip_id(clip) from /Game/VibeCity/Audio/ (imported by
  * scripts/unreal/import-city-audio.sh) at its position, gain and rate, after its delay, spatialized
- * with SA_VibeCity (no further falloff). The core hears from the player's eye.
+ * with SA_VibeCity (no further falloff), through the low-pass the core sets (air absorption and
+ * occlusion). The core hears from the camera.
  *
  * Continuous sounds (VlFrameView::loops: scrapes, air past fast bodies) keep one looping audio
  * component per loop id, moved and re-levelled each frame, faded out when a frame drops the id.
@@ -48,6 +49,7 @@ private:
 		float Gain;
 		float Rate;
 		double At;
+		float LowpassHz;
 	};
 
 	void OnFrame(const VlFrameView& Frame);

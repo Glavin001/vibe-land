@@ -129,3 +129,30 @@ fn authored_pack_surfaces_follow_texture_keys() {
         assert!(used.contains(id), "house-1story should show {id}: {used:?}");
     }
 }
+
+/// Sound occlusion (occlusion.ts): a ray through a standing building is blocked, one over the
+/// roofs or along open ground is not.
+#[test]
+fn standing_buildings_block_sound() {
+    use vibe_client_core::city::CityStream;
+    let manifest = city("high-rise-3f-local.json", 1);
+    let stream = CityStream::new(&manifest, 60, Space::Server);
+    // The building's bounding box in server space, from its chunks at rest.
+    let (mut lo, mut hi) = (glam::Vec3::splat(f32::MAX), glam::Vec3::splat(f32::MIN));
+    for s in &manifest.structures {
+        let (p, q) = (glam::Vec3::from_array(s.world_position), glam::Quat::from_array(s.world_rotation).normalize());
+        for c in &s.chunks {
+            let w = p + q * glam::Vec3::from_array(c.centroid);
+            lo = lo.min(w);
+            hi = hi.max(w);
+        }
+    }
+    let centre = (lo + hi) * 0.5;
+    let reach = (hi - lo).length() + 20.0;
+    let low = centre.y.min(lo.y + 2.0);
+    let through = (glam::Vec3::new(centre.x - reach, low, centre.z), glam::Vec3::new(centre.x + reach, low, centre.z));
+    assert!(stream.segment_blocked(through.0, through.1, 0.7), "through the building");
+    let over = hi.y + 30.0;
+    assert!(!stream.segment_blocked(glam::Vec3::new(through.0.x, over, centre.z), glam::Vec3::new(through.1.x, over, centre.z), 0.7), "over the roof");
+    assert!(!stream.segment_blocked(glam::Vec3::new(centre.x + reach, low, centre.z), glam::Vec3::new(centre.x + reach, low, centre.z + 40.0), 0.7), "open ground");
+}

@@ -102,6 +102,8 @@ pub struct ClientCore {
     flybys: audio::FlybyTracker,
     /// Debris energy per region, for the continuous debris beds (destructionActivity.ts).
     activity: audio::Activity,
+    /// Scene rays from the listener to sources (occlusion.ts).
+    occlusion: audio::Occlusion,
     loops: audio::Loops,
     /// Free dynamic bodies' last drawn position and time (server space, ms), for their velocity.
     dynamic_previous: std::collections::HashMap<u32, (Vec3, f64)>,
@@ -164,6 +166,7 @@ impl ClientCore {
             audio: audio::AudioDirector::default(),
             flybys: audio::FlybyTracker::default(),
             activity: audio::Activity::default(),
+            occlusion: audio::Occlusion::default(),
             loops: audio::Loops::default(),
             dynamic_previous: Default::default(),
             meteor_bodies: Default::default(),
@@ -717,14 +720,22 @@ impl ClientCore {
                 loops.push(l);
             }
         }
+        let city = self.city.as_ref();
         for mut l in loops {
-            l.position = space.pos(Vec3::from_array(l.position));
+            let p = Vec3::from_array(l.position);
+            let occlusion = self.occlusion.sample(listener, p, now_ms, |a, b, m| city.is_some_and(|c| c.segment_blocked(a, b, m)));
+            (l.gain, l.lowpass_hz) = audio::occluded(l.gain, p.distance(listener), occlusion, l.flags & audio::VL_LOOP_BED != 0);
+            l.position = space.pos(p);
             self.frame.loops.push(l);
         }
         let mut voices = Vec::new();
         self.audio.drain(now_ms, |e| audio::voices(e, listener, now_ms, audio::DEFAULT_MIX, &mut voices));
+        let city = self.city.as_ref();
         for mut v in voices {
-            v.position = space.pos(Vec3::from_array(v.position));
+            let p = Vec3::from_array(v.position);
+            let occlusion = self.occlusion.sample(listener, p, now_ms, |a, b, m| city.is_some_and(|c| c.segment_blocked(a, b, m)));
+            (v.gain, v.lowpass_hz) = audio::occluded(v.gain, p.distance(listener), occlusion, false);
+            v.position = space.pos(p);
             self.frame.sounds.push(v);
         }
     }
