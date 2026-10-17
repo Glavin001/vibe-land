@@ -32,6 +32,12 @@ AVibeCityDirector::AVibeCityDirector()
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Chunk(TEXT("/Game/VibeCity/Materials/M_VibeCityChunk.M_VibeCityChunk"));
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Glass(TEXT("/Game/VibeCity/Materials/M_VibeCityGlass.M_VibeCityGlass"));
 	ChunkMaterial = Chunk.Get();
+	// -VibeFlatChunks: the chunk material without its normal map.
+	if (FParse::Param(FCommandLine::Get(), TEXT("VibeFlatChunks")))
+	{
+		static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Flat(TEXT("/Game/VibeCity/Materials/M_VibeCityChunkFlat.M_VibeCityChunkFlat"));
+		ChunkMaterial = Flat.Get();
+	}
 	GlassMaterial = Glass.Get();
 }
 

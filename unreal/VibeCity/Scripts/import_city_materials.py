@@ -8,6 +8,7 @@ Creates under /Game/VibeCity:
   Textures/Layers/T_CityAlbedo_NN, T_CitySurface_NN   one per catalog layer, as imported
   Textures/T_CityAlbedoArray, T_CitySurfaceArray      Texture2DArrays, slice = catalog layer
   Materials/M_VibeCityChunk                           opaque PBR, samples both arrays
+  Materials/M_VibeCityChunkFlat                       the same without the normal map
   Materials/M_VibeCityGlass                           translucent glass
 
 M_VibeCityChunk reads what the client core puts on every chunk vertex:
@@ -97,8 +98,8 @@ def mask(material, channels: str, x, y):
     return e
 
 
-def chunk_material(albedo_array, surface_array):
-    m = fresh_material("M_VibeCityChunk")
+def chunk_material(albedo_array, surface_array, name="M_VibeCityChunk", normal_map=True):
+    m = fresh_material(name)
     uv0 = expr(m, unreal.MaterialExpressionTextureCoordinate, -1400, 0)
     uv1 = expr(m, unreal.MaterialExpressionTextureCoordinate, -1400, 200)
     uv1.set_editor_property("coordinate_index", 1)
@@ -142,7 +143,8 @@ def chunk_material(albedo_array, surface_array):
     mel.connect_material_expressions(offset, "", bias, "B")
     derive_z = expr(m, unreal.MaterialExpressionDeriveNormalZ, -150, 200)
     mel.connect_material_expressions(bias, "", derive_z, "")
-    mel.connect_material_property(derive_z, "", unreal.MaterialProperty.MP_NORMAL)
+    if normal_map:
+        mel.connect_material_property(derive_z, "", unreal.MaterialProperty.MP_NORMAL)
 
     m.set_editor_property("two_sided", False)
     mel.recompile_material(m)
@@ -180,6 +182,8 @@ surface_layers = import_layers("surface", srgb=False)
 albedo_array = texture_array("T_CityAlbedoArray", albedo_layers, srgb=True)
 surface_array = texture_array("T_CitySurfaceArray", surface_layers, srgb=False)
 chunk = chunk_material(albedo_array, surface_array)
+# The same without the normal map: a cheaper fallback, and a diagnostic for the tangent basis.
+chunk_material(albedo_array, surface_array, "M_VibeCityChunkFlat", normal_map=False)
 glass = glass_material()
 saved = assets.save_directory(ROOT, only_if_is_dirty=False, recursive=True)
 unreal.log(f"VIBE_IMPORT_OK layers={len(layered)} saved={saved} chunk={chunk.get_path_name()} glass={glass.get_path_name()}")
