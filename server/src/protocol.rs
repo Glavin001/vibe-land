@@ -1716,4 +1716,33 @@ mod client_codec_roundtrip {
             other => panic!("{other:?}"),
         }
     }
+
+    #[test]
+    fn meteor_launch_reads_back_on_the_client() {
+        let sent = crate::meteor::MeteorLaunchedPacket {
+            body_id: 0x0102_0304,
+            shooter_player_id: 7,
+            server_launch_time_us: 123_456_789_012,
+            start: [-180.5, 240.25, 300.0],
+            velocity: [12.5, -90.0, -100.75],
+            target: [3.0, 10.5, -4.25],
+            radius_m: 2.0,
+            gravity_ms2: 9.81,
+            flight_time_s: 2.75,
+        };
+        let got = net_client::decode_meteor_launched(&crate::meteor::encode_meteor_launched(&sent)).unwrap();
+        assert_eq!(
+            (got.body_id, got.shooter_player_id, got.server_launch_time_us, got.start, got.velocity, got.target, got.radius_m, got.gravity_ms2, got.flight_time_s),
+            (sent.body_id, sent.shooter_player_id, sent.server_launch_time_us, sent.start, sent.velocity, sent.target, sent.radius_m, sent.gravity_ms2, sent.flight_time_s)
+        );
+        assert!(net_client::decode_meteor_launched(&crate::meteor::encode_meteor_launched(&sent)[..40]).is_err());
+    }
+
+    #[test]
+    fn client_camera_drop_reads_back_on_the_server() {
+        let bytes = net_client::encode_city_camera_drop([12.5, 40.0, -3.25], 1.25, -0.5);
+        assert_eq!(bytes.len(), 21);
+        let ClientDatagram::CityCameraDrop(cmd) = decode_client_datagram(&bytes).unwrap() else { panic!("not a camera drop") };
+        assert_eq!((cmd.position, cmd.yaw, cmd.pitch), ([12.5, 40.0, -3.25], 1.25, -0.5));
+    }
 }

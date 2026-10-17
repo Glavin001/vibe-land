@@ -383,6 +383,54 @@ pub fn encode_city_resync_request(last_topo_seq: u32) -> Vec<u8> {
     out
 }
 
+/// A meteor the server launched (`PKT_METEOR_LAUNCHED`, server/src/meteor.rs): its body (streamed
+/// later as a snapshot sphere), who called it, and the ballistic arc a client draws until the body
+/// is in its snapshots. Absolute floats in server space, metres and seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeteorLaunched {
+    pub body_id: u32,
+    pub shooter_player_id: u32,
+    pub server_launch_time_us: u64,
+    pub start: [f32; 3],
+    pub velocity: [f32; 3],
+    pub target: [f32; 3],
+    pub radius_m: f32,
+    /// Magnitude, downward.
+    pub gravity_ms2: f32,
+    pub flight_time_s: f32,
+}
+
+/// Decode a `PKT_METEOR_LAUNCHED` packet (it is routed with the city stream's kinds, so
+/// [`decode_server_packet`] leaves it to this).
+pub fn decode_meteor_launched(bytes: &[u8]) -> Result<MeteorLaunched, DecodeError> {
+    let (&kind, body) = bytes.split_first().ok_or(DecodeError::Empty)?;
+    let mut r = Reader { bytes: body, kind };
+    let mut v3 = |r: &mut Reader| -> Result<[f32; 3], DecodeError> { Ok([r.f32()?, r.f32()?, r.f32()?]) };
+    Ok(MeteorLaunched {
+        body_id: r.u32()?,
+        shooter_player_id: r.u32()?,
+        server_launch_time_us: r.u64()?,
+        start: v3(&mut r)?,
+        velocity: v3(&mut r)?,
+        target: v3(&mut r)?,
+        radius_m: r.f32()?,
+        gravity_ms2: r.f32()?,
+        flight_time_s: r.f32()?,
+    })
+}
+
+/// Drop the player at a pose (`PKT_CITY_CAMERA_DROP`, reliable stream): leaving the aerial camera
+/// puts the player where the camera is. Server space; the server rate-limits it and rejects
+/// non-finite or far-out poses.
+pub fn encode_city_camera_drop(position: [f32; 3], yaw: f32, pitch: f32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(21);
+    out.push(PKT_CITY_CAMERA_DROP);
+    for v in position.into_iter().chain([yaw, pitch]) {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
 /// The most frames one input bundle carries (the count is a u8).
 pub const INPUT_BUNDLE_MAX_FRAMES: usize = 255;
 
@@ -491,6 +539,9 @@ impl<'a> Reader<'a> {
     }
     fn i32(&mut self) -> Result<i32, DecodeError> {
         Ok(i32::from_le_bytes(self.take()?))
+    }
+    fn f32(&mut self) -> Result<f32, DecodeError> {
+        Ok(f32::from_le_bytes(self.take::<4>()?))
     }
     fn u64(&mut self) -> Result<u64, DecodeError> {
         Ok(u64::from_le_bytes(self.take()?))
