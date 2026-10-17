@@ -12,6 +12,7 @@
 pub mod audio;
 pub mod city;
 pub mod coords;
+pub mod effects;
 pub mod frame;
 pub mod geometry;
 pub mod input;
@@ -25,9 +26,9 @@ use vibe_land_shared::constants::{
     FLAG_IN_VEHICLE, FLAG_ON_GROUND, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, WEAPON_CANNONBALL, WEAPON_HITSCAN,
     WEAPON_METEOR,
 };
-use vibe_land_shared::constants::{MELEE_COOLDOWN_MS, PKT_METEOR_LAUNCHED, PKT_VEHICLE_ASSET, PKT_VEHICLE_RIG};
+use vibe_land_shared::constants::{MELEE_COOLDOWN_MS, PKT_AUDIO_CONTACTS, PKT_METEOR_LAUNCHED, PKT_VEHICLE_ASSET, PKT_VEHICLE_RIG};
 use vibe_land_shared::net_client::{
-    decode_meteor_launched, decode_server_packet, decode_vehicle_asset, decode_vehicle_rig, VehicleRig, encode_city_camera_drop, encode_fire,
+    decode_audio_contacts, decode_meteor_launched, decode_server_packet, decode_vehicle_asset, decode_vehicle_rig, VehicleRig, encode_city_camera_drop, encode_fire,
     encode_input_bundle, encode_melee, encode_vehicle_enter, encode_vehicle_exit, MeteorLaunched, ServerMessage,
     SessionConfig, VehicleAsset,
 };
@@ -91,6 +92,7 @@ pub struct ClientCore {
     last_melee_us: Option<u64>,
     /// Meteor launches since the last poll, with their arrival times.
     meteors: Vec<(MeteorLaunched, u64)>,
+    audio_contacts: Vec<crate::frame::VlAudioContact>,
     vehicle_assets: std::collections::HashMap<u32, VehicleAsset>,
     /// Each car's newest rig (wheel states), for cars drawn from the snapshot.
     vehicle_rigs: std::collections::HashMap<u32, VehicleRig>,
@@ -134,6 +136,7 @@ impl ClientCore {
             next_swing_id: 1,
             last_melee_us: None,
             meteors: Vec::new(),
+            audio_contacts: Vec::new(),
             vehicle_assets: std::collections::HashMap::new(),
             vehicle_rigs: std::collections::HashMap::new(),
             driving: None,
@@ -227,6 +230,29 @@ impl ClientCore {
                     let handle = u32::from(asset.handle);
                     self.vehicle_assets.insert(handle, asset);
                     self.events.push(VlEvent { kind: crate::frame::VL_EVENT_VEHICLE_ASSET, id: handle, ..Default::default() });
+                }
+                Err(_) => self.protocol_decode_errors += 1,
+            }
+            return;
+        }
+        if kind == PKT_AUDIO_CONTACTS {
+            match decode_audio_contacts(bytes) {
+                Ok((_, contacts)) => {
+                    let m = self.space.metres();
+                    for c in contacts {
+                        let n = self.space.pos(Vec3::from_array(c.normal));
+                        self.audio_contacts.push(crate::frame::VlAudioContact {
+                            entity_a: c.entity_a,
+                            entity_b: c.entity_b,
+                            kind: u32::from(c.kind),
+                            pos: self.space.pos(Vec3::from_array(c.position)),
+                            normal: [n[0] / m, n[1] / m, n[2] / m],
+                            normal_speed: c.normal_speed * m,
+                            tangent_speed: c.tangent_speed * m,
+                            intensity: c.intensity,
+                            size: c.size,
+                        });
+                    }
                 }
                 Err(_) => self.protocol_decode_errors += 1,
             }
@@ -328,6 +354,7 @@ impl ClientCore {
         self.last_poll_us = Some(now_us);
         self.frame.clear_changes();
         self.frame.events.append(&mut self.events);
+        self.frame.audio_contacts.append(&mut self.audio_contacts);
 
         // Input: the 60 Hz frames due since the last poll, one bundle (as the web client sends).
         if self.state == VlCoreState::Playing {
