@@ -84,3 +84,44 @@ fn hull_city_meshes_match_their_chunks() {
         r.chunks, r.hulls, r.worst_volume_error
     );
 }
+
+/// Every face of every chunk wears a catalog material; top-facing faces wear the chunk's floor
+/// material and side faces its wall material.
+fn check_surfaces(manifest: &DestructionManifest) -> std::collections::BTreeSet<String> {
+    use vibe_client_core::materials::{chunk_surfaces, Catalog};
+    let catalog = Catalog::get();
+    let surfaces = chunk_surfaces(manifest, catalog);
+    let meshes = ChunkMeshes::build_with_surfaces(manifest, Space::Server, Some((&surfaces, catalog)));
+    assert_eq!(meshes.materials.len(), meshes.positions.len());
+    assert_eq!(meshes.tile_uvs.len(), meshes.positions.len());
+    let mut used = std::collections::BTreeSet::new();
+    for (i, s) in surfaces.iter().enumerate() {
+        let r = meshes.ranges[i];
+        for v in r.first_vertex..r.first_vertex + r.vertex_count {
+            let (n, m) = (meshes.normals[v as usize], meshes.materials[v as usize]);
+            let up = n[1].abs() >= n[0].abs() && n[1].abs() >= n[2].abs();
+            assert_eq!(m, u32::from(if up { s.floor } else { s.wall }), "chunk {i} vertex {v}");
+            assert!((m as usize) < catalog.ids.len());
+            used.insert(catalog.ids[m as usize].clone());
+        }
+    }
+    used
+}
+
+#[test]
+fn stock_city_surfaces_follow_the_building_hash() {
+    let used = check_surfaces(&city("high-rise-3f-local.json", 4));
+    // 16 buildings hashed over 8 wall and 2 floor layers: several distinct walls, and floors.
+    assert!(used.iter().filter(|id| id.contains("floor")).count() >= 1, "{used:?}");
+    assert!(used.len() >= 4, "{used:?}");
+}
+
+#[test]
+fn authored_pack_surfaces_follow_texture_keys() {
+    // house-1story: brick walls and a concrete slab (texture keys), a wood frame with no texture key
+    // (by name: timber), glazing (authored opacity: glass), concrete-wall footings.
+    let used = check_surfaces(&city("house-1story.json", 1));
+    for id in ["brick", "concrete-floor", "aged-timber", "glass", "concrete-wall"] {
+        assert!(used.contains(id), "house-1story should show {id}: {used:?}");
+    }
+}

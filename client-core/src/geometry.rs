@@ -20,6 +20,7 @@ use glam::{Quat, Vec3};
 use vibe_land_destruction::manifest::{ChunkDef, ChunkGeometry, DestructionManifest};
 
 use crate::coords::Space;
+use crate::materials::{Catalog, VlChunkSurface};
 
 /// The smallest half extent a fallback box gets (the web's 0.05 m floor on the full size).
 const MIN_FALLBACK_HALF_EXTENT_M: f32 = 0.025;
@@ -50,19 +51,38 @@ pub struct ChunkMeshes {
     pub normals: Vec<[f32; 3]>,
     /// Metres, box-projected in the structure frame.
     pub uvs: Vec<[f32; 2]>,
+    /// Per vertex: the catalog material its face wears (the chunk's floor material on faces that
+    /// mostly face up or down, its wall material otherwise). Empty without surfaces.
+    pub materials: Vec<u32>,
+    /// Per vertex: `uvs` in tiles of that material (metres / its `metres_per_tile`), so a renderer
+    /// samples its texture at these directly. Empty without surfaces.
+    pub tile_uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
 }
 
 impl ChunkMeshes {
     /// Meshes for every chunk of `manifest`, in `space`.
     pub fn build(manifest: &DestructionManifest, space: Space) -> Self {
+        Self::build_with_surfaces(manifest, space, None)
+    }
+
+    /// Meshes with each face's catalog material and tile coordinates, from `surfaces` (one per
+    /// chunk, chunk-table order; `materials::chunk_surfaces`).
+    pub fn build_with_surfaces(
+        manifest: &DestructionManifest,
+        space: Space,
+        surfaces: Option<(&[VlChunkSurface], &Catalog)>,
+    ) -> Self {
         let mut out = Self::default();
         let flip = flips_handedness(space);
         let mut scratch = Vec::new();
+        let mut slot = 0usize;
         for structure in &manifest.structures {
             for chunk in &structure.chunks {
                 let hull = server_triangles(chunk, &manifest.shape_library, &mut scratch);
-                out.push_chunk(chunk, &scratch, space, flip, hull);
+                let surface = surfaces.and_then(|(s, catalog)| s.get(slot).map(|s| (*s, catalog)));
+                out.push_chunk_surfaced(chunk, &scratch, space, flip, hull, surface);
+                slot += 1;
             }
         }
         out
@@ -81,17 +101,41 @@ impl ChunkMeshes {
     }
 
     /// Appends one chunk from its server-space triangles (chunk frame, CCW from outside).
+    #[cfg(test)]
     fn push_chunk(&mut self, chunk: &ChunkDef, triangles: &[[Vec3; 3]], space: Space, flip: bool, hull: bool) {
+        self.push_chunk_surfaced(chunk, triangles, space, flip, hull, None);
+    }
+
+    fn push_chunk_surfaced(
+        &mut self,
+        chunk: &ChunkDef,
+        triangles: &[[Vec3; 3]],
+        space: Space,
+        flip: bool,
+        hull: bool,
+        surface: Option<(VlChunkSurface, &Catalog)>,
+    ) {
         let first_vertex = self.positions.len() as u32;
         let first_index = self.indices.len() as u32;
         let centroid = Vec3::from_array(chunk.centroid);
         for (t, tri) in triangles.iter().enumerate() {
             let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
             let target_normal = Vec3::from_array(space.pos(normal)).normalize_or_zero().to_array();
+            let material = surface.map(|(s, catalog)| {
+                let a = normal.abs();
+                let id = if a.y >= a.x && a.y >= a.z { s.floor } else { s.wall };
+                let tile = catalog.materials.get(id as usize).map_or(1.0, |m| m.metres_per_tile).max(1e-3);
+                (u32::from(id), tile)
+            });
             for corner in tri {
+                let uv = box_uv(centroid + *corner, normal);
                 self.positions.push(space.pos(*corner));
                 self.normals.push(target_normal);
-                self.uvs.push(box_uv(centroid + *corner, normal));
+                self.uvs.push(uv);
+                if let Some((id, tile)) = material {
+                    self.materials.push(id);
+                    self.tile_uvs.push([uv[0] / tile, uv[1] / tile]);
+                }
             }
             let base = (t * 3) as u32;
             if flip {

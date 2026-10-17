@@ -14,6 +14,7 @@ pub mod coords;
 pub mod frame;
 pub mod geometry;
 pub mod input;
+pub mod materials;
 pub mod players;
 pub mod predictor;
 
