@@ -3,7 +3,7 @@ import { clamp, distance, seedRandom, type ContinuousSound, type SoundEvent, typ
 import { audioSettings, subscribeAudioSettings } from './settings';
 import type { AudioSettings, OutputMode } from './settings';
 import { azimuthOf, channelCount, resolveOutput, speakerGains } from './spatial';
-import { DestructionActivity } from './destructionActivity';
+import { SwitchableActivity } from './coreActivity';
 import { eventMix, propagationDelayMs, sourceAttenuation, voiceImportance, type VoiceRole } from './destructionMix';
 import { DEFAULT_PALETTE, PALETTE_SLOTS, paletteClipId, paletteSlotFor, type PaletteSlot,type PaletteChoice } from './soundPalette';
 import { PaletteBank,referenceGain } from './paletteBank';
@@ -71,7 +71,7 @@ async function loadBank(ctx:BaseAudioContext):Promise<void>{
 /** One renderer owns the graph. Gameplay supplies world-space facts only. */
 export class DestructionAudio {
   readonly director=new AudioDirector();
-  private activity=new DestructionActivity();
+  private activity=new SwitchableActivity();
   private options:PaletteBank|null=null;
   private paletteSignature='';
   private auditionGeneration=0;

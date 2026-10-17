@@ -910,6 +910,6 @@ impl ClientCore {
 /// debris beds.
 fn emit_sound(director: &mut audio::AudioDirector, activity: &mut audio::Activity, e: audio::SoundEvent, listener: Vec3, now_ms: f64) {
     let arrival = audio::SoundEvent { at_ms: e.at_ms + f64::from(audio::propagation_delay_ms(e.position.distance(listener))), ..e.clone() };
-    activity.add(&arrival, listener, now_ms);
+    activity.add(&arrival, listener, now_ms, 0.0);
     director.enqueue(e);
 }

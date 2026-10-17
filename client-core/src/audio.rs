@@ -556,6 +556,7 @@ struct Region {
     position: Vec3,
     material: AcousticMaterial,
     energy: f64,
+    occlusion: f32,
     time: f64,
     last_event: f64,
     strength: f64,
@@ -570,6 +571,8 @@ pub struct Bed {
     pub position: Vec3,
     pub material: AcousticMaterial,
     pub intensity: f32,
+    /// The region's occlusion, blended from its events'.
+    pub occlusion: f32,
 }
 
 #[derive(Default)]
@@ -591,8 +594,9 @@ fn fnv(key: &str) -> u32 {
 }
 
 impl Activity {
-    /// `add`: an impact, fracture or collapse at its arrival time.
-    pub fn add(&mut self, e: &SoundEvent, listener: Vec3, now_ms: f64) {
+    /// `add`: an impact, fracture or collapse at its arrival time, with its occlusion (0 when the
+    /// renderer occludes the bed's loop itself).
+    pub fn add(&mut self, e: &SoundEvent, listener: Vec3, now_ms: f64, occlusion: f32) {
         if self.regions.is_empty() {
             self.regions = vec![None; ACTIVITY_SLOTS];
             self.history = vec![None; 2048];
@@ -643,6 +647,7 @@ impl Activity {
                 position: e.position,
                 material: e.material,
                 energy: 0.0,
+                occlusion: clamp01(occlusion),
                 time: now_ms,
                 last_event: e.at_ms,
                 strength,
@@ -655,6 +660,7 @@ impl Activity {
         // A gentle weighted centroid, never pulled to another cell.
         let blend = (contribution / (region.energy + contribution + 1.0)).min(0.25) as f32;
         region.position += (e.position - region.position) * blend;
+        region.occlusion += (clamp01(occlusion) - region.occlusion) * blend;
         region.strength = (region.strength * (-(e.at_ms - region.last_event).max(0.0) / ACTIVITY_DECAY_MS).exp()).max(strength);
         region.last_event = region.last_event.max(e.at_ms);
         let due = e.at_ms;
@@ -690,7 +696,7 @@ impl Activity {
                 continue;
             }
             let bonus = if self.selected.contains(&r.key) { 1.2 } else { 1.0 };
-            candidates.push((Bed { key: r.key.clone(), position: r.position, material: r.material, intensity }, intensity * source_attenuation(d, 5.0) * bonus));
+            candidates.push((Bed { key: r.key.clone(), position: r.position, material: r.material, intensity, occlusion: r.occlusion }, intensity * source_attenuation(d, 5.0) * bonus));
         }
         candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.key.cmp(&b.0.key)));
         candidates.truncate(4);
@@ -1168,11 +1174,11 @@ mod tests {
         let l = Vec3::new(0.0, 1.6, 0.0);
         let ev = |id: u64, kind, material, p: [f32; 3], intensity, size, at_ms| SoundEvent { id, kind, position: Vec3::from_array(p), material, intensity, size, seed: 1, at_ms, protected: false };
         use AcousticMaterial::*;
-        a.add(&ev(1, SoundKind::Fracture, Concrete, [12.0, 3.0, 4.0], 0.9, 2.0, 1000.0), l, 1000.0);
-        a.add(&ev(2, SoundKind::Collapse, Concrete, [14.0, 2.0, 6.0], 1.0, 6.0, 1040.0), l, 1000.0);
-        a.add(&ev(3, SoundKind::Impact, Wood, [-20.0, 1.0, 30.0], 0.7, 1.0, 1100.0), l, 1000.0);
-        a.add(&ev(4, SoundKind::Impact, Metal, [5.0, 1.0, 5.0], 0.1, 1.0, 1000.0), l, 1000.0);
-        a.add(&ev(1, SoundKind::Fracture, Concrete, [12.0, 3.0, 4.0], 0.9, 2.0, 1200.0), l, 1100.0);
+        a.add(&ev(1, SoundKind::Fracture, Concrete, [12.0, 3.0, 4.0], 0.9, 2.0, 1000.0), l, 1000.0, 0.0);
+        a.add(&ev(2, SoundKind::Collapse, Concrete, [14.0, 2.0, 6.0], 1.0, 6.0, 1040.0), l, 1000.0, 0.0);
+        a.add(&ev(3, SoundKind::Impact, Wood, [-20.0, 1.0, 30.0], 0.7, 1.0, 1100.0), l, 1000.0, 0.0);
+        a.add(&ev(4, SoundKind::Impact, Metal, [5.0, 1.0, 5.0], 0.1, 1.0, 1000.0), l, 1000.0, 0.0);
+        a.add(&ev(1, SoundKind::Fracture, Concrete, [12.0, 3.0, 4.0], 0.9, 2.0, 1200.0), l, 1100.0, 0.0);
         for (t, want) in [(1050.0, 0.755366f32), (1200.0, 0.700083), (1600.0, 0.543401), (3000.0, 0.109914)] {
             let beds = a.sample(t, l);
             assert_eq!(beds.len(), 1, "at {t}");

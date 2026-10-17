@@ -403,3 +403,67 @@ pub fn decode_city_manifest(bytes: &[u8]) -> Result<CoreManifest, JsValue> {
         .map(|inner| CoreManifest { inner })
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
+
+/// The debris beds from the core (`audio::Activity`, destructionActivity.ts's `DestructionActivity`),
+/// behind `?coreAudio=1` (`client/src/audio/coreActivity.ts`).
+#[wasm_bindgen]
+pub struct CoreActivity {
+    inner: vibe_client_core::audio::Activity,
+    beds: Vec<vibe_client_core::audio::Bed>,
+}
+
+#[wasm_bindgen]
+impl CoreActivity {
+    #[wasm_bindgen(constructor)]
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self { inner: Default::default(), beds: Vec::new() }
+    }
+
+    /// An event at its arrival time; `id` is the web's event id (repeats within 3 s count once).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add(&mut self, id: &str, kind: &str, material: &str, x: f32, y: f32, z: f32, intensity: f32, size: f32, at_ms: f64, occlusion: f32, lx: f32, ly: f32, lz: f32, now_ms: f64) {
+        use vibe_client_core::audio::{AcousticMaterial, SoundEvent, SoundKind};
+        let kind = match kind {
+            "impact" => SoundKind::Impact,
+            "fracture" => SoundKind::Fracture,
+            "collapse" => SoundKind::Collapse,
+            _ => return,
+        };
+        let Some(material) = AcousticMaterial::from_name(material) else { return };
+        // FNV-1a over the id: the region dedupe needs only identity.
+        let id = id.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        let e = SoundEvent { id, kind, position: glam_vec(x, y, z), material, intensity, size, seed: 0, at_ms, protected: false };
+        self.inner.add(&e, glam_vec(lx, ly, lz), now_ms, occlusion);
+    }
+
+    /// Sample the beds now (at most four); read them with the getters.
+    pub fn sample(&mut self, now_ms: f64, lx: f32, ly: f32, lz: f32) -> usize {
+        self.beds = self.inner.sample(now_ms, glam_vec(lx, ly, lz));
+        self.beds.len()
+    }
+    pub fn key(&self, i: usize) -> String {
+        self.beds[i].key.clone()
+    }
+    pub fn material(&self, i: usize) -> String {
+        self.beds[i].material.name().into()
+    }
+    pub fn intensity(&self, i: usize) -> f32 {
+        self.beds[i].intensity
+    }
+    pub fn occlusion(&self, i: usize) -> f32 {
+        self.beds[i].occlusion
+    }
+    /// The bed's position, x y z.
+    pub fn position(&self, i: usize) -> Box<[f32]> {
+        Box::new(self.beds[i].position.to_array())
+    }
+    pub fn clear(&mut self) {
+        self.inner.clear();
+        self.beds.clear();
+    }
+}
+
+fn glam_vec(x: f32, y: f32, z: f32) -> glam::Vec3 {
+    glam::Vec3::new(x, y, z)
+}

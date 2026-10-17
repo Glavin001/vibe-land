@@ -7,8 +7,9 @@
  *   three's ConvexGeometry (city/chunkGeometry.ts; parity in clientCore.test.ts).
  * - `?coreInput=1` (or `VITE_CORE_INPUT=1`): the 60 Hz input frames from the core's bundler
  *   (runtime/fixedInputBundler.ts; parity in fixedInputBundler.core.test.ts).
- * - `?coreAudio=1` (or `VITE_CORE_AUDIO=1`): each sound event's voices from the core's recipe
- *   (audio/voicePlan.ts; parity in audio/voicePlan.core.test.ts).
+ * - `?coreAudio=1` (or `VITE_CORE_AUDIO=1`): each sound event's voices from the core's recipe and
+ *   the debris beds from the core's (audio/voicePlan.ts, audio/coreActivity.ts; parity in
+ *   audio/voicePlan.core.test.ts, audio/coreActivity.test.ts).
  * - `?coreGrass=1`: grass patches from the core, in the grass worker (core/coreFlags.ts).
  */
 import init, { convex_hull_triangles, CoreInputBundler, CorePlayerInterpolator } from '../wasm/core-pkg/vibe_client_core_wasm.js';
@@ -19,6 +20,7 @@ import { provideCoreHullTriangles } from '../city/chunkGeometry';
 import { provideCoreInputBundler } from '../runtime/fixedInputBundler';
 import { coreVoicePlan } from '../audio/coreVoicePlan';
 import { provideVoicePlanner } from '../audio/voicePlan';
+import { provideCoreActivity } from '../audio/coreActivity';
 
 function flag(urlName: string, envValue: string | undefined): boolean {
   if (envValue === '1') return true;
@@ -73,7 +75,10 @@ export function initClientCore(): Promise<void> {
   loading ??= init().then(() => {
     if (coreGeometryEnabled()) provideCoreHullTriangles(coreHullTriangles);
     if (coreInputEnabled()) provideCoreInputBundler(coreInputBundler);
-    if (coreAudioEnabled()) provideVoicePlanner(coreVoicePlan);
+    if (coreAudioEnabled()) {
+      provideVoicePlanner(coreVoicePlan);
+      provideCoreActivity();
+    }
     if (corePlayersEnabled()) provideCorePlayerInterpolator(corePlayerInterpolator);
     if (coreManifestEnabled()) provideBinaryManifestDecoder(decodeManifestCore);
   });
