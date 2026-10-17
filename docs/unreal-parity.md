@@ -92,7 +92,9 @@ the web's fog curve (Gaussian) is thinner under 40 m.
   sprites; local fog volumes did not render in this configuration, and a Niagara system is the
   native upgrade.
 - **Moving debris.** Bonds broken between two moving bodies are placed at rest for dust and
-  sound, and their dust starts with no velocity of its own.
+  sound. Their dust starts with no velocity of its own, as on the web's /city: wire 4 carries no
+  body velocities into its sources (`perPlayerCityClient.ts` builds each promotion with
+  `linearVelocity: [0, 0, 0]`).
 - **Dust from a live fracture in Unreal, not yet re-run.** The core makes the web's dust
   (`dust.rs`, a port of `dustPolicy.ts` held to it by `tests/dust_parity.rs`: 1200 sources, 4220
   parcels, worst relative difference 2e-15), and Unreal draws its parcels in a ring of the web's
