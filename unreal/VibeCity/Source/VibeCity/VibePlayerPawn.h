@@ -38,7 +38,13 @@ public:
 
 	/** The selected weapon (VL_WEAPON_*). */
 	uint32 Weapon() const { return CurrentWeapon; }
+	/** Whether the scope is up: aim held, on foot and alive (the web's canUseScopedAim). */
+	bool IsAiming() const { return bAiming && CanUseAim(); }
+	/** The buttons sent with the last input (tests). */
+	uint32 SentButtons() const { return LastSentButtons; }
 	static const TCHAR* WeaponName(uint32 Weapon);
+	/** Remember the chosen weapon (user settings), unless -VibeFreshSettings. */
+	void SaveWeapon() const;
 
 	/** Whether the server has placed this player yet. */
 	bool IsJoined() const { return bJoined; }
@@ -51,6 +57,13 @@ public:
 
 	/** In the aerial camera (N). */
 	bool IsAerial() const { return bAerial; }
+	/** The aerial camera's flight speed, m/s (the web's slider: 5 to 100 in steps of 5; the wheel here). */
+	int32 AerialSpeed() const { return AerialSpeedMs; }
+	/** A camera drop sent and not yet confirmed: the camera holds the drop pose, input is neutral. */
+	bool IsDropPending() const { return DropSentAt > 0.0; }
+	/** Camera drops sent, and confirmed by the server (tests). */
+	int32 DropsSent() const { return DropsSentCount; }
+	int32 DropsConfirmed() const { return DropsConfirmedCount; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -114,6 +127,10 @@ private:
 	void Interact();
 	void FollowCar(float DeltaSeconds);
 	bool bInVehicle = false;
+	bool bDead = false;
+	uint32 LastSentButtons = 0;
+	/** Fire and aim: on foot and alive (scene/aimControls.ts canUseScopedAim). */
+	bool CanUseAim() const { return !bInVehicle && !bDead; }
 	uint32 DrivenCar = 0;
 	FVector ChaseFocus = FVector::ZeroVector;
 	FVector ChaseEye = FVector::ZeroVector;
@@ -126,6 +143,12 @@ private:
 	TObjectPtr<UInputAction> AerialAction;
 	bool bAerial = false;
 	FVector AerialEye = FVector::ZeroVector;
+	int32 AerialSpeedMs = 30;
+	/** When the pending camera drop was sent (0: none), and where it puts the player's capsule centre. */
+	double DropSentAt = 0.0;
+	int32 DropsSentCount = 0;
+	int32 DropsConfirmedCount = 0;
+	FVector DropTarget = FVector::ZeroVector;
 	void UpdateFieldOfView(float DeltaSeconds);
 	bool bAiming = false;
 	float VerticalFov = 75.0f;

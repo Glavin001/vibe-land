@@ -47,7 +47,7 @@ for test in "${TESTS[@]}"; do
   curl -fs -m 5 -X POST "$API/city-reset/$MATCH" > /dev/null || true
   log="$LOGS/$name.log"
   args=(-game -windowed -ResX=1280 -ResY=720 "-VibeApi=$API" "-VibeMatch=$MATCH"
-    "-ExecCmds=Automation RunTests $test; Quit" "-TestExit=Automation Test Queue Empty" "-abslog=$log")
+    -VibeFreshSettings "-ExecCmds=Automation RunTests $test; Quit" "-TestExit=Automation Test Queue Empty" "-abslog=$log")
   [[ -n "$SHOTS" ]] && args+=("-VibeShotDir=$SHOTS")
   for attempt in 1 2 3; do
     rm -f "$log" # read only this launch's log

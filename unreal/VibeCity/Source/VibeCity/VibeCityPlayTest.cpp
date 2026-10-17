@@ -674,6 +674,7 @@ bool FVibeCityPlayAerialAndMelee::RunTest(const FString& Parameters)
 		FVector EyeStart = FVector::ZeroVector;
 		FVector PlayerStart = FVector::ZeroVector;
 		FVector DropEye = FVector::ZeroVector;
+		int32 DropsBefore = 0;
 	};
 	TSharedRef<FState> S = MakeShared<FState>();
 	auto PlayerPos = [S]() { return FVector(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]); };
@@ -747,7 +748,7 @@ bool FVibeCityPlayAerialAndMelee::RunTest(const FString& Parameters)
 		return true;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
-	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, PlayerPos, CameraEye]()
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, PlayerPos, CameraEye, Pawn]()
 	{
 		Key(EKeys::W, false);
 		const double Seconds = Now() - S->FlyStart;
@@ -760,16 +761,20 @@ bool FVibeCityPlayAerialAndMelee::RunTest(const FString& Parameters)
 		S->DropEye = CameraEye();
 		Key(EKeys::N, true);
 		Key(EKeys::N, false);
+		S->DropsBefore = Pawn() ? Pawn()->DropsConfirmed() : 0;
 		S->Deadline = Now() + 5.0;
 		return true;
 	}));
-	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, PlayerPos]()
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, PlayerPos, Pawn]()
 	{
 		const double Off = FVector::Dist2D(PlayerPos(), S->DropEye);
-		if (Off < 100.0 || Now() > S->Deadline)
+		// GameWorld.tsx: the camera holds the drop until the server has the player there.
+		const bool bConfirmed = Pawn() && !Pawn()->IsDropPending() && Pawn()->DropsConfirmed() > S->DropsBefore;
+		if ((Off < 100.0 && bConfirmed) || Now() > S->Deadline)
 		{
-			AddInfo(FString::Printf(TEXT("dropped: player %.2f m from the camera's spot"), Off / 100.0));
+			AddInfo(FString::Printf(TEXT("dropped: player %.2f m from the camera's spot; drop confirmed %d"), Off / 100.0, bConfirmed ? 1 : 0));
 			TestTrue(FString::Printf(TEXT("the drop put the player at the camera (%.2f m off)"), Off / 100.0), Off < 100.0);
+			TestTrue(TEXT("the drop was confirmed (the camera follows the player again)"), bConfirmed);
 			return true;
 		}
 		return false;
@@ -950,6 +955,27 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 		return true;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]() { return S->Tick - S->TickStart >= 120.0f || Now() > S->Deadline; }));
+	// On-foot actions do nothing in a car (input/keyboardMouse.ts contexts): 2 (cannon), Left Alt (aim)
+	// and Shift (sprint) while driving.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([]()
+	{
+		Key(EKeys::Two, true);
+		Key(EKeys::Two, false);
+		Key(EKeys::LeftAlt, true);
+		Key(EKeys::LeftShift, true);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Pawn]()
+	{
+		const AVibePlayerPawn* P = Pawn();
+		TestTrue(TEXT("in the car: the weapon slot keys do nothing"), P && P->Weapon() == VL_WEAPON_RIFLE);
+		TestTrue(TEXT("in the car: no scope"), P && !P->IsAiming());
+		TestTrue(TEXT("in the car: Shift sends no sprint"), P && (P->SentButtons() & VL_BTN_SPRINT) == 0);
+		Key(EKeys::LeftAlt, false);
+		Key(EKeys::LeftShift, false);
+		return true;
+	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
 	{
 		Key(EKeys::W, false);

@@ -19,6 +19,7 @@
 #include "VibeVehicles.h"
 #include "GenericPlatform/GenericPlatformHttp.h"
 #include "HttpModule.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
 #include "VibeLandNet.h"
@@ -34,7 +35,15 @@ namespace
 	// city/cityReset.ts.
 	constexpr double CityResetCooldownS = 1.0;
 	// scene/aerialFlight.ts and App.tsx (aerialSpeed 30).
-	constexpr double AerialSpeedCmS = 3000.0;
+	// CityFlightControls.tsx: the flight speed slider, 5 to 100 m/s in steps of 5 (30 by default).
+	constexpr int32 AerialSpeedMinMs = 5;
+	constexpr int32 AerialSpeedMaxMs = 100;
+	constexpr int32 AerialSpeedStepMs = 5;
+	// GameWorld.tsx: a camera drop is confirmed when the player is within 1 m across and 8 m up or down
+	// of where it was dropped, and given up on after 3 s.
+	constexpr double DropArrivedAcrossCm = 100.0;
+	constexpr double DropArrivedVerticalCm = 800.0;
+	constexpr double DropTimeoutS = 3.0;
 	constexpr double AerialSprintMultiplier = 3.0;
 	constexpr double AerialMaxStepS = 0.1;
 	// shared::constants::VEHICLE_INTERACT_RADIUS_M.
@@ -85,9 +94,23 @@ UVibeNetSubsystem* AVibePlayerPawn::Net() const
 	return GameInstance ? GameInstance->GetSubsystem<UVibeNetSubsystem>() : nullptr;
 }
 
+namespace
+{
+	// The chosen weapon is remembered across sessions, as the web keeps it in localStorage
+	// (city/shotMode.ts). -VibeFreshSettings (the play-tests) starts from the rifle and saves nothing.
+	const TCHAR* SettingsSection = TEXT("VibeCity");
+	bool FreshSettings() { return FParse::Param(FCommandLine::Get(), TEXT("VibeFreshSettings")); }
+}
+
 void AVibePlayerPawn::BeginPlay()
 {
 	Super::BeginPlay();
+	int32 Saved = 0;
+	if (!FreshSettings() && GConfig && GConfig->GetInt(SettingsSection, TEXT("Weapon"), Saved, GGameUserSettingsIni)
+		&& (Saved == VL_WEAPON_RIFLE || Saved == VL_WEAPON_CANNON || Saved == VL_WEAPON_METEOR))
+	{
+		CurrentWeapon = static_cast<uint32>(Saved);
+	}
 	if (UVibeNetSubsystem* NetSubsystem = Net())
 	{
 		FrameHandle = NetSubsystem->OnFrame.AddUObject(this, &AVibePlayerPawn::OnFrame);
@@ -160,6 +183,7 @@ void AVibePlayerPawn::CreateInput()
 	Mapping->MapKey(MeteorAction, EKeys::Three);
 	Mapping->MapKey(CycleAction, EKeys::MouseWheelAxis);
 	Mapping->MapKey(AimAction, EKeys::RightMouseButton);
+	Mapping->MapKey(AimAction, EKeys::LeftAlt); // input/bindings.ts aimSecondaryKey
 	Mapping->MapKey(ResetAction, EKeys::R);
 	Mapping->MapKey(MeleeAction, EKeys::V);
 	Mapping->MapKey(InteractAction, EKeys::E);
@@ -200,9 +224,10 @@ void AVibePlayerPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 	Input->BindActionValueLambda(CrouchAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { OnButton(VL_BTN_CROUCH, false); });
 	Input->BindAction(FireAction, ETriggerEvent::Started, this, &AVibePlayerPawn::OnFire);
 	Input->BindAction(FireAction, ETriggerEvent::Completed, this, &AVibePlayerPawn::OnFireStopped);
-	Input->BindActionValueLambda(RifleAction, ETriggerEvent::Started, [this](const FInputActionValue&) { SelectWeapon(VL_WEAPON_RIFLE); });
-	Input->BindActionValueLambda(CannonAction, ETriggerEvent::Started, [this](const FInputActionValue&) { SelectWeapon(VL_WEAPON_CANNON); });
-	Input->BindActionValueLambda(MeteorAction, ETriggerEvent::Started, [this](const FInputActionValue&) { SelectWeapon(VL_WEAPON_METEOR); });
+	// Weapon slots, the wheel, melee and aim are on-foot actions (input/keyboardMouse.ts contexts).
+	Input->BindActionValueLambda(RifleAction, ETriggerEvent::Started, [this](const FInputActionValue&) { if (!bInVehicle) SelectWeapon(VL_WEAPON_RIFLE); });
+	Input->BindActionValueLambda(CannonAction, ETriggerEvent::Started, [this](const FInputActionValue&) { if (!bInVehicle) SelectWeapon(VL_WEAPON_CANNON); });
+	Input->BindActionValueLambda(MeteorAction, ETriggerEvent::Started, [this](const FInputActionValue&) { if (!bInVehicle) SelectWeapon(VL_WEAPON_METEOR); });
 	Input->BindAction(CycleAction, ETriggerEvent::Triggered, this, &AVibePlayerPawn::CycleWeapon);
 	Input->BindActionValueLambda(AimAction, ETriggerEvent::Started, [this](const FInputActionValue&) { bAiming = true; });
 	Input->BindActionValueLambda(AimAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { bAiming = false; });
@@ -222,7 +247,7 @@ void AVibePlayerPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 	Input->BindActionValueLambda(InteractAction, ETriggerEvent::Started, [this](const FInputActionValue&) { Interact(); });
 	Input->BindActionValueLambda(MeleeAction, ETriggerEvent::Started, [this](const FInputActionValue&)
 	{
-		if (UVibeNetSubsystem* NetSubsystem = Net(); NetSubsystem && bJoined && !bAerial)
+		if (UVibeNetSubsystem* NetSubsystem = Net(); NetSubsystem && bJoined && !bAerial && !bInVehicle)
 		{
 			NetSubsystem->Melee();
 		}
@@ -242,7 +267,7 @@ void AVibePlayerPawn::OnMoveStopped(const FInputActionValue&)
 
 void AVibePlayerPawn::OnLook(const FInputActionValue& Value)
 {
-	const FVector2D Look = Value.Get<FVector2D>() * (bAiming ? AimLookMultiplier : 1.0f);
+	const FVector2D Look = Value.Get<FVector2D>() * (IsAiming() ? AimLookMultiplier : 1.0f);
 	if (bInVehicle)
 	{
 		// In a car the mouse orbits the chase camera about the car (input/resolver.ts); the legacy
@@ -285,6 +310,16 @@ const TCHAR* AVibePlayerPawn::WeaponName(uint32 Weapon)
 void AVibePlayerPawn::SelectWeapon(uint32 InWeapon)
 {
 	CurrentWeapon = InWeapon;
+	SaveWeapon();
+}
+
+void AVibePlayerPawn::SaveWeapon() const
+{
+	if (!FreshSettings() && GConfig)
+	{
+		GConfig->SetInt(SettingsSection, TEXT("Weapon"), static_cast<int32>(CurrentWeapon), GGameUserSettingsIni);
+		GConfig->Flush(false, GGameUserSettingsIni);
+	}
 }
 
 void AVibePlayerPawn::CycleWeapon(const FInputActionValue& Value)
@@ -292,7 +327,13 @@ void AVibePlayerPawn::CycleWeapon(const FInputActionValue& Value)
 	// The web's cycle (city/shotMode.ts): rifle, cannon, meteor.
 	static const uint32 Order[] = { VL_WEAPON_RIFLE, VL_WEAPON_CANNON, VL_WEAPON_METEOR };
 	const float Step = Value.Get<float>();
-	if (FMath::IsNearlyZero(Step))
+	if (bAerial && !FMath::IsNearlyZero(Step))
+	{
+		// Flying, the wheel sets the flight speed (the web's slider).
+		AerialSpeedMs = FMath::Clamp(AerialSpeedMs + (Step > 0.0f ? AerialSpeedStepMs : -AerialSpeedStepMs), AerialSpeedMinMs, AerialSpeedMaxMs);
+		return;
+	}
+	if (FMath::IsNearlyZero(Step) || bInVehicle)
 	{
 		return;
 	}
@@ -305,7 +346,7 @@ void AVibePlayerPawn::CycleWeapon(const FInputActionValue& Value)
 		}
 	}
 	Index = (Index + (Step > 0.0f ? 1 : -1) + UE_ARRAY_COUNT(Order)) % UE_ARRAY_COUNT(Order);
-	CurrentWeapon = Order[Index];
+	SelectWeapon(Order[Index]);
 }
 
 void AVibePlayerPawn::ResetCity()
@@ -413,7 +454,10 @@ void AVibePlayerPawn::ToggleAerial()
 	if (UVibeNetSubsystem* NetSubsystem = Net(); NetSubsystem && PC)
 	{
 		const FRotator View = PC->GetControlRotation();
-		NetSubsystem->CameraDrop(AerialEye - FVector(0.0, 0.0, 100.0 * VL_EYE_HEIGHT_M), View.Yaw, SignedPitch(View.Pitch));
+		DropTarget = AerialEye - FVector(0.0, 0.0, 100.0 * VL_EYE_HEIGHT_M);
+		NetSubsystem->CameraDrop(DropTarget, View.Yaw, SignedPitch(View.Pitch));
+		DropSentAt = FPlatformTime::Seconds();
+		++DropsSentCount;
 	}
 }
 
@@ -431,14 +475,14 @@ void AVibePlayerPawn::FlyAerial(float DeltaSeconds)
 	FVector Move = Forward * MoveAxes.Y + Right * MoveAxes.X + FVector::UpVector * Vertical;
 	const double Length = FMath::Max(1.0, Move.Size());
 	const double Step = FMath::Clamp(static_cast<double>(DeltaSeconds), 0.0, AerialMaxStepS)
-		* AerialSpeedCmS * ((Buttons & VL_BTN_SPRINT) ? AerialSprintMultiplier : 1.0) / Length;
+		* 100.0 * AerialSpeedMs * ((Buttons & VL_BTN_SPRINT) ? AerialSprintMultiplier : 1.0) / Length;
 	AerialEye += Move * Step;
 	SetActorLocation(AerialEye - Camera->GetRelativeLocation());
 }
 
 void AVibePlayerPawn::UpdateFieldOfView(float DeltaSeconds)
 {
-	const float Target = bAiming ? ScopeVerticalFov : HipfireVerticalFov;
+	const float Target = IsAiming() ? ScopeVerticalFov : HipfireVerticalFov;
 	VerticalFov = FMath::Lerp(Target, VerticalFov, FMath::Exp(-AimFovDamp * DeltaSeconds));
 	// Unreal's field of view is horizontal: keep the web's vertical one at any aspect.
 	FVector2D Size(16.0, 9.0);
@@ -482,11 +526,20 @@ void AVibePlayerPawn::Tick(float DeltaSeconds)
 		NetSubsystem->SetInput(Input);
 		return;
 	}
+	if (IsDropPending())
+	{
+		// Dropped: hold the camera at the drop until the server has the player there (OnFrame).
+		SetActorLocation(AerialEye - Camera->GetRelativeLocation());
+		NetSubsystem->SetInput(Input);
+		return;
+	}
 	Input.move_x = static_cast<float>(MoveAxes.X);
 	Input.move_y = static_cast<float>(MoveAxes.Y);
-	Input.buttons = Buttons;
+	// In a car Space stays (the handbrake rides the jump bit); sprint and crouch are on-foot only.
+	Input.buttons = bInVehicle ? (Buttons & ~(VL_BTN_SPRINT | VL_BTN_CROUCH)) : Buttons;
+	LastSentButtons = Input.buttons;
 	NetSubsystem->SetInput(Input);
-	if (bFireHeld && bJoined && !bInVehicle)
+	if (bFireHeld && bJoined && CanUseAim())
 	{
 		// The core repeats at most at the server's fire interval and stamps the shot.
 		NetSubsystem->Fire(CurrentWeapon);
@@ -501,11 +554,27 @@ void AVibePlayerPawn::OnFrame(const VlFrameView& Frame)
 		return;
 	}
 	bInVehicle = (Me.state_flags & VL_STATE_IN_VEHICLE) != 0;
+	bDead = (Me.state_flags & VL_STATE_DEAD) != 0;
+	if (IsDropPending())
+	{
+		const FVector At(Me.pos[0], Me.pos[1], Me.pos[2]);
+		const bool bArrived = FVector::Dist2D(At, DropTarget) < DropArrivedAcrossCm
+			&& FMath::Abs(At.Z - DropTarget.Z) < DropArrivedVerticalCm && !bInVehicle;
+		if (bArrived || FPlatformTime::Seconds() - DropSentAt > DropTimeoutS)
+		{
+			if (!bArrived)
+			{
+				UE_LOG(LogVibeLand, Warning, TEXT("camera drop was not confirmed by the server"));
+			}
+			DropsConfirmedCount += bArrived ? 1 : 0;
+			DropSentAt = 0.0;
+		}
+	}
 	if (bInVehicle)
 	{
 		FollowCar(static_cast<float>(GetWorld()->GetDeltaSeconds()));
 	}
-	else if (!bAerial)
+	else if (!bAerial && !IsDropPending())
 	{
 		SetActorLocation(FVector(Me.pos[0], Me.pos[1], Me.pos[2]));
 	}

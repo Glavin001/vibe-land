@@ -96,7 +96,8 @@ void AVibeShotEffects::OnFrame(const VlFrameView& Frame)
 		const VlEvent& E = Frame.events[i];
 		const FVector P0(E.p0[0], E.p0[1], E.p0[2]);
 		const FVector P1(E.p1[0], E.p1[1], E.p1[2]);
-		if (E.kind == VL_EVENT_LOCAL_SHOT && E.weapon == VL_WEAPON_RIFLE)
+		// Rifle and cannon leave a trace; a meteor arrives from the sky (GameWorld.tsx, shotTraces.tsx).
+		if (E.kind == VL_EVENT_LOCAL_SHOT && E.weapon != VL_WEAPON_METEOR)
 		{
 			// p0 is the eye, p1 the aim direction. The core knows no hit point until the server
 			// answers, so the beam runs the web's local tracer length.
@@ -105,7 +106,7 @@ void AVibeShotEffects::OnFrame(const VlFrameView& Frame)
 			const FVector Muzzle = P0 + Aim.RotateVector(MuzzleOffsetCm);
 			Show(Muzzle, P0 + Dir * MaxRangeCm, MissColor, false);
 		}
-		else if (E.kind == VL_EVENT_SHOT_FIRED && E.player != LocalPlayerId && E.weapon == VL_WEAPON_RIFLE)
+		else if (E.kind == VL_EVENT_SHOT_FIRED && E.player != LocalPlayerId && E.weapon != VL_WEAPON_METEOR)
 		{
 			const FLinearColor Color = E.a == ResolutionMiss ? MissColor
 				: E.a == ResolutionPlayer ? (E.b == HitZoneHead ? HeadColor : BodyColor)
