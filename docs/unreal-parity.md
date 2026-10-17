@@ -43,10 +43,11 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 | Per-building textures (the web's building hash, texture keys) | done, at 2K (the web: 1K/512) | `client-core/src/materials.rs`, `shared/assets/materials/catalog.json` | layer codes equal to the TypeScript (tsx fixtures) |
 | Unreal materials for known materials | done: PBR from 2K Poly Haven sources (albedo, DirectX normal, AO/roughness/metal); real sets for the web's procedural limestone, slate and timber | catalog `hd` sources | `CityAndEffects` checks the material |
 | Glass | material built (`M_VibeCityGlass`); the stock city has none | catalog `glass` | not yet seen on screen |
-| Sun, sky, fog, ground | done: physical sky, real-time sky light; fog matched to the web's FogExp2 (value and slope at the 80 m AOI); ground tinted by the grass paint's canopy colour as the web's | sun from `sunSky.ts`; fog from `weather.rs`; tint from `grass.rs` `ground_tint` | `VibeCity.Render.Compare` against `compare-web.mjs` (below) |
+| Sun, sky, fog, ground | done: physical sky, real-time sky light; fog matched to the web's FogExp2 (value and slope at the 80 m AOI); the web's hero ground per pixel (grass and mud layers, dirt patches from its macro noise and thin cover, canopy tint, macro albedo and warmth) | sun from `sunSky.ts`; fog from `weather.rs`; noise from `ground.rs` (`cityMacroNoise`, byte for byte); cover from `grass.rs` | `VibeCity.Render.Compare` against `compare-web.mjs` (below): dirt patches in the same places |
+| Texture scale | done: every texture tiles at the catalog size × the web's `cityTexScale` (2) | core tile UVs (`drawn_metres_per_tile`) | `geometry_manifest`: tile UVs = metres / (catalog tile × 2) on every chunk vertex |
 | Weather presets (clear, dust storm, snow storm): fog colour and thickness, camera-wrapped particles drifting with the wind | done | `client-core/src/weather.rs` (port of `weatherPresets.ts`, `fogSettings.ts`); the particle shader is `WeatherParticles.tsx`'s, as HLSL | `VibeCity.Render.WeatherAndGrass`: 5000 snow particles and the preset fog, then clear |
-| Meadow and shared painted grass (`/match-stats/<id>/grass`, polled every 2 s with If-None-Match) | done: blades per patch, species (grass, reed, wheat, corn, fern), crop rows, distance LOD, wind | `client-core/src/grass.rs` (ports of `grassPlacement.ts`, `GrassPaint.ts`, `foliageProfiles.ts`) | default patches and a painted patch (count, species split, first and last blades) equal to the TypeScript; `WeatherAndGrass`: the stored 84-tile layout loads and every patch regenerates |
-| Destruction audio (fractures, entry, sheds, collapse waves, impacts, shots, server contacts, scrape loops, air, fly-bys) | done | `client-core/src/audio.rs`, `effects.rs` (ports of `model.ts`, `director.ts`, `destructionMix.ts`, `engine.ts`, `motion.ts`, `destructionSources.ts`) | mix, intensity, attenuation, random, closest pass, Doppler equal to the TypeScript; `CityAndEffects`: sounds and loops after a meteor |
+| Meadow and shared painted grass (`/match-stats/<id>/grass`, polled every 2 s with If-None-Match) | done: blades per patch, species placed and shaped as the web's (seed heads on reeds and wheat, leaves on corn, fronds on ferns), crop rows, distance LOD, wind | `client-core/src/grass.rs` (ports of `grassPlacement.ts`, `GrassPaint.ts`, `foliageProfiles.ts`); shapes from `grassMaterial.ts` | default patches and a painted patch (count, species split, first and last blades) equal to the TypeScript; `WeatherAndGrass`: the stored 84-tile layout loads and every patch regenerates; `VibeCity.Render.Species`: every species drawn (species.png) |
+| Destruction audio (fractures, entry, sheds, collapse waves, impacts, shots, server contacts, scrape loops, air, fly-bys, debris beds, car engines), heard from the camera, occluded by standing buildings, low-passed with distance | done | `client-core/src/audio.rs`, `effects.rs` (ports of `model.ts`, `director.ts`, `destructionMix.ts`, `engine.ts`, `motion.ts`, `destructionSources.ts`, `destructionActivity.ts`, `occlusion.ts`) | mix, intensity, attenuation, random, closest pass, Doppler, debris beds equal to the TypeScript; occlusion through a building and not over it; `CityAndEffects`: sounds and loops heard 35 m from a meteor |
 | Dust where things break | done, as clusters of soft lit sprites | `client-core/src/effects.rs` | `CityAndEffects`: puffs after a meteor |
 | Cursor (Esc frees, click captures, focus loss frees) | done | (Unreal only) | `VibeCity.Cursor` |
 | Session drops | rejoin | `client-core` | (fork commit dd5c0765) |
@@ -54,27 +55,34 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 ## Side by side
 
 `VibeCity.Render.Compare` and `scripts/unreal/compare-web.mjs` render the same match from the same
-pose (the web replay's rig: (0, 14, 140) looking at (0, 6, 0), 75° vertical, 1280×720). The first
-comparison found three differences, since fixed: Unreal's fog was about a hundredth as dense as
-the web's, its ground was the untinted ochre photograph, and its capture FOV was horizontal. What
-remains is look, not content: Unreal's auto-exposure renders brighter with a paler sky, the web's
-ground has dirt patches (its splat map), and the web's fog curve (Gaussian) is thinner under 40 m.
+pose (the web replay's rig: (0, 14, 140) looking at (0, 6, 0), 75° vertical, 1280×720). The
+comparisons found, and fixed:
+
+- Unreal's fog was about a hundredth as dense as the web's;
+- the ground was the untinted ochre photograph, without the web's dirt patches;
+- the capture FOV was horizontal;
+- every texture tiled twice as densely (the core missed `cityTexScale`).
+
+What remains is look, not content: Unreal's auto-exposure renders brighter with a paler sky, and
+the web's fog curve (Gaussian) is thinner under 40 m.
 
 ## Known gaps
 
-- **Audio beds.** The web's debris "activity" beds, vehicle engine loops and occlusion are not
-  ported. Bonds broken between two moving bodies are placed at rest. There is no dust budget in
-  the core (Unreal recycles the faintest of 64 live puffs).
+- **Lighting look.** The web lights with its sky gradient's environment map and ACES tone mapping;
+  Unreal uses its physical sky, sky light and auto-exposure, so it renders brighter. Matching
+  exposure exactly means porting the web's IBL, not tuning.
 - **Dust look.** The web's dust is volumetric (fluid parcels). Unreal draws clusters of lit
   sprites; local fog volumes did not render in this configuration, and a Niagara system is the
   native upgrade.
 - **Remote players.** No crouch clip; death is the web's death clip, not its cosmetic ragdoll.
-- **Ground splat map.** The web's ground blends dirt by a splat map and a macro field; Unreal's
-  draws the grass photograph with the canopy tint only.
-- **Lumen.** Procedural meshes have no distance fields, so Lumen's software tracing does not see
-  the city. Lighting is the sky light plus shadows.
-- **Species meshes.** Painted reeds, wheat, corn and ferns are placed as the web places them, but
-  drawn as blades of their profile's width (the web draws its foliage canopies).
-- **Web adoption of the core.** Under way module by module behind flags (the shared SnapshotV2
-  decoder through WASM is in progress); audio, effects, grass and weather still run as
-  TypeScript on the web, pinned to the Rust ports by fixtures.
+- **Moving debris.** Bonds broken between two moving bodies are placed at rest for dust and
+  sound. There is no dust budget in the core (Unreal recycles the faintest of 64 live puffs).
+- **Foliage canopies.** The web adds canopy volumes over tall painted stands; Unreal draws the
+  plants only.
+- **Lumen** (an Unreal upgrade, not a web feature). Procedural meshes have no distance fields, so
+  Lumen's software tracing does not see the city.
+- **Web adoption of the core.** Module by module behind flags, off by default until a live
+  session confirms them. Packet decoding (`?sharedDecode=1`), client packet encoders, chunk hulls
+  (`?coreGeometry=1`) and the 60 Hz input frames (`?coreInput=1`) run on the shared Rust code,
+  each deep-equal to the TypeScript in tests. Audio, effects, grass and weather still run as
+  TypeScript on the web, pinned to their Rust ports by fixtures.
