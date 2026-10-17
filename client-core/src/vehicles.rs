@@ -641,6 +641,21 @@ pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space:
     })
 }
 
+/// A car's wheel centres in its actor frame, stream wheel order (fr, fl, rr, rl): the rig's hubs
+/// as the web's `resolveVehicleGeometry` gives them (`sourceToActorPoint`: x and z negated, less the
+/// origin height). The driver's presentation proxy rolls on these (vehicle_predictor.rs).
+pub fn wheel_centres(metadata: &[u8]) -> Option<[[f32; 3]; 4]> {
+    let meta: Value = serde_json::from_slice(metadata).ok()?;
+    let origin_height = meta.get("originHeight")?.as_f64()? as f32;
+    let corners = meta.get("rig")?.get("corners")?;
+    let mut out = [[0.0; 3]; 4];
+    for (i, id) in WHEEL_CORNERS.iter().enumerate() {
+        let hub = vec3(corners.get(*id)?.get("hub"))?;
+        out[i] = [-hub.x, hub.y - origin_height, -hub.z];
+    }
+    Some(out)
+}
+
 /// Each part's hull points in the source frame (part + shape + vertex, metres), in `parts` order:
 /// what the wire 4 client needs to rest a car's detached groups on the ground.
 pub fn part_hull_points(metadata: &[u8]) -> Result<Vec<Vec<Vec3>>, VehicleMeshError> {

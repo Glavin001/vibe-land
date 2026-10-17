@@ -80,6 +80,19 @@ impl Track {
     }
 }
 
+/// A snapshot car's newest authoritative state, server space, with the input the server had
+/// applied when it was taken.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NewestCar {
+    pub tick: u32,
+    pub vehicle_type: u8,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub linear_velocity: Vec3,
+    pub angular_velocity: Vec3,
+    pub ack_input_seq: u16,
+}
+
 /// A dynamic body's track (cannonballs, meteors): poses by tick, and the last tick it was named.
 #[derive(Clone, Debug, Default)]
 struct BodyTrack {
@@ -128,6 +141,9 @@ pub struct Players {
     /// The snapshot's vehicles (on wire 4: the car this player drives, which the city stream
     /// leaves out), by handle.
     vehicles: HashMap<u8, BodyTrack>,
+    /// Each snapshot car's newest authoritative state, for the driver's presentation
+    /// (vehicle_predictor.rs).
+    vehicle_newest: HashMap<u8, NewestCar>,
     /// handle -> (body id, shape, half extents m), from `PKT_DYNAMIC_BODY_META`.
     body_meta: HashMap<u16, (u32, u8, Vec3)>,
 }
@@ -150,6 +166,7 @@ impl Players {
             bodies: HashMap::new(),
             body_meta: HashMap::new(),
             vehicles: HashMap::new(),
+            vehicle_newest: HashMap::new(),
         }
     }
 
@@ -227,6 +244,21 @@ impl Players {
         }
         for v in &s.vehicle_states {
             let q = Quat::from_xyzw(snorm(v.qx_snorm), snorm(v.qy_snorm), snorm(v.qz_snorm), snorm(v.qw_snorm)).normalize();
+            if self.vehicle_newest.get(&v.handle).is_none_or(|n| n.tick < s.server_tick) {
+                let w = |x: i16| f32::from(x) / 1000.0;
+                self.vehicle_newest.insert(
+                    v.handle,
+                    NewestCar {
+                        tick: s.server_tick,
+                        vehicle_type: v.vehicle_type,
+                        position: q2_5(v.dx_q2_5mm, v.dy_q2_5mm, v.dz_q2_5mm),
+                        rotation: q,
+                        linear_velocity: cms([v.vx_cms, v.vy_cms, v.vz_cms]),
+                        angular_velocity: Vec3::new(w(v.wx_mrads), w(v.wy_mrads), w(v.wz_mrads)),
+                        ack_input_seq: s.ack_input_seq,
+                    },
+                );
+            }
             let track = self.vehicles.entry(v.handle).or_default();
             track.last_seen = s.server_tick;
             if track.samples.back().is_none_or(|&(t, _, _)| t < s.server_tick) {
@@ -245,6 +277,8 @@ impl Players {
         let now = s.server_tick;
         self.bodies.retain(|_, t| now.saturating_sub(t.last_seen) <= BODY_STALE_TICKS);
         self.vehicles.retain(|_, t| now.saturating_sub(t.last_seen) <= BODY_STALE_TICKS);
+        let vehicles = &self.vehicles;
+        self.vehicle_newest.retain(|h, _| vehicles.contains_key(h));
     }
 
     /// Players at `now_ms`, written in `space`. Returns the render tick.
@@ -291,6 +325,11 @@ impl Players {
     /// A snapshot vehicle's pose at the last sampled render tick, in server space.
     pub fn vehicle_pose(&self, handle: u8) -> Option<(Vec3, Quat)> {
         self.vehicles.get(&handle)?.at(self.render_tick?)
+    }
+
+    /// A snapshot car's newest authoritative state (server space).
+    pub fn newest_vehicle(&self, handle: u8) -> Option<&NewestCar> {
+        self.vehicle_newest.get(&handle)
     }
 
     /// The snapshot's vehicle handles.

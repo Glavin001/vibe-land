@@ -631,6 +631,9 @@ pub struct VehicleAsset {
     pub asset_hash: String,
     /// The car's configuration (model, appearance, ...), as JSON.
     pub configuration: serde_json::Value,
+    /// The server's prepared driving setup (acceleration, topSpeed, tyreFriction, maxSteerRadians,
+    /// steeringResponse, ...: `PreparedDriving`), as JSON; null when absent.
+    pub driving: serde_json::Value,
 }
 
 /// Decode a `PKT_VEHICLE_ASSET` packet.
@@ -646,6 +649,7 @@ pub fn decode_vehicle_asset(bytes: &[u8]) -> Result<VehicleAsset, DecodeError> {
         geometry_hash: text("geometryHash").ok_or_else(malformed)?,
         asset_hash: text("assetHash").unwrap_or_default(),
         configuration: vehicle.get("configuration").cloned().unwrap_or(serde_json::Value::Null),
+        driving: vehicle.get("driving").cloned().unwrap_or(serde_json::Value::Null),
     })
 }
 

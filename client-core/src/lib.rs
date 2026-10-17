@@ -20,6 +20,7 @@ pub mod input;
 pub mod materials;
 pub mod players;
 pub mod predictor;
+pub mod vehicle_predictor;
 pub mod vehicles;
 pub mod weather;
 
@@ -114,6 +115,13 @@ pub struct ClientCore {
     in_vehicle: bool,
     /// The newest input frames sent, for the in-car resend window.
     recent_inputs: std::collections::VecDeque<InputFrame>,
+    /// The driven car's presentation: its unacknowledged inputs replayed from the newest
+    /// authoritative state (vehicle_predictor.rs, the web's vehiclePresentation.ts).
+    car_predictor: vehicle_predictor::VehiclePredictor,
+    /// The snapshot tick of the newest car state the predictor has seen.
+    car_observed_tick: Option<u32>,
+    /// Each garage car's wheel centres (actor frame, stream wheel order), from its metadata.
+    wheel_centres: std::collections::HashMap<u32, [[f32; 3]; 4]>,
 }
 
 /// In a car the web resends the newest unacknowledged input frames with every bundle, this many
@@ -161,6 +169,9 @@ impl ClientCore {
             driving: None,
             in_vehicle: false,
             recent_inputs: std::collections::VecDeque::new(),
+            car_predictor: Default::default(),
+            car_observed_tick: None,
+            wheel_centres: std::collections::HashMap::new(),
         }
     }
 
@@ -176,7 +187,12 @@ impl ClientCore {
         self.config.as_ref()
     }
 
+    /// Fail with `error`, unless the core already failed: then what follows is a consequence (a
+    /// manifest arriving for a session the core refused), and the first reason is the one to keep.
     fn fail(&mut self, error: String) {
+        if self.state == VlCoreState::Failed {
+            return;
+        }
         self.state = VlCoreState::Failed;
         self.last_error = Some(error);
     }
@@ -390,6 +406,9 @@ impl ClientCore {
             if let Some(bundler) = self.bundler.as_mut() {
                 let frames = bundler.produce(dt_s, &self.input);
                 if !frames.is_empty() {
+                    if let (true, Some(handle)) = (self.in_vehicle, self.driving) {
+                        self.car_predictor.record(handle, &frames);
+                    }
                     self.recent_inputs.extend(frames.iter().cloned());
                     while self.recent_inputs.len() > RECENT_INPUTS {
                         self.recent_inputs.pop_front();
@@ -506,6 +525,40 @@ impl ClientCore {
                 match streamed {
                     Some(i) => self.frame.cars[i] = car,
                     None => self.frame.cars.push(car),
+                }
+            }
+            // The driven car: drawn where the driver's inputs put it, not an interpolation delay
+            // plus a round trip behind (the web's VehiclePresentationPredictor).
+            match (self.in_vehicle, self.driving) {
+                (true, Some(handle)) => {
+                    let sim_hz = self.config.as_ref().map_or(60, |c| u32::from(c.sim_hz));
+                    if let Some(n) = u8::try_from(handle).ok().and_then(|h| players.newest_vehicle(h)).copied() {
+                        if self.car_observed_tick.is_none_or(|t| n.tick > t) {
+                            self.car_observed_tick = Some(n.tick);
+                            let proxy = self.vehicle_proxy(handle, n.vehicle_type);
+                            let sample = vehicle_predictor::CarSample {
+                                server_time_us: f64::from(n.tick) * 1e6 / f64::from(sim_hz),
+                                position: n.position,
+                                rotation: n.rotation,
+                                linear_velocity: n.linear_velocity,
+                                angular_velocity: n.angular_velocity,
+                            };
+                            self.car_predictor.observe(handle, sample, n.ack_input_seq, proxy, now_ms);
+                        }
+                    }
+                    self.car_predictor.update(dt_s as f32, now_ms);
+                    if let (Some((p, q)), Some(car)) =
+                        (self.car_predictor.pose(), self.frame.cars.iter_mut().find(|c| c.handle == handle))
+                    {
+                        car.pos = self.space.pos(p);
+                        car.quat = self.space.quat(q);
+                    }
+                }
+                _ => {
+                    if self.car_predictor.handle().is_some() {
+                        self.car_predictor.reset();
+                    }
+                    self.car_observed_tick = None;
                 }
             }
         }
@@ -754,10 +807,30 @@ impl ClientCore {
     /// stream rest the car's detached parts on the ground as the server does.
     pub fn set_vehicle_metadata(&mut self, handle: u32, metadata: &[u8]) -> Result<(), vehicles::VehicleMeshError> {
         let parts = vehicles::part_hull_points(metadata)?;
+        if let Some(centres) = vehicles::wheel_centres(metadata) {
+            self.wheel_centres.insert(handle, centres);
+        }
         if let Some(city) = self.city.as_mut() {
             city.set_vehicle_parts(handle, parts);
         }
         Ok(())
+    }
+
+    /// The driven car's proxy (`vehicleProxy`): a garage car's dimensions, prepared driving and wheel
+    /// centres once its metadata has arrived; the stock definition of its type otherwise.
+    fn vehicle_proxy(&self, handle: u32, vehicle_type: u8) -> vehicle_predictor::VehicleProxy {
+        self.vehicle_assets
+            .get(&handle)
+            .zip(self.wheel_centres.get(&handle))
+            .and_then(|(asset, wheels)| vehicle_predictor::VehicleProxy::custom(&asset.configuration, &asset.driving, wheels))
+            .unwrap_or_else(|| vehicle_predictor::VehicleProxy::stock(vehicle_type))
+    }
+
+    /// The driven car's newest authoritative position and velocity (server space), for tests.
+    pub fn driven_car_authoritative(&self) -> Option<(Vec3, Vec3)> {
+        let handle = u8::try_from(self.driving?).ok()?;
+        let n = self.players.as_ref()?.newest_vehicle(handle)?;
+        Some((n.position, n.linear_velocity))
     }
 
     /// Ask to drive the car with `handle` (the web's E near a car; the server checks the seat is

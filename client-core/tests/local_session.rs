@@ -242,7 +242,25 @@ fn a_player_enters_drives_and_leaves_a_car() {
     assert!(h.core.in_vehicle(), "the server did not seat the player in car {}", car.handle);
     let start = h.core.frame().cars.iter().find(|c| c.handle == car.handle).unwrap().pos;
     h.core.set_input(&VlInput { move_y: 1.0, ..Default::default() });
-    h.run(120);
+    // The driver sees its car where its inputs put it (the web's vehiclePresentation: replay of the
+    // unacknowledged inputs from the newest authoritative state), not an interpolation delay
+    // behind the server: along the car's velocity, the drawn car does not trail the newest
+    // authoritative car on average, where an interpolated one trails it by speed x delay.
+    let mut leads = Vec::new();
+    for _ in 0..120 {
+        h.run(1);
+        let Some((newest, velocity)) = h.core.driven_car_authoritative() else { continue };
+        let speed = velocity.length();
+        if speed < 1.0 {
+            continue;
+        }
+        let drawn = h.core.frame().cars.iter().find(|c| c.handle == car.handle).unwrap().pos;
+        leads.push((glam::Vec3::from_array(drawn) - newest).dot(velocity / speed));
+    }
+    let mean = leads.iter().sum::<f32>() / leads.len().max(1) as f32;
+    eprintln!("drawn car lead over the newest authoritative car: mean {mean:.3} m over {} frames", leads.len());
+    assert!(!leads.is_empty(), "the car never reached 1 m/s");
+    assert!(mean >= 0.0, "the driven car trails the server by {:.3} m on average", -mean);
     let end = h.core.poll(u64::from(h.tick) * TICK_US + TICK_US / 2).cars.iter().find(|c| c.handle == car.handle).unwrap().pos;
     let moved = (end[0] - start[0]).hypot(end[2] - start[2]);
     assert!(moved > 2.0, "throttle moved the car {moved} m");
