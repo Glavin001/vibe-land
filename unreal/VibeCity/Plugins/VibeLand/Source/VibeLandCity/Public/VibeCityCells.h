@@ -28,6 +28,10 @@ namespace VibeCityCells
 		TArray<FVector> Normals;
 		TArray<FVector2D> UV0;
 		TArray<FVector2D> UV1;
+		/** (height above the ground in the intact city in metres, interior): interior is 1 on a face
+		 * bonded neighbours covered. Fixed to the surface, so weathering keyed to it stays on a chunk
+		 * that breaks away. */
+		TArray<FVector2D> UV2;
 		TArray<FProcMeshTangent> Tangents;
 
 		void Reset()
@@ -37,6 +41,7 @@ namespace VibeCityCells
 			Normals.Reset();
 			UV0.Reset();
 			UV1.Reset();
+			UV2.Reset();
 			Tangents.Reset();
 		}
 	};
@@ -54,9 +59,10 @@ namespace VibeCityCells
 	};
 
 	/** Append chunk `ChunkIndex` of `Meshes`, its vertices through `ToComponent`, each triangle to
-	 * the glass or the opaque section by its material. */
-	VIBELANDCITY_API void AppendChunk(const VlMeshView& Meshes, int32 ChunkIndex, const FTransform& ToComponent, const FCatalogMap& Catalog,
-		FSection& Opaque, FSection& Glass);
+	 * the glass or the opaque section by its material; `Rest` is the chunk's rest transform
+	 * (RestTransform), for UV2. */
+	VIBELANDCITY_API void AppendChunk(const VlMeshView& Meshes, int32 ChunkIndex, const FTransform& ToComponent, const FTransform& Rest,
+		const FCatalogMap& Catalog, FSection& Opaque, FSection& Glass);
 
 	/** Where an imported city's cells are kept: /Game/VibeCity/Scenes/<first 16 of the hash>_<HD|Web>. */
 	VIBELANDCITY_API FString SceneFolder(const FString& ManifestHash, bool bHd);

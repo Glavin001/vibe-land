@@ -116,7 +116,7 @@ private:
 	/** Apply finished background cell builds that are still current; `bWait` waits for all. */
 	void FinishCellBuilds(bool bWait);
 	void RebuildBody(uint64 Body);
-	void AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const;
+	void AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, const FTransform& Rest, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const;
 	void ApplySections(UProceduralMeshComponent* Component, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const;
 	/** Draw cell `Cell` from the imported city, if this manifest's was imported. */
 	bool UseImportedCell(int32 Cell, const FString& Folder);

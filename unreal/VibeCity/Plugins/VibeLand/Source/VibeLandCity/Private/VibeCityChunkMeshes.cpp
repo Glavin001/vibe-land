@@ -121,13 +121,13 @@ void AVibeCityDirector::BuildCity(UVibeNetSubsystem* NetSubsystem)
 	OnCityBuilt.Broadcast(Bounds);
 }
 
-void AVibeCityDirector::AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const
+void AVibeCityDirector::AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, const FTransform& Rest, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const
 {
 	UVibeNetSubsystem* NetSubsystem = Net();
 	VlMeshView M = {};
 	if (NetSubsystem && NetSubsystem->ChunkMeshes(M))
 	{
-		VibeCityCells::AppendChunk(M, ChunkIndex, ToComponent, Catalog, Opaque, Glass);
+		VibeCityCells::AppendChunk(M, ChunkIndex, ToComponent, Rest, Catalog, Opaque, Glass);
 	}
 }
 
@@ -199,7 +199,7 @@ int64 AVibeCityDirector::CellTriangles(int32 Cell, bool bGlass) const
 		const FChunkSlot& Slot = Slots[ChunkIndex];
 		if (Slot.Body == 0 && !Slot.bRemoved)
 		{
-			AppendChunk(ChunkIndex, Slot.Rest, Opaque, Glass);
+			AppendChunk(ChunkIndex, Slot.Rest, Slot.Rest, Opaque, Glass);
 		}
 	}
 	return (bGlass ? Glass : Opaque).Triangles.Num() / 3;
@@ -212,12 +212,12 @@ void AVibeCityDirector::ApplySections(UProceduralMeshComponent* Component, VibeC
 	Component->ClearAllMeshSections();
 	if (Opaque.Vertices.Num() > 0)
 	{
-		Component->CreateMeshSection(0, Opaque.Vertices, Opaque.Triangles, Opaque.Normals, Opaque.UV0, Opaque.UV1, NoUV, NoUV, NoColor, Opaque.Tangents, /*bCreateCollision=*/false);
+		Component->CreateMeshSection(0, Opaque.Vertices, Opaque.Triangles, Opaque.Normals, Opaque.UV0, Opaque.UV1, Opaque.UV2, NoUV, NoColor, Opaque.Tangents, /*bCreateCollision=*/false);
 		Component->SetMaterial(0, ChunkMaterial ? ChunkMaterial.Get() : BaseMaterial.Get());
 	}
 	if (Glass.Vertices.Num() > 0)
 	{
-		Component->CreateMeshSection(1, Glass.Vertices, Glass.Triangles, Glass.Normals, Glass.UV0, Glass.UV1, NoUV, NoUV, NoColor, Glass.Tangents, /*bCreateCollision=*/false);
+		Component->CreateMeshSection(1, Glass.Vertices, Glass.Triangles, Glass.Normals, Glass.UV0, Glass.UV1, Glass.UV2, NoUV, NoColor, Glass.Tangents, /*bCreateCollision=*/false);
 		Component->SetMaterial(1, GlassMaterial ? GlassMaterial.Get() : BaseMaterial.Get());
 	}
 }
@@ -262,7 +262,7 @@ void AVibeCityDirector::RebuildCell(int32 Cell, bool bAsync)
 		Out->Version = Version;
 		for (const TPair<int32, FTransform>& Chunk : Standing)
 		{
-			VibeCityCells::AppendChunk(Meshes, Chunk.Key, Chunk.Value, Catalog, Out->Opaque, Out->Glass);
+			VibeCityCells::AppendChunk(Meshes, Chunk.Key, Chunk.Value, Chunk.Value, Catalog, Out->Opaque, Out->Glass);
 		}
 		return Out;
 	};
@@ -335,7 +335,7 @@ void AVibeCityDirector::RebuildBody(uint64 Body)
 	VibeCityCells::FSection Opaque, Glass;
 	for (const int32 ChunkIndex : *Members)
 	{
-		AppendChunk(ChunkIndex, FTransform(Slots[ChunkIndex].Local), Opaque, Glass);
+		AppendChunk(ChunkIndex, FTransform(Slots[ChunkIndex].Local), Slots[ChunkIndex].Rest, Opaque, Glass);
 	}
 	ApplySections(Component, Opaque, Glass);
 	if (const FTransform* Pose = BodyPoses.Find(Body))

@@ -847,6 +847,7 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 		int32 Shots = 0;
 		bool bCannon = false;
 		bool bMeteor = false;
+		FVector Target = FVector::ZeroVector;
 	};
 	TSharedRef<FState> S = MakeShared<FState>();
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
@@ -871,12 +872,23 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 		{
 			return false;
 		}
-		// The player beside the camera, facing the building (server (-22, 1, -20) toward (-42, -42)).
-		const FVector From(100.0 * -20.0, -100.0 * -22.0, 100.0);
-		const FVector To(100.0 * -42.0, -100.0 * -42.0, 400.0);
-		N->CameraDrop(From, static_cast<float>((To - From).Rotation().Yaw), 0.0f);
-		// Far enough back (about 55 m) that a meteor's blast does not bury the camera in debris.
-		VibeCityCapture::Park(GameWorld(), FVector3f(-4.0f, 9.0f, -2.0f), FVector3f(-42.0f, 4.0f, -42.0f), 60.0f);
+		// The shot (server metres: eye, target, fov), -VibeShowcase=px,py,pz,tx,ty,tz,fov for another
+		// scene; by default about 55 m back from the default city's corner building, far enough that
+		// a meteor's blast does not bury the camera in debris. The player stands below the camera,
+		// facing the target; the meteor falls on the highest chunk within 15 m of the target.
+		FString Shot = TEXT("-4,9,-2,-42,4,-42,60");
+		FParse::Value(FCommandLine::Get(), TEXT("VibeShowcase="), Shot, /*bShouldStopOnSeparator=*/false);
+		FVector3f Eye, Look;
+		float Fov = 60.0f;
+		if (!VibeCityCapture::Parse(Shot, Eye, Look, Fov))
+		{
+			AddError(FString::Printf(TEXT("bad -VibeShowcase=%s"), *Shot));
+			return true;
+		}
+		const FVector From(100.0 * Eye.Z, -100.0 * Eye.X, 100.0);
+		S->Target = FVector(100.0 * Look.Z, -100.0 * Look.X, 100.0 * Look.Y);
+		N->CameraDrop(From, static_cast<float>((S->Target - From).Rotation().Yaw), 0.0f);
+		VibeCityCapture::Park(GameWorld(), Eye, Look, Fov > 0.0f ? Fov : 60.0f);
 		if (APlayerController* PC = GameWorld()->GetFirstPlayerController(); PC && PC->GetHUD())
 		{
 			PC->GetHUD()->bShowHUD = false;
@@ -902,7 +914,7 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 			for (const VlChunk& C : N->Chunks())
 			{
 				const FVector P = VibeCityCells::RestTransform(C).GetLocation();
-				if (FVector::Dist2D(P, FVector(-4200.0, 4200.0, 0.0)) < 1500.0 && P.Z > Top.Z)
+				if (FVector::Dist2D(P, S->Target) < 1500.0 && P.Z > Top.Z)
 				{
 					Top = P;
 				}

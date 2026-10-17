@@ -36,7 +36,8 @@ namespace VibeCityCells
 		return Map;
 	}
 
-	void AppendChunk(const VlMeshView& M, int32 ChunkIndex, const FTransform& ToComponent, const FCatalogMap& Catalog, FSection& Opaque, FSection& Glass)
+	void AppendChunk(const VlMeshView& M, int32 ChunkIndex, const FTransform& ToComponent, const FTransform& Rest, const FCatalogMap& Catalog,
+		FSection& Opaque, FSection& Glass)
 	{
 		if (ChunkIndex < 0 || static_cast<size_t>(ChunkIndex) >= M.range_count)
 		{
@@ -65,6 +66,10 @@ namespace VibeCityCells
 				S.Tangents.Add(FProcMeshTangent(ToComponent.TransformVectorNoScale(FVector(Tg[0], Tg[1], Tg[2])), Tg[3] < 0.0f));
 				S.UV0.Add(FVector2D(M.tile_uvs[V][0], M.tile_uvs[V][1]) * UvScale);
 				S.UV1.Add(LayerMetal);
+				// Height in metres only: Nanite quantises UVs over each cluster's range, and wide ranges
+				// (city coordinates) cost the layer index in UV1 its precision.
+				const double Height = Rest.TransformPosition(ToVector(M.positions[V])).Z / 100.0;
+				S.UV2.Add(FVector2D(Height, M.interior ? static_cast<double>(M.interior[V]) : 0.0));
 			}
 		}
 	}

@@ -28,7 +28,7 @@ namespace
 		FMeshDescription Description;
 		FStaticMeshAttributes Attributes(Description);
 		Attributes.Register();
-		Attributes.GetVertexInstanceUVs().SetNumChannels(2);
+		Attributes.GetVertexInstanceUVs().SetNumChannels(3);
 		const FPolygonGroupID Group = Description.CreatePolygonGroup();
 		Attributes.GetPolygonGroupMaterialSlotNames()[Group] = TEXT("Chunk");
 		TVertexAttributesRef<FVector3f> Positions = Attributes.GetVertexPositions();
@@ -55,6 +55,7 @@ namespace
 				Signs[Instance] = S.Tangents[V].bFlipTangentY ? -1.0f : 1.0f;
 				UVs.Set(Instance, 0, FVector2f(S.UV0[V]));
 				UVs.Set(Instance, 1, FVector2f(S.UV1[V]));
+				UVs.Set(Instance, 2, FVector2f(S.UV2[V]));
 				Corners.Add(Instance);
 			}
 			Description.CreateTriangle(Group, Corners);
@@ -141,7 +142,7 @@ int32 UVibeCityImportCommandlet::Main(const FString& Params)
 		VibeCityCells::FSection Opaque, Glass;
 		for (const int32 Index : Cell.Value)
 		{
-			VibeCityCells::AppendChunk(Meshes, Index, VibeCityCells::RestTransform(Chunks[Index]), Catalog, Opaque, Glass);
+			VibeCityCells::AppendChunk(Meshes, Index, VibeCityCells::RestTransform(Chunks[Index]), VibeCityCells::RestTransform(Chunks[Index]), Catalog, Opaque, Glass);
 		}
 		Triangles += (Opaque.Triangles.Num() + Glass.Triangles.Num()) / 3;
 		if (Opaque.Vertices.Num() > 0)

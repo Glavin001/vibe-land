@@ -171,6 +171,103 @@ def chunk_material(albedo_array, surface_array, name="M_VibeCityChunk", normal_m
     return m
 
 
+def weathering(m, albedo, roughness, x, y):
+    """Weathering on a chunk surface, keyed to the surface itself so it stays on a chunk that breaks
+    away: its height in the intact city and interior flag (UV2, metres) and its texture coordinates
+    (UV0, box-projected tiles, continuous across a wall's chunks); faces the break exposed
+    (interior) are fresh and get none. The art-standard layers of a grime pass:
+      - large-scale colour variation (smooth noise over a few tiles, x0.9..1.1), breaking up tiling;
+      - a splash and rising-damp band up to ~1.2 m above the ground, darker and rougher, its top edge
+        broken by noise;
+      - rain streaks on walls: noise stretched 16x vertically, darkening where it is high.
+    Returns (albedo, roughness) nodes."""
+    def mul(a, b, dx, dy):
+        e = expr(m, unreal.MaterialExpressionMultiply, x + dx, y + dy)
+        mel.connect_material_expressions(a, "", e, "A")
+        mel.connect_material_expressions(b, "", e, "B")
+        return e
+
+    def add(a, b, dx, dy):
+        e = expr(m, unreal.MaterialExpressionAdd, x + dx, y + dy)
+        mel.connect_material_expressions(a, "", e, "A")
+        mel.connect_material_expressions(b, "", e, "B")
+        return e
+
+    def const(v, dx, dy):
+        e = expr(m, unreal.MaterialExpressionConstant, x + dx, y + dy)
+        e.set_editor_property("r", v)
+        return e
+
+    def lerp(a, b, t, dx, dy):
+        e = expr(m, unreal.MaterialExpressionLinearInterpolate, x + dx, y + dy)
+        mel.connect_material_expressions(a, "", e, "A")
+        mel.connect_material_expressions(b, "", e, "B")
+        mel.connect_material_expressions(t, "", e, "Alpha")
+        return e
+
+    def noise(position, scale, levels, dx, dy):
+        n = expr(m, unreal.MaterialExpressionNoise, x + dx, y + dy)
+        n.set_editor_property("scale", scale)
+        n.set_editor_property("levels", levels)
+        n.set_editor_property("turbulence", False)
+        n.set_editor_property("output_min", 0.0)
+        n.set_editor_property("output_max", 1.0)
+        mel.connect_material_expressions(position, "", n, "Position")
+        return n
+
+    uv0 = expr(m, unreal.MaterialExpressionTextureCoordinate, x - 1400, y)
+    uv2 = expr(m, unreal.MaterialExpressionTextureCoordinate, x - 1400, y + 120)
+    uv2.set_editor_property("coordinate_index", 2)
+    height = mask(m, "r", x - 1250, y + 120)
+    mel.connect_material_expressions(uv2, "", height, "")
+    interior = mask(m, "g", x - 1250, y + 220)
+    mel.connect_material_expressions(uv2, "", interior, "")
+    # (u, v, 0) in tiles: v runs down a wall.
+    rest = expr(m, unreal.MaterialExpressionAppendVector, x - 1100, y + 40)
+    mel.connect_material_expressions(uv0, "", rest, "A")
+    mel.connect_material_expressions(const(0.0, -1250, 60), "", rest, "B")
+
+    # Colour variation: x (0.9 + 0.2 n).
+    macro = noise(rest, 0.3, 3, -900, -200)
+    vary = add(mul(macro, const(0.2, -800, -120), -700, -180), const(0.9, -700, -100), -600, -180)
+
+    # Splash band: (1 - smoothstep(0, 1.2 m, z + 0.6 (n - 0.5))) x 0.35 darker.
+    edge = noise(rest, 1.5, 2, -900, 100)
+    ragged = add(height, mul(add(edge, const(-0.5, -800, 200), -700, 160), const(0.6, -700, 240), -600, 180), -500, 140)
+    band_step = expr(m, unreal.MaterialExpressionSmoothStep, x - 400, y + 140)
+    band_step.set_editor_property("const_min", 0.0)
+    band_step.set_editor_property("const_max", 1.2)
+    mel.connect_material_expressions(ragged, "", band_step, "Value")
+    band = expr(m, unreal.MaterialExpressionOneMinus, x - 300, y + 140)
+    mel.connect_material_expressions(band_step, "", band, "")
+
+    # Streaks: v (down the wall) squashed 16x, so features run 16x taller than wide.
+    squash = expr(m, unreal.MaterialExpressionConstant3Vector, x - 1100, y + 320)
+    squash.set_editor_property("constant", unreal.LinearColor(1.0, 1.0 / 16.0, 1.0, 0.0))
+    streak_n = noise(mul(rest, squash, -950, 320), 3.0, 2, -800, 320)
+    streak = expr(m, unreal.MaterialExpressionSaturate, x - 500, y + 320)
+    mel.connect_material_expressions(mul(add(streak_n, const(-0.6, -700, 400), -600, 340), const(3.0, -600, 420), -550, 360), "", streak, "")
+    normal = expr(m, unreal.MaterialExpressionVertexNormalWS, x - 700, y + 480)
+    nz = mask(m, "b", x - 600, y + 480)
+    mel.connect_material_expressions(normal, "", nz, "")
+    abs_nz = expr(m, unreal.MaterialExpressionAbs, x - 520, y + 480)
+    mel.connect_material_expressions(nz, "", abs_nz, "")
+    wall = expr(m, unreal.MaterialExpressionOneMinus, x - 440, y + 480)
+    mel.connect_material_expressions(abs_nz, "", wall, "")
+    streaks = mul(streak, wall, -380, 400)
+
+    # Grime amount (none on interior faces): band 0.35 + streaks 0.18 of darkening.
+    outside = expr(m, unreal.MaterialExpressionOneMinus, x - 1100, y + 220)
+    mel.connect_material_expressions(interior, "", outside, "")
+    dark = mul(add(mul(band, const(0.35, -250, 200), -200, 160), mul(streaks, const(0.18, -250, 420), -200, 380), -120, 240), outside, -40, 240)
+    shade = expr(m, unreal.MaterialExpressionOneMinus, x + 40, y + 240)
+    mel.connect_material_expressions(dark, "", shade, "")
+    variation = lerp(const(1.0, -300, -260), vary, outside, -200, -200)
+    out_albedo = mul(mul(albedo, variation, 0, -100), shade, 120, 0)
+    out_rough = lerp(roughness, const(1.0, 0, 380), mul(band, mul(const(0.5, -100, 460), outside, 0, 440), 60, 420), 160, 360)
+    return out_albedo, out_rough
+
+
 def hd_chunk_material(albedo_array, normal_array, arm_array):
     """The chunk material on 2K Poly Haven sources: albedo, a DirectX normal map, and AO/roughness/
     metalness from the ARM map. UV0 must already be in tiles of the hd source (the renderer scales
@@ -195,7 +292,6 @@ def hd_chunk_material(albedo_array, normal_array, arm_array):
     tinted = expr(m, unreal.MaterialExpressionMultiply, -350, -250)
     mel.connect_material_expressions(albedo, "RGB", tinted, "A")
     mel.connect_material_expressions(tint, "", tinted, "B")
-    mel.connect_material_property(tinted, "", unreal.MaterialProperty.MP_BASE_COLOR)
 
     normal = expr(m, unreal.MaterialExpressionTextureSample, -700, 50)
     normal.set_editor_property("texture", normal_array)
@@ -208,8 +304,12 @@ def hd_chunk_material(albedo_array, normal_array, arm_array):
     arm.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_MASKS)
     mel.connect_material_expressions(uvw, "", arm, "UVs")
     mel.connect_material_property(arm, "R", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
-    mel.connect_material_property(arm, "G", unreal.MaterialProperty.MP_ROUGHNESS)
     mel.connect_material_property(arm, "B", unreal.MaterialProperty.MP_METALLIC)
+    rough = mask(m, "g", -500, 300)
+    mel.connect_material_expressions(arm, "RGB", rough, "")
+    weathered, weathered_rough = weathering(m, tinted, rough, 0, 700)
+    mel.connect_material_property(weathered, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    mel.connect_material_property(weathered_rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
     mel.recompile_material(m)
     return m
 
@@ -896,6 +996,12 @@ if only == "battery":
     battery_material()
     saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
     unreal.log(f"VIBE_IMPORT_OK battery saved={saved}")
+    raise SystemExit(0)
+if only == "chunkhd":
+    # Rebuilds M_VibeCityChunkHD on the HD arrays a full --hd import made.
+    hd_chunk_material(*(unreal.load_asset(f"{TEXTURES}/{n}") for n in ("T_CityAlbedoHDArray", "T_CityNormalHDArray", "T_CityARMHDArray")))
+    saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
+    unreal.log(f"VIBE_IMPORT_OK chunkhd saved={saved}")
     raise SystemExit(0)
 if only == "projectiles":
     projectile_materials()
