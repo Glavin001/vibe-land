@@ -16,6 +16,7 @@
 #include "EngineUtils.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/AutomationTest.h"
+#include "Components/StaticMeshComponent.h"
 #include "ProceduralMeshComponent.h"
 #include "Tests/AutomationCommon.h"
 #include "VibeCityDirector.h"
@@ -120,6 +121,16 @@ bool FVibeCityRenderMaterials::RunTest(const FString& Parameters)
 			{
 				Drawn = Mesh->GetMaterial(0);
 				break;
+			}
+		}
+		// An imported city's intact cells are static meshes (VibeCity.Render.ImportedCity).
+		TArray<UStaticMeshComponent*> Imported;
+		Director->GetComponents(Imported);
+		for (UStaticMeshComponent* Mesh : Imported)
+		{
+			if (!Drawn && Mesh && Mesh->GetStaticMesh())
+			{
+				Drawn = Mesh->GetMaterial(0);
 			}
 		}
 		if (!TestNotNull(TEXT("a standing cell is drawn"), Drawn))

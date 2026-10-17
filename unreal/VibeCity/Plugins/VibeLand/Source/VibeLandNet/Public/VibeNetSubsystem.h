@@ -81,6 +81,9 @@ public:
 	 * the client is destroyed. */
 	bool ChunkMeshes(VlMeshView& Out) const;
 
+	/** The session's city manifest hash (sha256 hex; empty without a city): an imported city's key. */
+	FString ManifestHash() const;
+
 	/** Every chunk's catalog materials, in chunk-table order (empty until the manifest arrived). */
 	TArrayView<const VlChunkSurface> ChunkSurfaces() const;
 

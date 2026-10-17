@@ -238,20 +238,23 @@ impl ClientCore {
         match decode_manifest(bytes, config.city_manifest_hash.as_deref()) {
             Ok(manifest) => {
                 self.city = Some(CityStream::new(&manifest, u32::from(config.sim_hz), self.space));
-                let catalog = materials::Catalog::get();
-                self.surfaces = materials::chunk_surfaces(&manifest, catalog);
+                // The same tables an import step bakes (city::CityModel).
+                let (_, surfaces, meshes) = crate::city::city_tables(&manifest, self.space);
+                self.surfaces = surfaces;
                 self.grass_exclusions = grass::exclusions_from_manifest(&manifest);
-                self.meshes = Some(geometry::ChunkMeshes::build_with_surfaces(
-                    &manifest,
-                    self.space,
-                    Some((&self.surfaces, catalog)),
-                ));
+                self.meshes = Some(meshes);
                 if self.state == VlCoreState::WaitingForManifest {
                     self.state = VlCoreState::WaitingForWelcome;
                 }
             }
             Err(error) => self.fail(error.to_string()),
         }
+    }
+
+    /// The session's city manifest hash (sha256 hex; empty for a match without a city): the key an
+    /// imported city is stored under.
+    pub fn manifest_hash(&self) -> &str {
+        self.config.as_ref().and_then(|c| c.city_manifest_hash.as_deref()).unwrap_or("")
     }
 
     /// The city's chunk table (empty until the manifest arrives). Fixed for the session.

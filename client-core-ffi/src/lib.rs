@@ -27,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 19;
+pub const VL_ABI_VERSION: u32 = 20;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -674,18 +674,7 @@ pub unsafe extern "C" fn vl_client_chunk_meshes(client: *mut VlClient, out: *mut
     }
     guard(client, |c| {
         let Some(m) = c.core.chunk_meshes() else { return VL_ERR_STATE };
-        out.write(VlMeshView {
-            ranges: m.ranges.as_ptr(),
-            range_count: m.ranges.len(),
-            positions: m.positions.as_ptr(),
-            normals: m.normals.as_ptr(),
-            tangents: m.tangents.as_ptr(),
-            tile_uvs: m.tile_uvs.as_ptr(),
-            materials: m.materials.as_ptr(),
-            vertex_count: m.positions.len(),
-            indices: m.indices.as_ptr(),
-            index_count: m.indices.len(),
-        });
+        out.write(mesh_view(m));
         VL_OK
     })
 }
@@ -710,6 +699,112 @@ pub unsafe extern "C" fn vl_client_chunk_surfaces(
         out_count.write(s.len());
         VL_OK
     })
+}
+
+fn mesh_view(m: &vibe_client_core::geometry::ChunkMeshes) -> VlMeshView {
+    VlMeshView {
+        ranges: m.ranges.as_ptr(),
+        range_count: m.ranges.len(),
+        positions: m.positions.as_ptr(),
+        normals: m.normals.as_ptr(),
+        tangents: m.tangents.as_ptr(),
+        tile_uvs: m.tile_uvs.as_ptr(),
+        materials: m.materials.as_ptr(),
+        vertex_count: m.positions.len(),
+        indices: m.indices.as_ptr(),
+        index_count: m.indices.len(),
+    }
+}
+
+/// A city built from its manifest alone, for an import step: no session. Opaque to C.
+pub struct VlCity {
+    model: vibe_client_core::city::CityModel,
+}
+
+/// Build the city an uncompressed manifest (VLCM, as `<api>/city-manifest/<hash>` serves it)
+/// describes, in `space` (as `VlConfig::space`): the chunk table and meshes a client builds when
+/// that manifest arrives. Null when the bytes are not a manifest. Free with `vl_city_destroy`.
+/// Needs no client: any thread may build.
+///
+/// # Safety
+/// `bytes` must hold `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn vl_city_build(bytes: *const u8, len: usize, space: u32) -> *mut VlCity {
+    if bytes.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Some(space) = Space::from_u32(space) else { return std::ptr::null_mut() };
+    let bytes = std::slice::from_raw_parts(bytes, len);
+    match catch_unwind(AssertUnwindSafe(|| vibe_client_core::city::CityModel::from_manifest(bytes, space))) {
+        Ok(Ok(model)) => Box::into_raw(Box::new(VlCity { model })),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// The built city's chunk table (as `vl_client_chunks`). Valid until `vl_city_destroy`.
+///
+/// # Safety
+/// `city` must come from `vl_city_build`; the outputs must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_city_chunks(city: *const VlCity, out_chunks: *mut *const VlChunk, out_count: *mut usize) -> i32 {
+    let (Some(city), false, false) = (city.as_ref(), out_chunks.is_null(), out_count.is_null()) else { return VL_ERR_ARG };
+    out_chunks.write(city.model.chunks.as_ptr());
+    out_count.write(city.model.chunks.len());
+    VL_OK
+}
+
+/// The built city's chunk meshes (as `vl_client_chunk_meshes`). Valid until `vl_city_destroy`.
+///
+/// # Safety
+/// `city` must come from `vl_city_build`; `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_city_meshes(city: *const VlCity, out: *mut VlMeshView) -> i32 {
+    let (Some(city), false) = (city.as_ref(), out.is_null()) else { return VL_ERR_ARG };
+    out.write(mesh_view(&city.model.meshes));
+    VL_OK
+}
+
+/// The manifest's sha256 (hex) into `buffer` (NUL-terminated, truncated to `capacity`); returns
+/// its length.
+///
+/// # Safety
+/// `city` must come from `vl_city_build`; `buffer` must hold `capacity` bytes (or be null).
+#[no_mangle]
+pub unsafe extern "C" fn vl_city_hash(city: *const VlCity, buffer: *mut c_char, capacity: usize) -> usize {
+    let Some(city) = city.as_ref() else { return 0 };
+    copy_str(&city.model.hash, buffer, capacity)
+}
+
+/// Free a city from `vl_city_build`.
+///
+/// # Safety
+/// `city` must be null or come from `vl_city_build`, not used again afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn vl_city_destroy(city: *mut VlCity) {
+    if !city.is_null() {
+        drop(Box::from_raw(city));
+    }
+}
+
+/// The session's city manifest hash (sha256 hex; empty before the session config or for a match
+/// without a city) into `buffer` (NUL-terminated, truncated to `capacity`); returns its length.
+/// It keys an imported city.
+///
+/// # Safety
+/// `client` must be a live client; `buffer` must hold `capacity` bytes (or be null).
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_manifest_hash(client: *mut VlClient, buffer: *mut c_char, capacity: usize) -> usize {
+    let Some(c) = client.as_ref() else { return 0 };
+    copy_str(c.core.manifest_hash(), buffer, capacity)
+}
+
+unsafe fn copy_str(text: &str, buffer: *mut c_char, capacity: usize) -> usize {
+    if !buffer.is_null() && capacity > 0 {
+        let n = text.len().min(capacity - 1);
+        std::ptr::copy_nonoverlapping(text.as_ptr(), buffer.cast::<u8>(), n);
+        buffer.add(n).write(0);
+    }
+    text.len()
 }
 
 /// The material catalog (`shared/assets/materials/catalog.json`), indexed by the ids chunk meshes

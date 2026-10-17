@@ -9,6 +9,8 @@
 #include "VibeCityBatteries.h"
 #include "VibeCityGrass.h"
 
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
@@ -21,31 +23,7 @@ namespace
 {
 	FVector ToVector(const float (&V)[3]) { return FVector(V[0], V[1], V[2]); }
 	FQuat ToQuat(const float (&Q)[4]) { return FQuat(Q[0], Q[1], Q[2], Q[3]).GetNormalized(); }
-
-	// Standing chunks are merged per cell of this size (cm), as the web merges per 32 m render cell
-	// (client/src/scene/cityChunkMesh.ts): a fracture rebuilds only the cells it touched.
-	constexpr double CellSizeCm = 3200.0;
 }
-
-struct AVibeCityDirector::FSectionBuffers
-{
-	TArray<FVector> Vertices;
-	TArray<int32> Triangles;
-	TArray<FVector> Normals;
-	TArray<FVector2D> UV0;
-	TArray<FVector2D> UV1;
-	TArray<FProcMeshTangent> Tangents;
-
-	void Reset()
-	{
-		Vertices.Reset();
-		Triangles.Reset();
-		Normals.Reset();
-		UV0.Reset();
-		UV1.Reset();
-		Tangents.Reset();
-	}
-};
 
 UProceduralMeshComponent* AVibeCityDirector::NewChunkComponent()
 {
@@ -70,18 +48,7 @@ void AVibeCityDirector::BuildCity(UVibeNetSubsystem* NetSubsystem)
 	const double Started = FPlatformTime::Seconds();
 
 	// The catalog: per entry, the layer and metalness the chunk material reads from UV1.
-	const VlMaterial* Catalog = nullptr;
-	size_t CatalogCount = 0;
-	vl_catalog(&Catalog, &CatalogCount);
-	CatalogLayerMetal.SetNum(static_cast<int32>(CatalogCount));
-	CatalogGlass.SetNum(static_cast<int32>(CatalogCount));
-	CatalogUvScale.SetNum(static_cast<int32>(CatalogCount));
-	for (size_t i = 0; i < CatalogCount; ++i)
-	{
-		CatalogUvScale[i] = bHdMaterial && Catalog[i].hd_metres_per_tile > 0.0f ? Catalog[i].metres_per_tile / Catalog[i].hd_metres_per_tile : 1.0f;
-		CatalogLayerMetal[i] = FVector2D(FMath::Max(Catalog[i].layer, 0), Catalog[i].metalness);
-		CatalogGlass[i] = (Catalog[i].flags & VL_MATERIAL_GLASS) != 0;
-	}
+	Catalog = VibeCityCells::FCatalogMap::Build(bHdMaterial);
 	if (!ChunkMaterial)
 	{
 		UE_LOG(LogVibeLand, Warning, TEXT("M_VibeCityChunk is missing: run scripts/unreal/import-city-materials.sh. Chunks use the basic shape material."));
@@ -93,22 +60,40 @@ void AVibeCityDirector::BuildCity(UVibeNetSubsystem* NetSubsystem)
 	{
 		const VlChunk& Chunk = Chunks[Index];
 		FChunkSlot& Slot = Slots[Index];
-		Slot.Rest = FTransform(ToQuat(Chunk.rest_quat), ToVector(Chunk.rest_pos));
+		Slot.Rest = VibeCityCells::RestTransform(Chunk);
 		const FVector P = Slot.Rest.GetLocation();
-		const FIntPoint Key(FMath::FloorToInt(P.X / CellSizeCm), FMath::FloorToInt(P.Y / CellSizeCm));
+		const FIntPoint Key = VibeCityCells::CellKey(P);
 		int32* Existing = CellByKey.Find(Key);
 		Slot.Cell = Existing ? *Existing : CellByKey.Add(Key, CellChunks.Num());
 		if (!Existing)
 		{
 			CellChunks.AddDefaulted();
+			CellKeys.Add(Key);
 			CellComponents.Add(NewChunkComponent());
 		}
 		CellChunks[Slot.Cell].Add(Index);
 		Bounds += P;
 	}
+	// The imported city for this manifest (and material mode), when there is one: -VibeRuntimeCells
+	// draws every cell from its runtime mesh instead.
+	ImportedOpaque.SetNum(CellChunks.Num());
+	ImportedGlass.SetNum(CellChunks.Num());
+	const FString Hash = NetSubsystem->ManifestHash();
+	const FString Folder = Hash.IsEmpty() || FParse::Param(FCommandLine::Get(), TEXT("VibeRuntimeCells")) ? FString() : VibeCityCells::SceneFolder(Hash, bHdMaterial);
+	ImportedFolder = Folder;
 	for (int32 Cell = 0; Cell < CellChunks.Num(); ++Cell)
 	{
 		RebuildCell(Cell);
+	}
+	const int32 Imported = ImportedCellsDrawn();
+	if (Imported == 0)
+	{
+		ImportedFolder.Reset(); // none for this manifest: rebuilt cells need not look
+	}
+	if (!Folder.IsEmpty())
+	{
+		UE_LOG(LogVibeLand, Display, TEXT("imported city %s: %d of %d cells%s"), *Folder, Imported, CellChunks.Num(),
+			Imported == 0 ? TEXT(" (none imported for this manifest: scripts/unreal/import-city.sh)") : TEXT(""));
 	}
 	bCityBuilt = true;
 	// The energy batteries dropped where players die (the web's BatteriesRenderer).
@@ -135,42 +120,91 @@ void AVibeCityDirector::BuildCity(UVibeNetSubsystem* NetSubsystem)
 	OnCityBuilt.Broadcast(Bounds);
 }
 
-void AVibeCityDirector::AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, FSectionBuffers& Opaque, FSectionBuffers& Glass) const
+void AVibeCityDirector::AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const
 {
 	UVibeNetSubsystem* NetSubsystem = Net();
 	VlMeshView M = {};
-	if (!NetSubsystem || !NetSubsystem->ChunkMeshes(M) || static_cast<size_t>(ChunkIndex) >= M.range_count)
+	if (NetSubsystem && NetSubsystem->ChunkMeshes(M))
 	{
-		return;
+		VibeCityCells::AppendChunk(M, ChunkIndex, ToComponent, Catalog, Opaque, Glass);
 	}
-	const VlMeshRange& R = M.ranges[ChunkIndex];
-	// One material per triangle (the core assigns it per face): route each triangle by its first
-	// vertex's material.
-	for (uint32 t = 0; t + 2 < R.index_count; t += 3)
+}
+
+bool AVibeCityDirector::UseImportedCell(int32 Cell, const FString& Folder)
+{
+	const FString Name = VibeCityCells::CellAssetName(CellKeys[Cell], false);
+	UStaticMesh* Opaque = LoadObject<UStaticMesh>(nullptr, *(Folder / Name + TEXT(".") + Name), nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Opaque)
 	{
-		const uint32 First = R.first_vertex + M.indices[R.first_index + t];
-		const uint32 Material = M.materials[First];
-		const bool bGlass = CatalogGlass.IsValidIndex(static_cast<int32>(Material)) && CatalogGlass[Material];
-		FSectionBuffers& S = bGlass ? Glass : Opaque;
-		const FVector2D LayerMetal = CatalogLayerMetal.IsValidIndex(static_cast<int32>(Material)) ? CatalogLayerMetal[Material] : FVector2D::ZeroVector;
-		const double UvScale = CatalogUvScale.IsValidIndex(static_cast<int32>(Material)) ? CatalogUvScale[Material] : 1.0;
-		for (uint32 k = 0; k < 3; ++k)
+		return false;
+	}
+	auto Make = [this](UStaticMesh* Mesh, UMaterialInterface* Material)
+	{
+		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(this);
+		C->SetStaticMesh(Mesh);
+		C->SetMobility(EComponentMobility::Movable);
+		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		C->SetCastShadow(true);
+		C->SetMaterial(0, Material);
+		C->SetupAttachment(RootComponent);
+		C->RegisterComponent();
+		return C;
+	};
+	ImportedOpaque[Cell] = Make(Opaque, ChunkMaterial ? ChunkMaterial.Get() : BaseMaterial.Get());
+	const FString GlassName = VibeCityCells::CellAssetName(CellKeys[Cell], true);
+	if (UStaticMesh* Glass = LoadObject<UStaticMesh>(nullptr, *(Folder / GlassName + TEXT(".") + GlassName), nullptr, LOAD_NoWarn | LOAD_Quiet))
+	{
+		ImportedGlass[Cell] = Make(Glass, GlassMaterial ? GlassMaterial.Get() : BaseMaterial.Get());
+	}
+	return true;
+}
+
+void AVibeCityDirector::DropImportedCell(int32 Cell)
+{
+	for (TArray<TObjectPtr<UStaticMeshComponent>>* Set : { &ImportedOpaque, &ImportedGlass })
+	{
+		if (Set->IsValidIndex(Cell) && (*Set)[Cell])
 		{
-			const uint32 V = R.first_vertex + M.indices[R.first_index + t + k];
-			S.Triangles.Add(S.Vertices.Num());
-			S.Vertices.Add(ToComponent.TransformPosition(ToVector(M.positions[V])));
-			S.Normals.Add(ToComponent.TransformVectorNoScale(ToVector(M.normals[V])));
-			const float(&Tg)[4] = M.tangents[V];
-			// Unreal derives the binormal as normal x tangent, flipped when bFlipTangentY; the core's
-			// w is +1 when normal x tangent already points along +v.
-			S.Tangents.Add(FProcMeshTangent(ToComponent.TransformVectorNoScale(FVector(Tg[0], Tg[1], Tg[2])), Tg[3] < 0.0f));
-			S.UV0.Add(FVector2D(M.tile_uvs[V][0], M.tile_uvs[V][1]) * UvScale);
-			S.UV1.Add(LayerMetal);
+			(*Set)[Cell]->DestroyComponent();
+			(*Set)[Cell] = nullptr;
 		}
 	}
 }
 
-void AVibeCityDirector::ApplySections(UProceduralMeshComponent* Component, FSectionBuffers& Opaque, FSectionBuffers& Glass) const
+int32 AVibeCityDirector::ImportedCellsDrawn() const
+{
+	int32 N = 0;
+	for (const TObjectPtr<UStaticMeshComponent>& C : ImportedOpaque)
+	{
+		N += C ? 1 : 0;
+	}
+	return N;
+}
+
+const UStaticMesh* AVibeCityDirector::ImportedCellMesh(int32 Cell) const
+{
+	return ImportedOpaque.IsValidIndex(Cell) && ImportedOpaque[Cell] ? ImportedOpaque[Cell]->GetStaticMesh() : nullptr;
+}
+
+int64 AVibeCityDirector::CellTriangles(int32 Cell, bool bGlass) const
+{
+	if (!CellChunks.IsValidIndex(Cell))
+	{
+		return 0;
+	}
+	VibeCityCells::FSection Opaque, Glass;
+	for (const int32 ChunkIndex : CellChunks[Cell])
+	{
+		const FChunkSlot& Slot = Slots[ChunkIndex];
+		if (Slot.Body == 0 && !Slot.bRemoved)
+		{
+			AppendChunk(ChunkIndex, Slot.Rest, Opaque, Glass);
+		}
+	}
+	return (bGlass ? Glass : Opaque).Triangles.Num() / 3;
+}
+
+void AVibeCityDirector::ApplySections(UProceduralMeshComponent* Component, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const
 {
 	static const TArray<FVector2D> NoUV;
 	static const TArray<FColor> NoColor;
@@ -189,7 +223,20 @@ void AVibeCityDirector::ApplySections(UProceduralMeshComponent* Component, FSect
 
 void AVibeCityDirector::RebuildCell(int32 Cell)
 {
-	FSectionBuffers Opaque, Glass;
+	// Intact (every chunk standing, none removed, as after a city reset), a cell draws its imported
+	// mesh when there is one; from its first change, its runtime mesh.
+	bool bIntact = true;
+	for (const int32 ChunkIndex : CellChunks[Cell])
+	{
+		bIntact &= Slots[ChunkIndex].Body == 0 && !Slots[ChunkIndex].bRemoved;
+	}
+	if (bIntact && !ImportedFolder.IsEmpty() && (ImportedOpaque[Cell] || UseImportedCell(Cell, ImportedFolder)))
+	{
+		CellComponents[Cell]->ClearAllMeshSections();
+		return;
+	}
+	DropImportedCell(Cell);
+	VibeCityCells::FSection Opaque, Glass;
 	for (const int32 ChunkIndex : CellChunks[Cell])
 	{
 		const FChunkSlot& Slot = Slots[ChunkIndex];
@@ -223,7 +270,7 @@ void AVibeCityDirector::RebuildBody(uint64 Body)
 	}
 	// In the body's frame: a chunk on a body keeps the body's rotation, so its vertex is
 	// local_pos + v there, and the component carries the body's pose.
-	FSectionBuffers Opaque, Glass;
+	VibeCityCells::FSection Opaque, Glass;
 	for (const int32 ChunkIndex : *Members)
 	{
 		AppendChunk(ChunkIndex, FTransform(Slots[ChunkIndex].Local), Opaque, Glass);
@@ -331,6 +378,15 @@ int64 AVibeCityDirector::DrawnCellVertices() const
 	for (const TObjectPtr<UProceduralMeshComponent>& Cell : CellComponents)
 	{
 		N += SectionVertices(Cell);
+	}
+	// An imported cell draws its intact chunks' triangles as baked (VibeCity.Render.ImportedCity
+	// holds each mesh's triangles to the cell's): count the corners they make.
+	for (int32 Cell = 0; Cell < ImportedOpaque.Num(); ++Cell)
+	{
+		if (ImportedOpaque[Cell])
+		{
+			N += 3 * (CellTriangles(Cell, false) + (ImportedGlass.IsValidIndex(Cell) && ImportedGlass[Cell] ? CellTriangles(Cell, true) : 0));
+		}
 	}
 	return N;
 }

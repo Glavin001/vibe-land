@@ -14,6 +14,7 @@ Unreal client stands, which shared code does it, and the evidence.
 ```bash
 scripts/unreal/import-city-materials.sh --hd   # city, glass, dust and grass materials (2K Poly Haven), once
 scripts/unreal/import-city-audio.sh            # the web's destruction clips, once
+scripts/unreal/import-city.sh --match citypp-demo  # the match's city as Nanite cells (per manifest hash)
 scripts/unreal/demo.sh                         # PhysX server + web client + Unreal on citypp-demo
 scripts/unreal/play-tests.sh                   # the automated suite against the live server
 node scripts/unreal/compare-web.mjs            # the web /city from the comparison pose (headless Chromium)
@@ -32,7 +33,7 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 |---|---|---|---|
 | Join a `citypp` match over WebTransport, session config, cert pinning, manifest | done | `client-transport-wt`, `client-core` | `vl-headless` gate: every snapshot the server produced arrived, 0 decode errors |
 | Wire 4 destruction stream (keyframes, events, acks, resync on hash mismatch) | done | `perplayer` client inside `client-core/src/city.rs` | 0 hash mismatches in every run; `vl-headless --gate` |
-| Other players (interpolated, roster) | done: the web's UAL mannequin, tinted per player; locomotion, jump phases, melee (Melee_Hook), the web's cosmetic ragdoll on death (13 bodies, 12 joints) | `client-core/src/players.rs` | `VibeCity.Play.LookAtRemote` (jumping player in jump phases), `ShootRemote`, `KillRemote` (pelvis falls to the ground) |
+| Other players (interpolated, roster) | done: the web's UAL mannequin, tinted per player; locomotion, jump phases, melee (Melee_Hook), the web's cosmetic ragdoll on death (13 bodies, 12 joints) | `client-core/src/players.rs` | `VibeCity.Play.LookAtRemote` (jumping player in jump phases), `ShootRemote`, `KillRemote`, `VibeCity.Render.Ragdoll` (the body lies down: pelvis about 16 cm over the ground) |
 | First-person walking, sprint, jump, crouch (server-authoritative, thin predictor) | done | `client-core/src/input.rs`, `predictor.rs` | `VibeCity.Play.WalkAndShoot`: 6.0 m/s between two snapshots (per server tick), server velocity exact |
 | Rifle, cannon, meteor (1/2/3), fire interval, tracers, hit results, damage | done | `net_client` encoders/decoders | `WalkAndShoot`, `CannonAndMeteor`, `ShootRemote` (Unreal shot took a browser player 100 to 86 HP) |
 | Aim (RMB, web FOV), melee (V), aerial camera (N), city reset (R) | done | core `melee`, `camera_drop` | `AimAndReset`, `AerialAndMelee` |
@@ -45,6 +46,7 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 | Batteries (energy dropped where players die) | done: glowing cells sized by energy | `net_client` `BatterySync` decoder, frame `batteries` | round trip against the server encoder; `KillRemote`: the dead player's battery listed and drawn |
 | Settings: mouse, gamepad, key bindings, sound mix presets and dynamic range; gamepad play | done, as an Unreal panel | core audio mix | `VibeCity.Settings` |
 | City geometry: convex hulls and boxes, standing cells, debris bodies | done | `client-core/src/geometry.rs` | every mesh closed and equal to its authored volume (24105 chunks of `fractured-downtown`); `VibeCity.Render.CityAndEffects`: all vertices drawn before and after a fracture |
+| Imported city (an Unreal upgrade): one Nanite static mesh per 32 m cell, with a mesh distance field so Lumen sees it, baked per manifest hash; intact cells draw them, a cell swaps to its runtime mesh on its first change and back when intact again (a reset) | done | `client-core` `CityModel` (`vl_city_build`: the chunk table and meshes from the manifest alone, equal to a session's); `VibeCityCells` (one cell mesher for the game and the importer) | `city_model_matches_the_client`; `VibeCity.Render.ImportedCity`: 16 of 16 cells Nanite, each with its cell's triangles and a distance field; a meteor swaps the 2 it breaks, a reset brings them back |
 | Per-building textures (the web's building hash, texture keys) | done, at 2K (the web: 1K/512) | `client-core/src/materials.rs`, `shared/assets/materials/catalog.json` | layer codes equal to the TypeScript (tsx fixtures) |
 | Unreal materials for known materials | done: PBR from 2K Poly Haven sources (albedo, DirectX normal, AO/roughness/metal); real sets for the web's procedural limestone, slate and timber | catalog `hd` sources | `CityAndEffects` checks the material |
 | Glass | material built (`M_VibeCityGlass`); the stock city has none | catalog `glass` | not yet seen on screen |
@@ -86,8 +88,14 @@ the web's fog curve (Gaussian) is thinner under 40 m.
 - **Server walk speed.** The server's on-foot input policy repeats a held input when a frame is
   late and then applies the late frame too, so players on either client walk about 14.5% fast;
   the fix is behind `VIBE_FOOT_INPUT_DEBT=1` (off by default).
-- **Lumen** (an Unreal upgrade, not a web feature). Procedural meshes have no distance fields, so
-  Lumen's software tracing does not see the city.
+- **One machine, one GPU.** With the server on the same Mac, Lumen and virtual shadows slow the
+  server's PhysX tick (about 49 Hz instead of 60). The tests that time the server's input run with
+  standard lighting (`play-tests.sh`); for local play, `-dpcvars=r.DynamicGlobalIlluminationMethod=0,r.ReflectionMethod=2,r.Shadow.Virtual.Enable=0`
+  does the same. A server on its own machine is unaffected.
+- **Lumen on broken cells.** Lumen global illumination and reflections and virtual shadow maps are
+  on, and imported cells carry distance fields. A cell drawing its runtime (procedural) mesh, after
+  its first fracture or with no import for the manifest, has none, so Lumen's software tracing
+  misses it until a reset.
 - **Web adoption of the core.** Module by module behind flags, off by default until each has run
   in live sessions, every one held equal to the TypeScript it replaces by a test:
   - packet decoders and encoders: `?sharedDecode=1`;

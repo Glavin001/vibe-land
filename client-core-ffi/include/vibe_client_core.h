@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 19
+#define VL_ABI_VERSION 20
 
 #define VL_OK 0
 
@@ -249,6 +249,11 @@ typedef enum VlCoreState VlCoreState;
 typedef uint32_t VlCoreState;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
+
+/**
+ * A city built from its manifest alone, for an import step: no session. Opaque to C.
+ */
+typedef struct VlCity VlCity;
 
 /**
  * A client: the native transport and the shared core. Opaque to C.
@@ -1196,6 +1201,62 @@ int32_t vl_client_chunk_meshes(struct VlClient *client, struct VlMeshView *out);
 int32_t vl_client_chunk_surfaces(struct VlClient *client,
                                  const struct VlChunkSurface **out_surfaces,
                                  size_t *out_count);
+
+/**
+ * Build the city an uncompressed manifest (VLCM, as `<api>/city-manifest/<hash>` serves it)
+ * describes, in `space` (as `VlConfig::space`): the chunk table and meshes a client builds when
+ * that manifest arrives. Null when the bytes are not a manifest. Free with `vl_city_destroy`.
+ * Needs no client: any thread may build.
+ *
+ * # Safety
+ * `bytes` must hold `len` bytes.
+ */
+struct VlCity *vl_city_build(const uint8_t *bytes, size_t len, uint32_t space);
+
+/**
+ * The built city's chunk table (as `vl_client_chunks`). Valid until `vl_city_destroy`.
+ *
+ * # Safety
+ * `city` must come from `vl_city_build`; the outputs must be writable.
+ */
+int32_t vl_city_chunks(const struct VlCity *city,
+                       const struct VlChunk **out_chunks,
+                       size_t *out_count);
+
+/**
+ * The built city's chunk meshes (as `vl_client_chunk_meshes`). Valid until `vl_city_destroy`.
+ *
+ * # Safety
+ * `city` must come from `vl_city_build`; `out` must be writable.
+ */
+int32_t vl_city_meshes(const struct VlCity *city, struct VlMeshView *out);
+
+/**
+ * The manifest's sha256 (hex) into `buffer` (NUL-terminated, truncated to `capacity`); returns
+ * its length.
+ *
+ * # Safety
+ * `city` must come from `vl_city_build`; `buffer` must hold `capacity` bytes (or be null).
+ */
+size_t vl_city_hash(const struct VlCity *city, char *buffer, size_t capacity);
+
+/**
+ * Free a city from `vl_city_build`.
+ *
+ * # Safety
+ * `city` must be null or come from `vl_city_build`, not used again afterwards.
+ */
+void vl_city_destroy(struct VlCity *city);
+
+/**
+ * The session's city manifest hash (sha256 hex; empty before the session config or for a match
+ * without a city) into `buffer` (NUL-terminated, truncated to `capacity`); returns its length.
+ * It keys an imported city.
+ *
+ * # Safety
+ * `client` must be a live client; `buffer` must hold `capacity` bytes (or be null).
+ */
+size_t vl_client_manifest_hash(struct VlClient *client, char *buffer, size_t capacity);
 
 /**
  * The material catalog (`shared/assets/materials/catalog.json`), indexed by the ids chunk meshes

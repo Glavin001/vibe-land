@@ -22,7 +22,11 @@
 #include "Tests/AutomationCommon.h"
 #include "UObject/UObjectIterator.h"
 #include "UnrealClient.h"
+#include "Engine/StaticMesh.h"
+#include "Rendering/NaniteResources.h"
+#include "StaticMeshResources.h"
 #include "VibeCityCapture.h"
+#include "VibeCityCells.h"
 #include "VibeCityDirector.h"
 #include "Components/ExponentialHeightFogComponent.h"
 #include "VibeCityGrass.h"
@@ -409,6 +413,156 @@ bool FVibeCityRenderSpecies::RunTest(const FString& Parameters)
 		return true;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.0f));
+	return true;
+}
+
+// VibeCity.Render.ImportedCity: the city imported for this manifest (scripts/unreal/import-city.sh)
+// draws its intact cells as Nanite static meshes, each exactly its cell: the triangles Nanite was
+// built from equal the cell's intact chunks' triangles, and each has a mesh distance field (Lumen).
+// A meteor on one swaps the cells it breaks to their runtime meshes (every vertex still drawn), and
+// a city reset brings the imported meshes back.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityRenderImportedCity, "VibeCity.Render.ImportedCity",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityRenderImportedCity::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		double Deadline = 0.0;
+		int32 Cell = INDEX_NONE;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	auto WaitFor = [S](TFunction<bool()> Done, double Seconds)
+	{
+		if (S->Deadline == 0.0)
+		{
+			S->Deadline = FPlatformTime::Seconds() + Seconds;
+		}
+		const bool bOver = Done() || FPlatformTime::Seconds() > S->Deadline;
+		if (bOver)
+		{
+			S->Deadline = 0.0;
+		}
+		return bOver;
+	};
+	// Built, and every intact cell drawing its imported mesh (cells broken before this run draw their
+	// runtime meshes; a reset at the end brings them all back).
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, WaitFor]()
+	{
+		if (!WaitFor([] { AVibeCityDirector* D = Find<AVibeCityDirector>(); return D && D->IsCityBuilt(); }, 120.0))
+		{
+			return false;
+		}
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		if (!D || !D->IsCityBuilt())
+		{
+			AddError(TEXT("the city was not built"));
+			return true;
+		}
+		int32 Imported = 0, Matching = 0, WithField = 0, Nanite = 0;
+		for (int32 Cell = 0; Cell < D->CellCount(); ++Cell)
+		{
+			const UStaticMesh* Mesh = D->ImportedCellMesh(Cell);
+			if (!Mesh)
+			{
+				continue;
+			}
+			++Imported;
+			const FStaticMeshRenderData* Data = Mesh->GetRenderData();
+			Nanite += Mesh->HasValidNaniteData() ? 1 : 0;
+			const int64 Built = Data && Data->NaniteResourcesPtr.IsValid() ? Data->NaniteResourcesPtr->NumInputTriangles : -1;
+			Matching += Built == D->CellTriangles(Cell, false) ? 1 : 0;
+			WithField += Data && Data->LODResources.Num() > 0 && Data->LODResources[0].DistanceFieldData != nullptr ? 1 : 0;
+			if (S->Cell == INDEX_NONE)
+			{
+				S->Cell = Cell;
+			}
+		}
+		AddInfo(FString::Printf(TEXT("%d of %d cells imported: %d Nanite, %d with their cell's triangles, %d with a distance field"),
+			Imported, D->CellCount(), Nanite, Matching, WithField));
+		if (Imported == 0)
+		{
+			AddError(TEXT("no imported city for this manifest: scripts/unreal/import-city.sh --match <this match>"));
+			S->Cell = INDEX_NONE;
+			return true;
+		}
+		TestEqual(TEXT("every imported cell is Nanite"), Nanite, Imported);
+		TestEqual(TEXT("every imported cell holds exactly its cell's triangles"), Matching, Imported);
+		TestEqual(TEXT("every imported cell has a mesh distance field (Lumen)"), WithField, Imported);
+		TestEqual(TEXT("all vertices drawn"), D->DrawnCellVertices() + D->DrawnBodyVertices(), D->ExpectedVertices());
+
+		// A meteor on the highest chunk of the first imported cell.
+		UVibeNetSubsystem* N = Net();
+		const TArrayView<const VlChunk> Chunks = N ? N->Chunks() : TArrayView<const VlChunk>();
+		FVector Target = FVector(0.0, 0.0, -1.0e9);
+		for (int32 i = 0; i < Chunks.Num(); ++i)
+		{
+			const FVector P = VibeCityCells::RestTransform(Chunks[i]).GetLocation();
+			if (D->CellOfChunk(i) == S->Cell && P.Z > Target.Z)
+			{
+				Target = P;
+			}
+		}
+		// Server space: (x, y, z) = (-Y, Z, X) / 100.
+		Post(N->CurrentApiBaseUrl() / TEXT("city-meteor") / N->CurrentMatchId(),
+			FString::Printf(TEXT("{\"targets\":[[%f,%f,%f]]}"), -Target.Y / 100.0, Target.Z / 100.0, Target.X / 100.0));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, WaitFor]()
+	{
+		if (S->Cell == INDEX_NONE)
+		{
+			return true;
+		}
+		if (!WaitFor([S] { AVibeCityDirector* D = Find<AVibeCityDirector>(); return D && !D->ImportedCellMesh(S->Cell); }, 30.0))
+		{
+			return false;
+		}
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		TestTrue(TEXT("the struck cell swapped to its runtime mesh"), D && !D->ImportedCellMesh(S->Cell));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(3.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		if (S->Cell == INDEX_NONE)
+		{
+			return true;
+		}
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		if (D)
+		{
+			AddInfo(FString::Printf(TEXT("after the meteor: %d cells imported, %d removed chunks"), D->ImportedCellsDrawn(), D->RemovedChunks()));
+			TestEqual(TEXT("all vertices drawn after the swap"), D->DrawnCellVertices() + D->DrawnBodyVertices(), D->ExpectedVertices());
+		}
+		UVibeNetSubsystem* N = Net();
+		Post(N->CurrentApiBaseUrl() / TEXT("city-reset") / N->CurrentMatchId(), TEXT("{}"));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, WaitFor]()
+	{
+		if (S->Cell == INDEX_NONE)
+		{
+			return true;
+		}
+		if (!WaitFor([S] { AVibeCityDirector* D = Find<AVibeCityDirector>(); return D && D->ImportedCellMesh(S->Cell); }, 30.0))
+		{
+			return false;
+		}
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		TestTrue(TEXT("after a city reset the cell draws its imported mesh again"), D && D->ImportedCellMesh(S->Cell));
+		if (D)
+		{
+			AddInfo(FString::Printf(TEXT("after the reset: %d of %d cells imported"), D->ImportedCellsDrawn(), D->CellCount()));
+		}
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("imported.png"), false, false);
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
 	return true;
 }
 

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use glam::{Quat, Vec3};
 use sha2::{Digest, Sha256};
-use vibe_land_destruction::manifest::{ChunkGeometry, DestructionManifest};
+use vibe_land_destruction::manifest::{ChunkDef, ChunkGeometry, DestructionManifest};
 use vibe_land_destruction::{manifest_binary, per_player::structure_defs};
 use vibe_land_perplayer::client::{BodyChange, Client};
 use vibe_land_perplayer::predict::Physics;
@@ -63,6 +63,79 @@ pub fn decode_manifest(bytes: &[u8], expected_hash: Option<&str>) -> Result<Dest
     manifest_binary::decode(bytes).map_err(|e| ManifestError::Decode(format!("{e:?}")))
 }
 
+/// A city as a renderer draws it before any of it breaks, built from the manifest alone (no
+/// session): its hash, the chunk table and every chunk's mesh, exactly as a client builds them when
+/// the manifest arrives. An import step bakes it into a renderer's own assets, keyed by the hash.
+pub struct CityModel {
+    /// The manifest's sha256 (hex), as the session config's `city_manifest_hash` names it.
+    pub hash: String,
+    pub chunks: Vec<crate::frame::VlChunk>,
+    pub surfaces: Vec<crate::materials::VlChunkSurface>,
+    pub meshes: crate::geometry::ChunkMeshes,
+}
+
+impl CityModel {
+    pub fn from_manifest(bytes: &[u8], space: Space) -> Result<Self, ManifestError> {
+        let manifest = decode_manifest(bytes, None)?;
+        let (chunks, surfaces, meshes) = city_tables(&manifest, space);
+        Ok(Self { hash: hex::encode(Sha256::digest(bytes)), chunks, surfaces, meshes })
+    }
+}
+
+/// The chunk table, the chunks' catalog surfaces and their meshes, in chunk-table order.
+pub fn city_tables(
+    manifest: &DestructionManifest,
+    space: Space,
+) -> (Vec<crate::frame::VlChunk>, Vec<crate::materials::VlChunkSurface>, crate::geometry::ChunkMeshes) {
+    let catalog = crate::materials::Catalog::get();
+    let surfaces = crate::materials::chunk_surfaces(manifest, catalog);
+    let meshes = crate::geometry::ChunkMeshes::build_with_surfaces(manifest, space, Some((&surfaces, catalog)));
+    let chunks = chunk_table(manifest, space);
+    (chunks, surfaces, meshes)
+}
+
+fn appearance_colors(manifest: &DestructionManifest) -> Vec<u32> {
+    manifest
+        .material_appearance
+        .iter()
+        .map(|a| a.color.as_deref().and_then(parse_hex_color).unwrap_or(DEFAULT_COLOR))
+        .collect()
+}
+
+fn chunk_record(structure: u32, c: &ChunkDef, world_p: Vec3, world_q: Quat, colors: &[u32], space: Space) -> VlChunk {
+    let rest = world_p + world_q * Vec3::from_array(c.centroid);
+    let mut flags = 0;
+    if c.support {
+        flags |= VL_CHUNK_SUPPORT;
+    }
+    if matches!(c.geometry, ChunkGeometry::ConvexHull { .. }) {
+        flags |= VL_CHUNK_HULL;
+    }
+    VlChunk {
+        structure,
+        node: c.node_index,
+        rest_pos: space.pos(rest),
+        rest_quat: space.quat(world_q),
+        extents: space.extents(Vec3::from_array(c.size)),
+        color_rgba: colors.get(c.material as usize).copied().unwrap_or(DEFAULT_COLOR),
+        flags,
+    }
+}
+
+/// The chunk table (structures in manifest order, then their chunks), as `CityStream` builds it.
+pub fn chunk_table(manifest: &DestructionManifest, space: Space) -> Vec<VlChunk> {
+    let colors = appearance_colors(manifest);
+    let mut chunks = Vec::new();
+    for s in &manifest.structures {
+        let world_p = Vec3::from_array(s.world_position);
+        let world_q = Quat::from_array(s.world_rotation).normalize();
+        for c in &s.chunks {
+            chunks.push(chunk_record(s.structure_id, c, world_p, world_q, &colors, space));
+        }
+    }
+    chunks
+}
+
 /// A chunk's rest box (server space).
 struct Occluder {
     structure: u32,
@@ -110,11 +183,7 @@ impl CityStream {
         let physics = Physics::at_hz(sim_hz, gravity_y);
         let client = Client::new(structure_defs(manifest), physics, sim_hz, CITY_DELAY_TICKS);
 
-        let colors: Vec<u32> = manifest
-            .material_appearance
-            .iter()
-            .map(|a| a.color.as_deref().and_then(parse_hex_color).unwrap_or(DEFAULT_COLOR))
-            .collect();
+        let colors = appearance_colors(manifest);
 
         let mut chunks = Vec::new();
         let mut chunk_index = HashMap::new();
@@ -126,22 +195,7 @@ impl CityStream {
             for c in &s.chunks {
                 let index = chunks.len() as u32;
                 let rest = world_p + world_q * Vec3::from_array(c.centroid);
-                let mut flags = 0;
-                if c.support {
-                    flags |= VL_CHUNK_SUPPORT;
-                }
-                if matches!(c.geometry, ChunkGeometry::ConvexHull { .. }) {
-                    flags |= VL_CHUNK_HULL;
-                }
-                chunks.push(VlChunk {
-                    structure: s.structure_id,
-                    node: c.node_index,
-                    rest_pos: space.pos(rest),
-                    rest_quat: space.quat(world_q),
-                    extents: space.extents(Vec3::from_array(c.size)),
-                    color_rgba: colors.get(c.material as usize).copied().unwrap_or(DEFAULT_COLOR),
-                    flags,
-                });
+                chunks.push(chunk_record(s.structure_id, c, world_p, world_q, &colors, space));
                 chunk_index.insert((s.structure_id, c.node_index), index);
                 occluders.push(Occluder { structure: s.structure_id, node: c.node_index, centre: rest, rotation: world_q, half: Vec3::from_array(c.size) * 0.5 });
                 structure_chunks.entry(s.structure_id).or_default().push((c.node_index, index));

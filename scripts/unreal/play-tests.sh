@@ -29,7 +29,7 @@ done
 
 TESTS=(VibeCity.Cursor VibeCity.Play.WalkAndShoot VibeCity.Play.AimAndReset VibeCity.Play.CannonAndMeteor
   VibeCity.Play.AerialAndMelee VibeCity.Play.Drive VibeCity.Play.WreckCar VibeCity.Render.CityAndEffects
-  VibeCity.Render.WeatherAndGrass VibeCity.Render.Species VibeCity.Render.Materials VibeCity.Settings VibeCity.Play.Hud VibeCity.Render.Ragdoll)
+  VibeCity.Render.WeatherAndGrass VibeCity.Render.Species VibeCity.Render.Materials VibeCity.Settings VibeCity.Play.Hud VibeCity.Render.Ragdoll VibeCity.Render.ImportedCity)
 if [[ -n "$ONLY" ]]; then
   IFS=',' read -r -a TESTS <<< "$ONLY"
 fi
@@ -49,6 +49,14 @@ for test in "${TESTS[@]}"; do
   args=(-game -windowed -ResX=1280 -ResY=720 "-VibeApi=$API" "-VibeMatch=$MATCH"
     -VibeFreshSettings "-ExecCmds=Automation RunTests $test; Quit" "-TestExit=Automation Test Queue Empty" "-abslog=$log")
   [[ -n "$SHOTS" ]] && args+=("-VibeShotDir=$SHOTS")
+  # VIBE_UE_ARGS: more game arguments, word-split (e.g. -dpcvars=... to try renderer settings).
+  [[ -n "${VIBE_UE_ARGS:-}" ]] && read -r -a extra <<< "$VIBE_UE_ARGS" && args+=("${extra[@]}")
+  # The tests that time the server's input handling run with standard lighting: on one machine the
+  # server's PhysX shares the GPU with the game, and Lumen with virtual shadows slows its tick (141
+  # instead of 174 ticks over the same 180 input frames), which they would read as the server's.
+  case "$name" in
+    WalkAndShoot|AerialAndMelee) args+=("-dpcvars=r.DynamicGlobalIlluminationMethod=0,r.ReflectionMethod=2,r.Shadow.Virtual.Enable=0") ;;
+  esac
   for attempt in 1 2 3; do
     rm -f "$log" # read only this launch's log
     "$EDITOR" "$ROOT/unreal/VibeCity/VibeCity.uproject" "${args[@]}" > /dev/null 2>&1 &

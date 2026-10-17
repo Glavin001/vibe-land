@@ -156,3 +156,23 @@ fn standing_buildings_block_sound() {
     assert!(!stream.segment_blocked(glam::Vec3::new(through.0.x, over, centre.z), glam::Vec3::new(through.1.x, over, centre.z), 0.7), "over the roof");
     assert!(!stream.segment_blocked(glam::Vec3::new(centre.x + reach, low, centre.z), glam::Vec3::new(centre.x + reach, low, centre.z + 40.0), 0.7), "open ground");
 }
+
+/// An import step's city (CityModel, from the manifest bytes alone) is the one a client builds when
+/// the manifest arrives: the session's hash, the same chunk table and the same meshes, so baked
+/// assets line up chunk for chunk with what the session later breaks.
+#[test]
+fn city_model_matches_the_client() {
+    use sha2::{Digest, Sha256};
+    use vibe_client_core::city::{CityModel, CityStream};
+    let manifest = city("high-rise-3f-local.json", 2);
+    let bytes = vibe_land_destruction::manifest_binary::encode(&manifest);
+    let model = CityModel::from_manifest(&bytes, Space::Unreal).expect("model");
+    assert_eq!(model.hash, hex::encode(Sha256::digest(&bytes)));
+    let stream = CityStream::new(&manifest, 60, Space::Unreal);
+    assert_eq!(model.chunks.as_slice(), stream.chunks(), "chunk table");
+    let client = vibe_client_core::city::city_tables(&manifest, Space::Unreal).2;
+    assert_eq!(model.meshes.positions, client.positions);
+    assert_eq!(model.meshes.indices, client.indices);
+    assert_eq!(model.meshes.materials, client.materials);
+    assert_eq!(model.meshes.ranges.len(), model.chunks.len(), "one mesh per chunk");
+}

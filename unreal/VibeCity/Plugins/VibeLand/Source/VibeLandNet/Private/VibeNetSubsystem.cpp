@@ -255,6 +255,16 @@ bool UVibeNetSubsystem::ChunkMeshes(VlMeshView& Out) const
 	return Client && vl_client_chunk_meshes(Client, &Out) == VL_OK && Out.range_count > 0;
 }
 
+FString UVibeNetSubsystem::ManifestHash() const
+{
+	ANSICHAR Buffer[80] = {};
+	if (!Client || vl_client_manifest_hash(Client, Buffer, sizeof(Buffer)) == 0)
+	{
+		return FString();
+	}
+	return UTF8_TO_TCHAR(Buffer);
+}
+
 TArrayView<const VlChunkSurface> UVibeNetSubsystem::ChunkSurfaces() const
 {
 	const VlChunkSurface* Data = nullptr;

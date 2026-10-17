@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "VibeCityCells.h"
 
 #include "VibeCityDirector.generated.h"
 
@@ -19,7 +20,11 @@ struct VlFrameView;
  * material catalog (`M_VibeCityChunk`, texture arrays built by scripts/unreal/import-city-materials.sh;
  * glass in `M_VibeCityGlass`). Standing chunks are merged into one procedural mesh per 32 m cell; each
  * live dynamic body is its own mesh in the body's frame, moved by its pose. A fracture rebuilds only
- * the cells it took chunks from and the bodies it changed; removed chunks are left out. Players,
+ * the cells it took chunks from and the bodies it changed; removed chunks are left out.
+ *
+ * When this manifest's city was imported (scripts/unreal/import-city.sh: one Nanite static mesh per
+ * cell, with mesh distance fields for Lumen, under VibeCityCells::SceneFolder), intact cells draw
+ * from those meshes, and a cell swaps to its runtime mesh on its first change. Players,
  * vehicles and effects are the game module's (VibeCity).
  */
 UCLASS()
@@ -48,6 +53,15 @@ public:
 	/** The vertices that should be drawn: every chunk's core mesh but the removed ones'. */
 	int64 ExpectedVertices() const;
 	int32 LiveDust() const { return DustPuffs.Num(); }
+	/** Cells drawn from the imported city now, and cells in all. */
+	int32 ImportedCellsDrawn() const;
+	int32 CellCount() const { return CellChunks.Num(); }
+	/** The imported mesh of cell `Cell` (null when it draws its runtime mesh). */
+	const class UStaticMesh* ImportedCellMesh(int32 Cell) const;
+	/** The cell a chunk belongs to (INDEX_NONE before the city is built). */
+	int32 CellOfChunk(int32 Chunk) const { return Slots.IsValidIndex(Chunk) ? Slots[Chunk].Cell : INDEX_NONE; }
+	/** The triangles a cell's intact chunks make (opaque, glass). */
+	int64 CellTriangles(int32 Cell, bool bGlass) const;
 	bool UsesCatalogMaterial() const { return ChunkMaterial != nullptr; }
 	int64 SoundsSeen() const { return SoundsSeenCount; }
 	/** Loop-frames seen so far: each frame's loop count, summed (scrapes, air). */
@@ -68,16 +82,16 @@ private:
 		bool bRemoved = false;
 	};
 
-	/** One mesh section's buffers while it is being built. */
-	struct FSectionBuffers;
-
 	UVibeNetSubsystem* Net() const;
 	void BuildCity(UVibeNetSubsystem* Net);
 	void ApplyFrame(const VlFrameView& Frame);
 	void RebuildCell(int32 Cell);
 	void RebuildBody(uint64 Body);
-	void AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, FSectionBuffers& Opaque, FSectionBuffers& Glass) const;
-	void ApplySections(UProceduralMeshComponent* Component, FSectionBuffers& Opaque, FSectionBuffers& Glass) const;
+	void AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const;
+	void ApplySections(UProceduralMeshComponent* Component, VibeCityCells::FSection& Opaque, VibeCityCells::FSection& Glass) const;
+	/** Draw cell `Cell` from the imported city, if this manifest's was imported. */
+	bool UseImportedCell(int32 Cell, const FString& Folder);
+	void DropImportedCell(int32 Cell);
 	UProceduralMeshComponent* NewChunkComponent();
 	void SpawnDust(const VlFrameView& Frame);
 	void TickDust(float DeltaSeconds);
@@ -92,6 +106,15 @@ private:
 
 	UPROPERTY(Transient)
 	TMap<uint64, TObjectPtr<UProceduralMeshComponent>> BodyComponents;
+
+	/** Per cell: its imported meshes while it is intact (opaque, glass), else null. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UStaticMeshComponent>> ImportedOpaque;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UStaticMeshComponent>> ImportedGlass;
+	TArray<FIntPoint> CellKeys;
+	/** Where this manifest's imported cells are (empty: none, or -VibeRuntimeCells). */
+	FString ImportedFolder;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> ChunkMaterial;
@@ -137,13 +160,9 @@ private:
 	TMap<uint64, FTransform> BodyPoses;
 	TSet<int32> DirtyCells;
 	TSet<uint64> DirtyBodies;
-	/** Per catalog entry: (texture-array layer, metalness), and whether it is glass. */
-	TArray<FVector2D> CatalogLayerMetal;
-	/** Per catalog entry: the factor on the core's tile UVs for the material drawn (1, or
-	 * metres_per_tile / hd_metres_per_tile with the 2K sources). */
-	TArray<float> CatalogUvScale;
+	/** What the chunk material reads per catalog entry (VibeCityCells). */
+	VibeCityCells::FCatalogMap Catalog;
 	bool bHdMaterial = false;
-	TArray<bool> CatalogGlass;
 	FBox Bounds = FBox(ForceInit);
 	bool bCityBuilt = false;
 	UPROPERTY(Transient)
