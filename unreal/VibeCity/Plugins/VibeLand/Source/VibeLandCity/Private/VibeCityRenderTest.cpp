@@ -589,6 +589,7 @@ bool FVibeCityRenderDust::RunTest(const FString& Parameters)
 	{
 		double Started = 0.0;
 		int32 First = INDEX_NONE;
+		int32 Many = INDEX_NONE;
 		TArray<FBox> AtBirth;
 		/** Game time at the injection: dust ages in game time, which a slow frame clamps. */
 		double BornGameS = 0.0;
@@ -696,6 +697,49 @@ bool FVibeCityRenderDust::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("checked at a game age of %.1f s"), Age));
 		TestFalse(TEXT("the entry puff is gone after its 5 s"), D->DustBox(S->First + 3).IsSet());
 		TestTrue(TEXT("the wave cloud lingers (24 s)"), D->DustBox(S->First + 4).IsSet());
+		return true;
+	}));
+	// The web's selection (DustVolumeRenderer.ts): 1500 clouds in view within 60 m draw only the
+	// nearest 1024, and one behind the camera is not drawn.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		APlayerController* PC = GameWorld() ? GameWorld()->GetFirstPlayerController() : nullptr;
+		if (!D || !PC || !PC->PlayerCameraManager)
+		{
+			return true;
+		}
+		const FVector Eye = PC->PlayerCameraManager->GetCameraLocation();
+		const FVector Ahead = PC->PlayerCameraManager->GetCameraRotation().Vector();
+		TArray<VlDustParcel> Parcels;
+		for (int32 k = 0; k < 1501; ++k)
+		{
+			VlDustParcel P = {};
+			// k = 1500 behind the camera; the rest from 10 m to 55 m ahead.
+			const FVector At = k == 1500 ? Eye - Ahead * 1500.0 : Eye + Ahead * (1000.0 + 3.0 * k);
+			P.position[0] = At.X; P.position[1] = At.Y; P.position[2] = At.Z;
+			P.radius0 = 50.0f;
+			P.intensity = 0.9f;
+			P.shape = 4; // the long-lived wave cloud
+			P.color_rgba = 0xb3afa8ff;
+			Parcels.Add(P);
+		}
+		S->Many = D->InjectDustForTest(Parcels);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.3f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		if (!D || S->Many == INDEX_NONE)
+		{
+			return true;
+		}
+		AddInfo(FString::Printf(TEXT("live %d, drawn %d"), D->LiveDust(), D->DrawnDust()));
+		TestEqual(TEXT("at most the nearest 1024 are drawn"), D->DrawnDust(), 1024);
+		TestTrue(TEXT("the nearest is drawn"), D->DustBox(S->Many).IsSet() && D->DustBox(S->Many)->GetSize().X > 0.0);
+		TestTrue(TEXT("the farthest is not"), D->DustBox(S->Many + 1499).IsSet() && D->DustBox(S->Many + 1499)->GetSize().X == 0.0);
+		TestTrue(TEXT("the one behind the camera is not"), D->DustBox(S->Many + 1500).IsSet() && D->DustBox(S->Many + 1500)->GetSize().X == 0.0);
 		return true;
 	}));
 	return true;

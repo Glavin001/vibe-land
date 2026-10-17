@@ -56,6 +56,8 @@ public:
 	/** The vertices that should be drawn: every chunk's core mesh but the removed ones'. */
 	int64 ExpectedVertices() const;
 	int32 LiveDust() const { return LiveDustCount; }
+	/** Parcels drawn last frame, after the web's selection (DustVolumeRenderer.ts). */
+	int32 DrawnDust() const { return DrawnDustCount; }
 	/** Tests: draw `Parcels` as if a frame had brought them (no server needed); returns the ring
 	 * slot of the first. */
 	int32 InjectDustForTest(TArrayView<const VlDustParcel> Parcels);
@@ -173,10 +175,14 @@ private:
 		VlDustParcel P = {};
 		float Age = 0.0f;
 		bool bAlive = false;
+		/** Spawn order (the web store's serial): which parcels a thinned tier keeps, stably. */
+		uint32 Serial = 0;
 	};
 	TArray<FDustParcel> DustParcels;
 	int32 DustHead = 0;
 	int32 LiveDustCount = 0;
+	uint32 DustSerial = 0;
+	int32 DrawnDustCount = 0;
 
 	UPROPERTY(Transient)
 	TObjectPtr<class UInstancedStaticMeshComponent> DustInstances;

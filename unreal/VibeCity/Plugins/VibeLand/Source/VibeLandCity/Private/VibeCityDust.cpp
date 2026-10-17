@@ -6,7 +6,11 @@
 #include "VibeCityDirector.h"
 
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/StaticMesh.h"
+#include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInterface.h"
 #include "VibeLandNet.h"
 #include "vibe_client_core.h"
@@ -25,6 +29,18 @@ namespace
 	}
 	// DustSprites.tsx: a near parcel's sprite density is its density x 0.6.
 	constexpr float SpriteDensity = 0.6f;
+
+	// Which parcels are drawn, as the web's volumetric dust picks them (DustVolumeRenderer.ts
+	// select, dustLod.ts): not under 3 px across, distant ones thinned by spawn serial (one in two
+	// beyond 60 m, one in six beyond 140 m, unless the cloud is big for its distance) with the
+	// drawn ones carrying the stride's density, and at most the nearest 1024.
+	constexpr int32 MaxDrawn = 1024;
+	constexpr double MinProjectedPx = 3.0;
+	int32 TierStride(double DistanceM, double RadiusM)
+	{
+		if (DistanceM < 60.0 || DistanceM < RadiusM * 5.0) return 1;
+		return DistanceM < 140.0 ? 2 : 6;
+	}
 }
 
 void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
@@ -57,6 +73,7 @@ void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
 		Slot.P = Frame.dust[i];
 		Slot.Age = Frame.dust[i].age_s;
 		Slot.bAlive = true;
+		Slot.Serial = DustSerial++;
 		if (DustHead >= DustInstances->GetInstanceCount())
 		{
 			DustInstances->AddInstance(FTransform(FQuat::Identity, FVector::ZeroVector, FVector::ZeroVector), /*bWorldSpace=*/true);
@@ -74,7 +91,35 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 	// The web's default wind (fogSettings.ts): 8 m/s toward compass 45°, server space.
 	float Wind[3];
 	vl_weather_wind(8.0f, 45.0f, Wind);
+	// The camera, for the selection: pixels per metre at 1 m from the vertical field of view.
+	FVector Eye = FVector::ZeroVector, Forward = FVector::ForwardVector;
+	double PxPerM = 1080.0 / (2.0 * FMath::Tan(FMath::DegreesToRadians(45.0)));
+	double CosCull = -1.0, HalfDiagRad = PI;
+	if (const APlayerController* PC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr; PC && PC->PlayerCameraManager)
+	{
+		Eye = PC->PlayerCameraManager->GetCameraLocation();
+		Forward = PC->PlayerCameraManager->GetCameraRotation().Vector();
+		FVector2D Viewport(1920.0, 1080.0);
+		if (GEngine && GEngine->GameViewport)
+		{
+			GEngine->GameViewport->GetViewportSize(Viewport);
+		}
+		const double TanH = FMath::Tan(FMath::DegreesToRadians(PC->PlayerCameraManager->GetFOVAngle() * 0.5));
+		const double TanV = TanH * Viewport.Y / FMath::Max(Viewport.X, 1.0);
+		PxPerM = Viewport.Y / (2.0 * TanV);
+		HalfDiagRad = FMath::Atan(FMath::Sqrt(TanH * TanH + TanV * TanV));
+	}
+
+	struct FPick
+	{
+		int32 Slot;
+		double DistanceM;
+		int32 Stride;
+		VlDustEval E;
+	};
+	TArray<FPick, TInlineAllocator<256>> Picks;
 	const int32 Count = DustInstances->GetInstanceCount();
+	const FTransform Hidden(FQuat::Identity, FVector::ZeroVector, FVector::ZeroVector);
 	for (int32 i = 0; i < Count; ++i)
 	{
 		FDustParcel& D = DustParcels[i];
@@ -88,17 +133,48 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 		{
 			D.bAlive = false;
 			--LiveDustCount;
-			DustInstances->UpdateInstanceTransform(i, FTransform(FQuat::Identity, FVector::ZeroVector, FVector::ZeroVector), true, false, true);
+			DustInstances->UpdateInstanceTransform(i, Hidden, true, false, true);
 			continue;
 		}
+		const FVector Centre(E.centre[0], E.centre[1], E.centre[2]);
+		const double DistanceM = FVector::Dist(Centre, Eye) / 100.0;
+		const double RadiusM = E.radius / 100.0;
+		// In view (a sphere against the view cone, as the web tests its frustum), big enough, and kept
+		// by its tier.
+		const FVector To = Centre - Eye;
+		const bool bInView = DistanceM <= RadiusM
+			|| FMath::Acos(FMath::Clamp(FVector::DotProduct(To.GetSafeNormal(), Forward), -1.0, 1.0)) <= HalfDiagRad + FMath::Asin(FMath::Min(1.0, RadiusM * 0.87 / DistanceM));
+		const double ProjectedPx = (E.size[0] / 100.0) * PxPerM / FMath::Max(DistanceM, 1.0);
+		const int32 Stride = TierStride(DistanceM, RadiusM);
+		if (!bInView || ProjectedPx < MinProjectedPx || D.Serial % Stride != 0)
+		{
+			DustInstances->UpdateInstanceTransform(i, Hidden, true, false, true);
+			continue;
+		}
+		Picks.Add({ i, DistanceM, Stride, E });
+	}
+	if (Picks.Num() > MaxDrawn)
+	{
+		Picks.Sort([](const FPick& A, const FPick& B) { return A.DistanceM < B.DistanceM; });
+		for (int32 k = MaxDrawn; k < Picks.Num(); ++k)
+		{
+			DustInstances->UpdateInstanceTransform(Picks[k].Slot, Hidden, true, false, true);
+		}
+		Picks.SetNum(MaxDrawn);
+	}
+	DrawnDustCount = Picks.Num();
+	for (const FPick& Pick : Picks)
+	{
+		const FDustParcel& D = DustParcels[Pick.Slot];
+		const VlDustEval& E = Pick.E;
 		const FVector Size(E.size[0], E.size[1], E.size[2]);
-		DustInstances->UpdateInstanceTransform(i, FTransform(FQuat::Identity, FVector(E.centre[0], E.centre[1], E.centre[2]), Size / SphereCm),
+		DustInstances->UpdateInstanceTransform(Pick.Slot, FTransform(FQuat::Identity, FVector(E.centre[0], E.centre[1], E.centre[2]), Size / SphereCm),
 			/*bWorldSpace=*/true, /*bMarkRenderStateDirty=*/false, /*bTeleport=*/true);
 		const FLinearColor Color(FColor((D.P.color_rgba >> 24) & 0xFF, (D.P.color_rgba >> 16) & 0xFF, (D.P.color_rgba >> 8) & 0xFF, 0xFF));
 		// The material turns density into opacity as the web's sprite does; its noise eats E.erosion of
 		// the cloud; the seed varies it per parcel.
-		const float Density = D.P.intensity * E.density * SpriteDensity;
-		DustInstances->SetCustomData(i, { Color.R, Color.G, Color.B, Density, E.erosion, static_cast<float>(D.P.seed % 9973) / 9973.0f, Fade(E.age_s, E.life_fraction) },
+		const float Density = D.P.intensity * E.density * SpriteDensity * Pick.Stride;
+		DustInstances->SetCustomData(Pick.Slot, { Color.R, Color.G, Color.B, Density, E.erosion, static_cast<float>(D.P.seed % 9973) / 9973.0f, Fade(E.age_s, E.life_fraction) },
 			/*bMarkRenderStateDirty=*/false);
 	}
 	DustInstances->MarkRenderStateDirty();
