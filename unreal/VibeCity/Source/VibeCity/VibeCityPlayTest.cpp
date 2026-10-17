@@ -1287,6 +1287,7 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		double NextShot = 0.0;
 		double StandingPelvisZ = 0.0;
 		uint32 CrosshairZone = 0;
+		bool bMet = false;
 		double LowestPelvisZ = TNumericLimits<double>::Max();
 		double LastPelvisZ = 0.0;
 		int32 PelvisSamples = 0;
@@ -1316,6 +1317,13 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		{
 			S->Target = S->Remote[0].player_id;
 			return true;
+		}
+		// The stand-in (vl-headless --jump --drop 20,1,60) waits at a fixed point; meet it there,
+		// 4 m short of it and facing it (server (20, 1, 56), Unreal (5600, -2000, 100)).
+		if ((S->Local.player.flags & VL_PLAYER_VALID) && !S->bMet)
+		{
+			Net->CameraDrop(FVector(5600.0, -2000.0, 100.0), 0.0f, 0.0f);
+			S->bMet = true;
 		}
 		if (Now() > S->Deadline)
 		{
