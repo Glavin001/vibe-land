@@ -41,6 +41,7 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 | HUD: crosshair, HP, energy, weapon, spawn protection, car hints, flight panel | done | frame `local` | screenshots |
 | HUD feedback: directional damage, crosshair red on a player (body or head), scope, melee cooldown, invulnerability countdown, "city reset" note | done | core `aim_target` (the server's hitscan capsule and head ball) | `aim_tests`; `KillRemote`: the crosshair marked the target |
 | Performance pill (fps, server Hz, ping, Mbps) and the connecting / connection-lost banner | done | core `net_stats` | screenshots |
+| Controls panel (every command, its binding and how hard it is held; keyboard or gamepad, on foot or driving; F1 folds) and the shared-grass status line | done | (Unreal HUD over the settings' bindings; the grass actor's poll) | `VibeCity.Play.Hud`: 12 rows, folds and unfolds, "Shared grass · <revision>" of the loaded layout (hud.png) |
 | Batteries (energy dropped where players die) | done: glowing cells sized by energy | `net_client` `BatterySync` decoder, frame `batteries` | round trip against the server encoder; `KillRemote`: the dead player's battery listed and drawn |
 | Settings: mouse, gamepad, key bindings, sound mix presets and dynamic range; gamepad play | done, as an Unreal panel | core audio mix | `VibeCity.Settings` |
 | City geometry: convex hulls and boxes, standing cells, debris bodies | done | `client-core/src/geometry.rs` | every mesh closed and equal to its authored volume (24105 chunks of `fractured-downtown`); `VibeCity.Render.CityAndEffects`: all vertices drawn before and after a fracture |
@@ -81,8 +82,8 @@ the web's fog curve (Gaussian) is thinner under 40 m.
 - **Remote players.** No crouch clips (the web's `Crouch_Idle_Loop` and crouch locomotion).
 - **Moving debris.** Bonds broken between two moving bodies are placed at rest for dust and
   sound. There is no dust budget in the core (Unreal recycles the faintest of 64 live puffs).
-- **Match stats and toasts.** No player count or match stats panel (`PKT_MATCH_STATS`), no
-  grass-sync toast, no controls-hints overlay. The web's debug and admin tools stay web-only.
+- **Debug and admin tools** stay web-only: the stats overlay (match stats from `PKT_MATCH_STATS`,
+  the player count, RECORD TAPE), `/server-stats`, the world builder.
 - **Server walk speed.** The server's on-foot input policy repeats a held input when a frame is
   late and then applies the late frame too, so players on either client walk about 14.5% fast;
   the fix is behind `VIBE_FOOT_INPUT_DEBT=1` (off by default).

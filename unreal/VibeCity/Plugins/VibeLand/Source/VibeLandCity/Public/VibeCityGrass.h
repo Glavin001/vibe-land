@@ -55,6 +55,11 @@ public:
 	/** Patches generated over the current layout so far. */
 	int32 PatchesOnCurrentPaint() const { return GeneratedOnPaint; }
 
+	/** The shared layout's sync, as the web reports it under the HUD (GrassLayoutSync.ts): empty
+	 * when there is no layout to sync; "Loading shared grass…" until the first answer; then the
+	 * revision, or that the sync is offline. Error is true for the offline messages. */
+	FString SyncMessage(bool& bError) const;
+
 private:
 	struct FPatch
 	{
@@ -102,5 +107,7 @@ private:
 	FString LayoutUrl;
 	float SincePoll = 2.0f;
 	bool bPolling = false;
+	enum class ESync : uint8 { Idle, Loading, Ready, Error };
+	ESync Sync = ESync::Idle;
 	int32 GeneratedOnPaint = 0;
 };

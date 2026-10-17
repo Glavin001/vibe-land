@@ -8,6 +8,8 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "EngineUtils.h"
+#include "VibeCityGrass.h"
 #include "VibeNetSubsystem.h"
 #include "VibePlayerPawn.h"
 
@@ -190,6 +192,155 @@ void AVibeCityHUD::DrawStatus(float W, float H, float Scale, double Now, float D
 	}
 }
 
+void AVibeCityHUD::DrawControls(float W, float H, float Scale, bool bDriving)
+{
+	const APlayerController* PC = GetOwningPlayerController();
+	if (!PC)
+	{
+		return;
+	}
+	using EAction = FVibeSettings::EAction;
+	const FVibeSettings& S = FVibeSettings::Get();
+	auto Down = [PC](const FKey& Key) { return PC->IsInputKeyDown(Key) ? 1.0f : 0.0f; };
+	auto Analog = [PC](const FKey& Key) { return FMath::Clamp(FMath::Abs(PC->GetInputAnalogKeyState(Key)), 0.0f, 1.0f); };
+	auto Act = [&](EAction A) { return Down(S.Key(A)); };
+	auto Name = [&](EAction A) { return S.Key(A).GetDisplayName().ToString(); };
+	float MouseX = 0.0f, MouseY = 0.0f;
+	PC->GetInputMouseDelta(MouseX, MouseY);
+	// The device last used (useControlHints.ts: the family of the latest input wins).
+	const float Stick = FMath::Max(FVector2D(Analog(EKeys::Gamepad_LeftX), Analog(EKeys::Gamepad_LeftY)).Size(),
+		FVector2D(Analog(EKeys::Gamepad_RightX), Analog(EKeys::Gamepad_RightY)).Size());
+	const bool bPadNow = Stick > 0.2f || Analog(EKeys::Gamepad_RightTriggerAxis) > 0.2f || Analog(EKeys::Gamepad_LeftTriggerAxis) > 0.2f
+		|| Down(EKeys::Gamepad_FaceButton_Bottom) + Down(EKeys::Gamepad_FaceButton_Right) + Down(EKeys::Gamepad_FaceButton_Left) + Down(EKeys::Gamepad_FaceButton_Top) > 0.0f;
+	const bool bKeysNow = FMath::Abs(MouseX) + FMath::Abs(MouseY) > 0.0f || Down(EKeys::LeftMouseButton) > 0.0f
+		|| Act(EAction::MoveForward) + Act(EAction::MoveBackward) + Act(EAction::MoveLeft) + Act(EAction::MoveRight) + Act(EAction::Jump) > 0.0f;
+	bGamepadFamily = bPadNow ? true : bKeysNow ? false : bGamepadFamily;
+
+	struct FRow { FString Command; FString Binding; float Value; };
+	TArray<FRow> Rows;
+	const float Move = FMath::Min(1.0f, FVector2D(Act(EAction::MoveRight) - Act(EAction::MoveLeft), Act(EAction::MoveForward) - Act(EAction::MoveBackward)).Size());
+	const float Look = FMath::Min(1.0f, FVector2D(MouseX, MouseY).Size() / 8.0f);
+	const float PadMove = FMath::Min(1.0f, FVector2D(Analog(EKeys::Gamepad_LeftX), Analog(EKeys::Gamepad_LeftY)).Size());
+	const float PadLook = FMath::Min(1.0f, FVector2D(Analog(EKeys::Gamepad_RightX), Analog(EKeys::Gamepad_RightY)).Size());
+	const FString Wasd = FString::Printf(TEXT("%s %s %s %s"), *Name(EAction::MoveForward), *Name(EAction::MoveLeft), *Name(EAction::MoveBackward), *Name(EAction::MoveRight));
+	if (bDriving && bGamepadFamily)
+	{
+		Rows = {
+			{ TEXT("Steer"), TEXT("Left Stick X"), Analog(EKeys::Gamepad_LeftX) },
+			{ TEXT("Throttle"), TEXT("Right Trigger"), Analog(EKeys::Gamepad_RightTriggerAxis) },
+			{ TEXT("Brake / Reverse"), TEXT("Left Trigger"), Analog(EKeys::Gamepad_LeftTriggerAxis) },
+			{ TEXT("Camera"), TEXT("Right Stick"), PadLook },
+			{ TEXT("Handbrake"), TEXT("A"), Down(EKeys::Gamepad_FaceButton_Bottom) },
+			{ TEXT("Exit Vehicle"), TEXT("X"), Down(EKeys::Gamepad_FaceButton_Left) },
+		};
+	}
+	else if (bDriving)
+	{
+		Rows = {
+			{ TEXT("Steer"), FString::Printf(TEXT("%s / %s"), *Name(EAction::MoveLeft), *Name(EAction::MoveRight)), FMath::Max(Act(EAction::MoveLeft), Act(EAction::MoveRight)) },
+			{ TEXT("Throttle"), Name(EAction::MoveForward), Act(EAction::MoveForward) },
+			{ TEXT("Brake / Reverse"), Name(EAction::MoveBackward), Act(EAction::MoveBackward) },
+			{ TEXT("Camera"), TEXT("Mouse / Trackpad"), Look },
+			{ TEXT("Handbrake"), Name(EAction::Jump), Act(EAction::Jump) },
+			{ TEXT("Reset Vehicle"), Name(EAction::Reset), Act(EAction::Reset) },
+			{ TEXT("Exit Vehicle"), Name(EAction::Interact), Act(EAction::Interact) },
+		};
+	}
+	else if (bGamepadFamily)
+	{
+		Rows = {
+			{ TEXT("Move"), TEXT("Left Stick"), PadMove },
+			{ TEXT("Look"), TEXT("Right Stick"), PadLook },
+			{ TEXT("Shoot"), TEXT("Right Trigger"), Analog(EKeys::Gamepad_RightTriggerAxis) },
+			{ TEXT("Aim"), TEXT("Left Trigger"), Analog(EKeys::Gamepad_LeftTriggerAxis) },
+			{ TEXT("Melee"), TEXT("B"), Down(EKeys::Gamepad_FaceButton_Right) },
+			{ TEXT("Jump"), TEXT("A"), Down(EKeys::Gamepad_FaceButton_Bottom) },
+			{ TEXT("Sprint"), TEXT("Left Stick Press"), Down(EKeys::Gamepad_LeftThumbstick) },
+			{ TEXT("Crouch"), TEXT("B"), Down(EKeys::Gamepad_FaceButton_Right) },
+			{ TEXT("Interact / Car"), TEXT("X"), Down(EKeys::Gamepad_FaceButton_Left) },
+			{ TEXT("Next Weapon"), TEXT("Y"), Down(EKeys::Gamepad_FaceButton_Top) },
+		};
+	}
+	else
+	{
+		Rows = {
+			{ TEXT("Move"), Wasd, Move },
+			{ TEXT("Look"), TEXT("Mouse / Trackpad"), Look },
+			{ TEXT("Shoot"), TEXT("Left Mouse"), Down(EKeys::LeftMouseButton) },
+			{ TEXT("Aim"), FString::Printf(TEXT("Right Mouse / %s"), *Name(EAction::Aim)), FMath::Max(Down(EKeys::RightMouseButton), Act(EAction::Aim)) },
+			{ TEXT("Melee"), Name(EAction::Melee), Act(EAction::Melee) },
+			{ TEXT("Jump"), Name(EAction::Jump), Act(EAction::Jump) },
+			{ TEXT("Sprint"), Name(EAction::Sprint), Act(EAction::Sprint) },
+			{ TEXT("Crouch"), Name(EAction::Crouch), Act(EAction::Crouch) },
+			{ TEXT("Interact / Car"), Name(EAction::Interact), Act(EAction::Interact) },
+			{ TEXT("Rifle / Cannon / Meteor"), FString::Printf(TEXT("%s / %s / %s"), *Name(EAction::Rifle), *Name(EAction::Cannon), *Name(EAction::Meteor)),
+				FMath::Max3(Act(EAction::Rifle), Act(EAction::Cannon), Act(EAction::Meteor)) },
+			{ TEXT("Reset City"), Name(EAction::Reset), Act(EAction::Reset) },
+			{ TEXT("Aerial Camera"), Name(EAction::Aerial), Act(EAction::Aerial) },
+		};
+	}
+	LastControlRows = bControlsExpanded ? Rows.Num() : 0;
+	LastControlsTitle = FString::Printf(TEXT("%s · %s"), bGamepadFamily ? TEXT("Gamepad") : TEXT("Keyboard + Mouse"), bDriving ? TEXT("Vehicle") : TEXT("On Foot"));
+
+	UFont* Small = GEngine->GetSmallFont();
+	const FLinearColor Shell(0.027f, 0.043f, 0.063f, 0.58f);
+	const float Bottom = H - 16.0f * Scale;
+	if (!bControlsExpanded)
+	{
+		const FString Chip = TEXT("▶ Controls  (F1)");
+		float TW = 0.0f, TH = 0.0f;
+		GetTextSize(Chip, TW, TH, Small);
+		const float X = (W - TW) * 0.5f, Y = Bottom - TH - 8.0f * Scale;
+		DrawRect(Shell, X - 10.0f * Scale, Y - 4.0f * Scale, TW + 20.0f * Scale, TH + 8.0f * Scale);
+		DrawText(Chip, FLinearColor(1.0f, 1.0f, 1.0f, 0.82f), X, Y, Small);
+		return;
+	}
+	// A grid of cells as the web lays its rows out: command, binding, and a bar of how hard it is held.
+	constexpr int32 Columns = 4;
+	const float CellW = 210.0f * Scale, CellH = 54.0f * Scale, Pad = 12.0f * Scale;
+	const int32 Lines = (Rows.Num() + Columns - 1) / Columns;
+	const float PanelW = Columns * CellW + 2.0f * Pad;
+	const float HeaderH = 22.0f * Scale;
+	const float PanelH = HeaderH + Lines * CellH + 2.0f * Pad;
+	const float X0 = (W - PanelW) * 0.5f, Y0 = Bottom - PanelH;
+	DrawRect(Shell, X0, Y0, PanelW, PanelH);
+	DrawText(FString::Printf(TEXT("▼ Controls  ·  %s  ·  F1 folds"), *LastControlsTitle).ToUpper(), FLinearColor(1.0f, 1.0f, 1.0f, 0.9f), X0 + Pad, Y0 + Pad, Small);
+	for (int32 i = 0; i < Rows.Num(); ++i)
+	{
+		const FRow& R = Rows[i];
+		const float X = X0 + Pad + (i % Columns) * CellW;
+		const float Y = Y0 + Pad + HeaderH + (i / Columns) * CellH;
+		const bool bActive = R.Value > 0.05f;
+		DrawText(R.Command, bActive ? FLinearColor(0.55f, 0.95f, 1.0f) : FLinearColor(1.0f, 1.0f, 1.0f, 0.9f), X, Y, Small);
+		float TW = 0.0f, TH = 0.0f;
+		GetTextSize(R.Binding, TW, TH, Small);
+		DrawText(R.Binding, FLinearColor(1.0f, 1.0f, 1.0f, 0.55f), X, Y + TH, Small);
+		const float BarY = Y + 2.0f * TH + 4.0f * Scale, BarW = CellW - 16.0f * Scale, BarH = 3.0f * Scale;
+		DrawRect(FLinearColor(1.0f, 1.0f, 1.0f, 0.1f), X, BarY, BarW, BarH);
+		DrawRect(FLinearColor(0.35f, 0.85f, 1.0f, 0.9f), X, BarY, BarW * FMath::Clamp(R.Value, 0.0f, 1.0f), BarH);
+	}
+}
+
+void AVibeCityHUD::DrawGrassSync(float W, float H, float Scale)
+{
+	LastGrassSync.Reset();
+	bool bError = false;
+	if (TActorIterator<AVibeCityGrass> It(GetWorld()); It)
+	{
+		LastGrassSync = It->SyncMessage(bError);
+	}
+	if (LastGrassSync.IsEmpty())
+	{
+		return;
+	}
+	UFont* Small = GEngine->GetSmallFont();
+	float TW = 0.0f, TH = 0.0f;
+	GetTextSize(LastGrassSync, TW, TH, Small);
+	const float X = (W - TW) * 0.5f, Y = 58.0f * Scale;
+	DrawRect(FLinearColor(0.027f, 0.043f, 0.063f, 0.78f), X - 10.0f * Scale, Y - 5.0f * Scale, TW + 20.0f * Scale, TH + 10.0f * Scale);
+	DrawText(LastGrassSync, bError ? FLinearColor(1.0f, 0.86f, 0.61f) : FLinearColor(0.85f, 0.91f, 0.78f), X, Y, Small);
+}
+
 void AVibeCityHUD::DrawHUD()
 {
 	Super::DrawHUD();
@@ -343,17 +494,23 @@ void AVibeCityHUD::DrawHUD()
 	{
 		Banner(TEXT("City reset"), FLinearColor::White, H * 0.2f);
 	}
-	// Car hints (the web's ControlHintsOverlay).
+	// The controls panel, and the prompt by a car.
+	if (const APlayerController* PC = GetOwningPlayerController(); PC && PC->WasInputKeyJustPressed(EKeys::F1))
+	{
+		ToggleControls();
+	}
+	LastControlRows = 0;
+	if (const AVibePlayerPawn* Pawn = Cast<AVibePlayerPawn>(GetOwningPawn()); Pawn && !bFlying)
+	{
+		DrawControls(W, H, Scale, Pawn->IsInVehicle());
+	}
+	DrawGrassSync(W, H, Scale);
 	if (const AVibePlayerPawn* Pawn = Cast<AVibePlayerPawn>(GetOwningPawn()); Pawn && !bDead)
 	{
 		FString Hint;
-		if (Pawn->IsInVehicle())
+		if (!Pawn->IsInVehicle() && Pawn->NearCar())
 		{
-			Hint = TEXT("W/S throttle  A/D steer  Space handbrake  R reset car  E leave");
-		}
-		else if (Pawn->NearCar())
-		{
-			Hint = TEXT("E  drive");
+			Hint = FString::Printf(TEXT("%s  drive"), *FVibeSettings::Get().Key(FVibeSettings::EAction::Interact).GetDisplayName().ToString());
 		}
 		if (!Hint.IsEmpty())
 		{

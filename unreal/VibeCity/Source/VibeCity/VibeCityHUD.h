@@ -15,6 +15,7 @@
  * (ui/SpawnProtectionHUD); death; a note when the city resets; the performance pill (fps, server
  * tick rate, ping, download) and the connection banner (connecting, or why it dropped and when it
  * rejoins). Values come from the core.
+ * The controls panel (ControlHintsOverlay.tsx) and the shared grass status (GrassLayoutSync.ts).
  * While the aerial camera flies (or a drop is on its way) it draws no crosshair or weapon and shows
  * the web's flight panel instead (CityFlightControls.tsx).
  */
@@ -62,6 +63,25 @@ private:
 	uint64 PillBytes0 = 0;
 	FString PillText;
 	void DrawStatus(float W, float H, float Scale, double Now, float Dt);
+	/** The web's ControlHintsOverlay: every command with its binding and how hard it is held now,
+	 * for the device last used (keyboard and mouse, or gamepad) and on foot or driving. Expanded at
+	 * first, as on /city; F1 folds it. Hidden while flying, as the web hides it in the aerial view. */
+	void DrawControls(float W, float H, float Scale, bool bDriving);
+	bool bControlsExpanded = true;
+	bool bGamepadFamily = false;
+	/** The shared grass layout's status line (App.tsx under the top of the screen). */
+	void DrawGrassSync(float W, float H, float Scale);
+public:
+	/** What the controls panel drew last frame (tests): rows, and its title. */
+	int32 ControlRows() const { return LastControlRows; }
+	const FString& ControlsTitle() const { return LastControlsTitle; }
+	const FString& GrassSyncShown() const { return LastGrassSync; }
+	/** Fold or unfold the controls panel (F1). */
+	void ToggleControls() { bControlsExpanded = !bControlsExpanded; }
+private:
+	int32 LastControlRows = 0;
+	FString LastControlsTitle;
+	FString LastGrassSync;
 	double LastDrawTime = 0.0;
 	FDelegateHandle FrameHandle;
 	bool bDrewCrosshair = false;

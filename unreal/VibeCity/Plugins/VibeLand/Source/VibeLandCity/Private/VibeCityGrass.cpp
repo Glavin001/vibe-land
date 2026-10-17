@@ -136,6 +136,23 @@ bool AVibeCityGrass::ApplyLayout(TConstArrayView<uint8> Body)
 	return true;
 }
 
+FString AVibeCityGrass::SyncMessage(bool& bError) const
+{
+	bError = Sync == ESync::Error;
+	switch (Sync)
+	{
+	case ESync::Loading:
+		return TEXT("Loading shared grass…");
+	case ESync::Ready:
+		return FString::Printf(TEXT("Shared grass · %s"), *Revision.Left(8));
+	case ESync::Error:
+		return Revision.IsEmpty() ? TEXT("Shared grass unavailable · showing default meadow")
+			: TEXT("Grass sync offline · showing last shared layout");
+	default:
+		return FString();
+	}
+}
+
 void AVibeCityGrass::PollLayout()
 {
 	if (LayoutUrl.IsEmpty() || bPolling)
@@ -143,6 +160,10 @@ void AVibeCityGrass::PollLayout()
 		return;
 	}
 	bPolling = true;
+	if (Sync == ESync::Idle)
+	{
+		Sync = ESync::Loading;
+	}
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
 	Request->SetURL(LayoutUrl);
 	Request->SetVerb(TEXT("GET"));
@@ -161,11 +182,13 @@ void AVibeCityGrass::PollLayout()
 		Grass->bPolling = false;
 		Grass->SincePoll = 0.0f;
 		// 304: unchanged. Errors keep the last shared layout (or the default meadow).
-		if (!bOk || !Response.IsValid() || Response->GetResponseCode() != 200)
+		const int32 Code = bOk && Response.IsValid() ? Response->GetResponseCode() : 0;
+		if (Code == 304)
 		{
+			Grass->Sync = ESync::Ready;
 			return;
 		}
-		Grass->ApplyLayout(Response->GetContent());
+		Grass->Sync = Code == 200 && Grass->ApplyLayout(Response->GetContent()) ? ESync::Ready : ESync::Error;
 	});
 	Request->ProcessRequest();
 }
