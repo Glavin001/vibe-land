@@ -18,6 +18,7 @@ scripts/unreal/import-city.sh --match citypp-demo  # the match's city as Nanite 
 scripts/unreal/demo.sh                         # PhysX server + web client + Unreal on citypp-demo
 scripts/unreal/play-tests.sh                   # the automated suite against the live server
 node scripts/unreal/compare-web.mjs            # the web /city from the comparison pose (headless Chromium)
+node scripts/unreal/cross-client.mjs           # a web player and an Unreal player in one match, checked from both sides
 ```
 
 `-VibeWeather=clear|dust_storm|snow_storm` (and `vibe.weather` in game) picks the web's weather;
@@ -67,6 +68,7 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 | M4: 5 minutes, ≥ 20 fractures | `--seconds 300 --meteor-after 10 --meteor-every 12 --gate --min-fractures 20` | 261 fractures, 0 hash mismatches, 0 decode errors, 17857 of 17856 snapshots, server at 0.993 of real time |
 | Web on the shared core: 5 minutes, every core flag on | `node scripts/web-core-soak.mjs` (headless Chromium, a meteor every 12 s) | 25 meteors, up to 1634 live bodies presented, 496 hash checks, 0 mismatches, 0 decode errors, no render stalls, no page errors |
 | Walk displacement | `VibeCity.Play.WalkAndShoot`; `vl-headless --walk` | 6.000 m/s, the server's walk speed, on both (the server's foot input fix, on by default since 2026-10-17; 6.53 m/s before) |
+| Web and Unreal in one match | `node scripts/unreal/cross-client.mjs` (headless Chromium /city + Unreal MeetAndWalk, KillRemote, CannonAndMeteor) | Unreal 3 of 3; the web saw the Unreal player walk, was shot dead by it, and applied 730 destruction events from its meteor; 0 mismatches, 0 decode errors |
 | Unreal suite | `scripts/unreal/play-tests.sh` (one match on the server) | 17 of 17, and `KillRemote` with a stand-in; `CityAndEffects`: a meteor makes 10 fractures, 291 sounds and 336 live dust parcels from the web's policy |
 
 ## Side by side

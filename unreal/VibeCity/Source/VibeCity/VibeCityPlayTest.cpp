@@ -1501,3 +1501,74 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 }
 
 #endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+// VibeCity.Play.MeetAndWalk: for the cross-client check (scripts/unreal/cross-client.mjs), walk where
+// another client can see it: drop 4 m short of the stand-in's point (server (20, 1, 56), Unreal
+// (5600, -2000, 100)), facing across it, and hold W for 3 s. The local player must move more than
+// 3 m (the server's walk speed is 6 m/s).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayMeetAndWalk, "VibeCity.Play.MeetAndWalk",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayMeetAndWalk::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		VlLocal Local = {};
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+		FVector Start = FVector::ZeroVector;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 90.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame) { S->Local = Frame.local; });
+		}
+		if (S->Local.player.flags & VL_PLAYER_VALID)
+		{
+			Net->CameraDrop(FVector(5600.0, -2000.0, 100.0), 90.0f, 0.0f);
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("never joined"));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(3.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Click();
+		S->Start = FVector(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		Key(EKeys::W, true);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(3.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		Key(EKeys::W, false);
+		const FVector End(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		const double Walked = FVector::Dist2D(S->Start, End);
+		AddInfo(FString::Printf(TEXT("walked %.0f cm from %s"), Walked, *S->Start.ToString()));
+		TestTrue(TEXT("walked more than 3 m"), Walked > 300.0);
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif
+
