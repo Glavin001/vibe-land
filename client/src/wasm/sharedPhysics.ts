@@ -21,6 +21,7 @@ import {
   hydrateSharedVehicleDefinitions,
 } from './sharedVehicleDefinitions';
 import { nativeFileBytes } from '../platform/nativeFiles';
+import { initClientCore } from '../core/clientCore';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
@@ -286,7 +287,7 @@ export async function initSharedPhysics(): Promise<void> {
   if (!initPromise) {
     initPromise = (async () => {
       if (__NATIVE__) initSync({ module: await nativeFileBytes('vibe_land_shared_bg.wasm') });
-      else await init();
+      else await Promise.all([init(), initClientCore()]);
       provideWasmClockSync(WasmClockSync);
       if (sharedDecodeEnabled()) {
         provideSnapshotV2Decoder(decodeSnapshotV2Shared);

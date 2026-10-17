@@ -12,6 +12,6 @@ pub mod terrain;
 pub mod unit_conv;
 pub mod vehicle;
 pub mod vehicle_presentation;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm-api"))]
 pub mod wasm_api;
 pub mod world_document;

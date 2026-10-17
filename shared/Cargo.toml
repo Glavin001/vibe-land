@@ -18,7 +18,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [features]
-default = []
+# The browser API (src/wasm_api.rs) the web loads as the `vibe_land_shared` package. Crates that
+# build their own WASM package on this one (client-core-wasm, through client-core) leave it out,
+# or its exports would be duplicated into theirs.
+default = ["wasm-api"]
+wasm-api = []
 simd-stable = ["rapier3d/simd-stable", "vibe-netcode/simd-stable"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

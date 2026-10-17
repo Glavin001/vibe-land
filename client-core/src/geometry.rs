@@ -218,7 +218,7 @@ fn server_triangles(chunk: &ChunkDef, shape_library: &[Vec<f32>], out: &mut Vec<
 
 /// The convex hull of flat xyz `points` (parry's quickhull, as `destruction::variants` uses for the
 /// hull's centre of mass), oriented outward. False when the points span no volume.
-pub(crate) fn convex_hull_triangles(points: &[f32], out: &mut Vec<[Vec3; 3]>) -> bool {
+pub fn convex_hull_triangles(points: &[f32], out: &mut Vec<[Vec3; 3]>) -> bool {
     use rapier3d::na::Point3;
     let input: Vec<Point3<f32>> = points.chunks_exact(3).map(|p| Point3::new(p[0], p[1], p[2])).collect();
     if input.len() < 4 || input.iter().any(|p| !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite())) {

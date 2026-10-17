@@ -113,6 +113,17 @@ export function hullKey(points: Float32Array): string {
 }
 
 /**
+ * The shared client core's hull (client-core geometry.rs, parry's quickhull: what the Unreal client
+ * draws), installed behind `?coreGeometry=1` (core/clientCore.ts); three's ConvexGeometry otherwise.
+ * Nine floats per outward-wound triangle, or undefined when the points span no volume.
+ */
+let coreHullTriangles: ((points: Float32Array) => Float32Array | undefined) | null = null;
+
+export function provideCoreHullTriangles(fn: ((points: Float32Array) => Float32Array | undefined) | null): void {
+  coreHullTriangles = fn;
+}
+
+/**
  * Triangulated hull for a point set.
  *
  * The points are already convex (fracture cells are convex by construction),
@@ -120,6 +131,14 @@ export function hullKey(points: Float32Array): string {
  * still has to be computed to know which triangles to emit.
  */
 export function buildHullGeometry(points: Float32Array): THREE.BufferGeometry {
+  const triangles = coreHullTriangles?.(points);
+  if (triangles) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(triangles, 3));
+    // Non-indexed, so these are the faces' own normals, as ConvexGeometry gives.
+    geometry.computeVertexNormals();
+    return normalizeForBatching(geometry);
+  }
   const vertices: THREE.Vector3[] = [];
   for (let i = 0; i + 2 < points.length; i += 3) {
     vertices.push(new THREE.Vector3(points[i], points[i + 1], points[i + 2]));

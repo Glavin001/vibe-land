@@ -3231,6 +3231,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vibe-client-core-wasm"
+version = "0.1.0"
+dependencies = [
+ "vibe-client-core",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "vibe-client-transport-wt"
 version = "0.1.0"
 dependencies = [

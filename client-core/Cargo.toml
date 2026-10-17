@@ -7,7 +7,8 @@ description = "vibe-land's sans-IO client core: server bytes in, render-ready sc
 publish = false
 
 [dependencies]
-vibe-land-shared = { path = "../shared" }
+# Without its browser API (`wasm-api`): client-core-wasm is its own package.
+vibe-land-shared = { path = "../shared", default-features = false }
 vibe-netcode = { path = "../netcode" }
 vibe-land-perplayer = { path = "../perplayer" }
 vibe-land-destruction = { path = "../destruction" }

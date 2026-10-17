@@ -12,7 +12,7 @@
     "audio:verify": "node scripts/verify-destruction-audio.mjs --report && node scripts/verify-audio-options.mjs --report",
     "audio:options:build": "node scripts/build-audio-options.mjs --fetch",
     "audio:bench": "node --import=tsx/esm scripts/benchmark-destruction-audio.mts",
-    "build:wasm": "npm run gen:constants && npm run ensure:wasm-pack && wasm-pack build ../shared --target web --out-dir ../client/src/wasm/pkg && wasm-pack build ../research/destruction-codec --target web --out-dir ../../client/src/wasm/debris-pkg --no-default-features && wasm-pack build ../perplayer --target web --out-dir ../client/src/wasm/perplayer-pkg",
+    "build:wasm": "npm run gen:constants && npm run ensure:wasm-pack && wasm-pack build ../shared --target web --out-dir ../client/src/wasm/pkg && wasm-pack build ../research/destruction-codec --target web --out-dir ../../client/src/wasm/debris-pkg --no-default-features && wasm-pack build ../perplayer --target web --out-dir ../client/src/wasm/perplayer-pkg && wasm-pack build ../client-core-wasm --target web --out-dir ../client/src/wasm/core-pkg",
     "predev": "npm run ensure:wasm-pack && npm run build:wasm",
     "dev": "vite",
     "dev:practice": "vite --open /practice",

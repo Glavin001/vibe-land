@@ -1,0 +1,14 @@
+[package]
+name = "vibe-client-core-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "The web client's bindings to vibe-client-core (the Unreal client links the same core natively, through client-core-ffi)."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vibe-client-core = { path = "../client-core" }
+wasm-bindgen = "0.2"
