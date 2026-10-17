@@ -163,6 +163,71 @@ pub struct VlEvent {
     pub p1: [f32; 3],
 }
 
+/// A car wheel as drawn: suspension travel (m, renderer units), steer and spin angles (radians,
+/// about the wheel's own axes), and whether it touches the ground.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlWheel {
+    pub travel: f32,
+    pub steer: f32,
+    pub spin: f32,
+    pub grounded: u32,
+}
+
+/// A car the city stream carries, drawn on the car clock (the players' render time, so a driver and
+/// the car agree): the chassis pose and velocity, and its wheels when the stream has them.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlCar {
+    /// The car's handle (its asset is announced by `PKT_VEHICLE_ASSET` under this handle).
+    pub handle: u32,
+    /// [`VL_CAR_HAS_WHEELS`].
+    pub flags: u32,
+    pub pos: [f32; 3],
+    pub quat: [f32; 4],
+    pub vel: [f32; 3],
+    pub wheels: [VlWheel; 4],
+}
+
+/// [`VlCar::flags`]: `wheels` holds the stream's wheel states.
+pub const VL_CAR_HAS_WHEELS: u32 = 1;
+
+/// A free dynamic body from the game snapshots (cannonballs, meteors): interpolated to the render
+/// time. Spheres carry no rotation on the wire (identity).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlDynamicBody {
+    pub body_id: u32,
+    /// [`VL_SHAPE_SPHERE`] or [`VL_SHAPE_BOX`] (`shared::constants::SHAPE_*`).
+    pub shape: u32,
+    pub pos: [f32; 3],
+    pub quat: [f32; 4],
+    /// Half extents (a sphere's radius in each), renderer units.
+    pub half_extents: [f32; 3],
+}
+
+pub const VL_SHAPE_BOX: u32 = 0;
+pub const VL_SHAPE_SPHERE: u32 = 1;
+
+/// A meteor the server launched this frame (`PKT_METEOR_LAUNCHED`): the arc a renderer draws it on
+/// until its body appears among the dynamic bodies. Renderer space; times in seconds.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlMeteor {
+    pub body_id: u32,
+    pub shooter: u32,
+    /// Seconds since the launch, on the caller's clock, at this poll (the launch is in the past by
+    /// the network delay).
+    pub age_s: f32,
+    pub flight_time_s: f32,
+    pub start: [f32; 3],
+    /// Initial velocity and the downward gravity vector, renderer units per second (squared).
+    pub velocity: [f32; 3],
+    pub gravity: [f32; 3],
+    pub target: [f32; 3],
+    pub radius: f32,
+}
+
 /// Where the session is, as the core sees it.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -217,6 +282,12 @@ pub struct SceneFrame {
     pub body_poses: Vec<VlBodyPose>,
     /// Events since the previous poll.
     pub events: Vec<VlEvent>,
+    /// Cars on the car clock (every car, every poll).
+    pub cars: Vec<VlCar>,
+    /// Dynamic bodies at the render time (every body in interest, every poll).
+    pub dynamic_bodies: Vec<VlDynamicBody>,
+    /// Meteors launched since the previous poll.
+    pub meteors: Vec<VlMeteor>,
     pub stats: VlStats,
 }
 
@@ -226,5 +297,8 @@ impl SceneFrame {
         self.assignments.clear();
         self.body_poses.clear();
         self.events.clear();
+        self.cars.clear();
+        self.dynamic_bodies.clear();
+        self.meteors.clear();
     }
 }

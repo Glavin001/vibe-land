@@ -14,7 +14,9 @@ use vibe_land_destruction::{manifest_binary, per_player::structure_defs};
 use vibe_land_perplayer::client::{BodyChange, Client};
 use vibe_land_perplayer::predict::Physics;
 use vibe_land_perplayer::structure::REMOVED;
-use vibe_land_perplayer::wire::{encode_ack, encode_ack_missing, BodyKey, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS, PKT_PP_KEYFRAMES};
+use vibe_land_perplayer::wire::{
+    encode_ack, encode_ack_missing, BodyKey, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS, PKT_PP_KEYFRAMES, VEHICLE_STRUCTURE_BASE,
+};
 
 use crate::coords::Space;
 use crate::frame::*;
@@ -190,6 +192,33 @@ impl CityStream {
             }
         }
         render
+    }
+
+    /// The cars, drawn at `car_tick`: the web draws them on the players' clock (its
+    /// `setVehicleClock`, `renderTimeUs / SERVER_TICK_US`), so a driver sits in the car it drives.
+    /// Advances the car clock (car-group events apply as it reaches them) and writes every car.
+    pub fn cars(&mut self, car_tick: f32, out: &mut Vec<VlCar>) {
+        if !car_tick.is_finite() {
+            return;
+        }
+        self.client.advance_vehicles(car_tick);
+        for car in self.client.car_states() {
+            let mut record = VlCar {
+                handle: car.structure.saturating_sub(VEHICLE_STRUCTURE_BASE),
+                pos: self.space.pos(car.position),
+                quat: self.space.quat(car.rotation),
+                vel: self.space.pos(car.linear_velocity),
+                ..Default::default()
+            };
+            if let Some(wheels) = car.wheels {
+                record.flags |= VL_CAR_HAS_WHEELS;
+                let scale = self.space.metres();
+                for (out_wheel, w) in record.wheels.iter_mut().zip(wheels) {
+                    *out_wheel = VlWheel { travel: w.travel * scale, steer: w.steer, spin: w.angle, grounded: u32::from(w.grounded) };
+                }
+            }
+            out.push(record);
+        }
     }
 
     /// Every chunk of `structure` from the client's current state (after a bootstrap).

@@ -45,6 +45,14 @@ impl Space {
         }
     }
 
+    /// One metre in this space's length unit (1 for the server, 100 for Unreal's centimetres).
+    pub fn metres(self) -> f32 {
+        match self {
+            Space::Server => 1.0,
+            Space::Unreal => 100.0,
+        }
+    }
+
     /// A rotation, as `[x, y, z, w]`.
     pub fn quat(self, q: Quat) -> [f32; 4] {
         match self {

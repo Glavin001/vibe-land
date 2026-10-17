@@ -17,11 +17,12 @@ use std::collections::{HashMap, VecDeque};
 
 use glam::Vec3;
 use vibe_land_perplayer::client::RenderClock;
-use vibe_land_shared::protocol::{PlayerRosterPacket, SnapshotV2Packet};
+use glam::Quat;
+use vibe_land_shared::protocol::{DynamicBodyMetaPacket, PlayerRosterPacket, SnapshotV2Packet};
 use vibe_netcode::unit_conv::i16_to_angle;
 
 use crate::coords::Space;
-use crate::frame::{VlPlayer, VL_PLAYER_VALID};
+use crate::frame::{VlDynamicBody, VlPlayer, VL_PLAYER_VALID, VL_SHAPE_SPHERE};
 
 /// Samples kept per player (about a second at 60 Hz).
 const HISTORY: usize = 64;
@@ -79,6 +80,34 @@ impl Track {
     }
 }
 
+/// A dynamic body's track (cannonballs, meteors): poses by tick, and the last tick it was named.
+#[derive(Clone, Debug, Default)]
+struct BodyTrack {
+    samples: VecDeque<(u32, Vec3, Quat)>,
+    last_seen: u32,
+}
+
+impl BodyTrack {
+    fn at(&self, r: f32) -> Option<(Vec3, Quat)> {
+        let first = self.samples.front()?;
+        if r <= first.0 as f32 || self.samples.len() == 1 {
+            return Some((first.1, first.2));
+        }
+        match self.samples.iter().position(|&(tick, _, _)| tick as f32 >= r) {
+            None => self.samples.back().map(|&(_, p, q)| (p, q)),
+            Some(i) => {
+                let ((ta, pa, qa), (tb, pb, qb)) = (self.samples[i - 1], self.samples[i]);
+                let t = ((r - ta as f32) / (tb - ta).max(1) as f32).clamp(0.0, 1.0);
+                Some((pa.lerp(pb, t), qa.slerp(qb, t)))
+            }
+        }
+    }
+}
+
+/// A body unseen this long is dropped even without a removal (the server's cold refresh for
+/// dynamic bodies is 60 ticks: `COLD_DYNAMIC_REFRESH_TICKS`).
+const BODY_STALE_TICKS: u32 = 180;
+
 pub struct Players {
     clock: RenderClock,
     sim_hz: u32,
@@ -95,6 +124,9 @@ pub struct Players {
     pub ack_input_seq: u16,
     /// The render tick of the last [`sample`](Self::sample).
     render_tick: Option<f32>,
+    bodies: HashMap<u16, BodyTrack>,
+    /// handle -> (body id, shape, half extents m), from `PKT_DYNAMIC_BODY_META`.
+    body_meta: HashMap<u16, (u32, u8, Vec3)>,
 }
 
 impl Players {
@@ -112,6 +144,8 @@ impl Players {
             newest_tick: 0,
             ack_input_seq: 0,
             render_tick: None,
+            bodies: HashMap::new(),
+            body_meta: HashMap::new(),
         }
     }
 
@@ -128,6 +162,13 @@ impl Players {
         let map: HashMap<u8, u32> = roster.entries.iter().map(|e| (e.handle, e.player_id)).collect();
         self.remote.retain(|handle, _| map.contains_key(handle));
         self.roster = Some(map);
+    }
+
+    pub fn on_body_meta(&mut self, meta: &DynamicBodyMetaPacket) {
+        for e in &meta.entries {
+            let half = Vec3::new(f32::from(e.hx_cm), f32::from(e.hy_cm), f32::from(e.hz_cm)) / 100.0;
+            self.body_meta.insert(e.handle, (e.body_id, e.shape_type, half));
+        }
     }
 
     pub fn on_snapshot(&mut self, s: &SnapshotV2Packet, arrival_ms: f64) {
@@ -161,6 +202,33 @@ impl Players {
             };
             self.remote.entry(r.handle).or_default().push(s.server_tick, sample, self.interval_ticks);
         }
+        let q2_5 = |x: i16, y: i16, z: i16| anchor + Vec3::new(f32::from(x), f32::from(y), f32::from(z)) * Q2_5MM_M;
+        let snorm = |v: i16| f32::from(v) / 32767.0;
+        let mut bodies = |handle: u16, pos: Vec3, rot: Quat| {
+            let track = self.bodies.entry(handle).or_default();
+            track.last_seen = s.server_tick;
+            if track.samples.back().is_none_or(|&(t, _, _)| t < s.server_tick) {
+                track.samples.push_back((s.server_tick, pos, rot));
+                while track.samples.len() > HISTORY {
+                    track.samples.pop_front();
+                }
+            }
+        };
+        for b in &s.sphere_states {
+            bodies(b.handle, q2_5(b.dx_q2_5mm, b.dy_q2_5mm, b.dz_q2_5mm), Quat::IDENTITY);
+        }
+        for b in &s.box_states {
+            let q = Quat::from_xyzw(snorm(b.qx_snorm), snorm(b.qy_snorm), snorm(b.qz_snorm), snorm(b.qw_snorm)).normalize();
+            bodies(b.handle, q2_5(b.dx_q2_5mm, b.dy_q2_5mm, b.dz_q2_5mm), q);
+        }
+        for removal in &s.removals {
+            // 0x8000 | handle names a vehicle (the support-handle convention), not a body.
+            if removal.handle & 0x8000 == 0 {
+                self.bodies.remove(&removal.handle);
+            }
+        }
+        let now = s.server_tick;
+        self.bodies.retain(|_, t| now.saturating_sub(t.last_seen) <= BODY_STALE_TICKS);
     }
 
     /// Players at `now_ms`, written in `space`. Returns the render tick.
@@ -186,6 +254,22 @@ impl Players {
             }
         }
         Some((r, self.local.at(r)))
+    }
+
+    /// The dynamic bodies at the last sampled render tick, in `space`.
+    pub fn dynamic_bodies(&self, space: Space, out: &mut Vec<VlDynamicBody>) {
+        let Some(r) = self.render_tick else { return };
+        for (handle, track) in &self.bodies {
+            let Some(&(body_id, shape, half)) = self.body_meta.get(handle) else { continue };
+            let Some((p, q)) = track.at(r) else { continue };
+            out.push(VlDynamicBody {
+                body_id,
+                shape: u32::from(shape),
+                pos: space.pos(p),
+                quat: space.quat(q),
+                half_extents: space.extents(if u32::from(shape) == VL_SHAPE_SPHERE { Vec3::splat(half.x) } else { half }),
+            });
+        }
     }
 
     pub fn local_player_id(&self) -> u32 {
@@ -353,5 +437,44 @@ mod tests {
         let b = (-179f32).to_radians();
         let mid = lerp_angle(a, b, 0.5).to_degrees();
         assert!((mid.abs() - 180.0).abs() < 1e-3, "{mid}");
+    }
+    #[test]
+    fn dynamic_bodies_interpolate_carry_their_shape_and_leave_when_removed() {
+        use vibe_land_shared::protocol::{DynamicBodyMetaEntry, DynamicSphereStateV2, SnapshotRemoval};
+        let mut p = Players::new(60, 33);
+        p.on_body_meta(&DynamicBodyMetaPacket {
+            entries: vec![DynamicBodyMetaEntry { handle: 4, body_id: 900, shape_type: 1, hx_cm: 50, hy_cm: 50, hz_cm: 50 }],
+        });
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        // Falling 2.5 mm per tick in y (one q2.5mm unit).
+        let snap = |tick: u32| SnapshotV2Packet {
+            server_tick: tick,
+            sphere_states: vec![DynamicSphereStateV2 { handle: 4, dy_q2_5mm: -(tick as i16), ..Default::default() }],
+            ..Default::default()
+        };
+        for tick in 0..60 {
+            p.on_snapshot(&snap(tick), ms(tick));
+        }
+        let mut remote = Vec::new();
+        let (r, _) = p.sample(ms(60), Space::Server, &mut remote).unwrap();
+        let mut bodies = Vec::new();
+        p.dynamic_bodies(Space::Server, &mut bodies);
+        assert_eq!(bodies.len(), 1);
+        assert_eq!((bodies[0].body_id, bodies[0].shape), (900, 1));
+        assert_eq!(bodies[0].half_extents, [0.5, 0.5, 0.5]);
+        assert!((bodies[0].pos[1] + 0.0025 * r).abs() < 1e-4, "y {} at tick {r}", bodies[0].pos[1]);
+
+        // A vehicle's removal (0x8000 | handle) leaves bodies alone; the body's own removes it.
+        let mut gone = SnapshotV2Packet { server_tick: 61, removals: vec![SnapshotRemoval { handle: 0x8000 | 4, age_ticks: 0 }], ..Default::default() };
+        p.on_snapshot(&gone, ms(61));
+        bodies.clear();
+        p.dynamic_bodies(Space::Server, &mut bodies);
+        assert_eq!(bodies.len(), 1);
+        gone.server_tick = 62;
+        gone.removals = vec![SnapshotRemoval { handle: 4, age_ticks: 0 }];
+        p.on_snapshot(&gone, ms(62));
+        bodies.clear();
+        p.dynamic_bodies(Space::Server, &mut bodies);
+        assert!(bodies.is_empty());
     }
 }
