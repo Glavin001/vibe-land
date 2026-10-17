@@ -83,14 +83,20 @@ comparisons found, and fixed:
 What remains is look, not content: Unreal's auto-exposure renders brighter with a paler sky, and
 the web's fog curve (Gaussian) is thinner under 40 m.
 
+## Deliberate differences
+
+The owner's direction (2026-10-17): Unreal need not match the web's look; it should use what Unreal
+does better and match /city's function.
+
+- **Lighting.** The web lights with its sky gradient's environment map and ACES tone mapping;
+  Unreal uses its physical sky, sky light, Lumen global illumination and reflections, and virtual
+  shadow maps, over 2K PBR materials (above), so it renders brighter and more physically.
+- **Dust.** Both clients make the same parcels (the web's policy, in the shared core). The web
+  draws them as raymarched fluid volumes; Unreal draws each as a translucent, volume-lit ellipsoid
+  on the same curves.
+
 ## Known gaps
 
-- **Lighting look.** The web lights with its sky gradient's environment map and ACES tone mapping;
-  Unreal uses its physical sky, sky light and auto-exposure, so it renders brighter. Matching
-  exposure exactly means porting the web's IBL, not tuning.
-- **Dust look.** The web's dust is volumetric (fluid parcels). Unreal draws clusters of lit
-  sprites; local fog volumes did not render in this configuration, and a Niagara system is the
-  native upgrade.
 - **Moving debris.** Bonds broken between two moving bodies are placed at rest for dust and
   sound. Their dust starts with no velocity of its own, as on the web's /city: wire 4 carries no
   body velocities into its sources (`perPlayerCityClient.ts` builds each promotion with
