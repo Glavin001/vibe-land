@@ -1,6 +1,12 @@
 #include "VibeRemotePlayers.h"
 
 #include "Animation/AnimSequence.h"
+#include "Components/BoxComponent.h"
+#include "PhysicalMaterials/PhysicalMaterial.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+#include "PhysicsEngine/PhysicsConstraintTemplate.h"
+#include "PhysicsEngine/SkeletalBodySetup.h"
 #include "Components/SceneComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Components/StaticMeshComponent.h"
@@ -25,6 +31,56 @@ namespace
 	// The server's position is the capsule's centre: half a segment plus a radius above its feet
 	// (MoveConfig: 0.45 + 0.35 m).
 	constexpr double FeetBelowCentreCm = 80.0;
+
+	// The web's ragdoll rig (scene/characterAnim/ragdollBones.ts): per part, the bone it rides, the
+	// bone whose origin gives its long axis ("" = straight up), and its half extents in metres at the
+	// reference height (1.67 m head to foot), hy along the long axis.
+	struct FRagdollPart { const TCHAR* Bone; const TCHAR* Tip; float Hx, Hy, Hz; float Spin; };
+	const FRagdollPart RagdollRigParts[] = {
+		{ TEXT("pelvis"),     TEXT("spine_01"),   0.16f,  0.11f,  0.11f, 1.2f },
+		{ TEXT("spine_02"),   TEXT("neck_01"),    0.175f, 0.225f, 0.11f, 1.2f },
+		{ TEXT("Head"),       TEXT(""),           0.11f,  0.11f,  0.11f, 0.6f },
+		{ TEXT("upperarm_l"), TEXT("lowerarm_l"), 0.07f,  0.16f,  0.07f, 0.6f },
+		{ TEXT("lowerarm_l"), TEXT("hand_l"),     0.07f,  0.14f,  0.07f, 0.6f },
+		{ TEXT("upperarm_r"), TEXT("lowerarm_r"), 0.07f,  0.16f,  0.07f, 0.6f },
+		{ TEXT("lowerarm_r"), TEXT("hand_r"),     0.07f,  0.14f,  0.07f, 0.6f },
+		{ TEXT("thigh_l"),    TEXT("calf_l"),     0.08f,  0.21f,  0.08f, 0.6f },
+		{ TEXT("calf_l"),     TEXT("foot_l"),     0.08f,  0.21f,  0.08f, 0.6f },
+		{ TEXT("foot_l"),     TEXT("ball_l"),     0.05f,  0.10f,  0.06f, 0.6f },
+		{ TEXT("thigh_r"),    TEXT("calf_r"),     0.08f,  0.21f,  0.08f, 0.6f },
+		{ TEXT("calf_r"),     TEXT("foot_r"),     0.08f,  0.21f,  0.08f, 0.6f },
+		{ TEXT("foot_r"),     TEXT("ball_r"),     0.05f,  0.10f,  0.06f, 0.6f },
+	};
+	// Its joints: (b1, b2) as part indices, pivoting at b1's bone; ball joints with a swing cone and
+	// twist half-range about b1's long axis, hinges about b1's body Z with [lo, hi] (radians).
+	struct FRagdollJoint { int32 B1, B2; bool bHinge; float A, B; };
+	const FRagdollJoint RagdollRigJoints[] = {
+		{ 1, 0, false, 0.6f, 0.5f },   // spine
+		{ 2, 1, false, 0.7f, 0.8f },   // neck
+		{ 3, 1, false, 1.4f, 1.0f },   // shoulders
+		{ 5, 1, false, 1.4f, 1.0f },
+		{ 4, 3, true, -2.4f, 0.1f },   // elbows
+		{ 6, 5, true, -2.4f, 0.1f },
+		{ 7, 0, false, 1.1f, 0.5f },   // hips
+		{ 10, 0, false, 1.1f, 0.5f },
+		{ 8, 7, true, -2.6f, 0.05f },  // knees
+		{ 11, 10, true, -2.6f, 0.05f },
+		{ 9, 8, true, -0.7f, 0.7f },   // ankles
+		{ 12, 11, true, -0.7f, 0.7f },
+	};
+	// Ragdoll.ts spawnRagdollBody (shared wasm_api.rs): damping 0.02, friction 0.6, restitution 0.3.
+	constexpr float RagdollDamping = 0.02f;
+
+	/** A bone's reference-pose transform in component space. */
+	FTransform RefComponentSpace(const FReferenceSkeleton& Ref, int32 Bone)
+	{
+		FTransform T = FTransform::Identity;
+		for (int32 B = Bone; B != INDEX_NONE; B = Ref.GetParentIndex(B))
+		{
+			T = T * Ref.GetRefBonePose()[B];
+		}
+		return T;
+	}
 
 	FLinearColor Rgb(uint32 Rgb)
 	{
@@ -119,6 +175,11 @@ AVibeRemotePlayers::FAvatar& AVibeRemotePlayers::AvatarFor(uint32 PlayerId)
 		A.Skeletal->SetRelativeLocationAndRotation(FVector(0.0, 0.0, -FeetBelowCentreCm), FRotator(0.0, -90.0, 0.0));
 		A.Skeletal->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		A.Skeletal->RegisterComponent();
+		A.SkeletalRelative = A.Skeletal->GetRelativeTransform();
+		if (UPhysicsAsset* Physics = RagdollAsset())
+		{
+			A.Skeletal->SetPhysicsAsset(Physics, true);
+		}
 		// The web tints the character's main material per player; the joints keep their colour.
 		for (int32 M = 0; M < A.Skeletal->GetNumMaterials(); ++M)
 		{
@@ -254,18 +315,173 @@ void AVibeRemotePlayers::PlayClip(FAvatar& A, const TCHAR* Clip, bool bLoop)
 	A.ClipEndsAt = FPlatformTime::Seconds() + Seq->GetPlayLength();
 }
 
+UPhysicsAsset* AVibeRemotePlayers::RagdollAsset()
+{
+	if (RagdollPhysics || !Mannequin)
+	{
+		return RagdollPhysics;
+	}
+	const FReferenceSkeleton& Ref = Mannequin->GetRefSkeleton();
+	const int32 HeadBone = Ref.FindBoneIndex(TEXT("Head"));
+	const int32 FootBone = Ref.FindBoneIndex(TEXT("foot_l"));
+	if (HeadBone == INDEX_NONE || FootBone == INDEX_NONE)
+	{
+		return nullptr;
+	}
+	// Ragdoll.ts: the rig is sized for 1.67 m head to foot; scaled to this mannequin (cm per metre).
+	const double Span = RefComponentSpace(Ref, HeadBone).GetLocation().Z - RefComponentSpace(Ref, FootBone).GetLocation().Z;
+	const double S = Span > 10.0 ? Span / 1.67 : 100.0;
+
+	UPhysicsAsset* Physics = NewObject<UPhysicsAsset>(this, TEXT("PA_UAL1_Ragdoll"));
+	UPhysicalMaterial* Surface = NewObject<UPhysicalMaterial>(Physics);
+	Surface->Friction = 0.6f;
+	Surface->Restitution = 0.3f;
+	TArray<FTransform> BoneCs;
+	TArray<FVector> Dir;
+	for (const FRagdollPart& Part : RagdollRigParts)
+	{
+		const int32 Bone = Ref.FindBoneIndex(Part.Bone);
+		if (Bone == INDEX_NONE)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("ragdoll: the mannequin has no bone %s"), Part.Bone);
+			return nullptr;
+		}
+		const FTransform Cs = RefComponentSpace(Ref, Bone);
+		const int32 TipBone = *Part.Tip ? Ref.FindBoneIndex(Part.Tip) : INDEX_NONE;
+		const FVector Tip = TipBone != INDEX_NONE ? RefComponentSpace(Ref, TipBone).GetLocation()
+			: Cs.GetLocation() + FVector(0.0, 0.0, Part.Hy * 2.0 * S);
+		const FVector Along = (Tip - Cs.GetLocation()).GetSafeNormal(UE_SMALL_NUMBER, FVector::UpVector);
+		BoneCs.Add(Cs);
+		Dir.Add(Along);
+		// The box: centred halfway to the tip, its Z along the bone, as Ragdoll.ts places it.
+		FKBoxElem Box(2.0 * Part.Hx * S, 2.0 * Part.Hz * S, 2.0 * Part.Hy * S);
+		Box.Center = Cs.InverseTransformPosition((Cs.GetLocation() + Tip) * 0.5);
+		Box.Rotation = (Cs.GetRotation().Inverse() * FQuat::FindBetweenNormals(FVector::UpVector, Along)).Rotator();
+		USkeletalBodySetup* Body = NewObject<USkeletalBodySetup>(Physics);
+		Body->BoneName = Part.Bone;
+		Body->PhysicsType = PhysType_Default;
+		Body->AggGeom.BoxElems.Add(Box);
+		Body->PhysMaterial = Surface;
+		Body->DefaultInstance.LinearDamping = RagdollDamping;
+		Body->DefaultInstance.AngularDamping = RagdollDamping;
+		Physics->SkeletalBodySetups.Add(Body);
+	}
+	for (const FRagdollJoint& J : RagdollRigJoints)
+	{
+		UPhysicsConstraintTemplate* Joint = NewObject<UPhysicsConstraintTemplate>(Physics);
+		FConstraintInstance& C = Joint->DefaultInstance;
+		C.ConstraintBone1 = RagdollRigParts[J.B1].Bone;
+		C.ConstraintBone2 = RagdollRigParts[J.B2].Bone;
+		C.JointName = C.ConstraintBone1;
+		// The pivot is b1's bone origin. The frame's X (Chaos's twist axis) is b1's long axis for a ball
+		// joint, and for a hinge its body Z: the axis the web's ragdoll rotates its body Y onto the bone
+		// carries world Z to, which is Unreal's X (coords: server z is Unreal x).
+		const FQuat ToBone = FQuat::FindBetweenNormals(FVector::UpVector, Dir[J.B1]);
+		const FVector Axis = J.bHinge ? ToBone.RotateVector(FVector::ForwardVector) : Dir[J.B1];
+		FQuat Frame = FQuat::FindBetweenNormals(FVector::ForwardVector, Axis);
+		const FVector Pivot = BoneCs[J.B1].GetLocation();
+		if (J.bHinge)
+		{
+			// [lo, hi] as a symmetric twist range about its centre.
+			Frame = Frame * FQuat(FVector::ForwardVector, -(J.A + J.B) * 0.5f);
+			C.SetAngularTwistLimit(ACM_Limited, FMath::RadiansToDegrees((J.B - J.A) * 0.5f));
+			C.SetAngularSwing1Limit(ACM_Locked, 0.0f);
+			C.SetAngularSwing2Limit(ACM_Locked, 0.0f);
+		}
+		else
+		{
+			C.SetAngularSwing1Limit(ACM_Limited, FMath::RadiansToDegrees(J.A));
+			C.SetAngularSwing2Limit(ACM_Limited, FMath::RadiansToDegrees(J.A));
+			C.SetAngularTwistLimit(ACM_Limited, FMath::RadiansToDegrees(J.B));
+		}
+		const FQuat Pre = FQuat::FindBetweenNormals(FVector::ForwardVector, Axis);
+		C.SetRefFrame(EConstraintFrame::Frame1, FTransform(BoneCs[J.B1].GetRotation().Inverse() * Pre, FVector::ZeroVector));
+		C.SetRefFrame(EConstraintFrame::Frame2, FTransform(BoneCs[J.B2].GetRotation().Inverse() * Frame,
+			BoneCs[J.B2].InverseTransformPosition(Pivot)));
+		C.SetDisableCollision(true);
+		Physics->ConstraintSetup.Add(Joint);
+	}
+	Physics->UpdateBodySetupIndexMap();
+	Physics->UpdateBoundsBodiesArray();
+	RagdollPhysics = Physics;
+	UE_LOG(LogTemp, Display, TEXT("ragdoll: %d bodies, %d joints, %.1f cm per rig metre"), Physics->SkeletalBodySetups.Num(),
+		Physics->ConstraintSetup.Num(), S);
+	return RagdollPhysics;
+}
+
 void AVibeRemotePlayers::SetRagdoll(FAvatar& A, bool bOn, const FVector& Velocity)
 {
-	// The web's death: its authored death clip (characterAnim profile `deathClip`, what the web plays
-	// when cosmetic ragdolls are off), held on its last frame until the player respawns.
 	A.bRagdoll = bOn;
+	if (bOn && RagdollPhysics)
+	{
+		// The web's death (cosmetic ragdolls on by default): every body takes the player's last velocity,
+		// so it falls as one, and a random spin up to 1.2 rad/s (pelvis, torso) or 0.6 rad/s (the rest).
+		if (!RagdollGround)
+		{
+			RagdollGround = NewObject<UBoxComponent>(this, TEXT("RagdollGround"));
+			RagdollGround->SetupAttachment(RootComponent);
+			RagdollGround->SetBoxExtent(FVector(1.0e6, 1.0e6, 500.0));
+			RagdollGround->SetWorldLocation(FVector(0.0, 0.0, -500.0));
+			RagdollGround->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			RagdollGround->SetCollisionObjectType(ECC_WorldStatic);
+			RagdollGround->SetCollisionResponseToAllChannels(ECR_Ignore);
+			RagdollGround->SetCollisionResponseToChannel(ECC_PhysicsBody, ECR_Block);
+			RagdollGround->RegisterComponent();
+		}
+		A.Skeletal->Stop();
+		A.Skeletal->SetCollisionProfileName(TEXT("Ragdoll"));
+		A.Skeletal->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+		A.Skeletal->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+		A.Skeletal->SetSimulatePhysics(true);
+		A.Skeletal->SetAllPhysicsLinearVelocity(Velocity);
+		for (int32 i = 0; i < A.Skeletal->Bodies.Num() && i < UE_ARRAY_COUNT(RagdollRigParts); ++i)
+		{
+			const float Spin = RagdollRigParts[i].Spin;
+			if (FBodyInstance* Body = A.Skeletal->Bodies[i])
+			{
+				Body->SetAngularVelocityInRadians(FVector(FMath::FRandRange(-Spin, Spin), FMath::FRandRange(-Spin, Spin), FMath::FRandRange(-Spin, Spin)), false);
+			}
+		}
+		A.Skeletal->WakeAllRigidBodies();
+		return;
+	}
 	if (bOn)
 	{
-		PlayClip(A, TEXT("Death01"), false);
+		PlayClip(A, TEXT("Death01"), false); // no rig (bones missing): the web's death clip
 		return;
+	}
+	if (A.Skeletal->IsSimulatingPhysics())
+	{
+		A.Skeletal->SetSimulatePhysics(false);
+		A.Skeletal->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		A.Skeletal->AttachToComponent(A.Root, FAttachmentTransformRules::KeepRelativeTransform);
+		A.Skeletal->SetRelativeTransform(A.SkeletalRelative);
 	}
 	A.Jump = FAvatar::EJump::Grounded;
 	A.Clip.Reset();
+}
+
+int32 AVibeRemotePlayers::RagdollBodies() const
+{
+	return RagdollPhysics ? RagdollPhysics->SkeletalBodySetups.Num() : 0;
+}
+
+int32 AVibeRemotePlayers::RagdollJoints() const
+{
+	return RagdollPhysics ? RagdollPhysics->ConstraintSetup.Num() : 0;
+}
+
+TOptional<FVector> AVibeRemotePlayers::RagdollPelvis(uint32 PlayerId) const
+{
+	const FAvatar* A = Avatars.Find(PlayerId);
+	return A && A->Skeletal && A->bRagdoll && A->Skeletal->IsSimulatingPhysics()
+		? TOptional<FVector>(A->Skeletal->GetBoneLocation(TEXT("pelvis"))) : TOptional<FVector>();
+}
+
+bool AVibeRemotePlayers::RagdollAtRest(uint32 PlayerId) const
+{
+	const FAvatar* A = Avatars.Find(PlayerId);
+	return A && A->Skeletal && A->Skeletal->IsSimulatingPhysics() && !A->Skeletal->IsAnyRigidBodyAwake();
 }
 
 void AVibeRemotePlayers::Tick(float DeltaSeconds)

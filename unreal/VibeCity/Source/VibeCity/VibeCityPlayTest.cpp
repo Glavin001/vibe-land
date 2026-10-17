@@ -1235,8 +1235,9 @@ bool FVibeCityPlayWreckCar::RunTest(const FString& Parameters)
 #if WITH_DEV_AUTOMATION_TESTS
 
 // VibeCity.Play.KillRemote: fire the rifle at the nearest other player until the server marks them
-// dead; they are drawn dying (AVibeRemotePlayers: the web's death clip). -VibeShotDir
-// saves dead.png.
+// dead; they fall as the web's cosmetic ragdoll (AVibeRemotePlayers): the web's rig (13 bodies, 12
+// joints), and under gravity the pelvis drops below half its standing height while the ground
+// stops it (never below the city ground). -VibeShotDir saves dead.png.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayKillRemote, "VibeCity.Play.KillRemote",
 	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
@@ -1252,6 +1253,10 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		bool bDead = false;
 		int32 Shots = 0;
 		double NextShot = 0.0;
+		double StandingPelvisZ = 0.0;
+		double LowestPelvisZ = TNumericLimits<double>::Max();
+		double LastPelvisZ = 0.0;
+		int32 PelvisSamples = 0;
 	};
 	TSharedRef<FState> S = MakeShared<FState>();
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
@@ -1332,19 +1337,70 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		}
 		return false;
 	}));
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	// The ragdoll for 2 s (the server respawns after longer): the pelvis falls and the ground holds it.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		const VlPlayer* P = S->Remote.FindByPredicate([S](const VlPlayer& R) { return R.player_id == S->Target; });
+		// Standing, the pelvis is about 0.95 m over the feet; the server's position is 0.8 m over them.
+		S->StandingPelvisZ = P ? P->pos[2] - 80.0 + 95.0 : 95.0;
+		S->Deadline = Now() + 2.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		TActorIterator<AVibeRemotePlayers> Players(GameWorld());
+		if (Players)
+		{
+			if (const TOptional<FVector> Pelvis = Players->RagdollPelvis(S->Target))
+			{
+				S->LowestPelvisZ = FMath::Min(S->LowestPelvisZ, Pelvis->Z);
+				S->LastPelvisZ = Pelvis->Z;
+				S->PelvisSamples += 1;
+			}
+		}
+		return Now() > S->Deadline;
+	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
 	{
 		TActorIterator<AVibeRemotePlayers> Players(GameWorld());
 		AddInfo(FString::Printf(TEXT("death drawn on %d frames"), Players ? Players->RagdollSeen() : 0));
 		TestTrue(TEXT("the dead player is drawn dying"), Players && Players->RagdollSeen() > 0);
+		AddInfo(FString::Printf(TEXT("ragdoll rig: %d bodies, %d joints; pelvis over %d frames: lowest %.1f cm, last %.1f cm (standing %.1f cm)"),
+			Players ? Players->RagdollBodies() : 0, Players ? Players->RagdollJoints() : 0, S->PelvisSamples,
+			S->LowestPelvisZ, S->LastPelvisZ, S->StandingPelvisZ));
+		TestEqual(TEXT("the web's ragdoll rig: 13 bodies"), Players ? Players->RagdollBodies() : 0, 13);
+		TestEqual(TEXT("the web's ragdoll rig: 12 joints"), Players ? Players->RagdollJoints() : 0, 12);
+		TestTrue(TEXT("the dead player ragdolls"), S->PelvisSamples > 0);
+		TestTrue(TEXT("the ragdoll falls: its pelvis drops below half its standing height"), S->PelvisSamples > 0 && S->LastPelvisZ < S->StandingPelvisZ * 0.5);
+		TestTrue(TEXT("the ground holds it: the pelvis never goes below the city ground"), S->PelvisSamples > 0 && S->LowestPelvisZ >= 0.0);
 		FString ShotDir;
 		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
 		{
 			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("dead.png"), false, false);
 		}
+		S->Deadline = Now() + 20.0;
 		return true;
 	}));
+	// Respawned: the mannequin stops ragdolling and stands with the player again.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		const VlPlayer* P = S->Remote.FindByPredicate([S](const VlPlayer& R) { return R.player_id == S->Target; });
+		const bool bAlive = P && (P->state_flags & VL_STATE_DEAD) == 0;
+		TActorIterator<AVibeRemotePlayers> Players(GameWorld());
+		if (bAlive && Players)
+		{
+			TestFalse(TEXT("respawned: no longer ragdolling"), Players->RagdollPelvis(S->Target).IsSet());
+			AddInfo(TEXT("respawned: the mannequin stands with the player again"));
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddWarning(TEXT("the player did not respawn within 20 s; respawn not checked"));
+			return true;
+		}
+		return false;
+	}));
+
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
 	{

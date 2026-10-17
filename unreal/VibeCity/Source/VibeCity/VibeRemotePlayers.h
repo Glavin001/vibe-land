@@ -7,6 +7,8 @@
 #include "VibeRemotePlayers.generated.h"
 
 class UAnimSequence;
+class UBoxComponent;
+class UPhysicsAsset;
 class UMaterialInstanceDynamic;
 class USceneComponent;
 class USkeletalMesh;
@@ -20,8 +22,12 @@ class UTextRenderComponent;
  * Sprint_Loop clips chosen at the web's 2 and 4 m/s, and Melee_Hook on the meleeing flag) tinted per
  * player, an HP bar, a yellow flash for 180 ms when its HP drops, a shield while spawn-protected,
  * hidden while in a car. Like the web's CharacterFactory: a jump / air / land state machine on the
- * player's on-ground flag (Jump_Start, Jump_Loop, Jump_Land) over the locomotion, and its death
- * clip (Death01, the web's fallback to its cosmetic ragdoll) held until respawn. Until the mannequin is imported a figure of primitives stands in (lying down when dead).
+ * player's on-ground flag (Jump_Start, Jump_Loop, Jump_Land) over the locomotion. A dead player
+ * falls as the web's cosmetic ragdoll (characterAnim/Ragdoll.ts, ragdollBones.ts): the same 13 boxes
+ * on the same UAL bones and 12 joints with the same limits, built as a physics asset from the
+ * mannequin's reference pose, seeded with the player's last velocity and a small random spin, on
+ * the city ground; until respawn. Until the mannequin is imported a figure of primitives stands in
+ * (lying down when dead).
  */
 UCLASS()
 class VIBECITY_API AVibeRemotePlayers : public AActor
@@ -37,6 +43,12 @@ public:
 	/** Frames on which some player was drawn in a jump phase, and in a ragdoll (tests). */
 	int32 JumpingSeen() const { return JumpFrames; }
 	int32 RagdollSeen() const { return RagdollFrames; }
+	/** Bodies and joints of the ragdoll built from the web's rig (tests: 13 and 12). */
+	int32 RagdollBodies() const;
+	int32 RagdollJoints() const;
+	/** A ragdolling player's pelvis in the world, and whether its bodies have come to rest (tests). */
+	TOptional<FVector> RagdollPelvis(uint32 PlayerId) const;
+	bool RagdollAtRest(uint32 PlayerId) const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -65,9 +77,13 @@ private:
 		enum class EJump : uint8 { Grounded, Jumping, Airborne, Landing } Jump = EJump::Grounded;
 		double ClipEndsAt = 0.0;
 		bool bRagdoll = false;
+		/** Where the mannequin sits under the avatar's root, restored after a ragdoll. */
+		FTransform SkeletalRelative;
 	};
 
 	void PlayClip(FAvatar& A, const TCHAR* Clip, bool bLoop);
+	/** The web's ragdoll rig as a physics asset on the mannequin (once). */
+	UPhysicsAsset* RagdollAsset();
 	void SetRagdoll(FAvatar& A, bool bOn, const FVector& Velocity);
 
 	void OnFrame(const VlFrameView& Frame);
@@ -78,6 +94,11 @@ private:
 	TObjectPtr<USkeletalMesh> Mannequin;
 	UPROPERTY(Transient)
 	TMap<FString, TObjectPtr<UAnimSequence>> Anims;
+	UPROPERTY(Transient)
+	TObjectPtr<UPhysicsAsset> RagdollPhysics;
+	/** The city ground for ragdolls (server y = 0); the city's own meshes have no collision. */
+	UPROPERTY(Transient)
+	TObjectPtr<UBoxComponent> RagdollGround;
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> ShieldMaterial;
 	UPROPERTY(Transient)
