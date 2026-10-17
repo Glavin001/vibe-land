@@ -79,10 +79,21 @@ function vec3(source: Float32Array, index: number): [number, number, number] {
   return [source[base], source[base + 1], source[base + 2]];
 }
 
+/**
+ * The shared Rust decoder (city/manifestCore.ts: destruction manifest_binary.rs, the Unreal
+ * client's), installed behind `?coreManifest=1`; this file's otherwise.
+ */
+let coreDecoder: ((bytes: ArrayBuffer) => CityManifest) | null = null;
+
+export function provideBinaryManifestDecoder(decoder: ((bytes: ArrayBuffer) => CityManifest) | null): void {
+  coreDecoder = decoder;
+}
+
 export function decodeBinaryManifest(bytes: ArrayBuffer): CityManifest {
   if (!looksBinary(bytes)) {
     throw new Error('city manifest is not in the binary format');
   }
+  if (coreDecoder) return coreDecoder(bytes);
   const cursor = new Cursor(bytes);
   cursor.u32(); // magic, already checked
   const format = cursor.u32();

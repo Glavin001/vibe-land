@@ -266,3 +266,140 @@ impl CorePlayerInterpolator {
         self.inner.sample(id, target_us).map(player_sample_out)
     }
 }
+
+/// A city manifest decoded by the shared decoder (`destruction::manifest_binary`, the Unreal
+/// client's), laid out as the web's `decodeBinaryManifest` reads it: per structure, the chunks'
+/// fields as parallel arrays and the bonds' as typed arrays. Behind `?coreManifest=1`
+/// (`client/src/city/manifestCore.ts`).
+#[wasm_bindgen]
+pub struct CoreManifest {
+    inner: vibe_land_destruction::manifest::DestructionManifest,
+}
+
+/// No shape-library entry (`NO_SHAPE` in manifestBinary.ts).
+const NO_SHAPE: u32 = u32::MAX;
+
+#[wasm_bindgen]
+impl CoreManifest {
+    pub fn version(&self) -> u32 {
+        self.inner.version
+    }
+
+    /// Six floats per stress material (compression, tension, shear: elastic then fatal each).
+    pub fn material_strength(&self) -> Box<[f32]> {
+        self.inner
+            .materials
+            .iter()
+            .flat_map(|m| [m.compression_elastic, m.compression_fatal, m.tension_elastic, m.tension_fatal, m.shear_elastic, m.shear_fatal])
+            .collect()
+    }
+
+    pub fn shape_count(&self) -> u32 {
+        self.inner.shape_library.len() as u32
+    }
+
+    pub fn shape(&self, i: u32) -> Box<[f32]> {
+        self.inner.shape_library.get(i as usize).cloned().unwrap_or_default().into_boxed_slice()
+    }
+
+    /// The materials' appearance as JSON, or `undefined` when the pack has none.
+    pub fn appearance_json(&self) -> Option<String> {
+        (!self.inner.material_appearance.is_empty()).then(|| serde_json::to_string(&self.inner.material_appearance).unwrap_or_default())
+    }
+
+    pub fn structure_count(&self) -> u32 {
+        self.inner.structures.len() as u32
+    }
+
+    fn structure(&self, s: u32) -> &vibe_land_destruction::manifest::StructureManifest {
+        &self.inner.structures[s as usize]
+    }
+
+    pub fn structure_id(&self, s: u32) -> u32 {
+        self.structure(s).structure_id
+    }
+
+    /// World position ×3 then rotation ×4.
+    pub fn placement(&self, s: u32) -> Box<[f32]> {
+        let st = self.structure(s);
+        st.world_position.iter().chain(st.world_rotation.iter()).copied().collect()
+    }
+
+    /// Per chunk: centroid ×3, mass, volume, size ×3, radius, half extents ×3 (cuboid), mass offset ×3.
+    pub fn chunk_floats(&self, s: u32) -> Box<[f32]> {
+        use vibe_land_destruction::manifest::ChunkGeometry;
+        let mut out = Vec::new();
+        for c in &self.structure(s).chunks {
+            out.extend(c.centroid);
+            out.extend([c.mass, c.volume]);
+            out.extend(c.size);
+            out.push(c.radius);
+            out.extend(match &c.geometry {
+                ChunkGeometry::Cuboid { half_extents } => *half_extents,
+                ChunkGeometry::ConvexHull { .. } => [0.0; 3],
+            });
+            out.extend(c.mass_offset);
+        }
+        out.into_boxed_slice()
+    }
+
+    /// Per chunk: node index, material, support (0/1), kind (0 cuboid, 1 hull), shape id (`NO_SHAPE`
+    /// when none), inline point count.
+    pub fn chunk_ints(&self, s: u32) -> Box<[u32]> {
+        use vibe_land_destruction::manifest::ChunkGeometry;
+        let mut out = Vec::new();
+        for c in &self.structure(s).chunks {
+            let (kind, shape, points) = match &c.geometry {
+                ChunkGeometry::Cuboid { .. } => (0, NO_SHAPE, 0),
+                ChunkGeometry::ConvexHull { points, shape_id } => (1, shape_id.unwrap_or(NO_SHAPE), points.len() as u32),
+            };
+            out.extend([c.node_index, c.material, u32::from(c.support), kind, shape, points]);
+        }
+        out.into_boxed_slice()
+    }
+
+    /// Every hull chunk's inline points, in chunk order (their counts are in `chunk_ints`).
+    pub fn chunk_points(&self, s: u32) -> Box<[f32]> {
+        use vibe_land_destruction::manifest::ChunkGeometry;
+        self.structure(s)
+            .chunks
+            .iter()
+            .flat_map(|c| match &c.geometry {
+                ChunkGeometry::ConvexHull { points, .. } => points.clone(),
+                ChunkGeometry::Cuboid { .. } => Vec::new(),
+            })
+            .collect()
+    }
+
+    pub fn bond_node0(&self, s: u32) -> Box<[u32]> {
+        self.structure(s).bonds.iter().map(|b| b.node0).collect()
+    }
+
+    pub fn bond_node1(&self, s: u32) -> Box<[u32]> {
+        self.structure(s).bonds.iter().map(|b| b.node1).collect()
+    }
+
+    pub fn bond_centroid(&self, s: u32) -> Box<[f32]> {
+        self.structure(s).bonds.iter().flat_map(|b| b.centroid).collect()
+    }
+
+    pub fn bond_normal(&self, s: u32) -> Box<[f32]> {
+        self.structure(s).bonds.iter().flat_map(|b| b.normal).collect()
+    }
+
+    pub fn bond_area(&self, s: u32) -> Box<[f32]> {
+        self.structure(s).bonds.iter().map(|b| b.area).collect()
+    }
+
+    pub fn bond_material(&self, s: u32) -> Box<[u32]> {
+        self.structure(s).bonds.iter().map(|b| b.material).collect()
+    }
+}
+
+/// Decode a binary city manifest (VLCM) with the shared decoder.
+#[wasm_bindgen]
+pub fn decode_city_manifest(bytes: &[u8]) -> Result<CoreManifest, JsValue> {
+    vibe_land_destruction::manifest_binary::decode(bytes)
+        .map(|inner| CoreManifest { inner })
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}

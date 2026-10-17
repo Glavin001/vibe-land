@@ -3234,7 +3234,9 @@ dependencies = [
 name = "vibe-client-core-wasm"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "vibe-client-core",
+ "vibe-land-destruction",
  "vibe-land-shared",
  "wasm-bindgen",
 ]

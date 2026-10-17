@@ -13,6 +13,8 @@
  */
 import init, { convex_hull_triangles, CoreInputBundler, CorePlayerInterpolator } from '../wasm/core-pkg/vibe_client_core_wasm.js';
 import { provideCorePlayerInterpolator } from '../net/interpolation';
+import { provideBinaryManifestDecoder } from '../city/manifestBinary';
+import { decodeManifestCore } from '../city/manifestCore';
 import { provideCoreHullTriangles } from '../city/chunkGeometry';
 import { provideCoreInputBundler } from '../runtime/fixedInputBundler';
 import { coreVoicePlan } from '../audio/coreVoicePlan';
@@ -33,6 +35,10 @@ export function coreGeometryEnabled(): boolean {
 
 export function coreInputEnabled(): boolean {
   return flag('coreInput', import.meta.env?.VITE_CORE_INPUT);
+}
+
+export function coreManifestEnabled(): boolean {
+  return flag('coreManifest', import.meta.env?.VITE_CORE_MANIFEST);
 }
 
 export function corePlayersEnabled(): boolean {
@@ -63,12 +69,13 @@ let loading: Promise<void> | null = null;
 
 /** Load the core and install what the flags ask for. A no-op when no flag is on. */
 export function initClientCore(): Promise<void> {
-  if (!coreGeometryEnabled() && !coreInputEnabled() && !coreAudioEnabled() && !corePlayersEnabled()) return Promise.resolve();
+  if (!coreGeometryEnabled() && !coreInputEnabled() && !coreAudioEnabled() && !corePlayersEnabled() && !coreManifestEnabled()) return Promise.resolve();
   loading ??= init().then(() => {
     if (coreGeometryEnabled()) provideCoreHullTriangles(coreHullTriangles);
     if (coreInputEnabled()) provideCoreInputBundler(coreInputBundler);
     if (coreAudioEnabled()) provideVoicePlanner(coreVoicePlan);
     if (corePlayersEnabled()) provideCorePlayerInterpolator(corePlayerInterpolator);
+    if (coreManifestEnabled()) provideBinaryManifestDecoder(decodeManifestCore);
   });
   return loading;
 }
