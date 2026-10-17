@@ -11,7 +11,8 @@
  *   (audio/voicePlan.ts; parity in audio/voicePlan.core.test.ts).
  * - `?coreGrass=1`: grass patches from the core, in the grass worker (core/coreFlags.ts).
  */
-import init, { convex_hull_triangles, CoreInputBundler } from '../wasm/core-pkg/vibe_client_core_wasm.js';
+import init, { convex_hull_triangles, CoreInputBundler, CorePlayerInterpolator } from '../wasm/core-pkg/vibe_client_core_wasm.js';
+import { provideCorePlayerInterpolator } from '../net/interpolation';
 import { provideCoreHullTriangles } from '../city/chunkGeometry';
 import { provideCoreInputBundler } from '../runtime/fixedInputBundler';
 import { coreVoicePlan } from '../audio/coreVoicePlan';
@@ -34,6 +35,15 @@ export function coreInputEnabled(): boolean {
   return flag('coreInput', import.meta.env?.VITE_CORE_INPUT);
 }
 
+export function corePlayersEnabled(): boolean {
+  return flag('corePlayers', import.meta.env?.VITE_CORE_PLAYERS);
+}
+
+/** A remote-player interpolator from the core (needs the WASM loaded). */
+export function corePlayerInterpolator(maxSamples: number): CorePlayerInterpolator {
+  return new CorePlayerInterpolator(maxSamples);
+}
+
 export function coreAudioEnabled(): boolean {
   return flag('coreAudio', import.meta.env?.VITE_CORE_AUDIO);
 }
@@ -53,11 +63,12 @@ let loading: Promise<void> | null = null;
 
 /** Load the core and install what the flags ask for. A no-op when no flag is on. */
 export function initClientCore(): Promise<void> {
-  if (!coreGeometryEnabled() && !coreInputEnabled() && !coreAudioEnabled()) return Promise.resolve();
+  if (!coreGeometryEnabled() && !coreInputEnabled() && !coreAudioEnabled() && !corePlayersEnabled()) return Promise.resolve();
   loading ??= init().then(() => {
     if (coreGeometryEnabled()) provideCoreHullTriangles(coreHullTriangles);
     if (coreInputEnabled()) provideCoreInputBundler(coreInputBundler);
     if (coreAudioEnabled()) provideVoicePlanner(coreVoicePlan);
+    if (corePlayersEnabled()) provideCorePlayerInterpolator(corePlayerInterpolator);
   });
   return loading;
 }

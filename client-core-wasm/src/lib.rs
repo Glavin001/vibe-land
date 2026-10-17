@@ -205,3 +205,64 @@ pub fn voice_plan(kind: &str, material: &str, intensity: f32, size: f32, seed: u
     let e = SoundEvent { id: 0, kind, position: Default::default(), material, intensity, size, seed, at_ms: 0.0, protected };
     Some(CoreVoicePlan { voices: voice_plan(&e, Mix { impact, detail, bass, flyby, range }) })
 }
+
+/// The core's remote-player interpolation (`interp::PlayerInterpolator`, the web's
+/// `PlayerInterpolator` ported) for the web, behind `?corePlayers=1` (`net/interpolation.ts`).
+/// A sample is eleven numbers: server µs, position ×3, velocity ×3, yaw, pitch, hp, flags; then 1
+/// when it is a rest hold, else 0.
+#[wasm_bindgen]
+pub struct CorePlayerInterpolator {
+    inner: vibe_client_core::interp::PlayerInterpolator,
+}
+
+fn player_sample_out(s: vibe_client_core::interp::PlayerSample) -> Box<[f64]> {
+    let [px, py, pz] = s.position;
+    let [vx, vy, vz] = s.velocity;
+    Box::new([s.server_time_us, px, py, pz, vx, vy, vz, s.yaw, s.pitch, s.hp, s.flags, f64::from(u8::from(s.held))])
+}
+
+#[wasm_bindgen]
+impl CorePlayerInterpolator {
+    #[wasm_bindgen(constructor)]
+    pub fn new(max_samples: u32) -> Self {
+        Self { inner: vibe_client_core::interp::PlayerInterpolator::new(max_samples as usize) }
+    }
+
+    /// One snapshot sample (`push`): `s` is the eleven numbers less the hold mark.
+    pub fn push(&mut self, id: u32, s: &[f64], snapshot_interval_us: f64) {
+        if s.len() < 11 {
+            return;
+        }
+        let sample = vibe_client_core::interp::PlayerSample {
+            server_time_us: s[0],
+            position: [s[1], s[2], s[3]],
+            velocity: [s[4], s[5], s[6]],
+            yaw: s[7],
+            pitch: s[8],
+            hp: s[9],
+            flags: s[10],
+            held: false,
+        };
+        self.inner.push(id, sample, snapshot_interval_us);
+    }
+
+    pub fn remove(&mut self, id: u32) {
+        self.inner.remove(id);
+    }
+
+    pub fn retain_only(&mut self, ids: &[u32]) {
+        self.inner.retain_only(ids);
+    }
+
+    pub fn ids(&self) -> Box<[u32]> {
+        self.inner.ids().collect()
+    }
+
+    pub fn latest(&self, id: u32) -> Option<Box<[f64]>> {
+        self.inner.latest(id).map(player_sample_out)
+    }
+
+    pub fn sample(&self, id: u32, target_us: f64) -> Option<Box<[f64]>> {
+        self.inner.sample(id, target_us).map(player_sample_out)
+    }
+}

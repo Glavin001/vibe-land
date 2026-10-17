@@ -578,13 +578,64 @@ export class RenderClock {
   }
 }
 
+/** The shared client core's interpolator (client-core interp.rs, the Unreal client's), as core/clientCore.ts gives it. */
+export type CorePlayerInterpolator = {
+  push(id: number, sample: Float64Array, snapshotIntervalUs: number): void;
+  remove(id: number): void;
+  retain_only(ids: Uint32Array): void;
+  ids(): Uint32Array;
+  latest(id: number): Float64Array | undefined;
+  sample(id: number, targetUs: number): Float64Array | undefined;
+};
+let corePlayers: ((maxSamples: number) => CorePlayerInterpolator) | null = null;
+
+/** Make player interpolators delegate to the core's (behind `?corePlayers=1`), or to this file's with null. */
+export function provideCorePlayerInterpolator(factory: ((maxSamples: number) => CorePlayerInterpolator) | null): void {
+  corePlayers = factory;
+}
+
+function fromCore(f: Float64Array | undefined): PlayerSample | null {
+  if (!f) return null;
+  const s: PlayerSample = {
+    serverTimeUs: f[0],
+    position: [f[1], f[2], f[3]],
+    velocity: [f[4], f[5], f[6]],
+    yaw: f[7],
+    pitch: f[8],
+    hp: f[9],
+    flags: f[10],
+  };
+  if (f[11] === 1) s.held = true;
+  return s;
+}
+
 export class PlayerInterpolator {
   private readonly byEntity = new Map<number, PlayerSample[]>();
+  private core: CorePlayerInterpolator | null = null;
 
-  constructor(private readonly maxSamples = 32) {}
+  constructor(private readonly maxSamples = 32) {
+    this.attachCore();
+  }
+
+  /** Delegate to the core when it is provided and this interpolator holds nothing yet. */
+  private attachCore(): void {
+    if (!this.core && corePlayers && this.byEntity.size === 0) this.core = corePlayers(this.maxSamples);
+  }
+
+  /** Whether samples come from the shared core (`?corePlayers=1`). */
+  usesCore(): boolean {
+    return this.core !== null;
+  }
 
   /** As `VehicleInterpolator.push`. */
   push(entityId: number, sample: PlayerSample, snapshotIntervalUs = 0): void {
+    this.attachCore();
+    if (this.core) {
+      const s = sample;
+      this.core.push(entityId, Float64Array.of(s.serverTimeUs, s.position[0], s.position[1], s.position[2],
+        s.velocity[0], s.velocity[1], s.velocity[2], s.yaw, s.pitch, s.hp, s.flags), snapshotIntervalUs);
+      return;
+    }
     const queue = this.byEntity.get(entityId) ?? [];
     insertWithRestHold(queue, sample, snapshotIntervalUs, playerAtRest);
     while (queue.length > this.maxSamples) {
@@ -594,10 +645,12 @@ export class PlayerInterpolator {
   }
 
   remove(entityId: number): void {
+    if (this.core) return this.core.remove(entityId);
     this.byEntity.delete(entityId);
   }
 
   retainOnly(activeIds: Set<number>): void {
+    if (this.core) return this.core.retain_only(Uint32Array.from(activeIds));
     for (const id of this.byEntity.keys()) {
       if (!activeIds.has(id)) {
         this.byEntity.delete(id);
@@ -606,15 +659,18 @@ export class PlayerInterpolator {
   }
 
   ids(): number[] {
+    if (this.core) return [...this.core.ids()];
     return [...this.byEntity.keys()];
   }
 
   /** The newest snapshot sample of a player (not a rest hold), or null. */
   latest(entityId: number): PlayerSample | null {
+    if (this.core) return fromCore(this.core.latest(entityId));
     return newestSnapshotSample(this.byEntity.get(entityId));
   }
 
   sample(entityId: number, targetTimeUs: number): PlayerSample | null {
+    if (this.core) return fromCore(this.core.sample(entityId, targetTimeUs));
     const queue = this.byEntity.get(entityId);
     if (!queue || queue.length === 0) {
       return null;
