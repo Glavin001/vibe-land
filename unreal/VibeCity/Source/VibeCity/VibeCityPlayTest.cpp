@@ -29,6 +29,7 @@
 #include "Misc/AutomationTest.h"
 #include "Tests/AutomationCommon.h"
 #include "VibeNetSubsystem.h"
+#include "VibeCityBatteries.h"
 #include "VibePlayerPawn.h"
 #include "VibeShotEffects.h"
 #include "EngineUtils.h"
@@ -1320,7 +1321,12 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 	// 6 m from them.
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
 	{
-		const VlPlayer& P = S->Remote[0];
+		const VlPlayer* Found = S->Remote.FindByPredicate([S](const VlPlayer& R) { return R.player_id == S->Target; });
+		if (!Found)
+		{
+			return true; // they left interest; the next step reports it
+		}
+		const VlPlayer& P = *Found;
 		const FVector Target(P.pos[0], P.pos[1], P.pos[2]);
 		const FVector Me(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
 		const FVector Toward = (Target - Me).GetSafeNormal2D();
@@ -1398,6 +1404,16 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		TestEqual(TEXT("the web's ragdoll rig: 12 joints"), Players ? Players->RagdollJoints() : 0, 12);
 		TestTrue(TEXT("the dead player ragdolls"), S->PelvisSamples > 0);
 		TestTrue(TEXT("the ragdoll falls: its pelvis drops below half its standing height"), S->PelvisSamples > 0 && S->LastPelvisZ < S->StandingPelvisZ * 0.5);
+		// Their energy, dropped where they died (server kill_player_with_cause, PKT_BATTERY_SYNC):
+		// the core lists the battery and AVibeCityBatteries draws one cell per listed battery.
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			TActorIterator<AVibeCityBatteries> Batteries(GameWorld());
+			const int32 Listed = static_cast<int32>(Net->LastFrame().battery_count);
+			AddInfo(FString::Printf(TEXT("batteries: %d listed, %d drawn"), Listed, Batteries ? Batteries->Drawn() : 0));
+			TestTrue(TEXT("the dead player's battery is listed"), Listed > 0);
+			TestEqual(TEXT("one battery cell drawn per listed battery"), Batteries ? Batteries->Drawn() : 0, Listed);
+		}
 		TestTrue(TEXT("the ground holds it: the pelvis never goes below the city ground"), S->PelvisSamples > 0 && S->LowestPelvisZ >= 0.0);
 		FString ShotDir;
 		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))

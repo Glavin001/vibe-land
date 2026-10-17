@@ -90,6 +90,8 @@ pub enum ServerMessage {
     LocalPlayerEnergy(LocalPlayerEnergyPacket),
     /// Shapes of the snapshot's dynamic bodies (cannonballs, meteors), by handle.
     DynamicBodyMeta(DynamicBodyMetaPacket),
+    /// Energy batteries in the world (dropped on death): changed or all of them, and removals.
+    BatterySync(crate::protocol::BatterySyncPacket),
     /// The server's latency probe; echo the nonce back with [`encode_ping`].
     Ping(u32),
     Pong(u32),
@@ -132,6 +134,28 @@ pub fn decode_server_packet(bytes: &[u8]) -> Result<ServerMessage, DecodeError> 
             end_py_mm: r.i32()?,
             end_pz_mm: r.i32()?,
         }),
+        PKT_BATTERY_SYNC => {
+            // protocol.ts decodeBatterySyncPacket: flag, counts, 24-byte states, removed ids.
+            let full_resync = r.u8()? != 0;
+            let (states, removed) = (r.u16()? as usize, r.u16()? as usize);
+            let mut battery_states = Vec::with_capacity(states.min(4096));
+            for _ in 0..states {
+                battery_states.push(crate::protocol::NetBatteryState {
+                    id: r.u32()?,
+                    px_mm: r.i32()?,
+                    py_mm: r.i32()?,
+                    pz_mm: r.i32()?,
+                    energy_centi: r.u32()?,
+                    radius_cm: r.u16()?,
+                    height_cm: r.u16()?,
+                });
+            }
+            let mut removed_ids = Vec::with_capacity(removed.min(4096));
+            for _ in 0..removed {
+                removed_ids.push(r.u32()?);
+            }
+            ServerMessage::BatterySync(crate::protocol::BatterySyncPacket { full_resync, battery_states, removed_ids })
+        }
         PKT_DAMAGE_EVENT => ServerMessage::DamageEvent(DamageEventPacket {
             attacker_player_id: r.u32()?,
             damage_amount: r.u8()?,
@@ -431,7 +455,7 @@ pub fn server_packet_flat(bytes: &[u8]) -> Result<Option<Vec<f64>>, DecodeError>
             out
         }
         ServerMessage::Ping(v) | ServerMessage::Pong(v) => vec![kind, f64::from(v)],
-        ServerMessage::SnapshotV2(_) | ServerMessage::Other { .. } => return Ok(None),
+        ServerMessage::SnapshotV2(_) | ServerMessage::BatterySync(_) | ServerMessage::Other { .. } => return Ok(None),
     }))
 }
 

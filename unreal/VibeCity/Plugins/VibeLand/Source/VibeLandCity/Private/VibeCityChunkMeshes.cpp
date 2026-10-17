@@ -6,6 +6,7 @@
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "GenericPlatform/GenericPlatformHttp.h"
+#include "VibeCityBatteries.h"
 #include "VibeCityGrass.h"
 
 #include "Engine/World.h"
@@ -110,6 +111,11 @@ void AVibeCityDirector::BuildCity(UVibeNetSubsystem* NetSubsystem)
 		RebuildCell(Cell);
 	}
 	bCityBuilt = true;
+	// The energy batteries dropped where players die (the web's BatteriesRenderer).
+	if (!Batteries)
+	{
+		Batteries = GetWorld()->SpawnActor<AVibeCityBatteries>();
+	}
 	// The web's meadow over the ground (?grass=off there; -VibeNoGrass here).
 	if (!FParse::Param(FCommandLine::Get(), TEXT("VibeNoGrass")))
 	{

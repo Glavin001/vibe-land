@@ -14,6 +14,7 @@ Creates under /Game/VibeCity:
   Materials/M_VibeCityGrass                           meadow blades
   Materials/M_VibeCityWeather, ...WeatherAdditive     dust- and snow-storm particles
   Materials/M_VibeCityCanopy                          distant foliage canopy cards
+  Materials/M_VibeCityBattery                         energy batteries (gold, glowing)
   Materials/M_VibeCityChunkHD                         2K Poly Haven sources (with --hd)
   Materials/M_VibeCityGroundHD                        the ground: grass and mud layers, dirt patches (with --hd)
 
@@ -582,6 +583,31 @@ return dither < handoff ? 1.0 : 0.0;
     return m
 
 
+def battery_material():
+    """Energy batteries (netEntityRenderers.ts BatteriesRenderer): gold metal, glowing by Glow."""
+    m = fresh_material("M_VibeCityBattery")
+    gold = expr(m, unreal.MaterialExpressionConstant3Vector, -600, -100)
+    gold.set_editor_property("constant", unreal.LinearColor(1.0, 0.68, 0.0, 1.0))  # #ffd700, linear
+    mel.connect_material_property(gold, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    metal = expr(m, unreal.MaterialExpressionConstant, -600, 50)
+    metal.set_editor_property("r", 0.65)
+    mel.connect_material_property(metal, "", unreal.MaterialProperty.MP_METALLIC)
+    rough = expr(m, unreal.MaterialExpressionConstant, -600, 150)
+    rough.set_editor_property("r", 0.25)
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    glow = expr(m, unreal.MaterialExpressionScalarParameter, -600, 250)
+    glow.set_editor_property("parameter_name", "Glow")
+    glow.set_editor_property("default_value", 4.0)
+    warm = expr(m, unreal.MaterialExpressionConstant3Vector, -600, 350)
+    warm.set_editor_property("constant", unreal.LinearColor(1.0, 0.6, 0.0, 1.0))  # #ffcc00, linear
+    emissive = expr(m, unreal.MaterialExpressionMultiply, -350, 300)
+    mel.connect_material_expressions(glow, "", emissive, "A")
+    mel.connect_material_expressions(warm, "", emissive, "B")
+    mel.connect_material_property(emissive, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    mel.recompile_material(m)
+    return m
+
+
 def glass_material():
     m = fresh_material("M_VibeCityGlass")
     m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
@@ -609,6 +635,11 @@ def glass_material():
 
 
 only = os.environ.get("VIBE_MATERIALS_ONLY", "")
+if only == "battery":
+    battery_material()
+    saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
+    unreal.log(f"VIBE_IMPORT_OK battery saved={saved}")
+    raise SystemExit(0)
 if only == "canopy":
     canopy_material()
     saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
@@ -635,6 +666,7 @@ grass_material()
 weather_material("M_VibeCityWeather", additive=False)
 weather_material("M_VibeCityWeatherAdditive", additive=True)
 canopy_material()
+battery_material()
 hd_dir = os.environ.get("VIBE_CITY_HD_TEXTURES", "")
 if hd_dir:
     hd_albedo = import_layers("albedo", srgb=True, directory=hd_dir, ext="jpg", suffix="HD")

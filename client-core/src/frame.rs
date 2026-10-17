@@ -275,6 +275,21 @@ pub struct VlMeteor {
     pub radius: f32,
 }
 
+/// An energy battery in the world (dropped where a player died; picked up by walking into it).
+/// Renderer space.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlBattery {
+    pub id: u32,
+    /// The cell's centre.
+    pub pos: [f32; 3],
+    /// Energy it holds (0..1000).
+    pub energy: f32,
+    /// Pickup cylinder, renderer units.
+    pub radius: f32,
+    pub height: f32,
+}
+
 /// Where the session is, as the core sees it.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -345,6 +360,8 @@ pub struct SceneFrame {
     pub dust: Vec<crate::effects::VlDust>,
     /// The continuous sounds playing this poll (scrapes, air); a loop missing from a poll ends.
     pub loops: Vec<crate::audio::VlLoop>,
+    /// Every battery in the world now (the server's `PKT_BATTERY_SYNC` state).
+    pub batteries: Vec<VlBattery>,
     pub stats: VlStats,
 }
 

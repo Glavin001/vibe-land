@@ -101,6 +101,8 @@ pub struct ClientCore {
     audio_contacts: Vec<crate::frame::VlAudioContact>,
     audio: audio::AudioDirector,
     flybys: audio::FlybyTracker,
+    /// Batteries by id, server space (PKT_BATTERY_SYNC; a full resync replaces them all).
+    batteries: std::collections::BTreeMap<u32, vibe_land_shared::protocol::NetBatteryState>,
     /// Debris energy per region, for the continuous debris beds (destructionActivity.ts).
     activity: audio::Activity,
     /// Scene rays from the listener to sources (occlusion.ts).
@@ -168,6 +170,7 @@ impl ClientCore {
             audio_contacts: Vec::new(),
             audio: audio::AudioDirector::default(),
             flybys: audio::FlybyTracker::default(),
+            batteries: Default::default(),
             activity: audio::Activity::default(),
             occlusion: audio::Occlusion::default(),
             loops: audio::Loops::default(),
@@ -395,6 +398,17 @@ impl ClientCore {
                     players.on_body_meta(&meta);
                 }
             }
+            Ok(ServerMessage::BatterySync(sync)) => {
+                if sync.full_resync {
+                    self.batteries.clear();
+                }
+                for b in sync.battery_states {
+                    self.batteries.insert(b.id, b);
+                }
+                for id in sync.removed_ids {
+                    self.batteries.remove(&id);
+                }
+            }
             // Pings are echoed by the transport on its own thread.
             Ok(ServerMessage::Ping(_)) | Ok(ServerMessage::Pong(_)) => {}
             Ok(ServerMessage::Other { .. }) => self.unknown_packets += 1,
@@ -409,6 +423,17 @@ impl ClientCore {
         let dt_s = self.last_poll_us.map_or(0.0, |last| now_us.saturating_sub(last) as f64 / 1e6);
         self.last_poll_us = Some(now_us);
         self.frame.clear_changes();
+        let m = self.space.metres();
+        self.frame.batteries.clear();
+        for b in self.batteries.values() {
+            self.frame.batteries.push(crate::frame::VlBattery {
+                id: b.id,
+                pos: self.space.pos(Vec3::new(b.px_mm as f32, b.py_mm as f32, b.pz_mm as f32) / 1000.0),
+                energy: b.energy_centi as f32 / 100.0,
+                radius: f32::from(b.radius_cm) / 100.0 * m,
+                height: f32::from(b.height_cm) / 100.0 * m,
+            });
+        }
         self.frame.events.append(&mut self.events);
         self.frame.audio_contacts.append(&mut self.audio_contacts);
 

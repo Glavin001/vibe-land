@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 16
+#define VL_ABI_VERSION 17
 
 #define VL_OK 0
 
@@ -571,6 +571,27 @@ typedef struct VlLoop {
 } VlLoop;
 
 /**
+ * An energy battery in the world (dropped where a player died; picked up by walking into it).
+ * Renderer space.
+ */
+typedef struct VlBattery {
+  uint32_t id;
+  /**
+   * The cell's centre.
+   */
+  float pos[3];
+  /**
+   * Energy it holds (0..1000).
+   */
+  float energy;
+  /**
+   * Pickup cylinder, renderer units.
+   */
+  float radius;
+  float height;
+} VlBattery;
+
+/**
  * Counters and clocks, for overlays, logs and test gates.
  */
 typedef struct VlStats {
@@ -664,6 +685,11 @@ typedef struct VlFrameView {
    */
   const struct VlLoop *loops;
   size_t loop_count;
+  /**
+   * Every energy battery in the world now (renderer space).
+   */
+  const struct VlBattery *batteries;
+  size_t battery_count;
   struct VlStats stats;
 } VlFrameView;
 

@@ -27,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 16;
+pub const VL_ABI_VERSION: u32 = 17;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -208,6 +208,9 @@ pub struct VlFrameView {
     /// included) and `rate` each poll; fade it out when a poll no longer lists its `id`.
     pub loops: *const VlLoop,
     pub loop_count: usize,
+    /// Every energy battery in the world now (renderer space).
+    pub batteries: *const vibe_client_core::frame::VlBattery,
+    pub battery_count: usize,
     pub stats: VlStats,
 }
 
@@ -398,6 +401,8 @@ pub unsafe extern "C" fn vl_client_poll(client: *mut VlClient, out: *mut VlFrame
             car_part_count: frame.car_parts.len(),
             loops: frame.loops.as_ptr(),
             loop_count: frame.loops.len(),
+            batteries: frame.batteries.as_ptr(),
+            battery_count: frame.batteries.len(),
             stats: frame.stats,
         });
         VL_OK

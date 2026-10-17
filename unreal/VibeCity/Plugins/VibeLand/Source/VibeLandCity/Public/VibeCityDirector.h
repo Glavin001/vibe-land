@@ -146,6 +146,8 @@ private:
 	TArray<bool> CatalogGlass;
 	FBox Bounds = FBox(ForceInit);
 	bool bCityBuilt = false;
+	UPROPERTY(Transient)
+	TObjectPtr<class AVibeCityBatteries> Batteries;
 	int64 SoundsSeenCount = 0;
 	int64 LoopsSeenCount = 0;
 	int64 DustSeenCount = 0;

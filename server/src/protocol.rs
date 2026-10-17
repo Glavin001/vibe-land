@@ -1715,6 +1715,17 @@ mod client_codec_roundtrip {
             ServerMessage::DynamicBodyMeta(got) => assert_eq!(got, meta),
             other => panic!("{other:?}"),
         }
+        let batteries = BatterySyncPacket {
+            full_resync: true,
+            battery_states: (0..3)
+                .map(|i| NetBatteryState { id: 0x4000_0000 + i, px_mm: f.i32(), py_mm: f.i32(), pz_mm: f.i32(), energy_centi: f.next(), radius_cm: f.u16(), height_cm: f.u16() })
+                .collect(),
+            removed_ids: vec![0x4000_0007, 0x4000_0009],
+        };
+        match decode(&encode_server_reliable(&ServerReliablePacket::BatterySync(batteries.clone()))) {
+            ServerMessage::BatterySync(got) => assert_eq!(got, batteries),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

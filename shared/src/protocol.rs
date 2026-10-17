@@ -46,7 +46,7 @@ pub struct NetPlayerState {
     pub energy_centi: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NetBatteryState {
     pub id: u32,
     pub px_mm: i32,
@@ -647,7 +647,7 @@ pub struct LocalPlayerEnergyPacket {
     pub energy_centi: u32,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct BatterySyncPacket {
     pub full_resync: bool,
     pub battery_states: Vec<NetBatteryState>,
