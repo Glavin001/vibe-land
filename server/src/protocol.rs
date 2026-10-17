@@ -1777,4 +1777,24 @@ mod client_codec_roundtrip {
             assert_eq!((g.travel_m, g.steer_rad, g.rotation_rad, g.grounded), (w[0], w[1], w[2], w[3] != 0.0));
         }
     }
+
+    #[test]
+    fn audio_contacts_read_back_on_the_client() {
+        use crate::contact_audio::{ContactAudioReducer, ContactSample};
+        let mut reducer = ContactAudioReducer::default();
+        let sample = ContactSample {
+            entity_a: 11, entity_b: 22, position: [3.0, 1.0, -4.0], normal: [0.0, 2.0, 0.0],
+            normal_speed: 6.0, tangent_speed: 0.5, impulse: 5000.0, effective_mass: 800.0,
+        };
+        reducer.ingest(100, [sample]);
+        let packet = reducer.packet_for(100, [0.0, 0.0, 0.0]).expect("an audible contact");
+        let (tick, contacts) = net_client::decode_audio_contacts(&packet).unwrap();
+        assert_eq!(tick, 100);
+        assert_eq!(contacts.len(), 1);
+        let c = contacts[0];
+        assert_eq!((c.entity_a, c.entity_b, c.position), (11, 22, [3.0, 1.0, -4.0]));
+        assert_eq!(c.normal, [0.0, 1.0, 0.0], "the server sends a unit normal");
+        assert!(c.intensity > 0.0 && c.intensity <= 1.0 && c.size > 0.0);
+        assert!(net_client::decode_audio_contacts(&packet[..20]).is_err());
+    }
 }

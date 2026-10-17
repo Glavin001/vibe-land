@@ -159,13 +159,36 @@ impl CityStream {
                 }
                 BodyChange::Fracture { structure, removed_chunks, changed, .. } => {
                     self.fractures += 1;
-                    for node in removed_chunks {
+                    let mut sum = [0.0f32; 3];
+                    let mut count = 0u32;
+                    let mut note = |this: &Self, node: u32| {
+                        if let Some(&i) = this.chunk_index.get(&(structure, node)) {
+                            let p = this.chunks[i as usize].rest_pos;
+                            for k in 0..3 {
+                                sum[k] += p[k];
+                            }
+                            count += 1;
+                        }
+                    };
+                    for &node in &removed_chunks {
+                        note(self, node);
                         self.assign(structure, node, frame);
                     }
                     for (_, members) in changed {
                         for node in members {
+                            note(self, node);
                             self.assign(structure, node, frame);
                         }
+                    }
+                    if count > 0 {
+                        let n = count as f32;
+                        frame.events.push(VlEvent {
+                            kind: VL_EVENT_FRACTURE,
+                            id: structure,
+                            a: count,
+                            p0: [sum[0] / n, sum[1] / n, sum[2] / n],
+                            ..Default::default()
+                        });
                     }
                 }
             }

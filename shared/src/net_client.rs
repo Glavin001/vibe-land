@@ -478,6 +478,57 @@ pub fn decode_vehicle_rig(bytes: &[u8]) -> Result<VehicleRig, DecodeError> {
     Ok(VehicleRig { server_tick, handle, wheels })
 }
 
+/// One contact the server judged audible (`PKT_AUDIO_CONTACTS`, server `contact_audio.rs`):
+/// the two entities, impact (0) or scrape (1), where, the surface normal, the speeds into and
+/// along it (m/s), a perceptual intensity in [0, 1] and size (cube root of the reduced mass in
+/// tonnes).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AudioContact {
+    pub entity_a: u32,
+    pub entity_b: u32,
+    pub kind: u8,
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub normal_speed: f32,
+    pub tangent_speed: f32,
+    pub intensity: f32,
+    pub size: f32,
+}
+
+/// Decode a `PKT_AUDIO_CONTACTS` datagram: `[kind][version 1][count][0][u32 tick]` then
+/// `count` 52-byte records.
+pub fn decode_audio_contacts(bytes: &[u8]) -> Result<(u32, Vec<AudioContact>), DecodeError> {
+    let (&kind, body) = bytes.split_first().ok_or(DecodeError::Empty)?;
+    let mut r = Reader { bytes: body, kind };
+    let _version = r.u8()?;
+    let count = r.u8()? as usize;
+    let _reserved = r.u8()?;
+    let tick = r.u32()?;
+    let mut contacts = Vec::with_capacity(count);
+    for _ in 0..count {
+        let entity_a = r.u32()?;
+        let entity_b = r.u32()?;
+        let kind = r.u8()?;
+        let _ = (r.u8()?, r.u16()?);
+        let mut f = [0.0f32; 10];
+        for v in &mut f {
+            *v = r.f32()?;
+        }
+        contacts.push(AudioContact {
+            entity_a,
+            entity_b,
+            kind,
+            position: [f[0], f[1], f[2]],
+            normal: [f[3], f[4], f[5]],
+            normal_speed: f[6],
+            tangent_speed: f[7],
+            intensity: f[8],
+            size: f[9],
+        });
+    }
+    Ok((tick, contacts))
+}
+
 /// Drop the player at a pose (`PKT_CITY_CAMERA_DROP`, reliable stream): leaving the aerial camera
 /// puts the player where the camera is. Server space; the server rate-limits it and rejects
 /// non-finite or far-out poses.

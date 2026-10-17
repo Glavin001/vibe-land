@@ -18,13 +18,13 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use vibe_client_core::coords::Space;
 use vibe_client_core::geometry::VlMeshRange;
 use vibe_client_core::materials::{Catalog, VlChunkSurface, VlMaterial};
-use vibe_client_core::frame::{VlBodyPose, VlCar, VlChunk, VlChunkAssignment, VlDynamicBody, VlEvent, VlInput, VlLocal, VlMeteor, VlPlayer, VlStats};
+use vibe_client_core::frame::{VlAudioContact, VlBodyPose, VlCar, VlChunk, VlChunkAssignment, VlDynamicBody, VlEvent, VlInput, VlLocal, VlMeteor, VlPlayer, VlStats};
 use vibe_client_core::{ClientCore, Lane};
 use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportConfig, TransportState};
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 7;
+pub const VL_ABI_VERSION: u32 = 8;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -85,6 +85,14 @@ pub const VL_EVENT_SHOT_RESULT: u32 = 2;
 pub const VL_EVENT_DAMAGE: u32 = 3;
 pub const VL_EVENT_LOCAL_SHOT: u32 = 4;
 pub const VL_EVENT_VEHICLE_ASSET: u32 = 5;
+pub const VL_EVENT_FRACTURE: u32 = 6;
+/// `VlAudioContact::kind`.
+pub const VL_CONTACT_IMPACT: u32 = 0;
+pub const VL_CONTACT_SCRAPE: u32 = 1;
+const _: () = {
+    use vibe_client_core::frame as f;
+    assert!(VL_EVENT_FRACTURE == f::VL_EVENT_FRACTURE && VL_CONTACT_IMPACT == f::VL_CONTACT_IMPACT && VL_CONTACT_SCRAPE == f::VL_CONTACT_SCRAPE);
+};
 /// `VlVehicleVertex::section`: the chassis; 1..=4 stream wheel (section - 1)'s spinning parts;
 /// 5..=8 its steering parts that do not spin.
 pub const VL_VEHICLE_SECTION_CHASSIS: u32 = 0;
@@ -178,6 +186,9 @@ pub struct VlFrameView {
     /// Meteors launched since the previous poll.
     pub meteors: *const VlMeteor,
     pub meteor_count: usize,
+    /// Audible contacts since the previous poll.
+    pub audio_contacts: *const VlAudioContact,
+    pub audio_contact_count: usize,
     pub stats: VlStats,
 }
 
@@ -358,6 +369,8 @@ pub unsafe extern "C" fn vl_client_poll(client: *mut VlClient, out: *mut VlFrame
             dynamic_body_count: frame.dynamic_bodies.len(),
             meteors: frame.meteors.as_ptr(),
             meteor_count: frame.meteors.len(),
+            audio_contacts: frame.audio_contacts.as_ptr(),
+            audio_contact_count: frame.audio_contacts.len(),
             stats: frame.stats,
         });
         VL_OK

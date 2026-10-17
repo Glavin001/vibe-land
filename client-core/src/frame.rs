@@ -152,6 +152,31 @@ pub const VL_EVENT_LOCAL_SHOT: u32 = 4;
 /// are then available (`ClientCore::vehicle_asset`), and its mesh can be built from its
 /// `metadata.json` (`vehicles::build_vehicle_mesh`).
 pub const VL_EVENT_VEHICLE_ASSET: u32 = 5;
+/// A structure broke: `id` = the structure, `a` = how many chunks changed body or were removed,
+/// `p0` = their centre at rest (where to play the fracture's sound and dust).
+pub const VL_EVENT_FRACTURE: u32 = 6;
+
+/// A contact the server judged audible (`PKT_AUDIO_CONTACTS`): impact or scrape, where, how hard.
+/// Renderer space; speeds in renderer units per second.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlAudioContact {
+    pub entity_a: u32,
+    pub entity_b: u32,
+    /// [`VL_CONTACT_IMPACT`] or [`VL_CONTACT_SCRAPE`].
+    pub kind: u32,
+    pub pos: [f32; 3],
+    pub normal: [f32; 3],
+    pub normal_speed: f32,
+    pub tangent_speed: f32,
+    /// Perceptual loudness in [0, 1].
+    pub intensity: f32,
+    /// Cube root of the reduced mass in tonnes (bigger sounds lower).
+    pub size: f32,
+}
+
+pub const VL_CONTACT_IMPACT: u32 = 0;
+pub const VL_CONTACT_SCRAPE: u32 = 1;
 
 /// Something that happened, in arrival order. Positions in the renderer's space.
 #[repr(C)]
@@ -292,6 +317,8 @@ pub struct SceneFrame {
     pub dynamic_bodies: Vec<VlDynamicBody>,
     /// Meteors launched since the previous poll.
     pub meteors: Vec<VlMeteor>,
+    /// Audible contacts since the previous poll.
+    pub audio_contacts: Vec<VlAudioContact>,
     pub stats: VlStats,
 }
 
@@ -304,5 +331,6 @@ impl SceneFrame {
         self.cars.clear();
         self.dynamic_bodies.clear();
         self.meteors.clear();
+        self.audio_contacts.clear();
     }
 }

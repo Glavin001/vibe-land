@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 7
+#define VL_ABI_VERSION 8
 
 #define VL_OK 0
 
@@ -134,6 +134,15 @@
 #define VL_EVENT_LOCAL_SHOT 4
 
 #define VL_EVENT_VEHICLE_ASSET 5
+
+#define VL_EVENT_FRACTURE 6
+
+/**
+ * `VlAudioContact::kind`.
+ */
+#define VL_CONTACT_IMPACT 0
+
+#define VL_CONTACT_SCRAPE 1
 
 /**
  * `VlVehicleVertex::section`: the chassis; 1..=4 stream wheel (section - 1)'s spinning parts;
@@ -414,6 +423,31 @@ typedef struct VlMeteor {
 } VlMeteor;
 
 /**
+ * A contact the server judged audible (`PKT_AUDIO_CONTACTS`): impact or scrape, where, how hard.
+ * Renderer space; speeds in renderer units per second.
+ */
+typedef struct VlAudioContact {
+  uint32_t entity_a;
+  uint32_t entity_b;
+  /**
+   * [`VL_CONTACT_IMPACT`] or [`VL_CONTACT_SCRAPE`].
+   */
+  uint32_t kind;
+  float pos[3];
+  float normal[3];
+  float normal_speed;
+  float tangent_speed;
+  /**
+   * Perceptual loudness in [0, 1].
+   */
+  float intensity;
+  /**
+   * Cube root of the reduced mass in tonnes (bigger sounds lower).
+   */
+  float size;
+} VlAudioContact;
+
+/**
  * Counters and clocks, for overlays, logs and test gates.
  */
 typedef struct VlStats {
@@ -479,6 +513,11 @@ typedef struct VlFrameView {
    */
   const struct VlMeteor *meteors;
   size_t meteor_count;
+  /**
+   * Audible contacts since the previous poll.
+   */
+  const struct VlAudioContact *audio_contacts;
+  size_t audio_contact_count;
   struct VlStats stats;
 } VlFrameView;
 
