@@ -61,7 +61,10 @@ for test in "${TESTS[@]}"; do
       grep -q "Incompatible or missing module" "$log" 2>/dev/null && break
       sleep 3
     done
+    # SIGTERM starts Unreal's graceful exit, which can hang (and keep the GPU): SIGKILL after 20 s.
     kill "$pid" 2>/dev/null
+    for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    kill -9 "$pid" 2>/dev/null
     grep -q "Incompatible or missing module" "$log" 2>/dev/null || break
     echo "      ($test: a module was not loadable; launching again in 60 s)"
     sleep 60
