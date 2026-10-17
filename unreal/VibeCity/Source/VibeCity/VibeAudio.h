@@ -10,15 +10,11 @@ class USoundAttenuation;
 class USoundBase;
 
 /**
- * The city's sounds from the core's frame, with the web's clips (client/public/audio/destruction,
- * imported as sound waves under /Game/VibeCity/Audio/ by their catalog names):
- *   * audible contacts (PKT_AUDIO_CONTACTS): an impact or a scrape, loudness from the server's
- *     intensity, pitch lower for bigger bodies;
- *   * fractures (VL_EVENT_FRACTURE): a fracture clip, and a collapse over 40 chunks;
- *   * shots: the local shot at once, others' as the server resolved them;
- *   * meteors: a fly-by from the launch.
- * Like the web's director (audio/director.ts) it plays one sound per kind per 5 m cell per 65 ms
- * and keeps at most 24 voices. Clips not yet imported are skipped (logged once each).
+ * Plays the sounds the shared core decides (VlFrameView::sounds: client-core audio.rs and
+ * effects.rs, ports of the web's audio policy, so which clip, how loud, its distance falloff and
+ * pitch are the web's): clip vl_audio_clip_id(clip) from /Game/VibeCity/Audio/ (imported by
+ * scripts/unreal/import-city-audio.sh) at its position, gain and rate, after its delay, spatialized
+ * with SA_VibeCity (no further falloff). The core hears from the player's eye.
  */
 UCLASS()
 class VIBECITY_API AVibeAudio : public AActor
@@ -28,28 +24,35 @@ class VIBECITY_API AVibeAudio : public AActor
 public:
 	AVibeAudio();
 
-	/** Sounds started so far (tests). */
+	/** Sounds started so far, and sounds whose clip is not imported (tests). */
 	int32 Played() const { return PlayedCount; }
-	/** Sounds asked for whose clip is not imported (tests). */
 	int32 Missing() const { return MissingCount; }
 
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void Tick(float DeltaSeconds) override;
 
 private:
+	struct FPending
+	{
+		uint32 Clip;
+		FVector Position;
+		float Gain;
+		float Rate;
+		double At;
+	};
+
 	void OnFrame(const VlFrameView& Frame);
-	void Play(const FString& Kind, const FString& Clip, const FVector& At, float Volume, float Pitch);
-	USoundBase* Clip(const FString& Name);
+	void Start(const FPending& Sound);
+	USoundBase* Clip(uint32 Index);
 
 	UPROPERTY(Transient)
 	TObjectPtr<USoundAttenuation> Attenuation;
 	UPROPERTY(Transient)
-	TMap<FString, TObjectPtr<USoundBase>> Clips;
-	TSet<FString> Absent;
-	TMap<FString, double> RecentCells;
-	TArray<double> VoiceEnds;
-	uint32 LocalPlayerId = 0;
+	TMap<uint32, TObjectPtr<USoundBase>> Clips;
+	TSet<uint32> Absent;
+	TArray<FPending> Pending;
 	int32 PlayedCount = 0;
 	int32 MissingCount = 0;
 	FDelegateHandle FrameHandle;

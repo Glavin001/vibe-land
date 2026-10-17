@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# The Unreal client's automation tests against a live vibe-land server, each in its own game
+# process (a fresh player: a car left driven would leak into the next), all on one match whose city
+# is reset before each test (a fresh city without a new match: every match keeps a GPU-simulated
+# city alive, and many starve the server).
+#
+#   scripts/unreal/play-tests.sh [--api http://127.0.0.1:4001] [--match citypp-fork] [--only Name,...] [--shots DIR]
+#
+# Needs a server with citypp matches: the PhysX city server (scripts/perf/garage-vehicle-server.sh)
+# for every test; the synthetic server (VIBE_CITY_SYNTHETIC=1) has no colliders, cars or meteors.
+# Builds first (scripts/unreal/build-editor.sh). Exit status: the number of failed tests.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+API="http://127.0.0.1:4001"
+ONLY=""
+SHOTS=""
+MATCH="citypp-fork"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --api) API="$2"; shift 2 ;;
+    --only) ONLY="$2"; shift 2 ;;
+    --match) MATCH="$2"; shift 2 ;;
+    --shots) SHOTS="$2"; shift 2 ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    *) echo "play-tests: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+
+TESTS=(VibeCity.Cursor VibeCity.Play.WalkAndShoot VibeCity.Play.AimAndReset VibeCity.Play.CannonAndMeteor
+  VibeCity.Play.AerialAndMelee VibeCity.Play.Drive)
+if [[ -n "$ONLY" ]]; then
+  IFS=',' read -r -a TESTS <<< "$ONLY"
+fi
+
+UE_ROOT="${UE_ROOT:-/Users/Shared/Epic Games/UE_5.8}"
+EDITOR="$UE_ROOT/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor"
+LOGS="$ROOT/target/unreal-tests"
+mkdir -p "$LOGS"
+curl -fs -m 5 "$API/healthz" > /dev/null || { echo "play-tests: no server at $API" >&2; exit 2; }
+"$ROOT/scripts/unreal/build-editor.sh" > "$LOGS/build.log" 2>&1 || { echo "play-tests: build failed; see $LOGS/build.log" >&2; exit 2; }
+
+failed=0
+for test in "${TESTS[@]}"; do
+  name="${test##*.}"
+  curl -fs -m 5 -X POST "$API/city-reset/$MATCH" > /dev/null || true
+  log="$LOGS/$name.log"
+  args=(-game -windowed -ResX=1280 -ResY=720 "-VibeApi=$API" "-VibeMatch=$MATCH"
+    "-ExecCmds=Automation RunTests $test; Quit" "-TestExit=Automation Test Queue Empty" "-abslog=$log")
+  [[ -n "$SHOTS" ]] && args+=("-VibeShotDir=$SHOTS")
+  "$EDITOR" "$ROOT/unreal/VibeCity/VibeCity.uproject" "${args[@]}" > /dev/null 2>&1 &
+  pid=$!
+  # A test that hangs is stopped after five minutes.
+  for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 3; done
+  kill "$pid" 2>/dev/null
+  if grep -q "Result={Success}" "$log" 2>/dev/null; then
+    echo "pass  $test"
+  else
+    failed=$((failed + 1))
+    echo "FAIL  $test  ($log)"
+    grep -E "LogAutomationController: Error: " "$log" 2>/dev/null | grep -v "Test Completed" | sed 's/.*Error: /        /' | head -5
+  fi
+done
+echo "play-tests: $(( ${#TESTS[@]} - failed )) passed, $failed failed"
+exit "$failed"

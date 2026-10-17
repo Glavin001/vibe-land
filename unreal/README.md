@@ -45,7 +45,53 @@ Console commands:
 
 The game log is `~/Library/Logs/VibeCity/VibeCity.log`. For scripted checks,
 `-VibeShotDir=<dir> -VibeShotEvery=<s>` saves numbered screenshots; add `-RenderOffscreen` so
-nothing needs to be on screen.
+nothing needs to be on screen. `-VibeSpectate` flies a spectator over the city instead of playing.
+
+## Playing
+
+You play the web's `/city` in first person, with its controls (`client/src/input/bindings.ts`):
+
+| Key | On foot | In a car |
+|---|---|---|
+| W A S D | move | throttle, brake, steer |
+| Mouse | look | orbit the chase camera |
+| Space | jump | handbrake |
+| Left Shift | sprint | |
+| C | crouch | |
+| Left mouse | fire (held: at the server's rate) | |
+| Right mouse | aim (45° view) | |
+| 1 / 2 / 3, wheel | rifle, cannon, meteor strike | |
+| V | melee | |
+| E | enter the car within 4 m | leave the car |
+| R | reset the city | reset the car |
+| N | aerial camera; again to drop there | |
+| Esc | free the mouse; click to take it back | |
+
+The server simulates everything (a PhysX character controller for you, the city, the cars); the
+client sends input and draws what the server streams, with a small bounded lead on your own
+movement, as the web does on `/city`. Other players, cars (built from the parts the server
+simulates), cannonballs, meteors, fractures and tracers come from the same stream the browser
+reads, so a browser and an Unreal client on one match see and shoot each other. A dropped session
+is rejoined on its own.
+
+The web's character models and sounds are drawn from `/Game/VibeCity/Characters/` and
+`/Game/VibeCity/Audio/` once imported; until then players are tinted stand-in figures and the game
+is silent.
+
+## Tests
+
+```bash
+cargo test -p vibe-client-core -p vibe-client-core-ffi   # the shared core, in-process against the match loop
+cargo test -p web-fps-server --lib client_codec_roundtrip # every client packet against the server's codecs
+scripts/unreal/play-tests.sh                              # the game, against a live PhysX server
+```
+
+`play-tests.sh` runs each Unreal test in its own game process on a fresh match: Esc and focus
+(`VibeCity.Cursor`), walking at the server's speed and a shot's verdict (`WalkAndShoot`), aim and
+city reset (`AimAndReset`), the cannon and a meteor that breaks the city (`CannonAndMeteor`),
+melee and the aerial camera (`AerialAndMelee`), entering and driving a car (`Drive`). With a
+browser on the same match, `VibeCity.Play.ShootRemote` hits the browser's player and
+`VibeCity.Play.LookAtRemote` screenshots it.
 
 ## Building on macOS Sonoma 14.4 with Xcode 15.4
 
