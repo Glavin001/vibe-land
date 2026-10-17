@@ -778,6 +778,8 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 		double Deadline = 0.0;
 		uint32 Car = 0;
 		FVector CarStart = FVector::ZeroVector;
+		float Tick = 0.0f;
+		float TickStart = 0.0f;
 	};
 	TSharedRef<FState> S = MakeShared<FState>();
 	auto Vehicles = []() -> AVibeVehicles*
@@ -797,7 +799,11 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 		if (!S->Handle.IsValid())
 		{
 			S->Deadline = Now() + 90.0;
-			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame) { S->Local = Frame.local; });
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
+			{
+				S->Local = Frame.local;
+				S->Tick = Frame.stats.player_render_tick;
+			});
 		}
 		const AVibeVehicles* V = Vehicles();
 		if ((S->Local.player.flags & VL_PLAYER_VALID) && V && V->BuiltCars() > 0)
@@ -846,8 +852,9 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 		if (Pawn() && Pawn()->IsInVehicle())
 		{
 			S->CarStart = *Vehicles()->CarPosition(S->Car);
+			S->TickStart = S->Tick;
 			Key(EKeys::W, true);
-			S->Deadline = Now() + 3.0;
+			S->Deadline = Now() + 30.0;
 			return true;
 		}
 		if (Now() > S->Deadline)
@@ -858,7 +865,9 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 		}
 		return false;
 	}));
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
+	// Hold the throttle for server time, not wall time: in a car the server applies one input per
+	// tick, and a server sharing its GPU can tick well below real time.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]() { return S->Tick - S->TickStart >= 60.0f || Now() > S->Deadline; }));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
 	{
 		if (const AVibeVehicles* V = Vehicles())
@@ -884,10 +893,13 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 		}
 		return true;
 	}));
-	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]() { return S->Tick - S->TickStart >= 120.0f || Now() > S->Deadline; }));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
 	{
 		Key(EKeys::W, false);
+		const float Ticks = S->Tick - S->TickStart;
+		AddInfo(FString::Printf(TEXT("throttle held for %.0f server ticks"), Ticks));
+		TestTrue(TEXT("the server simulated 120 ticks of throttle within 30 s"), Ticks >= 120.0f);
 		const FVector End = *Vehicles()->CarPosition(S->Car);
 		const double Moved = FVector::Dist2D(End, S->CarStart) / 100.0;
 		AddInfo(FString::Printf(TEXT("drove car %u %.1f m; input next %u acked %u; in vehicle %d"), S->Car, Moved,
