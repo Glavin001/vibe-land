@@ -137,3 +137,71 @@ pub fn grass_patch(px: i32, pz: i32, density: f32, exclusions: &[f32], paint: Op
     }
     patch
 }
+
+/// One event's voices from the core (`audio::voice_plan`, engine.ts `play` with the original
+/// palette): read with `len()` and the per-voice getters. Behind `?coreAudio=1`
+/// (`client/src/audio/engine.ts`).
+#[wasm_bindgen]
+pub struct CoreVoicePlan {
+    voices: Vec<vibe_client_core::audio::PlannedVoice>,
+}
+
+#[wasm_bindgen]
+impl CoreVoicePlan {
+    pub fn len(&self) -> usize {
+        self.voices.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.voices.is_empty()
+    }
+    pub fn clip(&self, i: usize) -> String {
+        self.voices[i].clip.clone()
+    }
+    pub fn level(&self, i: usize) -> f32 {
+        self.voices[i].level
+    }
+    pub fn rate(&self, i: usize) -> f32 {
+        self.voices[i].rate
+    }
+    pub fn delay_s(&self, i: usize) -> f32 {
+        self.voices[i].delay_s
+    }
+    /// The web's voice role: '' (hit), 'body', 'detail' or 'threat'.
+    pub fn role(&self, i: usize) -> String {
+        use vibe_client_core::audio::VoiceRole::*;
+        match self.voices[i].role {
+            Hit => "",
+            Body => "body",
+            Detail => "detail",
+            Threat => "threat",
+        }
+        .into()
+    }
+    pub fn protected(&self, i: usize) -> bool {
+        self.voices[i].protected
+    }
+}
+
+/// `kind`: impact, fracture, collapse, shot or flyby; `material`: an acoustic material name;
+/// `dynamic_range`: balanced, night or cinematic; the mix as settings.ts holds it.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn voice_plan(kind: &str, material: &str, intensity: f32, size: f32, seed: u32, protected: bool, impact: f32, detail: f32, bass: f32, flyby: f32, dynamic_range: &str) -> Option<CoreVoicePlan> {
+    use vibe_client_core::audio::{voice_plan, AcousticMaterial, DynamicRange, Mix, SoundEvent, SoundKind};
+    let kind = match kind {
+        "impact" => SoundKind::Impact,
+        "fracture" => SoundKind::Fracture,
+        "collapse" => SoundKind::Collapse,
+        "shot" => SoundKind::Shot,
+        "flyby" => SoundKind::Flyby,
+        _ => return None,
+    };
+    let material = AcousticMaterial::from_name(material)?;
+    let range = match dynamic_range {
+        "night" => DynamicRange::Night,
+        "cinematic" => DynamicRange::Cinematic,
+        _ => DynamicRange::Balanced,
+    };
+    let e = SoundEvent { id: 0, kind, position: Default::default(), material, intensity, size, seed, at_ms: 0.0, protected };
+    Some(CoreVoicePlan { voices: voice_plan(&e, Mix { impact, detail, bass, flyby, range }) })
+}

@@ -7,10 +7,15 @@
  *   three's ConvexGeometry (city/chunkGeometry.ts; parity in clientCore.test.ts).
  * - `?coreInput=1` (or `VITE_CORE_INPUT=1`): the 60 Hz input frames from the core's bundler
  *   (runtime/fixedInputBundler.ts; parity in fixedInputBundler.core.test.ts).
+ * - `?coreAudio=1` (or `VITE_CORE_AUDIO=1`): each sound event's voices from the core's recipe
+ *   (audio/voicePlan.ts; parity in audio/voicePlan.core.test.ts).
+ * - `?coreGrass=1`: grass patches from the core, in the grass worker (core/coreFlags.ts).
  */
 import init, { convex_hull_triangles, CoreInputBundler } from '../wasm/core-pkg/vibe_client_core_wasm.js';
 import { provideCoreHullTriangles } from '../city/chunkGeometry';
 import { provideCoreInputBundler } from '../runtime/fixedInputBundler';
+import { coreVoicePlan } from '../audio/coreVoicePlan';
+import { provideVoicePlanner } from '../audio/voicePlan';
 
 function flag(urlName: string, envValue: string | undefined): boolean {
   if (envValue === '1') return true;
@@ -29,6 +34,10 @@ export function coreInputEnabled(): boolean {
   return flag('coreInput', import.meta.env?.VITE_CORE_INPUT);
 }
 
+export function coreAudioEnabled(): boolean {
+  return flag('coreAudio', import.meta.env?.VITE_CORE_AUDIO);
+}
+
 /** A bundler from the core (needs the WASM loaded). */
 export function coreInputBundler(fixedDtSec: number, maxCatchupSteps: number): CoreInputBundler {
   return new CoreInputBundler(fixedDtSec, maxCatchupSteps);
@@ -44,10 +53,11 @@ let loading: Promise<void> | null = null;
 
 /** Load the core and install what the flags ask for. A no-op when no flag is on. */
 export function initClientCore(): Promise<void> {
-  if (!coreGeometryEnabled() && !coreInputEnabled()) return Promise.resolve();
+  if (!coreGeometryEnabled() && !coreInputEnabled() && !coreAudioEnabled()) return Promise.resolve();
   loading ??= init().then(() => {
     if (coreGeometryEnabled()) provideCoreHullTriangles(coreHullTriangles);
     if (coreInputEnabled()) provideCoreInputBundler(coreInputBundler);
+    if (coreAudioEnabled()) provideVoicePlanner(coreVoicePlan);
   });
   return loading;
 }

@@ -38,6 +38,10 @@ impl AcousticMaterial {
             Self::Earth => "earth",
         }
     }
+    /// The material of a `name()`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Concrete, Self::Stone, Self::Metal, Self::Sheet, Self::Wood, Self::Glass, Self::Earth].into_iter().find(|m| m.name() == name)
+    }
 }
 
 /// `acousticMaterial(name, metalness)` (model.ts): a material's sound from its name.
@@ -127,16 +131,31 @@ pub struct Mix {
     pub impact: f32,
     pub detail: f32,
     pub bass: f32,
+    /// settings.ts `flyby`.
+    pub flyby: f32,
+    /// settings.ts `dynamicRange`.
+    pub range: DynamicRange,
 }
 
-pub const DEFAULT_MIX: Mix = Mix { impact: 1.0, detail: 0.8, bass: 0.9 };
-/// The cinematic mix's fly-by level (settings.ts MIXES.cinematic.flyby).
-const FLYBY_MIX: f32 = 1.0;
+/// settings.ts `DynamicRange`: how an event's intensity becomes its loudness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DynamicRange {
+    Balanced,
+    Night,
+    Cinematic,
+}
+
+/// settings.ts `DEFAULT_AUDIO`: the cinematic mix at the balanced range.
+pub const DEFAULT_MIX: Mix = Mix { impact: 1.0, detail: 0.8, bass: 0.9, flyby: 1.0, range: DynamicRange::Balanced };
 
 /// `eventMix` (destructionMix.ts), balanced dynamic range.
 pub fn event_mix(e: &SoundEvent, s: Mix) -> (f32, f32, f32, f32) {
     let i = clamp01(e.intensity);
-    let amount = 1.85 * i.powf(1.15);
+    let amount = match s.range {
+        DynamicRange::Night => 1.25 * i.powf(0.65),
+        DynamicRange::Cinematic => 2.2 * i.powf(1.65),
+        DynamicRange::Balanced => 1.85 * i.powf(1.15),
+    };
     let weight = if e.material == AcousticMaterial::Glass {
         0.0
     } else {
@@ -206,66 +225,87 @@ impl Clips {
     }
 }
 
-/// The voices one event plays (engine.ts `play`, original palette), relative to `listener`.
-pub fn voices(e: &SoundEvent, listener: Vec3, now_ms: f64, mix: Mix, out: &mut Vec<VlSound>) {
-    let clips = Clips::get();
+/// A voice's part in an event (engine.ts `voice` roles): the hit, the heavy body under it, the bright
+/// detail over it, or a near threat (fly-by).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VoiceRole {
+    Hit,
+    Body,
+    Detail,
+    Threat,
+}
+
+/// One voice an event plays (engine.ts `play`, original palette), before distance: clip id, level
+/// (the web's `voice` intensity), rate, start after the event's arrival, and whether the event's
+/// protection carries to it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlannedVoice {
+    pub clip: String,
+    pub level: f32,
+    pub rate: f32,
+    pub delay_s: f32,
+    pub role: VoiceRole,
+    pub protected: bool,
+}
+
+/// engine.ts `play`'s recipe for one event (the original palette; a custom palette clip replaces it
+/// on the web).
+pub fn voice_plan(e: &SoundEvent, mix: Mix) -> Vec<PlannedVoice> {
     let mut r = SeedRandom::new(e.seed);
-    let d = e.position.distance(listener);
     let intensity = clamp01(e.intensity);
     let (hit, body, detail, _) = event_mix(e, mix);
-    let delay_s = (((e.at_ms + f64::from(propagation_delay_ms(d))) - now_ms) / 1000.0).max(0.0) as f32;
     let rate = (1.04 - (e.size.max(0.0)).ln_1p() * 0.065 + (r.next() - 0.5) * 0.13).clamp(0.57, 1.2);
     let variant = (r.next() * 5.0).floor() as u32;
-    let flags = if e.protected { VL_SOUND_PROTECTED } else { 0 };
-    let attenuation = source_attenuation(d, e.size);
-    let mut push = |id: String, level: f32, rate: f32, extra_delay: f32| {
-        if level < 0.005 {
-            return;
-        }
-        if let Some(clip) = clips.index(&id) {
-            out.push(VlSound {
-                clip,
-                position: e.position.to_array(),
-                gain: level * attenuation,
-                rate,
-                delay_s: delay_s + extra_delay,
-                flags,
-                lowpass_hz: 20000.0,
-            });
-        }
+    let protected = e.protected || e.kind == SoundKind::Flyby;
+    let mut plan = Vec::new();
+    let mut push = |clip: String, level: f32, rate: f32, delay_s: f32, role: VoiceRole, protected: bool| {
+        plan.push(PlannedVoice { clip, level, rate, delay_s, role, protected });
     };
     let m = e.material.name();
     match e.kind {
         SoundKind::Flyby => {
-            // engine.ts: the original flyby clips, a little faster than the body's own rate.
-            let level = (0.15 + intensity * 0.85) * FLYBY_MIX;
-            if let Some(clip) = clips.index(&format!("flyby-{}", variant % 4)) {
-                out.push(VlSound {
-                    clip,
-                    position: e.position.to_array(),
-                    gain: level,
-                    rate: (rate * 1.2).clamp(0.8, 1.5),
-                    delay_s,
-                    flags: flags | VL_SOUND_PROTECTED,
-                    lowpass_hz: 20000.0,
-                });
-            }
-            return;
+            push(format!("flyby-{}", variant % 4), (0.15 + intensity * 0.85) * mix.flyby, (rate * 1.2).clamp(0.8, 1.5), 0.0, VoiceRole::Threat, true);
+            return plan;
         }
         SoundKind::Shot => {
             let gun = if e.size <= 0.2 { "rifle" } else { "cannon" };
-            push(format!("shot-{gun}-{}", variant % 3), hit, rate, 0.0);
-            return;
+            push(format!("shot-{gun}-{}", variant % 3), hit, rate, 0.0, VoiceRole::Hit, protected);
+            return plan;
         }
-        SoundKind::Collapse => push(format!("collapse-{}", variant % 4), hit, rate, 0.0),
-        SoundKind::Fracture => push(format!("{m}-fracture-{}", variant % 3), hit, rate, 0.0),
-        SoundKind::Impact => push(format!("{m}-impact-{variant}"), hit, rate, 0.0),
+        SoundKind::Collapse => push(format!("collapse-{}", variant % 4), hit, rate, 0.0, VoiceRole::Hit, protected),
+        SoundKind::Fracture => push(format!("{m}-fracture-{}", variant % 3), hit, rate, 0.0, VoiceRole::Hit, protected),
+        SoundKind::Impact => push(format!("{m}-impact-{variant}"), hit, rate, 0.0, VoiceRole::Hit, protected),
     }
     if body > 0.01 {
-        push(format!("heavy-{m}"), body, rate.clamp(0.68, 1.1), 0.009);
+        push(format!("heavy-{m}"), body, rate.clamp(0.68, 1.1), 0.009, VoiceRole::Body, protected);
     }
     if intensity > 0.4 {
-        push(format!("{m}-fracture-{}", (variant + 1) % 3), detail, rate * 1.11, 0.025);
+        push(format!("{m}-fracture-{}", (variant + 1) % 3), detail, rate * 1.11, 0.025, VoiceRole::Detail, false);
+    }
+    plan
+}
+
+/// The voices one event plays (engine.ts `play` then `placeVoice`), relative to `listener`: the
+/// plan, attenuated with distance and delayed by its arrival.
+pub fn voices(e: &SoundEvent, listener: Vec3, now_ms: f64, mix: Mix, out: &mut Vec<VlSound>) {
+    let clips = Clips::get();
+    let d = e.position.distance(listener);
+    let delay_s = (((e.at_ms + f64::from(propagation_delay_ms(d))) - now_ms) / 1000.0).max(0.0) as f32;
+    let attenuation = source_attenuation(d, e.size);
+    for v in voice_plan(e, mix) {
+        if v.level < 0.005 {
+            continue;
+        }
+        let Some(clip) = clips.index(&v.clip) else { continue };
+        out.push(VlSound {
+            clip,
+            position: e.position.to_array(),
+            gain: v.level * attenuation,
+            rate: v.rate,
+            delay_s: delay_s + v.delay_s,
+            flags: if v.protected { VL_SOUND_PROTECTED } else { 0 },
+            lowpass_hz: 20000.0,
+        });
     }
 }
 

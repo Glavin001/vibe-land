@@ -8,6 +8,7 @@ import { eventMix, propagationDelayMs, sourceAttenuation, voiceImportance, type 
 import { DEFAULT_PALETTE, PALETTE_SLOTS, paletteClipId, paletteSlotFor, type PaletteSlot,type PaletteChoice } from './soundPalette';
 import { PaletteBank,referenceGain } from './paletteBank';
 import { flybyMotion,flybyPose,type FlybyMotion } from './flyby';
+import { voicePlanner } from './voicePlan';
 
 interface Catalog { clips: Record<string,{url:string;duration:number}>; }
 interface Voice {
@@ -314,13 +315,8 @@ export class DestructionAudio {
       this.voice(selected,e.position,mix.hit+mix.body*.55,clamp(rate,.8,1.15),protectedSound,time,undefined,e.occlusion,e.size,'body');
       return;
     }
-    if(e.kind==='collapse'||e.kind==='shot'){
-      this.voice(e.kind==='shot'?`shot-${e.size<=.2?'rifle':'cannon'}-${variant%3}`:'collapse-'+variant%4,e.position,mix.hit,rate,protectedSound,time,undefined,e.occlusion,e.size);
-    }else this.voice(`${e.material}-${e.kind==='fracture'?'fracture-'+variant%3:'impact-'+variant}`,e.position,mix.hit,rate,protectedSound,time,undefined,e.occlusion,e.size);
-    if(mix.body>.01&&e.kind!=='shot'){
-      this.voice(`heavy-${e.material}`,e.position,mix.body,clamp(rate,.68,1.1),protectedSound,time+.009,undefined,e.occlusion,e.size,'body');
-    }
-    if(intensity>.4&&e.kind!=='shot')this.voice(`${e.material}-fracture-${(variant+1)%3}`,e.position,mix.detail,rate*1.11,false,time+.025,undefined,e.occlusion,e.size,'detail');
+    // The original palette's recipe (voicePlan.ts; the shared core's under ?coreAudio=1).
+    for(const v of voicePlanner()(e,s))this.voice(v.clip,e.position,v.level,v.rate,v.protected,time+v.delay,undefined,e.occlusion,e.size,v.role);
     if((e.kind==='collapse'||intensity>.85)&&s.ringing>0&&d<14&&ctx.currentTime-this.lastRing>5){
       this.lastRing=ctx.currentTime;this.ring(s.ringing*.012);
     }
