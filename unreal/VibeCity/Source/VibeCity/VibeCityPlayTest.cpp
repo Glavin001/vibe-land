@@ -237,3 +237,135 @@ bool FVibeCityPlayWalkAndShoot::RunTest(const FString& Parameters)
 }
 
 #endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+// VibeCity.Play.ShootRemote: cross-client hit. Aim at the nearest other player (another client on
+// the same match: a browser, a bot) through the real input path and fire the rifle; the server must
+// confirm a hit on that player (ShotResult: confirmed, hit_player_id). Needs another player within
+// the server's interest radius (80 m) and in clear line of sight.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayShootRemote, "VibeCity.Play.ShootRemote",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayShootRemote::RunTest(const FString& Parameters)
+{
+	struct FShootState
+	{
+		VlLocal Local = {};
+		TArray<VlPlayer> Remote;
+		TArray<VlEvent> Events;
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+		uint32 Target = 0;
+		int32 Shots = 0;
+	};
+	TSharedRef<FShootState> S = MakeShared<FShootState>();
+
+	// Joined, and someone else is in view.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 120.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
+			{
+				S->Local = Frame.local;
+				S->Remote.Reset();
+				for (size_t i = 0; i < Frame.remote_player_count; ++i)
+				{
+					S->Remote.Add(Frame.remote_players[i]);
+				}
+				for (size_t i = 0; i < Frame.event_count; ++i)
+				{
+					S->Events.Add(Frame.events[i]);
+				}
+			});
+		}
+		const bool bJoined = (S->Local.player.flags & VL_PLAYER_VALID) != 0;
+		if (bJoined && S->Remote.Num() > 0)
+		{
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("no other player within the server's interest radius"));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
+	// Aim at the nearest one's chest and fire, up to five shots (one every 0.3 s).
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		if (S->Remote.Num() == 0)
+		{
+			return true;
+		}
+		const FVector Eye(S->Local.eye[0], S->Local.eye[1], S->Local.eye[2]);
+		const VlPlayer* Nearest = nullptr;
+		for (const VlPlayer& P : S->Remote)
+		{
+			if (!Nearest || FVector::Dist(Eye, FVector(P.pos[0], P.pos[1], P.pos[2])) < FVector::Dist(Eye, FVector(Nearest->pos[0], Nearest->pos[1], Nearest->pos[2])))
+			{
+				Nearest = &P;
+			}
+		}
+		S->Target = Nearest->player_id;
+		// The capsule's centre (the reported position) is mid-torso.
+		const FVector Aim = FVector(Nearest->pos[0], Nearest->pos[1], Nearest->pos[2]) - Eye;
+		if (APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0))
+		{
+			PC->SetControlRotation(Aim.Rotation());
+		}
+		AddInfo(FString::Printf(TEXT("aiming at player %u, %.1f m away"), S->Target, Aim.Size() / 100.0));
+		S->Deadline = Now() + 6.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f)); // the view reaches the server
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		const VlEvent* Hit = S->Events.FindByPredicate([S](const VlEvent& E)
+		{
+			return E.kind == VL_EVENT_SHOT_RESULT && E.a == 1 && E.player == S->Target;
+		});
+		if (Hit)
+		{
+			AddInfo(FString::Printf(TEXT("hit player %u (zone %u) with shot %u after %d shots"), S->Target, Hit->b, Hit->id, S->Shots));
+			return true;
+		}
+		static double NextShot = 0.0;
+		if (Now() >= NextShot && S->Shots < 5)
+		{
+			Click();
+			S->Shots += 1;
+			NextShot = Now() + 0.3;
+		}
+		if (Now() > S->Deadline)
+		{
+			int32 Results = 0;
+			for (const VlEvent& E : S->Events)
+			{
+				Results += E.kind == VL_EVENT_SHOT_RESULT ? 1 : 0;
+			}
+			AddError(FString::Printf(TEXT("no confirmed hit on player %u: %d shots, %d results"), S->Target, S->Shots, Results));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif
