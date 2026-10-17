@@ -122,8 +122,9 @@ does better and match /city's function.
   sound. Their dust starts with no velocity of its own, as on the web's /city: wire 4 carries no
   body velocities into its sources (`perPlayerCityClient.ts` builds each promotion with
   `linearVelocity: [0, 0, 0]`).
-- **Debug and admin tools** stay web-only: the stats overlay (match stats from `PKT_MATCH_STATS`,
-  the player count, RECORD TAPE), `/server-stats`, the world builder.
+- **Debug and admin tools** stay web-only: the stats overlay's renderer tools (cost sweeps, quality
+  toggles) and RECORD TAPE (a capture of the web client's stream for `/cityreplay`), `/server-stats`,
+  the world builder. Unreal has the overlay's readout (F9, above).
 - **One machine, one GPU.** With the server on the same Mac, Lumen and virtual shadows slow the
   server's PhysX tick (about 49 Hz instead of 60). The tests that time the server's input run with
   standard lighting (`play-tests.sh`); for local play, `-dpcvars=r.DynamicGlobalIlluminationMethod=0,r.ReflectionMethod=2,r.Shadow.Virtual.Enable=0`
