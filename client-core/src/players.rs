@@ -126,8 +126,8 @@ pub struct Players {
     sim_hz: u32,
     interval_ticks: u32,
     local: Track,
-    /// By wire handle.
-    remote: HashMap<u8, Track>,
+    /// By wire handle: the web's interpolation (interp.rs), in server microseconds.
+    remote: crate::interp::PlayerInterpolator,
     /// Handle to player id, from the newest roster (None until the first arrives).
     roster: Option<HashMap<u8, u32>>,
     local_player_id: u32,
@@ -156,7 +156,7 @@ impl Players {
             sim_hz: sim_hz.max(1),
             interval_ticks: 1,
             local: Track::default(),
-            remote: HashMap::new(),
+            remote: crate::interp::PlayerInterpolator::default(),
             roster: None,
             local_player_id: 0,
             snapshots: 0,
@@ -181,7 +181,8 @@ impl Players {
 
     pub fn on_roster(&mut self, roster: &PlayerRosterPacket) {
         let map: HashMap<u8, u32> = roster.entries.iter().map(|e| (e.handle, e.player_id)).collect();
-        self.remote.retain(|handle, _| map.contains_key(handle));
+        let handles: Vec<u32> = map.keys().map(|&h| u32::from(h)).collect();
+        self.remote.retain_only(&handles);
         self.roster = Some(map);
     }
 
@@ -211,17 +212,27 @@ impl Players {
             flags: me.flags,
         };
         self.local.push(s.server_tick, local, self.interval_ticks);
+        // Remote players as netcodeClient.ts pushes them (f64: anchor mm / 1000 + delta x 0.0025,
+        // velocity cm/s / 100, angles from the i16's turn fraction), at tick x SERVER_TICK_US.
+        let tick_us = self.tick_us();
+        let anchor_m = [f64::from(s.anchor_px_mm) / 1000.0, f64::from(s.anchor_py_mm) / 1000.0, f64::from(s.anchor_pz_mm) / 1000.0];
+        let turn = |a: i16| f64::from(a as u16) / 65535.0 * std::f64::consts::PI * 2.0;
         for r in &s.remote_players {
-            let delta = Vec3::new(f32::from(r.dx_q2_5mm), f32::from(r.dy_q2_5mm), f32::from(r.dz_q2_5mm)) * Q2_5MM_M;
-            let sample = PlayerSample {
-                pos: anchor + delta,
-                vel: Vec3::new(f32::from(r.vx_cms), f32::from(r.vy_cms), f32::from(r.vz_cms)) / 100.0,
-                yaw: i16_to_angle(r.yaw_i16),
-                pitch: i16_to_angle(r.pitch_i16),
-                hp: r.hp,
-                flags: r.flags,
+            let sample = crate::interp::PlayerSample {
+                server_time_us: f64::from(s.server_tick) * tick_us,
+                position: [
+                    anchor_m[0] + f64::from(r.dx_q2_5mm) * 0.0025,
+                    anchor_m[1] + f64::from(r.dy_q2_5mm) * 0.0025,
+                    anchor_m[2] + f64::from(r.dz_q2_5mm) * 0.0025,
+                ],
+                velocity: [f64::from(r.vx_cms) / 100.0, f64::from(r.vy_cms) / 100.0, f64::from(r.vz_cms) / 100.0],
+                yaw: turn(r.yaw_i16),
+                pitch: turn(r.pitch_i16),
+                hp: f64::from(r.hp),
+                flags: f64::from(r.flags),
+                held: false,
             };
-            self.remote.entry(r.handle).or_default().push(s.server_tick, sample, self.interval_ticks);
+            self.remote.push(u32::from(r.handle), sample, f64::from(self.interval_ticks) * tick_us);
         }
         let q2_5 = |x: i16, y: i16, z: i16| anchor + Vec3::new(f32::from(x), f32::from(y), f32::from(z)) * Q2_5MM_M;
         let snorm = |v: i16| f32::from(v) / 32767.0;
@@ -288,19 +299,22 @@ impl Players {
         let r = self.clock.render_tick(now_ms)?;
         self.render_tick = Some(r);
         let write = |player_id: u32, s: PlayerSample| player_record(player_id, s, s.pos, space);
-        for (&handle, track) in &self.remote {
+        let target_us = f64::from(r) * self.tick_us();
+        let handles: Vec<u32> = self.remote.ids().collect();
+        for handle in handles {
+            let Ok(handle8) = u8::try_from(handle) else { continue };
             let id = match &self.roster {
-                Some(roster) => match roster.get(&handle) {
+                Some(roster) => match roster.get(&handle8) {
                     Some(&id) => id,
                     None => continue,
                 },
-                None => u32::from(handle),
+                None => handle,
             };
             if id == self.local_player_id {
                 continue;
             }
-            if let Some(s) = track.at(r) {
-                remote.push(write(id, s));
+            if let Some(s) = self.remote.sample(handle, target_us) {
+                remote.push(write(id, from_interp(&s)));
             }
         }
         Some((r, self.local.at(r)))
@@ -355,7 +369,12 @@ impl Players {
     /// A remote player's interpolated state at render tick `r`.
     #[cfg(test)]
     pub(crate) fn remote_at(&self, handle: u8, r: f32) -> Option<PlayerSample> {
-        self.remote.get(&handle)?.at(r)
+        self.remote.sample(u32::from(handle), f64::from(r) * self.tick_us()).map(|s| from_interp(&s))
+    }
+
+    /// One server tick in microseconds, as the web counts it (`SERVER_TICK_US`: floor(1e6 / sim Hz)).
+    fn tick_us(&self) -> f64 {
+        (1_000_000 / self.sim_hz) as f64
     }
 }
 
@@ -371,6 +390,19 @@ pub(crate) fn player_record(player_id: u32, s: PlayerSample, pos: Vec3, space: S
         hp: u32::from(s.hp),
         vel: space.pos(s.vel),
         state_flags: u32::from(s.flags),
+    }
+}
+
+/// A web-interpolated remote player as the renderer's sample.
+fn from_interp(s: &crate::interp::PlayerSample) -> PlayerSample {
+    let v = |a: [f64; 3]| Vec3::new(a[0] as f32, a[1] as f32, a[2] as f32);
+    PlayerSample {
+        pos: v(s.position),
+        vel: v(s.velocity),
+        yaw: s.yaw as f32,
+        pitch: s.pitch as f32,
+        hp: s.hp as u8,
+        flags: s.flags as u8,
     }
 }
 

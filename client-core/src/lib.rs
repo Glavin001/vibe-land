@@ -18,6 +18,7 @@ pub mod geometry;
 pub mod grass;
 pub mod ground;
 pub mod input;
+pub mod interp;
 pub mod materials;
 pub mod players;
 pub mod predictor;
