@@ -203,9 +203,28 @@ impl CityStream {
                     self.fractures += 1;
                     // Where it broke and how much: bonds clustered by cell, crushed chunks. Parted =
                     // the bond's two chunks now ride different bodies (the fracture is applied).
+                    // Where each involved chunk is now (on a moving body it is not at rest): the
+                    // map from a rest-space point riding a chunk to where it is drawn.
+                    let mut riders: HashMap<u32, (Vec3, Vec3, Quat)> = HashMap::new();
+                    let nodes = broken_bonds
+                        .iter()
+                        .filter_map(|b| self.source_table.bond_nodes(structure, *b).map(|(n, _)| n))
+                        .chain(changed.iter().filter_map(|(_, members)| members.first().copied()));
+                    for node in nodes {
+                        if let (Some(rest), Some((now, q))) = (self.chunk_rest_server(structure, node), self.chunk_world_server(structure, node)) {
+                            let world_q = self.client.structures.get(&structure).map_or(Quat::IDENTITY, |cs| cs.def.world_rotation);
+                            riders.insert(node, (rest, now, q * world_q.inverse()));
+                        }
+                    }
+                    let locate = move |node: u32, x: Vec3| riders.get(&node).map_or(x, |&(rest, now, turn)| now + turn * (x - rest));
                     let client = &self.client;
-                    let born: Vec<(Vec3, f32)> =
-                        changed.iter().map(|(_, members)| self.source_table.island(structure, members)).collect();
+                    let born: Vec<(Vec3, f32)> = changed
+                        .iter()
+                        .map(|(_, members)| {
+                            let (centre, mass) = self.source_table.island(structure, members);
+                            (members.first().map_or(centre, |&n| locate(n, centre)), mass)
+                        })
+                        .collect();
                     self.source_table.fracture_sources(
                         structure,
                         tick,
@@ -213,6 +232,7 @@ impl CityStream {
                         &removed_chunks,
                         &born,
                         |a, b| client.chunk_body(structure, a) != client.chunk_body(structure, b),
+                        &locate,
                         &mut self.source_state,
                         now_ms,
                         &mut self.sources,
@@ -503,6 +523,12 @@ impl CityStream {
         stats.fractures = self.fractures;
         stats.resync_requests = self.resync_requests;
         stats.acks_sent = self.acks_sent;
+    }
+
+    /// A chunk's rest position, server space.
+    fn chunk_rest_server(&self, structure: u32, node: u32) -> Option<Vec3> {
+        let cs = self.client.structures.get(&structure)?;
+        Some(cs.def.world_position + cs.def.world_rotation * *cs.def.rest.get(node as usize)?)
     }
 
     /// For tests and debug views: the world pose of a chunk now, in server space.

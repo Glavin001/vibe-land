@@ -301,6 +301,7 @@ impl SourceTable {
         removed_chunks: &[u32],
         born: &[(Vec3, f32)],
         parted: impl Fn(u32, u32) -> bool,
+        locate: impl Fn(u32, Vec3) -> Vec3,
         state: &mut SourceState,
         now_ms: f64,
         out: &mut Vec<Source>,
@@ -338,7 +339,8 @@ impl SourceTable {
         for bond in broken_bonds {
             let Some(b) = s.bonds.get(bond) else { continue };
             let w = b.area * if parted(b.node0, b.node1) { 1.0 } else { UNSEPARATED_WEIGHT };
-            add(0, b.centroid, w, b.normal, w * FRACTURE_UNITS_PER_M2, b.material);
+            // Where the bond is now: it rides its first chunk (on a moving body, not at rest).
+            add(0, locate(b.node0, b.centroid), w, b.normal, w * FRACTURE_UNITS_PER_M2, b.material);
         }
         for chunk in removed_chunks {
             let (Some(&pos), Some(&mass)) = (s.chunk_pos.get(chunk), s.chunk_mass.get(chunk)) else { continue };
@@ -420,6 +422,11 @@ impl SourceTable {
             }
         }
         (if mass > 0.0 { weighted / mass } else { Vec3::ZERO }, mass)
+    }
+
+    /// A bond's two chunks (node indices).
+    pub fn bond_nodes(&self, structure: u32, bond: u32) -> Option<(u32, u32)> {
+        self.structures.get(&structure)?.bonds.get(&bond).map(|b| (b.node0, b.node1))
     }
 
     /// Mass of a set of chunks of `structure`, kg.
@@ -571,14 +578,14 @@ mod tests {
         let mut broken = near.clone();
         broken.push(far);
         let mut out = Vec::new();
-        t.fracture_sources(structure, 10, &broken, &[], &[], |_, _| true, &mut SourceState::default(), 0.0, &mut out);
+        t.fracture_sources(structure, 10, &broken, &[], &[], |_, _| true, |_, p| p, &mut SourceState::default(), 0.0, &mut out);
         assert!(out.len() >= 2, "the far bond is its own source");
         let total: f32 = out.iter().map(|s| s.magnitude).sum();
         let area: f32 = broken.iter().map(|b| s.bonds[b].area).sum();
         assert!((total - 3.0 * area).abs() < 1e-3 * total.max(1.0), "magnitude = 3·Σarea");
         // Unparted bonds count 15%.
         let mut unparted = Vec::new();
-        t.fracture_sources(structure, 10, &broken, &[], &[], |_, _| false, &mut SourceState::default(), 0.0, &mut unparted);
+        t.fracture_sources(structure, 10, &broken, &[], &[], |_, _| false, |_, p| p, &mut SourceState::default(), 0.0, &mut unparted);
         let total_u: f32 = unparted.iter().map(|s| s.magnitude).sum();
         assert!((total_u - 0.15 * total).abs() < 1e-3 * total.max(1.0));
     }
@@ -589,7 +596,7 @@ mod tests {
         let (&structure, s) = t.structures.iter().next().unwrap();
         let (&chunk, &mass) = s.chunk_mass.iter().next().unwrap();
         let mut out = Vec::new();
-        t.fracture_sources(structure, 3, &[], &[chunk], &[], |_, _| true, &mut SourceState::default(), 0.0, &mut out);
+        t.fracture_sources(structure, 3, &[], &[chunk], &[], |_, _| true, |_, p| p, &mut SourceState::default(), 0.0, &mut out);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, SourceKind::Crush);
         assert!((out[0].magnitude - mass / 100.0).abs() < 1e-3);
@@ -617,12 +624,12 @@ mod tests {
         let origin = b.centroid + Vec3::new(20.0, 0.0, 0.0);
         state.shots.register(origin, b.centroid - origin, Some(b.centroid), 0.0);
         let mut out = Vec::new();
-        t.fracture_sources(structure, 5, &[bond], &[], &[], |_, _| true, &mut state, 100.0, &mut out);
+        t.fracture_sources(structure, 5, &[bond], &[], &[], |_, _| true, |_, p| p, &mut state, 100.0, &mut out);
         assert_eq!(out[0].kind, SourceKind::Entry);
         assert!(out[0].normal.x > 0.5, "faces the shooter");
         // The same cell breaking again 200 ms later is no longer quiet: a plain fracture.
         let mut again = Vec::new();
-        t.fracture_sources(structure, 6, &[bond], &[], &[], |_, _| true, &mut state, 300.0, &mut again);
+        t.fracture_sources(structure, 6, &[bond], &[], &[], |_, _| true, |_, p| p, &mut state, 300.0, &mut again);
         assert_eq!(again[0].kind, SourceKind::Fracture);
         assert!((out[0].magnitude - 2.0 * again[0].magnitude).abs() < 1e-4);
     }
@@ -633,10 +640,10 @@ mod tests {
         let (&structure, s) = t.structures.iter().next().unwrap();
         let (&bond, b) = s.bonds.iter().next().unwrap();
         let mut out = Vec::new();
-        t.fracture_sources(structure, 5, &[bond], &[], &[(b.centroid + Vec3::Y * 20.0, 8000.0)], |_, _| true, &mut SourceState::default(), 0.0, &mut out);
+        t.fracture_sources(structure, 5, &[bond], &[], &[(b.centroid + Vec3::Y * 20.0, 8000.0)], |_, _| true, |_, p| p, &mut SourceState::default(), 0.0, &mut out);
         assert!(out.iter().any(|s| s.kind == SourceKind::Shed && (s.magnitude - 16.0).abs() < 1e-3));
         let mut light = Vec::new();
-        t.fracture_sources(structure, 5, &[bond], &[], &[(b.centroid, 1000.0)], |_, _| true, &mut SourceState::default(), 0.0, &mut light);
+        t.fracture_sources(structure, 5, &[bond], &[], &[(b.centroid, 1000.0)], |_, _| true, |_, p| p, &mut SourceState::default(), 0.0, &mut light);
         let plain = 3.0 * b.area;
         assert!(light.iter().all(|s| s.kind != SourceKind::Shed));
         assert!((light[0].magnitude - (plain + 0.5)).abs() < 1e-3, "a quarter of 2 units folded in");
@@ -657,5 +664,18 @@ mod tests {
             state.note_impact(1, 11, Vec3::new(1.0, 2.0, 1.0), 30_000.0, 400.0 + f64::from(i) * 10.0, &mut out);
         }
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn bonds_on_moving_bodies_break_where_the_bodies_are() {
+        let t = table();
+        let (&structure, s) = t.structures.iter().next().unwrap();
+        let bond = *s.bonds.keys().min().unwrap();
+        let mut out = Vec::new();
+        let shift = Vec3::new(30.0, -5.0, 2.0);
+        t.fracture_sources(structure, 5, &[bond], &[], &[], |_, _| true, |_, p| p + shift, &mut SourceState::default(), 0.0, &mut out);
+        let mut rest = Vec::new();
+        t.fracture_sources(structure, 5, &[bond], &[], &[], |_, _| true, |_, p| p, &mut SourceState::default(), 0.0, &mut rest);
+        assert!((out[0].position - (rest[0].position + shift)).length() < 1e-4);
     }
 }
