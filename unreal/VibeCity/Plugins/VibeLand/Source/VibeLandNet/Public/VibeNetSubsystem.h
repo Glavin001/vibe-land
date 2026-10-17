@@ -72,6 +72,9 @@ public:
 	/** Every chunk's catalog materials, in chunk-table order (empty until the manifest arrived). */
 	TArrayView<const VlChunkSurface> ChunkSurfaces() const;
 
+	/** Where the meadow is bare (server space x/z), for vl_grass_patch (empty until the manifest arrived). */
+	TArrayView<const VlGrassExclusion> GrassExclusions() const;
+
 	FString LastError() const;
 	const FString& CurrentMatchId() const { return MatchId; }
 	const FString& CurrentApiBaseUrl() const { return ApiBaseUrl; }

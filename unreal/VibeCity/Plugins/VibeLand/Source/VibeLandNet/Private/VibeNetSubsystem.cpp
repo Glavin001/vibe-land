@@ -220,6 +220,17 @@ TArrayView<const VlChunkSurface> UVibeNetSubsystem::ChunkSurfaces() const
 	return TArrayView<const VlChunkSurface>(Data, static_cast<int32>(Count));
 }
 
+TArrayView<const VlGrassExclusion> UVibeNetSubsystem::GrassExclusions() const
+{
+	const VlGrassExclusion* Data = nullptr;
+	size_t Count = 0;
+	if (!Client || vl_client_grass_exclusions(Client, &Data, &Count) != VL_OK || !Data)
+	{
+		return {};
+	}
+	return TArrayView<const VlGrassExclusion>(Data, static_cast<int32>(Count));
+}
+
 TArrayView<const VlChunk> UVibeNetSubsystem::Chunks() const
 {
 	if (!Client)
