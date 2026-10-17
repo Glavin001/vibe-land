@@ -44,6 +44,9 @@ public:
 	static constexpr float PadPressed = 0.35f;
 	/** The buttons sent with the last input (tests). */
 	uint32 SentButtons() const { return LastSentButtons; }
+	/** The move axes sent with the last input, and how many frames asked the core to fire (tests). */
+	FVector2D SentMove() const { return LastSentMove; }
+	int32 FireRequests() const { return FireRequestCount; }
 	static const TCHAR* WeaponName(uint32 Weapon);
 	/** Remember the chosen weapon (user settings), unless -VibeFreshSettings. */
 	void SaveWeapon() const;
@@ -149,6 +152,8 @@ private:
 	bool bInVehicle = false;
 	bool bDead = false;
 	uint32 LastSentButtons = 0;
+	FVector2D LastSentMove = FVector2D::ZeroVector;
+	int32 FireRequestCount = 0;
 	/** Fire and aim: on foot and alive (scene/aimControls.ts canUseScopedAim). */
 	bool CanUseAim() const { return !bInVehicle && !bDead; }
 	uint32 DrivenCar = 0;

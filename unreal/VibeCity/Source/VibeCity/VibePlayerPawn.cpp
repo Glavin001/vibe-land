@@ -658,11 +658,13 @@ void AVibePlayerPawn::Tick(float DeltaSeconds)
 	// In a car Space stays (the handbrake rides the jump bit); sprint and crouch are on-foot only.
 	Input.buttons = bInVehicle ? (Buttons & ~(VL_BTN_SPRINT | VL_BTN_CROUCH)) : Buttons;
 	LastSentButtons = Input.buttons;
+	LastSentMove = FVector2D(Input.move_x, Input.move_y);
 	NetSubsystem->SetInput(Input);
 	if ((bFireHeld || PadRightTrigger > PadPressed) && bJoined && CanUseAim())
 	{
 		// The core repeats at most at the server's fire interval and stamps the shot.
 		NetSubsystem->Fire(CurrentWeapon);
+		++FireRequestCount;
 	}
 }
 
