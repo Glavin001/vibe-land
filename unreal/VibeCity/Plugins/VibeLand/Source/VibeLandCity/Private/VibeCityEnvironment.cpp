@@ -44,6 +44,10 @@ AVibeCityEnvironment::AVibeCityEnvironment()
 
 	Atmosphere = CreateDefaultSubobject<USkyAtmosphereComponent>(TEXT("Atmosphere"));
 	Atmosphere->SetupAttachment(RootComponent);
+	// The web's sky reads brighter than Unreal's physical sky at the matched exposure (same hue,
+	// blue/green 2.2 in both): x2 brings it from 0.37x to 0.96x of the web's at the comparison pose
+	// (compare-luma.mjs; see the exposure below).
+	Atmosphere->SkyLuminanceFactor = FLinearColor(2.0f, 2.0f, 2.0f);
 
 	// The sky's own light: captured from the atmosphere every frame, so shadowed walls are lit by
 	// the sky as the web's hemisphere light lights them. The lower hemisphere is not black: the
@@ -59,6 +63,8 @@ AVibeCityEnvironment::AVibeCityEnvironment()
 	Fog = CreateDefaultSubobject<UExponentialHeightFogComponent>(TEXT("Fog"));
 	Fog->SetupAttachment(RootComponent);
 	Fog->SetFogInscatteringColor(ClearFogColor);
+	// The web's fog is its preset colour alone; Unreal would add the sky atmosphere's ambient light.
+	Fog->SkyAtmosphereAmbientContributionColorScale = FLinearColor::Black;
 	// Uniform, as the web's FogExp2 (AVibeCityWeather sets the density from the preset).
 	Fog->SetFogHeightFalloff(0.001f);
 	// The web fogs geometry, not its sky dome: no fog past the ground's skirt.
@@ -67,6 +73,14 @@ AVibeCityEnvironment::AVibeCityEnvironment()
 	PostProcess = CreateDefaultSubobject<UPostProcessComponent>(TEXT("PostProcess"));
 	PostProcess->SetupAttachment(RootComponent);
 	PostProcess->bUnbound = true;
+	// Exposure matched to the web's, by measurement at the comparison pose (VibeCity.Render.Compare
+	// against scripts/unreal/compare-web.mjs, scripts/unreal/compare-luma.mjs). Unreal's
+	// auto-exposure rendered sky, horizon, mid and near ground 1.60, 2.14, 2.25 and 3.45 times the
+	// web's luminance; the tone curve is not linear, so the bias was found by secant steps
+	// (0 EV: 2.27x geometric mean; -1.18 EV: 0.51x; -0.64 EV: ground within 20%), then the sky's
+	// luminance raised (above) to 0.96x.
+	PostProcess->Settings.bOverride_AutoExposureBias = true;
+	PostProcess->Settings.AutoExposureBias = -0.64f;
 
 	Ground = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("Ground"));
 	Ground->SetupAttachment(RootComponent);

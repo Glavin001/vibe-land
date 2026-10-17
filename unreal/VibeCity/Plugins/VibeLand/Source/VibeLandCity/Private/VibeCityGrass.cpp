@@ -328,9 +328,19 @@ void AVibeCityGrass::Rebuild(FPatch& Patch, int32 Band)
 		// Tapering as (1 − t²) and bending as t² (grassNodes.ts).
 		auto At = [&](float T) { return Root + Facing * (B.lean * StalkCm * T * T) + FVector::UpVector * (StalkCm * T); };
 		const FVector Normal = (Facing * 0.5f + FVector::UpVector).GetSafeNormal();
+		// grassMaterial.ts's blade colour: the leaf tint (dried toward straw, darkened by poor
+		// health) runs from 0.22-0.38 of itself at the root to 0.85-1.25 at the tip (by the blade's
+		// variation) along height^0.75, and dry tips brown.
+		const FVector3f Leaf = FVector3f(
+			FMath::Lerp(B.color[0], 0.46f, B.dryness * 0.28f),
+			FMath::Lerp(B.color[1], 0.33f, B.dryness * 0.28f),
+			FMath::Lerp(B.color[2], 0.12f, B.dryness * 0.28f)) * FMath::Lerp(0.72f, 1.08f, B.health);
+		const FVector3f Base = Leaf * FMath::Lerp(0.22f, 0.38f, B.variation);
+		const FVector3f Tip = Leaf * FMath::Lerp(0.85f, 1.25f, B.variation);
 		auto Shade = [&](float T) {
-			const float K = 0.55f + 0.55f * T;
-			return FLinearColor(FMath::Min(1.0f, B.color[0] * K), FMath::Min(1.0f, B.color[1] * K), FMath::Min(1.0f, B.color[2] * K), T).ToFColor(false);
+			FVector3f C = FMath::Lerp(Base, Tip, FMath::Pow(T, 0.75f));
+			C = FMath::Lerp(C, FVector3f(0.34f, 0.22f, 0.08f), B.dryness * FMath::SmoothStep(0.6f, 1.0f, T) * 0.55f);
+			return FLinearColor(FMath::Min(1.0f, C.X), FMath::Min(1.0f, C.Y), FMath::Min(1.0f, C.Z), T).ToFColor(false);
 		};
 		{
 			const FVector C[3] = { At(0.0f), At(0.5f), At(1.0f) };
