@@ -16,6 +16,9 @@ class USceneComponent;
  * the server and turned into a mesh by the shared core (vl_vehicle_mesh_build, off the game
  * thread). Each car is a chassis and, per wheel, a pivot at its hub that rides the suspension
  * travel and steers, carrying the knuckle, and inside it the spinning wheel and hub.
+ *
+ * Parts that come off a car (VlCarPart, the stream's detached groups) are taken off its mesh and
+ * drawn on their own at the pose the stream gives them, as the web's presentVehicleDebris does.
  */
 UCLASS()
 class VIBECITY_API AVibeVehicles : public AActor
@@ -36,6 +39,8 @@ public:
 	TOptional<VlCar> LastCar(uint32 Handle) const;
 	int32 CarCount() const { return Cars.Num(); }
 	int32 BuiltCars() const;
+	/** Parts drawn off their cars right now (tests). */
+	int32 LooseParts() const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -54,7 +59,16 @@ private:
 		bool bBuilt = false;
 		bool bRequested = false;
 		FString GeometryHash;
+		/** The mesh, kept so the car can be rebuilt without its detached parts. */
+		TArray<VlVehicleVertex> Vertices;
+		float OriginHeight = 0.0f;
+		/** Parts off the car, and the component each is drawn with. */
+		TSet<uint32> Detached;
+		TMap<uint32, TObjectPtr<UProceduralMeshComponent>> Loose;
 	};
+
+	void Rebuild(uint32 Handle, FCar& Car);
+	UProceduralMeshComponent* LoosePart(uint32 Handle, FCar& Car, uint32 Part);
 
 	void OnFrame(const VlFrameView& Frame);
 	FCar& CarFor(uint32 Handle);

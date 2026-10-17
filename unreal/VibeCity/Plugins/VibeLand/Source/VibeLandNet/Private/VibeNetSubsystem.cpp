@@ -170,6 +170,14 @@ FString UVibeNetSubsystem::VehicleGeometryHash(uint32 Handle) const
 	return VehicleAssetText(Client, Handle, 0);
 }
 
+void UVibeNetSubsystem::SetVehicleMetadata(uint32 Handle, TConstArrayView<uint8> Metadata)
+{
+	if (Client)
+	{
+		vl_client_set_vehicle_metadata(Client, Handle, Metadata.GetData(), Metadata.Num());
+	}
+}
+
 FString UVibeNetSubsystem::VehicleConfiguration(uint32 Handle) const
 {
 	return VehicleAssetText(Client, Handle, 1);

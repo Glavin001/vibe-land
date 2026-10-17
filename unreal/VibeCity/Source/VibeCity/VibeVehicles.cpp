@@ -152,6 +152,50 @@ void AVibeVehicles::OnFrame(const VlFrameView& Frame)
 			Pair.Value.Root->SetVisibility(false, true);
 		}
 	}
+
+	// Parts off their cars: take them off the car's mesh when the set changes, draw each at its pose.
+	TMap<uint32, TSet<uint32>> Off;
+	for (size_t i = 0; i < Frame.car_part_count; ++i)
+	{
+		Off.FindOrAdd(Frame.car_parts[i].handle).Add(Frame.car_parts[i].part);
+	}
+	for (TPair<uint32, FCar>& Pair : Cars)
+	{
+		FCar& Car = Pair.Value;
+		const TSet<uint32>* Now = Off.Find(Pair.Key);
+		const TSet<uint32> Detached = Now ? *Now : TSet<uint32>();
+		if (Car.bBuilt && (Detached.Num() != Car.Detached.Num() || !Detached.Includes(Car.Detached)))
+		{
+			Car.Detached = Detached;
+			Rebuild(Pair.Key, Car);
+			for (TPair<uint32, TObjectPtr<UProceduralMeshComponent>>& Loose : Car.Loose)
+			{
+				Loose.Value->SetVisibility(Car.Detached.Contains(Loose.Key));
+			}
+		}
+	}
+	for (size_t i = 0; i < Frame.car_part_count; ++i)
+	{
+		const VlCarPart& P = Frame.car_parts[i];
+		FCar* Car = Cars.Find(P.handle);
+		if (!Car || !Car->bBuilt)
+		{
+			continue;
+		}
+		UProceduralMeshComponent* C = LoosePart(P.handle, *Car, P.part);
+		C->SetWorldLocationAndRotation(FVector(P.pos[0], P.pos[1], P.pos[2]), FQuat(P.quat[0], P.quat[1], P.quat[2], P.quat[3]));
+		C->SetVisibility(true);
+	}
+}
+
+int32 AVibeVehicles::LooseParts() const
+{
+	int32 Count = 0;
+	for (const TPair<uint32, FCar>& Pair : Cars)
+	{
+		Count += Pair.Value.Detached.Num();
+	}
+	return Count;
 }
 
 void AVibeVehicles::RequestMesh(uint32 Handle)
@@ -179,6 +223,13 @@ void AVibeVehicles::RequestMesh(uint32 Handle)
 			return;
 		}
 		TArray<uint8> Bytes = Response->GetContent();
+		if (AVibeVehicles* Self = Weak.Get())
+		{
+			if (UVibeNetSubsystem* Net = NetFor(Self))
+			{
+				Net->SetVehicleMetadata(Handle, Bytes);
+			}
+		}
 		// The core builds the hulls; ~a few hundred parts, so off the game thread.
 		Async(EAsyncExecution::ThreadPool, [Weak, Handle, Bytes = MoveTemp(Bytes), Configuration]()
 		{
@@ -215,17 +266,32 @@ void AVibeVehicles::ApplyMesh(uint32 Handle, VlVehicleMesh* Mesh)
 		Car.Hubs[W] = FVector(View.hubs[W][0], View.hubs[W][1], View.hubs[W][2]);
 		Car.Pivots[W]->SetRelativeLocation(Car.Hubs[W]);
 	}
-	// Sort triangles into the components: chassis (actor frame), knuckles and wheels (hub frame).
+	Car.Vertices = TArray<VlVehicleVertex>(View.vertices, static_cast<int32>(View.vertex_count));
+	Car.OriginHeight = View.origin_height;
+	Rebuild(Handle, Car);
+	Car.bBuilt = true;
+	UE_LOG(LogVibeLand, Display, TEXT("car %u: built %zu triangles"), Handle, View.vertex_count / 3);
+	vl_vehicle_mesh_destroy(Mesh);
+}
+
+void AVibeVehicles::Rebuild(uint32 Handle, FCar& Car)
+{
+	// Sort triangles into the components: chassis (actor frame), knuckles and wheels (hub frame);
+	// parts off the car are left out (they are drawn by LoosePart).
 	FSectionMesh Sections[VL_VEHICLE_SECTIONS];
-	for (size_t i = 0; i + 2 < View.vertex_count; i += 3)
+	for (int32 i = 0; i + 2 < Car.Vertices.Num(); i += 3)
 	{
-		const uint32 Section = FMath::Min(View.vertices[i].section, (uint32)VL_VEHICLE_SECTIONS - 1);
-		const uint32 Color = View.vertices[i].color_rgba;
+		if (Car.Detached.Contains(Car.Vertices[i].part))
+		{
+			continue;
+		}
+		const uint32 Section = FMath::Min(Car.Vertices[i].section, (uint32)VL_VEHICLE_SECTIONS - 1);
+		const uint32 Color = Car.Vertices[i].color_rgba;
 		const FVector Origin = Section == VL_VEHICLE_SECTION_CHASSIS ? FVector::ZeroVector
 			: Car.Hubs[(Section - (Section >= VL_VEHICLE_SECTION_KNUCKLE ? VL_VEHICLE_SECTION_KNUCKLE : VL_VEHICLE_SECTION_WHEEL)) % 4];
-		for (size_t k = 0; k < 3; ++k)
+		for (int32 k = 0; k < 3; ++k)
 		{
-			const VlVehicleVertex& V = View.vertices[i + k];
+			const VlVehicleVertex& V = Car.Vertices[i + k];
 			Sections[Section].Positions.FindOrAdd(Color).Add(FVector(V.pos[0], V.pos[1], V.pos[2]) - Origin);
 			Sections[Section].Normals.FindOrAdd(Color).Add(FVector(V.normal[0], V.normal[1], V.normal[2]));
 		}
@@ -253,9 +319,49 @@ void AVibeVehicles::ApplyMesh(uint32 Handle, VlVehicleMesh* Mesh)
 		Fill(Car.Wheels[W], Sections[VL_VEHICLE_SECTION_WHEEL + W]);
 		Fill(Car.Knuckles[W], Sections[VL_VEHICLE_SECTION_KNUCKLE + W]);
 	}
-	Car.bBuilt = true;
-	UE_LOG(LogVibeLand, Display, TEXT("car %u: built %zu triangles"), Handle, View.vertex_count / 3);
-	vl_vehicle_mesh_destroy(Mesh);
+}
+
+UProceduralMeshComponent* AVibeVehicles::LoosePart(uint32 Handle, FCar& Car, uint32 Part)
+{
+	if (TObjectPtr<UProceduralMeshComponent>* Found = Car.Loose.Find(Part))
+	{
+		return *Found;
+	}
+	UProceduralMeshComponent* C = NewObject<UProceduralMeshComponent>(this, *FString::Printf(TEXT("Car%uPart%u"), Handle, Part));
+	C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	C->SetMobility(EComponentMobility::Movable);
+	C->SetupAttachment(RootComponent);
+	C->RegisterComponent();
+	// The part in the asset's source frame (VlCarPart maps it to the world): actor + origin height.
+	FSectionMesh S;
+	const FVector Lift(0.0, 0.0, Car.OriginHeight);
+	for (int32 i = 0; i + 2 < Car.Vertices.Num(); i += 3)
+	{
+		if (Car.Vertices[i].part != Part)
+		{
+			continue;
+		}
+		for (int32 k = 0; k < 3; ++k)
+		{
+			const VlVehicleVertex& V = Car.Vertices[i + k];
+			S.Positions.FindOrAdd(V.color_rgba).Add(FVector(V.pos[0], V.pos[1], V.pos[2]) + Lift);
+			S.Normals.FindOrAdd(V.color_rgba).Add(FVector(V.normal[0], V.normal[1], V.normal[2]));
+		}
+	}
+	int32 Index = 0;
+	for (TPair<uint32, TArray<FVector>>& Pair : S.Positions)
+	{
+		TArray<int32> Triangles;
+		for (int32 t = 0; t < Pair.Value.Num(); ++t)
+		{
+			Triangles.Add(t);
+		}
+		C->CreateMeshSection_LinearColor(Index, Pair.Value, Triangles, S.Normals[Pair.Key], {}, {}, {}, false);
+		C->SetMaterial(Index, MaterialFor(Pair.Key));
+		++Index;
+	}
+	Car.Loose.Add(Part, C);
+	return C;
 }
 
 TOptional<uint32> AVibeVehicles::NearestCar(const FVector& Position, double RadiusCm) const

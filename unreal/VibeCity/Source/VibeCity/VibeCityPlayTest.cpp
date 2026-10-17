@@ -1039,3 +1039,134 @@ bool FVibeCityPlayLookAtRemote::RunTest(const FString& Parameters)
 }
 
 #endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+// VibeCity.Play.WreckCar: cannonballs into a parked car knock parts off it (the server's destructible
+// car); the parts come through the stream (VlCarPart) and are drawn off the car (AVibeVehicles).
+// -VibeShotDir=<dir> saves wreck.png. Needs the PhysX server with destructible cars.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayWreckCar, "VibeCity.Play.WreckCar",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayWreckCar::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		VlLocal Local = {};
+		int32 MaxParts = 0;
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+		double NextShot = 0.0;
+		int32 Shots = 0;
+		uint32 Car = 0;
+		FVector CarAt = FVector::ZeroVector;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	auto Vehicles = []() -> AVibeVehicles*
+	{
+		TActorIterator<AVibeVehicles> It(GameWorld());
+		return It ? *It : nullptr;
+	};
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 90.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
+			{
+				S->Local = Frame.local;
+				S->MaxParts = FMath::Max(S->MaxParts, static_cast<int32>(Frame.car_part_count));
+			});
+		}
+		const AVibeVehicles* V = Vehicles();
+		if ((S->Local.player.flags & VL_PLAYER_VALID) && V && V->BuiltCars() > 0)
+		{
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("no car drawn"));
+			return true;
+		}
+		return false;
+	}));
+	// 15 m from the nearest car, level with it.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
+	{
+		const FVector Me(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		TOptional<uint32> Car = Vehicles()->NearestCar(Me, 1.0e9);
+		S->Car = *Car;
+		S->CarAt = *Vehicles()->CarPosition(*Car);
+		const FVector Away = (Me - S->CarAt).GetSafeNormal2D();
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->CameraDrop(S->CarAt + Away * 1500.0 + FVector(0.0, 0.0, 100.0), static_cast<float>((-Away).Rotation().Yaw), 0.0f);
+		}
+		AddInfo(FString::Printf(TEXT("car %u at %s"), *Car, *S->CarAt.ToString()));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Click();
+		Key(EKeys::Two, true);
+		Key(EKeys::Two, false);
+		S->Deadline = Now() + 40.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles]()
+	{
+		const AVibeVehicles* V = Vehicles();
+		if (S->MaxParts > 0 && V && V->LooseParts() > 0)
+		{
+			AddInfo(FString::Printf(TEXT("%d part(s) off car %u after %d cannon shot(s); %d drawn loose"), S->MaxParts, S->Car, S->Shots, V->LooseParts()));
+			return true;
+		}
+		if (Now() >= S->NextShot && S->Shots < 3)
+		{
+			// Aim at the car's middle, a little above its origin.
+			const FVector Eye(S->Local.eye[0], S->Local.eye[1], S->Local.eye[2]);
+			const FVector Target = Vehicles()->CarPosition(S->Car).Get(S->CarAt) + FVector(0.0, 0.0, 60.0);
+			if (APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0))
+			{
+				PC->SetControlRotation((Target - Eye).Rotation());
+			}
+			Click();
+			S->Shots += 1;
+			S->NextShot = Now() + 4.0;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(FString::Printf(TEXT("no part came off car %u after %d cannon shots"), S->Car, S->Shots));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("wreck.png"), false, false);
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif

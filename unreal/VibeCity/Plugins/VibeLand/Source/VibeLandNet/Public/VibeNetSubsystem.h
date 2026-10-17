@@ -62,6 +62,10 @@ public:
 	FString VehicleGeometryHash(uint32 Handle) const;
 	FString VehicleConfiguration(uint32 Handle) const;
 
+	/** Hand the core a car's metadata.json, so its detached parts rest on the ground as the
+	 * server's do. */
+	void SetVehicleMetadata(uint32 Handle, TConstArrayView<uint8> Metadata);
+
 	/** The city's chunks (empty until the manifest arrived). */
 	TArrayView<const VlChunk> Chunks() const;
 
