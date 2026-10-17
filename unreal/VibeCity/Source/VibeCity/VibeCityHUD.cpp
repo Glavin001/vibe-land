@@ -138,6 +138,25 @@ void AVibeCityHUD::DrawHUD()
 	{
 		Banner(TEXT("Spawn protection"), FLinearColor(0.6f, 0.9f, 1.0f), H * 0.62f);
 	}
+	// Car hints (the web's ControlHintsOverlay).
+	if (const AVibePlayerPawn* Pawn = Cast<AVibePlayerPawn>(GetOwningPawn()); Pawn && !bDead)
+	{
+		FString Hint;
+		if (Pawn->IsInVehicle())
+		{
+			Hint = TEXT("W/S throttle  A/D steer  Space handbrake  R reset car  E leave");
+		}
+		else if (Pawn->NearCar())
+		{
+			Hint = TEXT("E  drive");
+		}
+		if (!Hint.IsEmpty())
+		{
+			float TextW = 0.0f, TextH = 0.0f;
+			GetTextSize(Hint, TextW, TextH, GEngine->GetMediumFont());
+			DrawText(Hint, FLinearColor::White, (W - TextW) * 0.5f, H * 0.75f, GEngine->GetMediumFont());
+		}
+	}
 	if (Local.energy >= 0.0f && Local.energy > 0.0f && Local.energy < LowEnergyThreshold)
 	{
 		Banner(TEXT("Low energy"), FLinearColor(1.0f, 0.8f, 0.2f), H * 0.68f);

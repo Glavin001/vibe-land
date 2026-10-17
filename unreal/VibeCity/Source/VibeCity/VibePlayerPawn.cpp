@@ -349,6 +349,12 @@ void AVibePlayerPawn::Interact()
 	}
 }
 
+bool AVibePlayerPawn::NearCar() const
+{
+	TActorIterator<AVibeVehicles> Vehicles(GetWorld());
+	return bJoined && !bAerial && Vehicles && Vehicles->NearestCar(GetActorLocation(), VehicleInteractRadiusCm).IsSet();
+}
+
 void AVibePlayerPawn::FollowCar(float DeltaSeconds)
 {
 	// The web's chase camera (scene/GameWorld.tsx): focus 1 m above the chassis, 6 m behind along the

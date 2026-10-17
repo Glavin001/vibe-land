@@ -55,11 +55,13 @@ bool UVibeNetSubsystem::Connect(const FString& InApiBaseUrl, const FString& InMa
 		return false;
 	}
 	UE_LOG(LogVibeLand, Display, TEXT("connecting to %s, match %s"), *ApiBaseUrl, *MatchId);
+	bWantConnected = true;
 	return true;
 }
 
 void UVibeNetSubsystem::Disconnect()
 {
+	bWantConnected = false;
 	if (Client)
 	{
 		vl_client_destroy(Client);
@@ -71,19 +73,52 @@ void UVibeNetSubsystem::Disconnect()
 
 const VlFrameView* UVibeNetSubsystem::Poll()
 {
+	const double Now = FPlatformTime::Seconds();
 	if (!Client)
 	{
+		// A session that dropped (server restart, network) is rejoined after a backoff.
+		if (bWantConnected && Now >= ReconnectAt)
+		{
+			UE_LOG(LogVibeLand, Display, TEXT("reconnecting to %s, match %s"), *ApiBaseUrl, *MatchId);
+			const FString Api = ApiBaseUrl, Match = MatchId;
+			if (!Connect(Api, Match))
+			{
+				bWantConnected = true; // keep trying
+				ReconnectAt = Now + ReconnectDelayS;
+				ReconnectDelayS = FMath::Min(ReconnectDelayS * 2.0, 30.0);
+			}
+		}
 		return nullptr;
 	}
 	const int32 Status = vl_client_poll(Client, &Frame);
 	if (Status != VL_OK)
 	{
 		UE_LOG(LogVibeLand, Error, TEXT("poll failed (%d): %s"), Status, *LastError());
-		Disconnect();
+		DropForReconnect(Now);
 		return nullptr;
+	}
+	if (Frame.transport_state == VL_TRANSPORT_CLOSED || Frame.transport_state == VL_TRANSPORT_FAILED)
+	{
+		UE_LOG(LogVibeLand, Warning, TEXT("session ended (%s); reconnecting in %.0f s"), *LastError(), ReconnectDelayS);
+		OnFrame.Broadcast(Frame);
+		DropForReconnect(Now);
+		return nullptr;
+	}
+	if (Frame.stats.state == 3 /* playing */)
+	{
+		ReconnectDelayS = 2.0;
 	}
 	OnFrame.Broadcast(Frame);
 	return &Frame;
+}
+
+void UVibeNetSubsystem::DropForReconnect(double Now)
+{
+	const bool bWanted = bWantConnected;
+	Disconnect();
+	bWantConnected = bWanted;
+	ReconnectAt = Now + ReconnectDelayS;
+	ReconnectDelayS = FMath::Min(ReconnectDelayS * 2.0, 30.0);
 }
 
 void UVibeNetSubsystem::SetInput(const VlInput& Input)

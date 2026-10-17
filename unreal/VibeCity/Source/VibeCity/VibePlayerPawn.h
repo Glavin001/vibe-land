@@ -43,6 +43,9 @@ public:
 	/** Whether the server has placed this player yet. */
 	bool IsJoined() const { return bJoined; }
 
+	/** A car is within reach (E would enter it). */
+	bool NearCar() const;
+
 	/** The server has this player in a car. */
 	bool IsInVehicle() const { return bInVehicle; }
 

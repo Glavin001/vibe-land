@@ -80,7 +80,13 @@ public:
 	const VlFrameView& LastFrame() const { return Frame; }
 
 private:
+	void DropForReconnect(double Now);
+
 	VlClient* Client = nullptr;
+	/** Connected by the game (not by vibe.disconnect): a dropped session is rejoined. */
+	bool bWantConnected = false;
+	double ReconnectAt = 0.0;
+	double ReconnectDelayS = 2.0;
 	VlFrameView Frame = {};
 	FString ApiBaseUrl;
 	FString MatchId;
