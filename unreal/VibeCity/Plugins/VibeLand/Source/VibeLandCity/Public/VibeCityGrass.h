@@ -27,6 +27,10 @@ public:
 
 	virtual void Tick(float DeltaSeconds) override;
 
+	/** For tests: patches with a mesh, and blades drawn across them. */
+	int32 DrawnPatches() const;
+	int64 DrawnBlades() const;
+
 	/** The bare footprints (server space), from the client core once the manifest arrived. */
 	void SetExclusions(TArrayView<const VlGrassExclusion> InExclusions);
 
@@ -37,6 +41,7 @@ private:
 		TArray<VlGrassBlade> Blades;
 		bool bReady = false;
 		int32 Band = -1;
+		int32 Drawn = 0;
 		TObjectPtr<UProceduralMeshComponent> Mesh;
 	};
 

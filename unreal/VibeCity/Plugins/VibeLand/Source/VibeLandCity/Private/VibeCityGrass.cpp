@@ -162,6 +162,7 @@ void AVibeCityGrass::Rebuild(FPatch& Patch, int32 Band)
 	}
 	// The first n blades cover the whole patch (grass.rs order), so the LOD is a prefix.
 	const int32 Count = FMath::Clamp(FMath::RoundToInt(Patch.Blades.Num() * Bands[Band]), 0, Patch.Blades.Num());
+	Patch.Drawn = Count;
 	TArray<FVector> Vertices;
 	TArray<int32> Triangles;
 	TArray<FVector> Normals;
@@ -207,4 +208,24 @@ void AVibeCityGrass::Rebuild(FPatch& Patch, int32 Band)
 		Patch.Mesh->CreateMeshSection(0, Vertices, Triangles, Normals, NoUV, Colors, NoTangents, false);
 		Patch.Mesh->SetMaterial(0, GrassMaterial);
 	}
+}
+
+int32 AVibeCityGrass::DrawnPatches() const
+{
+	int32 N = 0;
+	for (const TPair<FIntPoint, FPatch>& Pair : Patches)
+	{
+		N += Pair.Value.Mesh && Pair.Value.Drawn > 0 ? 1 : 0;
+	}
+	return N;
+}
+
+int64 AVibeCityGrass::DrawnBlades() const
+{
+	int64 N = 0;
+	for (const TPair<FIntPoint, FPatch>& Pair : Patches)
+	{
+		N += Pair.Value.Drawn;
+	}
+	return N;
 }

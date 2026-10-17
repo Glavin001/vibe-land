@@ -84,6 +84,8 @@ void AVibeCityDirector::Tick(float DeltaSeconds)
 	{
 		ApplyFrame(*Frame);
 		SpawnDust(*Frame);
+		SoundsSeenCount += static_cast<int64>(Frame->sound_count);
+		DustSeenCount += static_cast<int64>(Frame->dust_count);
 	}
 	TickDust(DeltaSeconds);
 	ShowStatus(*Frame);

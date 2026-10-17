@@ -40,6 +40,18 @@ public:
 	int32 ChunksOnBodies() const;
 	int32 PosedBodies() const { return BodyPoses.Num(); }
 
+	/** For tests: vertices drawn by standing cells and by bodies, chunks removed, live dust puffs,
+	 * whether chunks wear the generated catalog material, sounds seen in frames so far. */
+	int64 DrawnCellVertices() const;
+	int64 DrawnBodyVertices() const;
+	int32 RemovedChunks() const;
+	/** The vertices that should be drawn: every chunk's core mesh but the removed ones'. */
+	int64 ExpectedVertices() const;
+	int32 LiveDust() const { return DustPuffs.Num(); }
+	bool UsesCatalogMaterial() const { return ChunkMaterial != nullptr; }
+	int64 SoundsSeen() const { return SoundsSeenCount; }
+	int64 DustSeen() const { return DustSeenCount; }
+
 	/** Fired once, when the city has been built from the manifest. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnCityBuilt, const FBox& /*Bounds*/);
 	FOnCityBuilt OnCityBuilt;
@@ -126,6 +138,8 @@ private:
 	TArray<bool> CatalogGlass;
 	FBox Bounds = FBox(ForceInit);
 	bool bCityBuilt = false;
+	int64 SoundsSeenCount = 0;
+	int64 DustSeenCount = 0;
 	uint32 LastTransportState = 0;
 	uint32 LastCoreState = 0;
 	float SecondsSinceStatus = 0.0f;

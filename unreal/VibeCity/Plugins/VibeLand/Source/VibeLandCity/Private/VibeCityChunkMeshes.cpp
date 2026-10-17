@@ -296,3 +296,65 @@ void AVibeCityDirector::ApplyFrame(const VlFrameView& Frame)
 	DirtyCells.Reset();
 	DirtyBodies.Reset();
 }
+
+namespace
+{
+	int64 SectionVertices(const UProceduralMeshComponent* Mesh)
+	{
+		int64 N = 0;
+		for (int32 s = 0; Mesh && s < Mesh->GetNumSections(); ++s)
+		{
+			if (const FProcMeshSection* Section = const_cast<UProceduralMeshComponent*>(Mesh)->GetProcMeshSection(s))
+			{
+				N += Section->ProcVertexBuffer.Num();
+			}
+		}
+		return N;
+	}
+}
+
+int64 AVibeCityDirector::DrawnCellVertices() const
+{
+	int64 N = 0;
+	for (const TObjectPtr<UProceduralMeshComponent>& Cell : CellComponents)
+	{
+		N += SectionVertices(Cell);
+	}
+	return N;
+}
+
+int64 AVibeCityDirector::DrawnBodyVertices() const
+{
+	int64 N = 0;
+	for (const TPair<uint64, TObjectPtr<UProceduralMeshComponent>>& Pair : BodyComponents)
+	{
+		N += SectionVertices(Pair.Value);
+	}
+	return N;
+}
+
+int32 AVibeCityDirector::RemovedChunks() const
+{
+	int32 N = 0;
+	for (const FChunkSlot& Slot : Slots)
+	{
+		N += Slot.bRemoved ? 1 : 0;
+	}
+	return N;
+}
+
+int64 AVibeCityDirector::ExpectedVertices() const
+{
+	UVibeNetSubsystem* NetSubsystem = Net();
+	VlMeshView M = {};
+	if (!NetSubsystem || !NetSubsystem->ChunkMeshes(M))
+	{
+		return -1;
+	}
+	int64 N = 0;
+	for (int32 i = 0; i < Slots.Num() && static_cast<size_t>(i) < M.range_count; ++i)
+	{
+		N += Slots[i].bRemoved ? 0 : M.ranges[i].vertex_count;
+	}
+	return N;
+}
