@@ -107,7 +107,11 @@ the web's fog curve (Gaussian) is thinner under 40 m.
 - **Lumen on broken cells.** Lumen global illumination and reflections and virtual shadow maps are
   on, and imported cells carry distance fields. A cell drawing its runtime (procedural) mesh, after
   its first fracture or with no import for the manifest, has none, so Lumen's software tracing
-  misses it until a reset.
+  misses it until a reset. Hardware ray tracing would see those meshes too
+  (`r.RayTracing.Geometry.ProceduralMeshes`), but Unreal 5.8 offers it on the Mac only on the SM6
+  shader platform, and SM6 needs macOS 15: on this Mac (macOS 14.4) a launch with `-sm6` stops on
+  "-sm6 is selected but Mac requires OS 15 to support SM6". Distance fields cannot be built at
+  runtime outside the editor, so on macOS 14 this stays.
 - **The web on the core (on by default since 2026-10-17).** Each module has its own flag, on by
   default (`client/src/core/coreFlags.ts` `coreFlag`); `?name=0` on the page URL, or its `VITE_`
   variable set to 0, puts that module back on its TypeScript. Every one is held equal to the
