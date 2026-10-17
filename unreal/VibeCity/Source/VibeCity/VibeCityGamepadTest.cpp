@@ -3,16 +3,19 @@
 // the path a real controller's input takes:
 //  * the left stick pushed fully forward sends move (0, 1) (radial deadzone 0.18, rescaled to the rim);
 //  * the right stick fully right turns the view at the gamepad yaw speed, 2.8 rad/s (160°/s), ±10%;
-//  * RT asks the core to fire; A sends the jump bit.
+//  * RT asks the core to fire; A sends the jump bit;
+//  * and a mouse click pressed and released within one frame fires (as the web's mousedown).
 // Run in the game (scripts/unreal/play-tests.sh --only VibeCity.Gamepad).
 
 #include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/AutomationTest.h"
 #include "Tests/AutomationCommon.h"
+#include "Widgets/SWindow.h"
 #include "VibeCityPlayerController.h"
 #include "VibePlayerPawn.h"
 #include "vibe_client_core.h"
@@ -139,10 +142,15 @@ bool FVibeCityGamepad::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FHoldAxis(EKeys::Gamepad_RightTriggerAxis, 1.0f, 0.4));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
 	{
-		Axis(EKeys::Gamepad_RightTriggerAxis, 0.0f);
 		const int32 Fires = (PadPawn() ? PadPawn()->FireRequests() : 0) - S->FiresBefore;
 		AddInfo(FString::Printf(TEXT("RT: %d fire requests"), Fires));
 		TestTrue(TEXT("RT fires"), Fires > 0);
+		return true;
+	}));
+	// RT released (a pad sends its value each frame; a lone 0 in the frame of the last 1 is averaged away).
+	ADD_LATENT_AUTOMATION_COMMAND(FHoldAxis(EKeys::Gamepad_RightTriggerAxis, 0.0f, 0.2));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([]()
+	{
 		Button(EKeys::Gamepad_FaceButton_Bottom, true);
 		return true;
 	}));
@@ -151,6 +159,42 @@ bool FVibeCityGamepad::RunTest(const FString& Parameters)
 	{
 		TestTrue(TEXT("A sends the jump bit"), PadPawn() && (PadPawn()->SentButtons() & VL_BTN_JUMP) != 0);
 		Button(EKeys::Gamepad_FaceButton_Bottom, false);
+		return true;
+	}));
+	// A click pressed and released within one frame still fires, as the web's mousedown does
+	// (a quick click at a low frame rate). Past the rifle's fire interval first.
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		S->FiresBefore = PadPawn() ? PadPawn()->FireRequests() : 0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.3f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		const int32 Idle = (PadPawn() ? PadPawn()->FireRequests() : 0) - S->FiresBefore;
+		AddInfo(FString::Printf(TEXT("nothing held: %d fire requests"), Idle));
+		TestEqual(TEXT("with RT released and no button down, nothing fires"), Idle, 0);
+		S->FiresBefore = PadPawn() ? PadPawn()->FireRequests() : 0;
+		FSlateApplication& Slate = FSlateApplication::Get();
+		UGameViewportClient* Viewport = GEngine->GameViewport;
+		TSharedPtr<SWindow> Window = Viewport ? Viewport->GetWindow() : nullptr;
+		if (Window)
+		{
+			const FVector2D At = Slate.GetCursorPos();
+			Slate.ProcessMouseButtonDownEvent(Window->GetNativeWindow(), FPointerEvent(Slate.GetUserIndexForMouse(), FSlateApplication::CursorPointerIndex,
+				At, At, TSet<FKey>({ EKeys::LeftMouseButton }), EKeys::LeftMouseButton, 0.0f, FModifierKeysState()));
+			Slate.ProcessMouseButtonUpEvent(FPointerEvent(Slate.GetUserIndexForMouse(), FSlateApplication::CursorPointerIndex,
+				At, At, TSet<FKey>(), EKeys::LeftMouseButton, 0.0f, FModifierKeysState()));
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.3f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		const int32 Fires = (PadPawn() ? PadPawn()->FireRequests() : 0) - S->FiresBefore;
+		AddInfo(FString::Printf(TEXT("one-frame click: %d fire requests"), Fires));
+		TestEqual(TEXT("a click within one frame fires once"), Fires, 1);
 		return true;
 	}));
 	return true;
