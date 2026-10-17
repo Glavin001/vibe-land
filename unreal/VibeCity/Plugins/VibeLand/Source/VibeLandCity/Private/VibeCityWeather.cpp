@@ -53,10 +53,19 @@ AVibeCityWeather::AVibeCityWeather()
 	Particles->SetBoundsScale(10000.0f);
 }
 
-void AVibeCityWeather::SetFog(UExponentialHeightFogComponent* InFog, float InClearDensity)
+AVibeCityWeather::FUnrealFog AVibeCityWeather::UnrealFog(float Intensity)
 {
-	Fog = InFog;
-	ClearDensity = InClearDensity;
+	// The web (CityEnvironment.tsx, fogSettings.ts): FogExp2 at density ρ·intensity, transmittance
+	// exp(−(ρ·i·d)²), designed for opacity 0.55 at the server's area of interest R = 80 m
+	// (shared/src/constants.rs PLAYER_AOI_RADIUS_M). Unreal's height fog with no falloff, along a
+	// level ray past its start distance s (HeightFogCommon.ush: LineIntegral → ln 2; SceneCore.cpp:
+	// density / 1000 per cm): transmittance exp(−k·(d − s)) with k = (D/1000)·(ln 2)² per cm.
+	// Gaussian against exponential: match the web's transmittance and its slope at R, which gives
+	// k = 2(ρi)²R and s = R/2 (within a few percent of the web from 0.75R to 1.75R).
+	constexpr float AoiM = 80.0f;
+	const float Rho = vl_weather_fog_exp2_density() * Intensity;
+	const float KPerM = 2.0f * Rho * Rho * AoiM;
+	return { KPerM / 100.0f * 1000.0f / (UE_LN2 * UE_LN2), AoiM * 0.5f * 100.0f };
 }
 
 void AVibeCityWeather::BeginPlay()
@@ -82,7 +91,9 @@ void AVibeCityWeather::SetWeather(int32 InPreset, float Intensity)
 	if (Fog)
 	{
 		Fog->SetFogInscatteringColor(Srgb(W->fog_rgba));
-		Fog->SetFogDensity(ClearDensity * Intensity);
+		const FUnrealFog F = UnrealFog(Intensity);
+		Fog->SetFogDensity(F.Density);
+		Fog->SetStartDistance(F.StartCm);
 	}
 	const float BoxCm = W->box_m * 100.0f;
 	Build(static_cast<int32>(W->particle_count), BoxCm);

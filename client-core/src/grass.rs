@@ -155,6 +155,22 @@ impl GrassPaint {
         Ok((s.revision, Self::from_layout(s.layout)?))
     }
 
+    /// The ground's canopy tint at a world point (groundNodes.ts): the paint's cover texture (one
+    /// 2 m texel, `GrassPaint.updateCover`) as `mix(cover.rgb · 0.7 / (0.3199, 0.236, 0.1062), 1,
+    /// 1 − cover.density)`, a multiplier on the ochre grass photograph (linear RGB).
+    pub fn ground_tint(&self, x: f32, z: f32) -> [f32; 3] {
+        // updateCover: texel (tx, tz) over ±256 m reads the cell at (2t − 256 + 1) m.
+        let texel = |v: f32| (((v + 256.0) / 2.0).floor().clamp(0.0, 255.0)) * 2.0 - 256.0 + 1.0;
+        let (cx, cz) = (texel(x), texel(z));
+        let mut cell = [0.0f32; CHANNELS];
+        self.cell((cx / CELL).floor() as i32, (cz / CELL).floor() as i32, &mut cell);
+        // The cover texture holds bytes; three samples it as unorm.
+        let unorm = |b: f32| b / 255.0;
+        let dirt = 1.0 - unorm(cell[0]);
+        let canopy = [unorm(cell[2]) * 0.7 / 0.3199, unorm(cell[3]) * 0.7 / 0.236, unorm(cell[4]) * 0.7 / 0.1062];
+        canopy.map(|c| c + (1.0 - c) * dirt)
+    }
+
     pub fn tile_count(&self) -> usize {
         self.tiles.len()
     }
@@ -412,6 +428,19 @@ mod tests {
         assert!(GrassPaint::from_snapshot_json(br#"{"revision":"x","layout":{"version":3,"tiles":[]}}"#).is_err());
         let bad_species = format!(r#"{{"version":3,"tiles":[{{"x":0,"z":0,"data":[{}]}}]}}"#, vec!["0,0,0,0,0,9,0,0,0,0,0,0"; 256].join(","));
         assert!(GrassPaint::from_layout_json(bad_species.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn ground_tint_is_the_web_canopy() {
+        // The default meadow at the origin: cell (0, 0) holds GrassPaint.defaults(0.25, 0.25).
+        let mut cell = [0.0f32; CHANNELS];
+        default_cell(1.25, 1.25, &mut cell);
+        let tint = GrassPaint::default().ground_tint(1.0, 1.0);
+        let dirt = 1.0 - cell[0] / 255.0;
+        let want = (cell[3] / 255.0 * 0.7 / 0.236) * (1.0 - dirt) + dirt;
+        assert!((tint[1] - want).abs() < 1e-6, "{tint:?} {want}");
+        // Green canopy: the ochre photo's green channel is lifted the most.
+        assert!(tint[1] > tint[0] && tint[1] > tint[2]);
     }
 
     #[test]

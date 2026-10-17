@@ -116,8 +116,11 @@ void AVibeCityDirector::BuildCity(UVibeNetSubsystem* NetSubsystem)
 		if (AVibeCityGrass* Grass = GetWorld()->SpawnActor<AVibeCityGrass>())
 		{
 			Grass->SetExclusions(NetSubsystem->GrassExclusions());
-			// GrassLayoutSync.ts grassLayoutUrl: the match's shared painted grass.
-			Grass->SetLayoutUrl(NetSubsystem->CurrentApiBaseUrl() / TEXT("match-stats") / FGenericPlatformHttp::UrlEncode(NetSubsystem->CurrentMatchId()) / TEXT("grass"));
+			// GrassLayoutSync.ts grassLayoutUrl: the match's shared painted grass, from the game
+			// server unless -VibeGrassUrl= names another (the web's GRASS_SERVER_PORT service).
+			FString GrassUrl = NetSubsystem->CurrentApiBaseUrl() / TEXT("match-stats") / FGenericPlatformHttp::UrlEncode(NetSubsystem->CurrentMatchId()) / TEXT("grass");
+			FParse::Value(FCommandLine::Get(), TEXT("VibeGrassUrl="), GrassUrl);
+			Grass->SetLayoutUrl(GrassUrl);
 		}
 	}
 	UE_LOG(LogVibeLand, Display, TEXT("city built: %d chunks (%llu vertices) in %d cells, %.1f ms; bounds %s"),

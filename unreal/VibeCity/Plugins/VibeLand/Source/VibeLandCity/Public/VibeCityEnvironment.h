@@ -12,6 +12,7 @@ class UProceduralMeshComponent;
 class USkyAtmosphereComponent;
 class USkyLightComponent;
 class AVibeCityWeather;
+struct VlGrassPaint;
 
 /**
  * The city's sky, light and ground, matching the web client's (client/src/scene/CityEnvironment.tsx,
@@ -31,12 +32,16 @@ public:
 
 	virtual void BeginPlay() override;
 
+	/** Re-tint the ground for a grass layout (null: the default meadow), as the web's ground takes
+	 * its canopy colour from the grass paint (client-core grass.rs ground_tint). */
+	void SetGroundCover(const VlGrassPaint* Paint);
+
 	/** The web's sun (client/src/graphics/sunSky.ts DEFAULT_SUN_*). */
 	static constexpr float SunElevationDeg = 39.3f;
 	static constexpr float SunAzimuthDeg = 69.4f;
 
 private:
-	void BuildGround();
+	void BuildGround(const VlGrassPaint* Paint);
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UDirectionalLightComponent> Sun;

@@ -29,8 +29,17 @@ public:
 
 	/** The preset (VL_WEATHER_*) at a thickness (the web's intensity, 0.25 to 5). */
 	void SetWeather(int32 Preset, float Intensity);
-	/** The fog this weather recolours (the environment's). */
-	void SetFog(UExponentialHeightFogComponent* InFog, float InClearDensity);
+	/** The fog this weather recolours and thickens (the environment's). */
+	void SetFog(UExponentialHeightFogComponent* InFog) { Fog = InFog; }
+
+	/** Unreal's height fog (density, start distance in cm) matching the web's FogExp2 at an
+	 * intensity (see the .cpp for the derivation). */
+	struct FUnrealFog
+	{
+		float Density;
+		float StartCm;
+	};
+	static FUnrealFog UnrealFog(float Intensity);
 
 	int32 Preset() const { return CurrentPreset; }
 	/** For tests: particles drawn now. */
@@ -49,7 +58,6 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UExponentialHeightFogComponent> Fog;
 
-	float ClearDensity = 0.0f;
 	int32 CurrentPreset = -1;
 	int32 Drawn = 0;
 };

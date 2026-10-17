@@ -849,6 +849,21 @@ pub unsafe extern "C" fn vl_grass_paint_tiles(paint: *const VlGrassPaint) -> usi
     paint.as_ref().map_or(0, |p| p.0.tile_count())
 }
 
+/// The ground's tint at server (x, z) under `paint` (null: the default meadow): the web's canopy
+/// colour over its grass photograph (client-core grass.rs `ground_tint`), linear RGB into `out[3]`.
+///
+/// # Safety
+/// `paint` null or live; `out` writable for three floats.
+#[no_mangle]
+pub unsafe extern "C" fn vl_grass_ground_tint(paint: *const VlGrassPaint, x: f32, z: f32, out: *mut f32) {
+    if out.is_null() {
+        return;
+    }
+    let unpainted = vibe_client_core::grass::GrassPaint::default();
+    let tint = paint.as_ref().map_or(&unpainted, |p| &p.0).ground_tint(x, z);
+    std::ptr::copy_nonoverlapping(tint.as_ptr(), out, 3);
+}
+
 /// # Safety
 /// `paint` null or from `vl_grass_paint_parse`, not used after this (by any thread).
 #[no_mangle]

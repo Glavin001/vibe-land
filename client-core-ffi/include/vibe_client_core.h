@@ -1174,6 +1174,15 @@ struct VlGrassPaint *vl_grass_paint_parse(const uint8_t *bytes,
 size_t vl_grass_paint_tiles(const struct VlGrassPaint *paint);
 
 /**
+ * The ground's tint at server (x, z) under `paint` (null: the default meadow): the web's canopy
+ * colour over its grass photograph (client-core grass.rs `ground_tint`), linear RGB into `out[3]`.
+ *
+ * # Safety
+ * `paint` null or live; `out` writable for three floats.
+ */
+void vl_grass_ground_tint(const struct VlGrassPaint *paint, float x, float z, float *out);
+
+/**
  * # Safety
  * `paint` null or from `vl_grass_paint_parse`, not used after this (by any thread).
  */

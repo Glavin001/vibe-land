@@ -18,6 +18,7 @@ Creates under /Game/VibeCity:
 M_VibeCityChunk reads what the client core puts on every chunk vertex:
   UV0 = texture coordinates in tiles of the face's material (core geometry.rs `tile_uvs`)
   UV1 = (catalog layer, metalness)
+  vertex colour = an albedo multiplier (white on chunks; the web's canopy tint on the ground)
 and decodes the surface sheet the way the web shader does (client/scripts/build-city-textures.py):
 RG = tangent-space normal XY (OpenGL convention; Unreal's is DirectX, so green flips), B = roughness,
 A = ambient occlusion. The albedo sheet's alpha is height, unused here.
@@ -123,7 +124,13 @@ def chunk_material(albedo_array, surface_array, name="M_VibeCityChunk", normal_m
     albedo.set_editor_property("texture", albedo_array)
     albedo.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_COLOR)
     mel.connect_material_expressions(uvw, "", albedo, "UVs")
-    mel.connect_material_property(albedo, "RGB", unreal.MaterialProperty.MP_BASE_COLOR)
+    # × vertex colour: white on chunks; on the ground, the web's canopy tint (groundNodes.ts, core
+    # grass.rs ground_tint) over the ochre grass photograph.
+    tint = expr(m, unreal.MaterialExpressionVertexColor, -700, -350)
+    tinted = expr(m, unreal.MaterialExpressionMultiply, -350, -250)
+    mel.connect_material_expressions(albedo, "RGB", tinted, "A")
+    mel.connect_material_expressions(tint, "", tinted, "B")
+    mel.connect_material_property(tinted, "", unreal.MaterialProperty.MP_BASE_COLOR)
 
     surface = expr(m, unreal.MaterialExpressionTextureSample, -800, 200)
     surface.set_editor_property("texture", surface_array)
@@ -177,7 +184,13 @@ def hd_chunk_material(albedo_array, normal_array, arm_array):
     albedo.set_editor_property("texture", albedo_array)
     albedo.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_COLOR)
     mel.connect_material_expressions(uvw, "", albedo, "UVs")
-    mel.connect_material_property(albedo, "RGB", unreal.MaterialProperty.MP_BASE_COLOR)
+    # × vertex colour: white on chunks; on the ground, the web's canopy tint (groundNodes.ts, core
+    # grass.rs ground_tint) over the ochre grass photograph.
+    tint = expr(m, unreal.MaterialExpressionVertexColor, -700, -350)
+    tinted = expr(m, unreal.MaterialExpressionMultiply, -350, -250)
+    mel.connect_material_expressions(albedo, "RGB", tinted, "A")
+    mel.connect_material_expressions(tint, "", tinted, "B")
+    mel.connect_material_property(tinted, "", unreal.MaterialProperty.MP_BASE_COLOR)
 
     normal = expr(m, unreal.MaterialExpressionTextureSample, -700, 50)
     normal.set_editor_property("texture", normal_array)

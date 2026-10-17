@@ -18,6 +18,10 @@ namespace
 {
 	// The city world's ground: flat at server y = 0, ±256 m (client/src/world/cityWorld.ts).
 	constexpr double GroundHalfExtentCm = 25600.0;
+	// Past the ground, the web shows its fog-coloured background. Unreal fogs geometry only up to
+	// the fog cutoff (so the sky stays clear, as the web's dome), so a skirt carries the ground on
+	// to near the horizon, where the fog has made it the fog colour.
+	constexpr double SkirtHalfExtentCm = 2000000.0;
 	// client/src/graphics/weatherPresets.ts, clear: fog #b7c7d8.
 	const FLinearColor ClearFogColor = FLinearColor(FColor(0xB7, 0xC7, 0xD8));
 }
@@ -52,8 +56,10 @@ AVibeCityEnvironment::AVibeCityEnvironment()
 	Fog = CreateDefaultSubobject<UExponentialHeightFogComponent>(TEXT("Fog"));
 	Fog->SetupAttachment(RootComponent);
 	Fog->SetFogInscatteringColor(ClearFogColor);
-	Fog->SetFogDensity(0.002f);
-	Fog->SetFogHeightFalloff(0.1f);
+	// Uniform, as the web's FogExp2 (AVibeCityWeather sets the density from the preset).
+	Fog->SetFogHeightFalloff(0.001f);
+	// The web fogs geometry, not its sky dome: no fog past the ground's skirt.
+	Fog->SetFogCutoffDistance(2.0 * SkirtHalfExtentCm * UE_SQRT_2);
 
 	PostProcess = CreateDefaultSubobject<UPostProcessComponent>(TEXT("PostProcess"));
 	PostProcess->SetupAttachment(RootComponent);
@@ -87,19 +93,24 @@ void AVibeCityEnvironment::BeginPlay()
 	const FVector SunDirection = FVector(TowardSun[0], TowardSun[1], TowardSun[2]).GetSafeNormal();
 	Sun->SetWorldRotation((-SunDirection).Rotation());
 	SkyLight->RecaptureSky();
-	BuildGround();
+	BuildGround(nullptr);
 	FActorSpawnParameters Params;
 	Params.Owner = this;
 	Params.bDeferConstruction = true;
 	Weather = GetWorld()->SpawnActor<AVibeCityWeather>(AVibeCityWeather::StaticClass(), FTransform::Identity, Params);
 	if (Weather)
 	{
-		Weather->SetFog(Fog, Fog->FogDensity);
+		Weather->SetFog(Fog);
 		Weather->FinishSpawning(FTransform::Identity);
 	}
 }
 
-void AVibeCityEnvironment::BuildGround()
+void AVibeCityEnvironment::SetGroundCover(const VlGrassPaint* Paint)
+{
+	BuildGround(Paint);
+}
+
+void AVibeCityEnvironment::BuildGround(const VlGrassPaint* Paint)
 {
 	// The catalog's grass, tiled at its real size, through the chunk material (UV0 = tiles,
 	// UV1 = (layer, metalness)), with the box projection the core uses for top faces: u along
@@ -119,20 +130,76 @@ void AVibeCityEnvironment::BuildGround()
 		: (bHdGround && Catalog[Grass].hd_metres_per_tile > 0.0f ? Catalog[Grass].hd_metres_per_tile : Catalog[Grass].metres_per_tile);
 	const FVector2D LayerMetal(Grass != INDEX_NONE ? Catalog[Grass].layer : 0, 0.0);
 
-	const double R = GroundHalfExtentCm;
-	const TArray<FVector> Vertices = { FVector(-R, -R, 0), FVector(R, -R, 0), FVector(R, R, 0), FVector(-R, R, 0) };
-	TArray<FVector2D> UV0;
-	for (const FVector& V : Vertices)
+	// A grid on the grass paint's cover texels (2 m, groundNodes.ts samples GrassPaint.cover over
+	// ±256 m), each vertex carrying the canopy tint the material multiplies the photograph by.
+	constexpr int32 Cells = 256;
+	const double R = GroundHalfExtentCm, Step = 2.0 * R / Cells;
+	const int32 N = Cells + 1;
+	TArray<FVector> Vertices;
+	TArray<FVector2D> UV0, UV1;
+	TArray<FVector> Normals;
+	TArray<FColor> Colors;
+	TArray<FProcMeshTangent> Tangents;
+	Vertices.Reserve(N * N);
+	UV0.Reserve(N * N);
+	Colors.Reserve(N * N);
+	const FProcMeshTangent Tangent(FVector(0, -1, 0), false);
+	for (int32 j = 0; j < N; ++j)
 	{
-		UV0.Add(FVector2D(-V.Y / 100.0 / TileM, V.X / 100.0 / TileM));
+		for (int32 i = 0; i < N; ++i)
+		{
+			const FVector V(-R + i * Step, -R + j * Step, 0.0);
+			Vertices.Add(V);
+			const float X = -V.Y / 100.0, Z = V.X / 100.0; // server metres
+			UV0.Add(FVector2D(X / TileM, Z / TileM));
+			UV1.Add(LayerMetal);
+			Normals.Add(FVector::UpVector);
+			Tangents.Add(Tangent);
+			float Tint[3];
+			vl_grass_ground_tint(Paint, X, Z, Tint);
+			// Linear, as the material reads it (the core's colours are linear).
+			Colors.Add(FLinearColor(FMath::Clamp(Tint[0], 0.0f, 1.0f), FMath::Clamp(Tint[1], 0.0f, 1.0f), FMath::Clamp(Tint[2], 0.0f, 1.0f)).ToFColor(false));
+		}
 	}
 	// The order Unreal draws as front faces seen from above (the core keeps the server's order,
 	// which through the mirrored axes is clockwise from outside by the right-hand rule).
-	const TArray<int32> Triangles = { 0, 3, 2, 0, 2, 1 };
-	const TArray<FVector> Normals = { FVector::UpVector, FVector::UpVector, FVector::UpVector, FVector::UpVector };
-	const TArray<FVector2D> UV1 = { LayerMetal, LayerMetal, LayerMetal, LayerMetal };
-	const FProcMeshTangent Tangent(FVector(0, -1, 0), false);
-	const TArray<FProcMeshTangent> Tangents = { Tangent, Tangent, Tangent, Tangent };
+	TArray<int32> Triangles;
+	Triangles.Reserve(Cells * Cells * 6);
+	for (int32 j = 0; j < Cells; ++j)
+	{
+		for (int32 i = 0; i < Cells; ++i)
+		{
+			const int32 A = j * N + i, B = A + 1, C = A + N, D = C + 1;
+			Triangles.Append({ A, C, D, A, D, B });
+		}
+	}
 	static const TArray<FVector2D> NoUV;
-	Ground->CreateMeshSection(0, Vertices, Triangles, Normals, UV0, UV1, NoUV, NoUV, TArray<FColor>(), Tangents, false);
+	Ground->CreateMeshSection(0, Vertices, Triangles, Normals, UV0, UV1, NoUV, NoUV, Colors, Tangents, false);
+
+	// The skirt: a ring from the ground's edge out to SkirtHalfExtentCm, white (untinted).
+	const double S = SkirtHalfExtentCm;
+	const TArray<FVector> Ring = { FVector(-R, -R, 0), FVector(R, -R, 0), FVector(R, R, 0), FVector(-R, R, 0),
+		FVector(-S, -S, 0), FVector(S, -S, 0), FVector(S, S, 0), FVector(-S, S, 0) };
+	TArray<FVector2D> RingUV0, RingUV1;
+	for (const FVector& V : Ring)
+	{
+		RingUV0.Add(FVector2D(-V.Y / 100.0 / TileM, V.X / 100.0 / TileM));
+		RingUV1.Add(LayerMetal);
+	}
+	// Each side's quad (inner i, i+1; outer i+4, i+5), wound like the grid's.
+	TArray<int32> RingTriangles;
+	for (int32 i = 0; i < 4; ++i)
+	{
+		const int32 A = i, B = (i + 1) % 4, C = i + 4, D = (i + 1) % 4 + 4;
+		RingTriangles.Append({ A, B, D, A, D, C });
+	}
+	const TArray<FVector> RingNormals = { FVector::UpVector, FVector::UpVector, FVector::UpVector, FVector::UpVector,
+		FVector::UpVector, FVector::UpVector, FVector::UpVector, FVector::UpVector };
+	TArray<FProcMeshTangent> RingTangents;
+	RingTangents.Init(Tangent, Ring.Num());
+	Ground->CreateMeshSection(1, Ring, RingTriangles, RingNormals, RingUV0, RingUV1, NoUV, NoUV, TArray<FColor>(), RingTangents, false);
+	if (UMaterialInterface* Material = Ground->GetMaterial(0))
+	{
+		Ground->SetMaterial(1, Material);
+	}
 }

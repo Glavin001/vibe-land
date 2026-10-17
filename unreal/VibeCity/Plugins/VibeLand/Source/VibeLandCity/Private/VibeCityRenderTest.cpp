@@ -19,6 +19,8 @@
 #include "Misc/AutomationTest.h"
 #include "Tests/AutomationCommon.h"
 #include "UObject/UObjectIterator.h"
+#include "UnrealClient.h"
+#include "VibeCityCapture.h"
 #include "VibeCityDirector.h"
 #include "Components/ExponentialHeightFogComponent.h"
 #include "VibeCityGrass.h"
@@ -284,6 +286,52 @@ bool FVibeCityRenderWeatherAndGrass::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("layout %s: %d tiles; %d patches, %lld blades"), *Grass->PaintRevision().Left(8), Grass->PaintTiles(), Grass->DrawnPatches(), Grass->DrawnBlades()));
 		return true;
 	}));
+	return true;
+}
+
+// VibeCity.Render.Compare: the same view as the web's, for a side-by-side comparison. Parks the
+// camera at -VibeCapture=px,py,pz,tx,ty,tz[,fov] (server metres; default the web replay's rig,
+// (0, 14, 140) looking at (0, 6, 0)) on a fresh city, waits for the meadow, and saves
+// compare-unreal.png to -VibeShotDir= (the web's twin: window.__VIBE_E2E__.setCapturePose with the
+// same pose).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityRenderCompare, "VibeCity.Render.Compare",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityRenderCompare::RunTest(const FString& Parameters)
+{
+	TSharedRef<double> Started = MakeShared<double>(0.0);
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Started]() {
+		UVibeNetSubsystem* N = Net();
+		AVibeCityDirector* Director = Find<AVibeCityDirector>();
+		if (!N || !Director || !Director->IsCityBuilt())
+		{
+			return false;
+		}
+		FString Text = TEXT("0,14,140,0,6,0");
+		FParse::Value(FCommandLine::Get(), TEXT("VibeCapture="), Text);
+		FVector3f P, T;
+		float Fov = 0.0f;
+		TestTrue(TEXT("capture pose parses"), VibeCityCapture::Parse(Text, P, T, Fov));
+		TestTrue(TEXT("camera parked"), VibeCityCapture::Park(GameWorld(), P, T, Fov));
+		*Started = FPlatformTime::Seconds();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Started]() {
+		AVibeCityGrass* Grass = Find<AVibeCityGrass>();
+		const bool bSettled = Grass && Grass->DrawnPatches() > 4 && FPlatformTime::Seconds() - *Started > 6.0;
+		if (!bSettled && FPlatformTime::Seconds() - *Started < 30.0)
+		{
+			return false;
+		}
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("compare-unreal.png"), false, false);
+			AddInfo(FString::Printf(TEXT("screenshot: %s"), *(ShotDir / TEXT("compare-unreal.png"))));
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.0f));
 	return true;
 }
 

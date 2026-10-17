@@ -3,6 +3,8 @@
 #include "Async/Async.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
+#include "VibeCityEnvironment.h"
 #include "GameFramework/PlayerController.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
@@ -120,6 +122,11 @@ void AVibeCityGrass::PollLayout()
 			return;
 		}
 		Grass->Paint = MakeShared<FPaint, ESPMode::ThreadSafe>(Parsed);
+		// The ground takes its canopy tint from the same layout.
+		for (TActorIterator<AVibeCityEnvironment> It(Grass->GetWorld()); It; ++It)
+		{
+			It->SetGroundCover(Parsed);
+		}
 		Grass->Revision = UTF8_TO_TCHAR(Rev);
 		Grass->GeneratedOnPaint = 0;
 		// Regenerate every patch over the new layout; each keeps its blades until the new land.
