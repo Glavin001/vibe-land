@@ -1745,4 +1745,26 @@ mod client_codec_roundtrip {
         let ClientDatagram::CityCameraDrop(cmd) = decode_client_datagram(&bytes).unwrap() else { panic!("not a camera drop") };
         assert_eq!((cmd.position, cmd.yaw, cmd.pitch), ([12.5, 40.0, -3.25], 1.25, -0.5));
     }
+
+    #[test]
+    fn vehicle_asset_reads_back_on_the_client() {
+        let vehicle: crate::vehicle_assets::PreparedVehicle = serde_json::from_value(serde_json::json!({
+            "configuration": { "model": "buggy", "appearance": { "body": "#112233" } },
+            "assetHash": "a".repeat(64),
+            "geometryHash": "b".repeat(64),
+            "partCount": 1, "shapeCount": 1, "bondCount": 0,
+            "driving": {
+                "acceleration": 8.0, "driveTorque": 900.0, "brakeTorque": 1500.0, "springStiffness": 30000.0,
+                "damping": 3000.0, "tyreFriction": 1.2, "topSpeed": 30.0, "maxSteerRadians": 0.6,
+                "frontWheelDrive": false, "rearWheelDrive": true, "steeringResponse": 6.0,
+            },
+        }))
+        .expect("a prepared vehicle");
+        let got = net_client::decode_vehicle_asset(&crate::vehicle_assets::asset_packet(7, &vehicle)).unwrap();
+        assert_eq!(got.handle, 7);
+        assert_eq!(got.geometry_hash, "b".repeat(64));
+        assert_eq!(got.asset_hash, "a".repeat(64));
+        assert_eq!(got.configuration["appearance"]["body"], "#112233");
+        assert!(net_client::decode_vehicle_asset(&[vibe_land_shared::constants::PKT_VEHICLE_ASSET, b'{']).is_err());
+    }
 }

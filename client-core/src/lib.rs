@@ -17,18 +17,20 @@ pub mod input;
 pub mod materials;
 pub mod players;
 pub mod predictor;
+pub mod vehicles;
 
 use glam::Vec3;
 use vibe_land_shared::constants::{
     FLAG_IN_VEHICLE, FLAG_ON_GROUND, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, WEAPON_CANNONBALL, WEAPON_HITSCAN,
     WEAPON_METEOR,
 };
-use vibe_land_shared::constants::{MELEE_COOLDOWN_MS, PKT_METEOR_LAUNCHED};
+use vibe_land_shared::constants::{MELEE_COOLDOWN_MS, PKT_METEOR_LAUNCHED, PKT_VEHICLE_ASSET};
 use vibe_land_shared::net_client::{
-    decode_meteor_launched, decode_server_packet, encode_city_camera_drop, encode_fire, encode_input_bundle, encode_melee,
-    MeteorLaunched, ServerMessage, SessionConfig,
+    decode_meteor_launched, decode_server_packet, decode_vehicle_asset, encode_city_camera_drop, encode_fire,
+    encode_input_bundle, encode_melee, encode_vehicle_enter, encode_vehicle_exit, MeteorLaunched, ServerMessage,
+    SessionConfig, VehicleAsset,
 };
-use vibe_land_shared::protocol::{FireCmd, MeleeCmd};
+use vibe_land_shared::protocol::{FireCmd, InputFrame, MeleeCmd};
 
 use crate::city::{decode_manifest, is_city_packet, CityStream, CITY_DELAY_TICKS};
 use crate::coords::Space;
@@ -88,7 +90,19 @@ pub struct ClientCore {
     last_melee_us: Option<u64>,
     /// Meteor launches since the last poll, with their arrival times.
     meteors: Vec<(MeteorLaunched, u64)>,
+    vehicle_assets: std::collections::HashMap<u32, VehicleAsset>,
+    /// The car this client asked to drive (its handle), until it asks to leave.
+    driving: Option<u32>,
+    /// Whether the server has this player in a vehicle (the newest local state).
+    in_vehicle: bool,
+    /// The newest input frames sent, for the in-car resend window.
+    recent_inputs: std::collections::VecDeque<InputFrame>,
 }
+
+/// In a car the web resends the newest unacknowledged input frames with every bundle, this many
+/// at most when the server does not pace vehicle input (`VEHICLE_INPUT_REDUNDANCY`).
+const VEHICLE_INPUT_REDUNDANCY: usize = 4;
+const RECENT_INPUTS: usize = vibe_land_shared::net_client::INPUT_BUNDLE_MAX_FRAMES;
 
 impl ClientCore {
     pub fn new(space: Space) -> Self {
@@ -117,6 +131,10 @@ impl ClientCore {
             next_swing_id: 1,
             last_melee_us: None,
             meteors: Vec::new(),
+            vehicle_assets: std::collections::HashMap::new(),
+            driving: None,
+            in_vehicle: false,
+            recent_inputs: std::collections::VecDeque::new(),
         }
     }
 
@@ -199,6 +217,17 @@ impl ClientCore {
     pub fn on_packet(&mut self, _lane: Lane, bytes: &[u8], arrival_us: u64) {
         let Some(&kind) = bytes.first() else { return };
         let arrival_ms = arrival_us as f64 / 1000.0;
+        if kind == PKT_VEHICLE_ASSET {
+            match decode_vehicle_asset(bytes) {
+                Ok(asset) => {
+                    let handle = u32::from(asset.handle);
+                    self.vehicle_assets.insert(handle, asset);
+                    self.events.push(VlEvent { kind: crate::frame::VL_EVENT_VEHICLE_ASSET, id: handle, ..Default::default() });
+                }
+                Err(_) => self.protocol_decode_errors += 1,
+            }
+            return;
+        }
         if kind == PKT_METEOR_LAUNCHED {
             match decode_meteor_launched(bytes) {
                 Ok(meteor) => self.meteors.push((meteor, arrival_us)),
@@ -289,7 +318,23 @@ impl ClientCore {
             if let Some(bundler) = self.bundler.as_mut() {
                 let frames = bundler.produce(dt_s, &self.input);
                 if !frames.is_empty() {
-                    self.outgoing.push(Outgoing { datagram: true, bytes: encode_input_bundle(&frames) });
+                    self.recent_inputs.extend(frames.iter().cloned());
+                    while self.recent_inputs.len() > RECENT_INPUTS {
+                        self.recent_inputs.pop_front();
+                    }
+                    let bundle = if self.in_vehicle {
+                        // The newest unacknowledged frames, at least this poll's.
+                        let ack = self.players.as_ref().map_or(0, |p| p.ack_input_seq);
+                        let unacked: Vec<InputFrame> =
+                            self.recent_inputs.iter().filter(|f| (1..0x8000).contains(&f.seq.wrapping_sub(ack))).cloned().collect();
+                        let keep = VEHICLE_INPUT_REDUNDANCY.max(frames.len()).min(unacked.len());
+                        unacked[unacked.len() - keep..].to_vec()
+                    } else {
+                        frames
+                    };
+                    if !bundle.is_empty() {
+                        self.outgoing.push(Outgoing { datagram: true, bytes: encode_input_bundle(&bundle) });
+                    }
                 }
             }
         }
@@ -322,6 +367,7 @@ impl ClientCore {
                 stats.player_render_tick = r;
                 if let Some(s) = local {
                     let flags = u16::from(s.flags);
+                    self.in_vehicle = flags & FLAG_IN_VEHICLE != 0;
                     self.predictor.observe(s.vel, flags & FLAG_ON_GROUND != 0, flags & FLAG_IN_VEHICLE != 0, dt_s as f32);
                     let presented = self.predictor.update(s.pos, dt_s as f32, &self.input);
                     let player = player_record(players.local_player_id(), s, presented, self.space);
@@ -452,6 +498,32 @@ impl ClientCore {
         let p = self.space.pos_to_server(pos);
         let (yaw, pitch) = self.space.yaw_pitch_to_server(yaw, pitch);
         self.outgoing.push(Outgoing { datagram: false, bytes: encode_city_camera_drop(p.to_array(), yaw, pitch) });
+    }
+
+    /// A car's asset (geometry hash, configuration), once its `PKT_VEHICLE_ASSET` has arrived.
+    pub fn vehicle_asset(&self, handle: u32) -> Option<&VehicleAsset> {
+        self.vehicle_assets.get(&handle)
+    }
+
+    /// Ask to drive the car with `handle` (the web's E near a car; the server checks the seat is
+    /// free and the player within `VEHICLE_INTERACT_RADIUS_M`).
+    pub fn enter_vehicle(&mut self, handle: u32) {
+        if self.state == VlCoreState::Playing {
+            self.driving = Some(handle);
+            self.outgoing.push(Outgoing { datagram: true, bytes: encode_vehicle_enter(handle, 0) });
+        }
+    }
+
+    /// Leave the car this client entered.
+    pub fn exit_vehicle(&mut self) {
+        if let (VlCoreState::Playing, Some(handle)) = (self.state, self.driving.take()) {
+            self.outgoing.push(Outgoing { datagram: true, bytes: encode_vehicle_exit(handle) });
+        }
+    }
+
+    /// Whether the server has this player in a car.
+    pub fn in_vehicle(&self) -> bool {
+        self.in_vehicle
     }
 
     /// The frame the last [`poll`](Self::poll) produced.

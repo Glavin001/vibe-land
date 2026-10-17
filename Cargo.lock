@@ -3224,6 +3224,7 @@ version = "0.1.0"
 dependencies = [
  "cbindgen",
  "glam 0.27.0",
+ "serde_json",
  "vibe-client-core",
  "vibe-client-transport-wt",
  "vibe-land-shared",

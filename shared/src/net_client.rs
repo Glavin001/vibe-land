@@ -419,6 +419,34 @@ pub fn decode_meteor_launched(bytes: &[u8]) -> Result<MeteorLaunched, DecodeErro
     })
 }
 
+/// A car's asset, announced on the reliable stream (`PKT_VEHICLE_ASSET`, server
+/// `vehicle_assets::asset_packet`: JSON `{handle, vehicle: PreparedVehicle}` after the kind byte).
+/// Its geometry is `GET /vehicle-assets/<geometry_hash>/metadata.json`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VehicleAsset {
+    pub handle: u8,
+    pub geometry_hash: String,
+    pub asset_hash: String,
+    /// The car's configuration (model, appearance, ...), as JSON.
+    pub configuration: serde_json::Value,
+}
+
+/// Decode a `PKT_VEHICLE_ASSET` packet.
+pub fn decode_vehicle_asset(bytes: &[u8]) -> Result<VehicleAsset, DecodeError> {
+    let (&kind, body) = bytes.split_first().ok_or(DecodeError::Empty)?;
+    let malformed = || DecodeError::Truncated { kind, needed: body.len() + 1, remaining: body.len() };
+    let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| malformed())?;
+    let handle = value.get("handle").and_then(serde_json::Value::as_u64).and_then(|h| u8::try_from(h).ok()).ok_or_else(malformed)?;
+    let vehicle = value.get("vehicle").ok_or_else(malformed)?;
+    let text = |key: &str| vehicle.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
+    Ok(VehicleAsset {
+        handle,
+        geometry_hash: text("geometryHash").ok_or_else(malformed)?,
+        asset_hash: text("assetHash").unwrap_or_default(),
+        configuration: vehicle.get("configuration").cloned().unwrap_or(serde_json::Value::Null),
+    })
+}
+
 /// Drop the player at a pose (`PKT_CITY_CAMERA_DROP`, reliable stream): leaving the aerial camera
 /// puts the player where the camera is. Server space; the server rate-limits it and rejects
 /// non-finite or far-out poses.

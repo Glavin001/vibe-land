@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 5
+#define VL_ABI_VERSION 6
 
 #define VL_OK 0
 
@@ -133,6 +133,20 @@
 
 #define VL_EVENT_LOCAL_SHOT 4
 
+#define VL_EVENT_VEHICLE_ASSET 5
+
+/**
+ * `VlVehicleVertex::section`: the chassis; 1..=4 stream wheel (section - 1)'s spinning parts;
+ * 5..=8 its steering parts that do not spin.
+ */
+#define VL_VEHICLE_SECTION_CHASSIS 0
+
+#define VL_VEHICLE_SECTION_WHEEL 1
+
+#define VL_VEHICLE_SECTION_KNUCKLE 5
+
+#define VL_VEHICLE_SECTIONS 9
+
 /**
  * `VlMeshRange::flags`: the mesh is the chunk's convex hull (else its box).
  */
@@ -204,6 +218,11 @@ typedef uint32_t VlCoreState;
  * A client: the native transport and the shared core. Opaque to C.
  */
 typedef struct VlClient VlClient;
+
+/**
+ * A car mesh built by `vl_vehicle_mesh_build`. Opaque to C.
+ */
+typedef struct VlVehicleMesh VlVehicleMesh;
 
 /**
  * How a client is created.
@@ -477,6 +496,38 @@ typedef struct VlInput {
 } VlInput;
 
 /**
+ * One vertex of a car mesh, in the renderer's space and the car's actor frame. Three per triangle.
+ */
+typedef struct VlVehicleVertex {
+  float pos[3];
+  float normal[3];
+  /**
+   * 0xRRGGBBAA.
+   */
+  uint32_t color_rgba;
+  /**
+   * `VL_VEHICLE_SECTION_*`.
+   */
+  uint32_t section;
+} VlVehicleVertex;
+
+/**
+ * A car mesh's arrays, valid until `vl_vehicle_mesh_destroy`.
+ */
+typedef struct VlVehicleMeshView {
+  /**
+   * Three per triangle, in the car's actor frame.
+   */
+  const struct VlVehicleVertex *vertices;
+  size_t vertex_count;
+  /**
+   * Stream wheel i's hub: the pivot its sections spin and steer about.
+   */
+  float hubs[4][3];
+  float wheel_radius;
+} VlVehicleMeshView;
+
+/**
  * One chunk of the city, fixed for the life of the manifest. Index = position in the chunk table.
  */
 typedef struct VlChunk {
@@ -657,6 +708,65 @@ int32_t vl_client_melee(struct VlClient *client, uint32_t *out_swing_id);
  * `client` must be a live client; `pos` must point to three floats.
  */
 int32_t vl_client_camera_drop(struct VlClient *client, const float *pos, float yaw, float pitch);
+
+/**
+ * Ask to drive the car with `handle` (`VlCar::handle`).
+ *
+ * # Safety
+ * `client` must be a live client.
+ */
+int32_t vl_client_enter_vehicle(struct VlClient *client, uint32_t handle);
+
+/**
+ * Leave the car this client entered.
+ *
+ * # Safety
+ * `client` must be a live client.
+ */
+int32_t vl_client_exit_vehicle(struct VlClient *client);
+
+/**
+ * Copy a car's asset into `buf` (NUL-terminated, truncated to `cap`): `what` 0 = its geometry hash
+ * (fetch `<api>/vehicle-assets/<hash>/metadata.json`), 1 = its configuration as JSON. Returns the
+ * full length (0 when the asset has not arrived).
+ *
+ * # Safety
+ * `client` must be a live client; `buf` must hold `cap` bytes (or be null with `cap` 0).
+ */
+size_t vl_client_vehicle_asset(struct VlClient *client,
+                               uint32_t handle,
+                               uint32_t what,
+                               char *buf,
+                               size_t cap);
+
+/**
+ * Build a car's mesh from its `metadata.json` bytes and (optionally, NUL-terminated JSON) its
+ * configuration, in `space` (as `VlConfig::space`). Null on failure. Free with
+ * `vl_vehicle_mesh_destroy`. Needs no client: any thread may build.
+ *
+ * # Safety
+ * `metadata` must hold `len` bytes; `configuration` must be null or a NUL-terminated string.
+ */
+struct VlVehicleMesh *vl_vehicle_mesh_build(const uint8_t *metadata,
+                                            size_t len,
+                                            const char *configuration,
+                                            uint32_t space);
+
+/**
+ * The arrays of a built car mesh.
+ *
+ * # Safety
+ * `mesh` must come from `vl_vehicle_mesh_build`; `out` must be writable.
+ */
+int32_t vl_vehicle_mesh_view(const struct VlVehicleMesh *mesh, struct VlVehicleMeshView *out);
+
+/**
+ * Free a car mesh.
+ *
+ * # Safety
+ * `mesh` must come from `vl_vehicle_mesh_build` (or be null) and not be used afterwards.
+ */
+void vl_vehicle_mesh_destroy(struct VlVehicleMesh *mesh);
 
 /**
  * The city's chunk table: empty until the manifest has arrived (`VlStats::chunks` > 0), then

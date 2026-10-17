@@ -24,7 +24,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 5;
+pub const VL_ABI_VERSION: u32 = 6;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -84,6 +84,19 @@ pub const VL_EVENT_SHOT_FIRED: u32 = 1;
 pub const VL_EVENT_SHOT_RESULT: u32 = 2;
 pub const VL_EVENT_DAMAGE: u32 = 3;
 pub const VL_EVENT_LOCAL_SHOT: u32 = 4;
+pub const VL_EVENT_VEHICLE_ASSET: u32 = 5;
+/// `VlVehicleVertex::section`: the chassis; 1..=4 stream wheel (section - 1)'s spinning parts;
+/// 5..=8 its steering parts that do not spin.
+pub const VL_VEHICLE_SECTION_CHASSIS: u32 = 0;
+pub const VL_VEHICLE_SECTION_WHEEL: u32 = 1;
+pub const VL_VEHICLE_SECTION_KNUCKLE: u32 = 5;
+pub const VL_VEHICLE_SECTIONS: u32 = 9;
+const _: () = {
+    use vibe_client_core::vehicles as v;
+    assert!(VL_EVENT_VEHICLE_ASSET == vibe_client_core::frame::VL_EVENT_VEHICLE_ASSET);
+    assert!(VL_VEHICLE_SECTION_CHASSIS == v::VL_VEHICLE_SECTION_CHASSIS && VL_VEHICLE_SECTION_WHEEL == v::VL_VEHICLE_SECTION_WHEEL);
+    assert!(VL_VEHICLE_SECTION_KNUCKLE == v::VL_VEHICLE_SECTION_KNUCKLE && VL_VEHICLE_SECTIONS == v::VL_VEHICLE_SECTIONS);
+};
 /// `VlMeshRange::flags`: the mesh is the chunk's convex hull (else its box).
 pub const VL_MESH_HULL: u32 = 1;
 /// `VlMaterial::flags`.
@@ -414,6 +427,119 @@ pub unsafe extern "C" fn vl_client_camera_drop(client: *mut VlClient, pos: *cons
         c.core.camera_drop(p, yaw, pitch);
         VL_OK
     })
+}
+
+/// Ask to drive the car with `handle` (`VlCar::handle`).
+///
+/// # Safety
+/// `client` must be a live client.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_enter_vehicle(client: *mut VlClient, handle: u32) -> i32 {
+    guard(client, |c| {
+        c.core.enter_vehicle(handle);
+        VL_OK
+    })
+}
+
+/// Leave the car this client entered.
+///
+/// # Safety
+/// `client` must be a live client.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_exit_vehicle(client: *mut VlClient) -> i32 {
+    guard(client, |c| {
+        c.core.exit_vehicle();
+        VL_OK
+    })
+}
+
+/// Copy a car's asset into `buf` (NUL-terminated, truncated to `cap`): `what` 0 = its geometry hash
+/// (fetch `<api>/vehicle-assets/<hash>/metadata.json`), 1 = its configuration as JSON. Returns the
+/// full length (0 when the asset has not arrived).
+///
+/// # Safety
+/// `client` must be a live client; `buf` must hold `cap` bytes (or be null with `cap` 0).
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_vehicle_asset(client: *mut VlClient, handle: u32, what: u32, buf: *mut c_char, cap: usize) -> usize {
+    let mut len = 0usize;
+    guard(client, |c| {
+        let text = match c.core.vehicle_asset(handle) {
+            Some(asset) if what == 0 => asset.geometry_hash.clone(),
+            Some(asset) => asset.configuration.to_string(),
+            None => return VL_OK,
+        };
+        len = text.len();
+        if !buf.is_null() && cap > 0 {
+            let n = text.len().min(cap - 1);
+            std::ptr::copy_nonoverlapping(text.as_ptr(), buf as *mut u8, n);
+            *buf.add(n) = 0;
+        }
+        VL_OK
+    });
+    len
+}
+
+/// A car mesh built by `vl_vehicle_mesh_build`. Opaque to C.
+pub struct VlVehicleMesh {
+    mesh: vibe_client_core::vehicles::VehicleMesh,
+}
+
+/// A car mesh's arrays, valid until `vl_vehicle_mesh_destroy`.
+#[repr(C)]
+pub struct VlVehicleMeshView {
+    /// Three per triangle, in the car's actor frame.
+    pub vertices: *const vibe_client_core::vehicles::VlVehicleVertex,
+    pub vertex_count: usize,
+    /// Stream wheel i's hub: the pivot its sections spin and steer about.
+    pub hubs: [[f32; 3]; 4],
+    pub wheel_radius: f32,
+}
+
+/// Build a car's mesh from its `metadata.json` bytes and (optionally, NUL-terminated JSON) its
+/// configuration, in `space` (as `VlConfig::space`). Null on failure. Free with
+/// `vl_vehicle_mesh_destroy`. Needs no client: any thread may build.
+///
+/// # Safety
+/// `metadata` must hold `len` bytes; `configuration` must be null or a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn vl_vehicle_mesh_build(metadata: *const u8, len: usize, configuration: *const c_char, space: u32) -> *mut VlVehicleMesh {
+    if metadata.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Some(space) = Space::from_u32(space) else { return std::ptr::null_mut() };
+    let bytes = std::slice::from_raw_parts(metadata, len);
+    let config = cstr(configuration).and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    match catch_unwind(AssertUnwindSafe(|| vibe_client_core::vehicles::build_vehicle_mesh(bytes, config.as_ref(), space))) {
+        Ok(Ok(mesh)) => Box::into_raw(Box::new(VlVehicleMesh { mesh })),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// The arrays of a built car mesh.
+///
+/// # Safety
+/// `mesh` must come from `vl_vehicle_mesh_build`; `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_vehicle_mesh_view(mesh: *const VlVehicleMesh, out: *mut VlVehicleMeshView) -> i32 {
+    let (Some(mesh), false) = (mesh.as_ref(), out.is_null()) else { return VL_ERR_ARG };
+    out.write(VlVehicleMeshView {
+        vertices: mesh.mesh.vertices.as_ptr(),
+        vertex_count: mesh.mesh.vertices.len(),
+        hubs: mesh.mesh.hubs,
+        wheel_radius: mesh.mesh.wheel_radius,
+    });
+    VL_OK
+}
+
+/// Free a car mesh.
+///
+/// # Safety
+/// `mesh` must come from `vl_vehicle_mesh_build` (or be null) and not be used afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn vl_vehicle_mesh_destroy(mesh: *mut VlVehicleMesh) {
+    if !mesh.is_null() {
+        drop(Box::from_raw(mesh));
+    }
 }
 
 /// The city's chunk table: empty until the manifest has arrived (`VlStats::chunks` > 0), then

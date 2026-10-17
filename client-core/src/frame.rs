@@ -148,6 +148,10 @@ pub const VL_EVENT_DAMAGE: u32 = 3;
 /// This client fired (sent the moment it did, for the local muzzle effect and tracer): `id` =
 /// shot, `p0` = eye, `p1` = the aim direction (unit).
 pub const VL_EVENT_LOCAL_SHOT: u32 = 4;
+/// A car's asset arrived (or changed): `id` = the car's handle. Its geometry hash and configuration
+/// are then available (`ClientCore::vehicle_asset`), and its mesh can be built from its
+/// `metadata.json` (`vehicles::build_vehicle_mesh`).
+pub const VL_EVENT_VEHICLE_ASSET: u32 = 5;
 
 /// Something that happened, in arrival order. Positions in the renderer's space.
 #[repr(C)]

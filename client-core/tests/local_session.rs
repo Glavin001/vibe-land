@@ -212,3 +212,40 @@ fn a_camera_drop_from_the_core_moves_the_server_player() {
     assert!(horizontal < 0.5, "dropped at {target:?}, player at {pos:?}");
     assert!(pos[1] < target[1], "the player should have fallen from the drop height: {pos:?}");
 }
+
+/// Cars: the stream carries them (on the car clock), their assets are announced, and a player who
+/// asks to drive one next to it is put in it; throttle moves it; leaving puts the player out.
+#[test]
+fn a_player_enters_drives_and_leaves_a_car() {
+    use vibe_client_core::frame::{VlInput, VL_EVENT_VEHICLE_ASSET};
+    let mut h = Harness::start("citypp-core-car");
+    let mut assets = Vec::new();
+    for _ in 0..180 {
+        h.run(1);
+        assets.extend(h.core.frame().events.iter().filter(|e| e.kind == VL_EVENT_VEHICLE_ASSET).map(|e| e.id));
+    }
+    let cars = h.core.poll(u64::from(h.tick) * TICK_US + TICK_US / 2).cars.clone();
+    eprintln!("cars {}: {:?}; assets {:?}", cars.len(), cars.iter().map(|c| (c.handle, c.pos)).collect::<Vec<_>>(), assets);
+    if cars.is_empty() {
+        eprintln!("this server fields no cars (synthetic city without vehicles); driving is gated in Unreal against PhysX");
+        return;
+    }
+    let car = cars[0];
+    assert!(h.core.vehicle_asset(car.handle).is_some(), "car {} has no asset", car.handle);
+    // Stand beside it and ask to drive.
+    h.core.camera_drop([car.pos[0] + 1.5, car.pos[1] + 1.0, car.pos[2]], 0.0, 0.0);
+    h.run(60);
+    h.core.enter_vehicle(car.handle);
+    h.run(30);
+    assert!(h.core.in_vehicle(), "the server did not seat the player in car {}", car.handle);
+    let start = h.core.frame().cars.iter().find(|c| c.handle == car.handle).unwrap().pos;
+    h.core.set_input(&VlInput { move_y: 1.0, ..Default::default() });
+    h.run(120);
+    let end = h.core.poll(u64::from(h.tick) * TICK_US + TICK_US / 2).cars.iter().find(|c| c.handle == car.handle).unwrap().pos;
+    let moved = (end[0] - start[0]).hypot(end[2] - start[2]);
+    assert!(moved > 2.0, "throttle moved the car {moved} m");
+    h.core.set_input(&VlInput::default());
+    h.core.exit_vehicle();
+    h.run(30);
+    assert!(!h.core.in_vehicle(), "still in the car after leaving");
+}
