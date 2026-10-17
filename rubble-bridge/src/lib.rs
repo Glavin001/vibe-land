@@ -76,14 +76,34 @@ pub struct BoxPart {
     pub half_extents: [f32; 3],
 }
 
+/// One box body for `RubbleWorld::add_box_bodies`. `mass <= 0` makes it static.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxBody {
+    /// Centre of mass, world.
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub half: [f32; 3],
+    /// The box's centre relative to the centre of mass, body frame.
+    pub box_offset: [f32; 3],
+    pub mass: f32,
+    pub asleep: bool,
+}
+
 pub struct RubbleWorld {
     sim: WgpuSim,
     /// Collider index -> body, for ray hits.
     collider_body: Vec<BodyId>,
+    /// Box bodies made by `add_box_bodies` that the host has not collected yet
+    /// (`take_new_box_bodies`): a game that moves players outside rubble
+    /// mirrors them.
+    new_box_bodies: Vec<(BodyId, [f32; 3], [f32; 3])>,
     config: WorldConfig,
 }
 
 const IDENTITY: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+/// Every material's contact offset (m): the gap at which rubble starts a
+/// contact, as rubble's own scenes and tests set it.
+const CONTACT_OFFSET_M: f32 = 0.01;
 
 fn static_body(position: [f32; 3], rotation: [f32; 4]) -> BodyState {
     BodyState {
@@ -130,7 +150,7 @@ impl RubbleWorld {
         if config.hierarchical_grid {
             sim.set_grid_levels(Some(true));
         }
-        Ok(Self { sim, collider_body: Vec::new(), config })
+        Ok(Self { sim, collider_body: Vec::new(), new_box_bodies: Vec::new(), config })
     }
 
     pub fn config(&self) -> WorldConfig {
@@ -139,7 +159,7 @@ impl RubbleWorld {
 
     /// Material table entry (rubble has 64). Friction combines as sqrt(a*b).
     pub fn set_material(&mut self, index: u32, friction: f32, restitution: f32) {
-        self.sim.set_material(index, Material { friction, restitution, contact_offset: 0.01, _pad: 0.0 });
+        self.sim.set_material(index, Material { friction, restitution, contact_offset: CONTACT_OFFSET_M, _pad: 0.0 });
     }
 
     fn push_collider(&mut self, collider: Collider) -> u32 {
@@ -192,6 +212,63 @@ impl RubbleWorld {
         body
     }
 
+    /// A dynamic box whose centre of mass is `position` and whose box sits at
+    /// `box_offset` from it in the body frame. `asleep` creates it sleeping:
+    /// it does not integrate until a contact with an awake body wakes it.
+    pub fn add_box_body(
+        &mut self,
+        position: [f32; 3],
+        rotation: [f32; 4],
+        half: [f32; 3],
+        box_offset: [f32; 3],
+        mass: f32,
+        asleep: bool,
+        material: u32,
+    ) -> BodyId {
+        // Box inertia about its own centre, shifted to the centre of mass
+        // (parallel-axis theorem, diagonal terms).
+        let d = Vec3::from(box_offset);
+        let shift = Vec3::new(d.y * d.y + d.z * d.z, d.x * d.x + d.z * d.z, d.x * d.x + d.y * d.y) * mass;
+        let mut state = BodyState::dynamic(position.into(), Quat::from_array(rotation), mass, box_inertia(mass, half) + shift);
+        if asleep {
+            state.flags = BodyFlags::Dynamic as u32 | BodyFlags::Sleeping as u32;
+        }
+        let body = self.sim.add_body(state);
+        self.push_collider(Self::box_collider(body, box_offset, IDENTITY, half, material));
+        body
+    }
+
+    /// Many bodies at once (one upload each for bodies and colliders): city
+    /// chunks. Same meaning as `add_box_body` per entry; returns their ids.
+    pub fn add_box_bodies(&mut self, boxes: &[BoxBody], material: u32) -> Vec<BodyId> {
+        let states: Vec<BodyState> = boxes
+            .iter()
+            .map(|b| {
+                if b.mass <= 0.0 {
+                    return static_body(b.position, b.rotation);
+                }
+                let d = Vec3::from(b.box_offset);
+                let shift = Vec3::new(d.y * d.y + d.z * d.z, d.x * d.x + d.z * d.z, d.x * d.x + d.y * d.y) * b.mass;
+                let mut s = BodyState::dynamic(b.position.into(), Quat::from_array(b.rotation), b.mass, box_inertia(b.mass, b.half) + shift);
+                if b.asleep {
+                    s.flags = BodyFlags::Dynamic as u32 | BodyFlags::Sleeping as u32;
+                }
+                s
+            })
+            .collect();
+        let range = self.sim.add_bodies(&states);
+        let colliders: Vec<Collider> = range
+            .clone()
+            .zip(boxes)
+            .map(|(body, b)| Self::box_collider(body, b.box_offset, IDENTITY, b.half, material))
+            .collect();
+        let first = self.sim.add_colliders(&colliders).start;
+        debug_assert_eq!(first as usize, self.collider_body.len());
+        self.collider_body.extend(colliders.iter().map(|c| c.body));
+        self.new_box_bodies.extend(range.clone().zip(boxes).map(|(body, b)| (body, b.half, b.box_offset)));
+        range.collect()
+    }
+
     /// A static compound (e.g. an intact structure anchored to the ground):
     /// `parts` in the body frame placed at `position`/`rotation`.
     pub fn add_static_compound(&mut self, position: [f32; 3], rotation: [f32; 4], parts: &[BoxPart], material: u32) -> BodyId {
@@ -200,6 +277,17 @@ impl RubbleWorld {
             self.push_collider(Self::box_collider(body, part.center, part.rotation, part.half_extents, material));
         }
         body
+    }
+
+    /// The box bodies `add_box_bodies` made since the last call: `(body,
+    /// half extents, box offset from the centre of mass)`.
+    pub fn take_new_box_bodies(&mut self) -> Vec<(BodyId, [f32; 3], [f32; 3])> {
+        std::mem::take(&mut self.new_box_bodies)
+    }
+
+    /// The solver's contact tolerance (m): the material's contact offset.
+    pub fn contact_offset(&self) -> f32 {
+        CONTACT_OFFSET_M
     }
 
     pub fn step(&mut self) -> anyhow::Result<()> {
@@ -453,6 +541,72 @@ mod tests {
         }
         let y = world.body(ball).position[1];
         assert!(y > 2.0 && y < 2.6, "the ball rests on the box top: y {y}");
+    }
+
+    /// A wall of unbonded boxes, created asleep, stacked face to face on the
+    /// ground (1 m cubes, 6 wide, `rows` high).
+    fn sleeping_wall(world: &mut RubbleWorld, rows: u32) -> Vec<BodyId> {
+        let boxes: Vec<BoxBody> = (0..rows)
+            .flat_map(|row| {
+                (0..6).map(move |col| BoxBody {
+                    position: [0.0, 0.5 + row as f32, col as f32 - 2.5],
+                    rotation: IDENTITY,
+                    half: [0.5; 3],
+                    box_offset: [0.0; 3],
+                    mass: 100.0,
+                    asleep: true,
+                })
+            })
+            .collect();
+        world.add_box_bodies(&boxes, 0)
+    }
+
+    /// Asleep, the wall does not move: nothing integrates until something
+    /// awake touches it.
+    #[test]
+    fn a_sleeping_wall_stays_put_untouched() {
+        let mut world = RubbleWorld::new(WorldConfig::default()).expect("wgpu device");
+        ground(&mut world);
+        let wall = sleeping_wall(&mut world, 4);
+        let rest: Vec<[f32; 3]> = wall.iter().map(|&b| world.body(b).position).collect();
+        for _ in 0..120 {
+            world.step().unwrap();
+        }
+        for (&b, p0) in wall.iter().zip(&rest) {
+            let p = world.body(b);
+            assert!(p.sleeping, "box {b} woke with nothing touching it");
+            assert_eq!(p.position, *p0, "box {b} moved while asleep");
+        }
+    }
+
+    /// A ball fired into the sleeping wall wakes the boxes it reaches and
+    /// knocks them loose. Energy bounds the result: no box moves faster than
+    /// the ball's speed plus a free fall from the wall's full height.
+    #[test]
+    fn a_ball_knocks_a_sleeping_wall_loose() {
+        let mut world = RubbleWorld::new(WorldConfig::default()).expect("wgpu device");
+        ground(&mut world);
+        let rows = 4;
+        let wall = sleeping_wall(&mut world, rows);
+        let rest: Vec<[f32; 3]> = wall.iter().map(|&b| world.body(b).position).collect();
+        let speed = 30.0;
+        let ball = world.add_dynamic_sphere([6.0, 1.5, 0.0], 0.3, 50.0, 0);
+        world.set_velocity(ball, [-speed, 0.0, 0.0], [0.0; 3]);
+        let bound = speed + (2.0 * G * rows as f32).sqrt();
+        let mut fastest = 0.0_f32;
+        for _ in 0..180 {
+            world.step().unwrap();
+            for &b in &wall {
+                fastest = fastest.max(Vec3::from(world.body(b).linear_velocity).length());
+            }
+        }
+        let moved = wall
+            .iter()
+            .zip(&rest)
+            .filter(|(&b, p0)| (Vec3::from(world.body(b).position) - Vec3::from(**p0)).length() > 0.1)
+            .count();
+        assert!(moved > 0, "the ball knocked nothing loose");
+        assert!(fastest <= bound, "a box reached {fastest} m/s, over the energy bound {bound}");
     }
 
     #[test]

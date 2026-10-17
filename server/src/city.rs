@@ -2488,9 +2488,9 @@ impl CityRuntime {
             }
             #[cfg(feature = "rubble")]
             CityBackend::Rubble(backend) => {
-                // The physics arena stepped rubble already; intact anchored
-                // structures stream no body rows.
-                let output = backend.tick();
+                // The physics arena stepped rubble already: read which chunks
+                // it woke and moved, and stream them (anchored ones send none).
+                let (output, snapshots) = backend.tick();
                 feed_encoder(
                     &mut self.capture,
                     &mut self.encoder,
@@ -2499,7 +2499,7 @@ impl CityRuntime {
                     &self.manifest,
                     self.pose_feed.as_deref(),
                     sim_tick,
-                    &[],
+                    &snapshots,
                     &output,
                 );
                 reliable.extend(self.encoder.take_topology_messages());
@@ -3677,14 +3677,53 @@ mod tests {
         assert_eq!(client.stats.decode_errors, 0);
     }
 
-    /// The buildings are rubble colliders: a cannonball fired at one from
-    /// outside stops at its facade instead of passing through.
+    /// The buildings are rubble bodies: a cannonball fired at one from open
+    /// ground reaches its facade (it does not stop short or pass through
+    /// unseen), and the chunks it strikes are knocked loose and freed.
     #[cfg(feature = "rubble")]
     #[test]
-    fn a_cannonball_stops_at_a_rubble_building() {
+    fn a_cannonball_knocks_chunks_out_of_a_rubble_building() {
+        let (mut arena, mut city) = rubble_city();
+        let structure = city
+            .manifest
+            .structures
+            .iter()
+            .min_by(|a, b| a.world_position[0].total_cmp(&b.world_position[0]))
+            .expect("a building")
+            .clone();
+        let face_x = structure
+            .chunks
+            .iter()
+            .map(|c| c.centroid[0] - c.size[0] * 0.5)
+            .fold(f32::INFINITY, f32::min)
+            + structure.world_position[0];
+        let height = structure.chunks.iter().map(|c| c.centroid[1]).fold(0.0_f32, f32::max) * 0.5;
+        let radius = 0.3;
+        let start = nalgebra::Vector3::new(face_x - 10.0, structure.world_position[1] + height.max(1.0), structure.world_position[2]);
+        let id = arena
+            .launch_ball_from_muzzle(start, nalgebra::Vector3::new(30.0, 0.0, 0.0), radius, 50.0, 600)
+            .expect("launched");
+        let gravity_y = -(vibe_netcode::movement::GRAVITY as f32);
+        let mut furthest = f32::NEG_INFINITY;
+        for tick in 1..=120 {
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+            city.step(tick, 1.0 / 60.0, [0.0, gravity_y, 0.0], None);
+            let ball = arena.snapshot_dynamic_bodies().into_iter().find(|s| s.0 == id).expect("ball streams");
+            furthest = furthest.max(ball.1[0]);
+        }
+        assert_eq!(arena.health().gpu_warning_count, 0, "rubble refused steps: nothing moved");
+        // Touching the facade: centre within a radius plus the contact offset of it.
+        assert!(furthest >= face_x - radius - 0.01, "the ball never reached the facade: {furthest} vs {face_x}");
+        assert!(city.stats().broken_bonds > 0, "the strike freed no chunk");
+    }
+
+    /// A player walking into a rubble building stops at its facade: the
+    /// city's chunks are mirrored into the world the character controller
+    /// moves in.
+    #[cfg(feature = "rubble")]
+    #[test]
+    fn a_player_cannot_walk_through_a_rubble_building() {
         let (mut arena, city) = rubble_city();
-        // The westernmost building, shot from open ground to its west. Its
-        // chunks are boxes about the structure origin (no rotation in the pack).
         let structure = city
             .manifest
             .structures
@@ -3697,20 +3736,68 @@ mod tests {
             .map(|c| c.centroid[0] - c.size[0] * 0.5)
             .fold(f32::INFINITY, f32::min)
             + structure.world_position[0];
-        let height = structure.chunks.iter().map(|c| c.centroid[1]).fold(0.0_f32, f32::max) * 0.5;
-        let start = nalgebra::Vector3::new(face_x - 10.0, structure.world_position[1] + height.max(1.0), structure.world_position[2]);
-        let id = arena
-            .launch_ball_from_muzzle(start, nalgebra::Vector3::new(30.0, 0.0, 0.0), 0.3, 50.0, 600)
-            .expect("launched");
-        for _ in 0..90 {
+        // One tick so the arena mirrors the chunks the city made.
+        arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        let player = 1;
+        arena.rapier.spawn_player(player);
+        let start_x = face_x - 6.0;
+        let yaw = std::f32::consts::FRAC_PI_2; // forward = (sin yaw, 0, cos yaw) = +x
+        assert!(arena.rapier.drop_player_from_camera(
+            player,
+            &vibe_land_shared::protocol::CityCameraDropCmd { position: [start_x, 1.0, structure.world_position[2]], yaw, pitch: 0.0 },
+        ));
+        let input = vibe_land_shared::protocol::InputCmd { move_y: 127, yaw, ..Default::default() };
+        for _ in 0..240 {
+            arena.rapier.simulate_player_tick(player, &input, 1.0 / 60.0);
             arena.step_vehicles_and_dynamics(1.0 / 60.0);
         }
-        assert_eq!(arena.health().gpu_warning_count, 0, "rubble refused steps: nothing moved");
-        let ball = arena.snapshot_dynamic_bodies().into_iter().find(|s| s.0 == id).expect("ball streams");
-        // 30 m/s for 1.5 s would carry it 45 m, far through the building; it
-        // must have crossed the 10 m gap and stopped at the facade.
-        assert!(ball.1[0] > start.x + 9.0, "the ball never reached the building: x {} from {}", ball.1[0], start.x);
-        assert!(ball.1[0] < face_x + 0.3, "the ball passed into the building: x {} vs facade {face_x}", ball.1[0]);
+        let (position, ..) = arena.rapier.snapshot_player(player).expect("player");
+        assert!(position[0] > start_x + 3.0, "the player did not walk forward: x {} from {start_x}", position[0]);
+        assert!(position[0] < face_x, "the player walked into the building: x {} vs facade {face_x}", position[0]);
+    }
+
+    /// A stock car driven at a rubble building stops at its facade: vehicles
+    /// collide with the mirrored chunks too.
+    #[cfg(feature = "rubble")]
+    #[test]
+    fn a_car_cannot_drive_through_a_rubble_building() {
+        use vibe_land_shared::world_document::WorldDocumentArena;
+        let (mut arena, city) = rubble_city();
+        let structure = city
+            .manifest
+            .structures
+            .iter()
+            .min_by(|a, b| a.world_position[0].total_cmp(&b.world_position[0]))
+            .expect("a building");
+        let face_x = structure
+            .chunks
+            .iter()
+            .map(|c| c.centroid[0] - c.size[0] * 0.5)
+            .fold(f32::INFINITY, f32::min)
+            + structure.world_position[0];
+        let start_x = face_x - 20.0;
+        // Chassis forward is +Z; a quarter turn about +Y points it at +X.
+        let quarter = std::f32::consts::FRAC_PI_4;
+        WorldDocumentArena::spawn_vehicle_with_id(
+            &mut arena,
+            900,
+            0,
+            nalgebra::Vector3::new(start_x, 1.0, structure.world_position[2]),
+            [0.0, quarter.sin(), 0.0, quarter.cos()],
+        );
+        arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        let driver = 1;
+        arena.rapier.spawn_player(driver);
+        arena.rapier.enter_vehicle(driver, 900);
+        let throttle = vibe_land_shared::protocol::InputCmd { move_y: 127, ..Default::default() };
+        for _ in 0..300 {
+            arena.rapier.simulate_player_tick(driver, &throttle, 1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+        let car = arena.rapier.snapshot_vehicles().into_iter().find(|v| v.id == 900).expect("car");
+        let x = car.px_mm as f32 / 1000.0;
+        assert!(x > start_x + 5.0, "the car did not drive forward: x {x} from {start_x}");
+        assert!(x < face_x, "the car drove into the building: x {x} vs facade {face_x}");
     }
 
     /// The default (v2) match is untouched: v2 reliable packets, no wire-4 ones.

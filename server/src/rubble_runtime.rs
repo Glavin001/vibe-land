@@ -4,11 +4,12 @@
 //! world-document boxes and balls, fired balls and meteors -- against the
 //! static world. What rubble does not have yet stays in the Rapier arena this
 //! wraps: the player character controller, the stock vehicles and batteries.
-//! Players meet rubble bodies through kinematic mirrors: every tick each
-//! rubble body's pose is written into Rapier as a kinematic body of the same
-//! shape, so players stand on and bump into them. That coupling is one-way
-//! (a player cannot push a rubble body) until rubble has kinematic bodies and
-//! a character controller of its own.
+//! Players and vehicles meet rubble bodies through mirrors: each rubble body
+//! has a fixed Rapier body of the same shape, moved to the rubble pose when it
+//! changes, so the character controller (which collides with static geometry
+//! and ignores kinematic bodies) and the vehicles treat them as solid. The
+//! coupling is one-way -- a player or car cannot push a rubble body -- until
+//! rubble has kinematic bodies and a character controller of its own.
 //!
 //! No PhysX anywhere: this module and `vibe-land-rubble-bridge` are the whole
 //! engine side of `--features rubble`.
@@ -18,9 +19,7 @@ use std::collections::{HashMap, VecDeque};
 
 use anyhow::Result;
 use nalgebra::{DMatrix, Isometry3, Quaternion, Translation3, UnitQuaternion, Vector3};
-use rapier3d::prelude::{
-    ColliderBuilder, ColliderHandle, Group, InteractionGroups, RigidBodyBuilder, RigidBodyHandle,
-};
+use rapier3d::prelude::{ColliderBuilder, ColliderHandle};
 use vibe_land_rubble_bridge::{BodyId, RubbleWorld, WorldConfig};
 use vibe_land_shared::physics_arena::PhysicsArena as RapierPhysicsArena;
 use vibe_land_shared::world_document::{EffectiveTerrainMaterial, TerrainMaterialField, WorldDocumentArena};
@@ -45,8 +44,8 @@ struct RubbleBody {
     body: BodyId,
     half_extents: [f32; 3],
     shape_type: u8,
-    /// The kinematic mirror players collide with.
-    mirror: RigidBodyHandle,
+    /// The static-world collider players and vehicles collide with.
+    mirror: ColliderHandle,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -86,6 +85,9 @@ pub struct RubblePhysicsArena {
     /// Top of the lowest static surface, for "fell through the ground" checks.
     lowest_ground_y: Option<f32>,
     last_step_ms: f32,
+    /// Fixed mirrors of box bodies other code made in the shared world
+    /// (the city's chunks), with the pose each was last given.
+    box_mirrors: Vec<(BodyId, ColliderHandle, [f32; 3], [f32; 3], [f32; 4])>,
     /// Steps rubble refused (a capacity overflow): nothing moved those ticks.
     /// Reported as `PhysicsHealth::gpu_warning_count`.
     failed_steps: u32,
@@ -135,6 +137,7 @@ impl RubblePhysicsArena {
             lowest_ground_y: None,
             last_step_ms: 0.0,
             failed_steps: 0,
+            box_mirrors: Vec::new(),
         })
     }
 
@@ -151,38 +154,72 @@ impl RubblePhysicsArena {
         self.lowest_ground_y = Some(self.lowest_ground_y.map_or(top, |y| y.min(top)));
     }
 
-    // ── Kinematic mirrors ────────────────────────────────────────────────
+    // ── Mirrors ──────────────────────────────────────────────────────────
+    //
+    // Standalone static-world colliders (as `SimWorld::insert_static_collider`
+    // makes), moved to their rubble body's pose when it changes and queued
+    // for the broad phase: the character controller only collides with
+    // static geometry (its filters exclude kinematic bodies), and vehicles
+    // collide with the static world.
 
-    fn insert_mirror(&mut self, id: u32, position: Vec3, rotation: [f32; 4], half: [f32; 3], shape_type: u8) -> RigidBodyHandle {
-        let sim = &mut self.rapier.dynamic.sim;
-        let body = RigidBodyBuilder::kinematic_position_based()
-            .pose(Isometry3::from_parts(Translation3::new(position.x, position.y, position.z), unit_quat(rotation)))
-            .build();
-        let handle = sim.rigid_bodies.insert(body);
-        let collider = if shape_type == SHAPE_SPHERE {
+    fn mirror_pose(position: [f32; 3], rotation: [f32; 4], offset: [f32; 3]) -> Isometry3<f32> {
+        Isometry3::from_parts(Translation3::new(position[0], position[1], position[2]), unit_quat(rotation))
+            * Isometry3::translation(offset[0], offset[1], offset[2])
+    }
+
+    fn insert_mirror(&mut self, id: u32, position: Vec3, rotation: [f32; 4], half: [f32; 3], shape_type: u8) -> ColliderHandle {
+        let shape = if shape_type == SHAPE_SPHERE {
             ColliderBuilder::ball(half[0])
         } else {
             ColliderBuilder::cuboid(half[0], half[1], half[2])
+        };
+        self.rapier
+            .dynamic
+            .sim
+            .insert_static_collider(shape.position(Self::mirror_pose(position.into(), rotation, [0.0; 3])).user_data(id as u128))
+    }
+
+    /// Mirror the box bodies other code added to the world since last time
+    /// (the city's chunks), so players and vehicles collide with them.
+    fn mirror_new_box_bodies(&mut self) {
+        let fresh = self.world().take_new_box_bodies();
+        if fresh.is_empty() {
+            return;
         }
-        // The Rapier arena's dynamic-body groups, so the character controller
-        // treats a mirror exactly as it treated a Rapier dynamic body.
-        .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2))
-        .user_data(id as u128)
-        .build();
-        sim.colliders.insert_with_parent(collider, handle, &mut sim.rigid_bodies);
-        handle
+        let poses = self.world().bodies();
+        for (body, half, offset) in fresh {
+            let Some(pose) = poses.get(body as usize) else { continue };
+            let collider = ColliderBuilder::cuboid(half[0], half[1], half[2])
+                .position(Self::mirror_pose(pose.position, pose.rotation, offset));
+            let handle = self.rapier.dynamic.sim.insert_static_collider(collider);
+            self.box_mirrors.push((body, handle, offset, pose.position, pose.rotation));
+        }
     }
 
     fn sync_mirrors(&mut self) {
+        self.mirror_new_box_bodies();
         let poses = self.world().bodies();
         let sim = &mut self.rapier.dynamic.sim;
+        let mut moved = |handle: ColliderHandle, pose: Isometry3<f32>| {
+            if let Some(collider) = sim.colliders.get_mut(handle) {
+                collider.set_position(pose);
+                sim.modified_colliders.push(handle);
+            }
+        };
+        for (body, handle, offset, last_p, last_r) in &mut self.box_mirrors {
+            let Some(pose) = poses.get(*body as usize) else { continue };
+            if pose.position == *last_p && pose.rotation == *last_r {
+                continue;
+            }
+            *last_p = pose.position;
+            *last_r = pose.rotation;
+            moved(*handle, Self::mirror_pose(pose.position, pose.rotation, *offset));
+        }
         for body in self.bodies.values() {
             let Some(pose) = poses.get(body.body as usize) else { continue };
-            if let Some(rb) = sim.rigid_bodies.get_mut(body.mirror) {
-                let p = pose.position;
-                rb.set_next_kinematic_position(Isometry3::from_parts(Translation3::new(p[0], p[1], p[2]), unit_quat(pose.rotation)));
-            }
+            moved(body.mirror, Self::mirror_pose(pose.position, pose.rotation, [0.0; 3]));
         }
+        self.rapier.dynamic.sync_broad_phase();
     }
 
     // ── Dynamic bodies ───────────────────────────────────────────────────
@@ -218,15 +255,7 @@ impl RubblePhysicsArena {
     fn retire(&mut self, id: u32) {
         let Some(body) = self.bodies.remove(&id) else { return };
         self.by_body.remove(&body.body);
-        let sim = &mut self.rapier.dynamic.sim;
-        sim.rigid_bodies.remove(
-            body.mirror,
-            &mut sim.island_manager,
-            &mut sim.colliders,
-            &mut self.rapier.dynamic.impulse_joints,
-            &mut self.rapier.dynamic.multibody_joints,
-            true,
-        );
+        self.rapier.dynamic.sim.remove_static_collider(body.mirror);
         self.world().park(body.body, [0.0, PARKED_Y, 0.0]);
         if body.shape_type == SHAPE_SPHERE {
             self.free_spheres.push((body.half_extents[0], body.body));
@@ -521,8 +550,7 @@ mod tests {
         let dt = 1.0 / f32::from(vibe_land_shared::constants::SIM_HZ);
         assert!((pos[1] - 0.5).abs() <= 0.01 + 9.81 * dt * dt, "rest height {}", pos[1]);
         let mirror = arena.bodies[&7].mirror;
-        let rb = &arena.rapier.dynamic.sim.rigid_bodies[mirror];
-        let next = rb.next_position().translation.vector;
+        let next = arena.rapier.dynamic.sim.colliders[mirror].position().translation.vector;
         assert!((next - Vector3::from(pos)).norm() < 1e-4, "mirror {next:?} vs body {pos:?}");
     }
 
