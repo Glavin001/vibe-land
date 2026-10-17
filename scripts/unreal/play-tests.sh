@@ -28,14 +28,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 TESTS=(VibeCity.Cursor VibeCity.Play.WalkAndShoot VibeCity.Play.AimAndReset VibeCity.Play.CannonAndMeteor
-  VibeCity.Play.AerialAndMelee VibeCity.Play.Drive)
+  VibeCity.Play.AerialAndMelee VibeCity.Play.Drive VibeCity.Play.WreckCar)
 if [[ -n "$ONLY" ]]; then
   IFS=',' read -r -a TESTS <<< "$ONLY"
 fi
 
 UE_ROOT="${UE_ROOT:-/Users/Shared/Epic Games/UE_5.8}"
 EDITOR="$UE_ROOT/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor"
-LOGS="$ROOT/target/unreal-tests"
+LOGS="$ROOT/target/unreal-tests/$MATCH" # per match: sessions running this side by side keep apart
 mkdir -p "$LOGS"
 curl -fs -m 5 "$API/healthz" > /dev/null || { echo "play-tests: no server at $API" >&2; exit 2; }
 "$ROOT/scripts/unreal/build-editor.sh" > "$LOGS/build.log" 2>&1 || { echo "play-tests: build failed; see $LOGS/build.log" >&2; exit 2; }
@@ -48,11 +48,23 @@ for test in "${TESTS[@]}"; do
   args=(-game -windowed -ResX=1280 -ResY=720 "-VibeApi=$API" "-VibeMatch=$MATCH"
     "-ExecCmds=Automation RunTests $test; Quit" "-TestExit=Automation Test Queue Empty" "-abslog=$log")
   [[ -n "$SHOTS" ]] && args+=("-VibeShotDir=$SHOTS")
-  "$EDITOR" "$ROOT/unreal/VibeCity/VibeCity.uproject" "${args[@]}" > /dev/null 2>&1 &
-  pid=$!
-  # A test that hangs is stopped after five minutes.
-  for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 3; done
-  kill "$pid" 2>/dev/null
+  for attempt in 1 2 3; do
+    rm -f "$log" # read only this launch's log
+    "$EDITOR" "$ROOT/unreal/VibeCity/VibeCity.uproject" "${args[@]}" > /dev/null 2>&1 &
+    pid=$!
+    # A test that hangs is stopped after five minutes; a game that finds a module "incompatible"
+    # (seen right after a build, while another build of the project is linking) waits on a
+    # rebuild dialog, so it is stopped at once and launched again.
+    for _ in $(seq 1 100); do
+      kill -0 "$pid" 2>/dev/null || break
+      grep -q "Incompatible or missing module" "$log" 2>/dev/null && break
+      sleep 3
+    done
+    kill "$pid" 2>/dev/null
+    grep -q "Incompatible or missing module" "$log" 2>/dev/null || break
+    echo "      ($test: a module was not loadable; launching again in 60 s)"
+    sleep 60
+  done
   if grep -q "Result={Success}" "$log" 2>/dev/null; then
     echo "pass  $test"
   else
