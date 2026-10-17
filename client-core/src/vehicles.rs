@@ -2,10 +2,12 @@
 //! metadata.json`; the server's `vehicle_assets::PreparedGeometry`), for clients that draw cars
 //! from the same parts the physics simulates.
 //!
-//! Every part is the convex hulls of its shapes, flat-shaded, in the car's actor frame: the
-//! asset's source frame (+Y up, -Z front, metres) less `originHeight` in Y, as the web draws it
-//! (`VehicleVisual.ts`, `group.position.y = -originHeight`). A shape's vertex sits at
-//! `part.position + shape.position + v` (`vehicle_assets/fracture.rs`).
+//! Every part is the convex hulls of its shapes, flat-shaded, in the car's actor frame (the frame
+//! the server simulates the car in): a shape's vertex sits at `part.position + shape.position + v`
+//! (`vehicle_assets/fracture.rs`), already in that frame. The rig (`rig.corners`, the suspension
+//! hardpoints) is authored in the source frame (+Y up, -Z front); source to actor is a half-turn
+//! about Y less `originHeight` (the server's `vehicle_assets::rig::source_to_actor`), so every rig
+//! hub and frame is carried into the actor frame before it meets the parts.
 //!
 //! Parts with a suspension role (wheel, hub, knuckle, arms, upright, damper, piston, spring and its
 //! seats, shock eye, tie rod, axle, CV boot, steering wheel) are posed from the stream's wheel
@@ -75,8 +77,9 @@ pub struct VehicleMesh {
     pub hubs: [[f32; 3]; 4],
     /// Tyre radius in the renderer's units.
     pub wheel_radius: f32,
-    /// The actor frame is the source frame less this in height (renderer units): a detached part's
-    /// transform (`VlCarPart`, source frame) applies to a vertex at `pos + origin_height · up`.
+    /// Always 0: the parts are in the actor frame, the frame a detached part's transform
+    /// (`VlCarPart`) maps from, so a renderer adds nothing to their vertices. (Kept so the layout
+    /// does not change.)
     pub origin_height: f32,
     /// The parts the rig moves, with their rest frames.
     pub posed: Vec<VlPosedPart>,
@@ -102,11 +105,13 @@ impl VehicleMesh {
     }
 }
 
+/// A rig frame (source frame) carried into the actor frame (a half-turn about Y, less the origin
+/// height: `source_to_actor`) and the renderer's space.
 fn frame_out(part: u32, f: rig::Frame, origin_height: f32, space: Space) -> VlPartPose {
     VlPartPose {
         part,
-        pos: space.pos(f.t - Vec3::Y * origin_height),
-        quat: space.quat(f.r),
+        pos: space.pos(Vec3::new(-f.t.x, f.t.y - origin_height, -f.t.z)),
+        quat: space.quat(glam::Quat::from_rotation_y(std::f32::consts::PI) * f.r),
         scale: { let s = space.extents(f.s); let m = space.metres(); [s[0] / m, s[1] / m, s[2] / m] },
     }
 }
@@ -562,12 +567,13 @@ pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space:
     let origin_height = meta.get("originHeight").and_then(Value::as_f64).ok_or(VehicleMeshError::Missing("originHeight"))? as f32;
     let parts = meta.get("parts").and_then(Value::as_array).ok_or(VehicleMeshError::Missing("parts"))?;
     let corners = meta.get("rig").and_then(|r| r.get("corners"));
-    let to_actor = |p: Vec3| p - Vec3::Y * origin_height;
+    // The rig's points are in the source frame: into the actor frame the parts are in.
+    let source_to_actor = |p: Vec3| Vec3::new(-p.x, p.y - origin_height, -p.z);
 
     let mut hubs = [[0.0f32; 3]; 4];
     for (i, corner) in WHEEL_CORNERS.iter().enumerate() {
         let hub = vec3(corners.and_then(|c| c.get(*corner)).and_then(|c| c.get("hub"))).ok_or(VehicleMeshError::Missing("rig hubs"))?;
-        hubs[i] = space.pos(to_actor(hub));
+        hubs[i] = space.pos(source_to_actor(hub));
     }
     let radius = meta
         .get("dimensions")
@@ -600,7 +606,7 @@ pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space:
             let mut points = Vec::new();
             for v in shape.get("vertices").and_then(Value::as_array).into_iter().flatten() {
                 if let Some(v) = vec3(Some(v)) {
-                    let p = to_actor(base + v);
+                    let p = base + v;
                     points.extend_from_slice(&[p.x, p.y, p.z]);
                 }
             }
@@ -634,7 +640,7 @@ pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space:
         vertices,
         hubs,
         wheel_radius: radius * space.metres(),
-        origin_height: origin_height * space.metres(),
+        origin_height: 0.0,
         posed,
         rig,
         space: Some(space),
@@ -708,7 +714,8 @@ mod tests {
             "parts": [
                 { "position": [0.0, 1.0, 0.0], "material": "frame", "system": "Body", "motion": null,
                   "shapes": [{ "position": [0.0, 0.0, 0.0], "vertices": cube(0.5) }] },
-                { "position": [1.0, 0.5, -1.5], "material": "rubber", "system": "Wheels",
+                // At the fr hub carried into the actor frame (the parts' frame).
+                { "position": [-1.0, -0.5, 1.5], "material": "rubber", "system": "Wheels",
                   "motion": { "corner": "fr", "role": "wheel" },
                   "shapes": [{ "position": [0.0, 0.0, 0.0], "vertices": cube(0.25) }] },
             ],
@@ -722,10 +729,10 @@ mod tests {
         assert_eq!(mesh.vertices.len() % 3, 0);
         // A cube's hull is 12 triangles: two cubes, 72 vertices.
         assert_eq!(mesh.vertices.len(), 72);
-        // The chassis cube is centred at source y 1.0, actor y 0.0 (originHeight 1).
+        // Parts are in the actor frame already: the chassis cube stays centred at y 1.0.
         let chassis: Vec<_> = mesh.vertices.iter().filter(|v| v.part == 0).collect();
         let mean_y = chassis.iter().map(|v| v.pos[1]).sum::<f32>() / chassis.len() as f32;
-        assert!(mean_y.abs() < 1e-5, "{mean_y}");
+        assert!((mean_y - 1.0).abs() < 1e-5, "{mean_y}");
         // Each closed hull has zero net signed area: sum of normal * area per face is 0.
         let mut sum = Vec3::ZERO;
         for t in mesh.vertices.chunks_exact(3) {
@@ -733,7 +740,9 @@ mod tests {
             sum += (b - a).cross(c - a);
         }
         assert!(sum.length() < 1e-4, "{sum}");
-        assert_eq!(mesh.hubs[0], [1.0, -0.5, -1.5]);
+        // The fr hub (source [1, 0.5, -1.5]) in the actor frame: a half-turn less the origin height.
+        assert_eq!(mesh.hubs[0], [-1.0, -0.5, 1.5]);
+        assert_eq!(mesh.origin_height, 0.0);
         assert_eq!(mesh.wheel_radius, 0.5);
     }
 
@@ -823,6 +832,64 @@ mod tests {
             }
         }
         eprintln!("checked {} cars", cars.len());
+    }
+
+    /// What a renderer draws for a posed part (its vertex taken from the rest frame to the pose,
+    /// as `VlPosedPart` documents) is the same car in either space: posing in server space and
+    /// converting equals posing in Unreal space, for wheels travelling, steering and spinning.
+    #[test]
+    fn posing_agrees_across_spaces() {
+        fn posed_vertex(v: Vec3, r: &VlPosedPart, p: &VlPartPose) -> Vec3 {
+            let (rt, rq, rs) = (Vec3::from_array(r.rest_pos), glam::Quat::from_array(r.rest_quat), Vec3::from_array(r.rest_scale));
+            let (pt, pq, ps) = (Vec3::from_array(p.pos), glam::Quat::from_array(p.quat), Vec3::from_array(p.scale));
+            let local = (rq.inverse() * (v - rt)) / rs;
+            pt + pq * (ps * local)
+        }
+        let cars = cached_cars();
+        let mut checked = 0;
+        for (path, bytes) in &cars {
+            let server = build_vehicle_mesh(bytes, None, Space::Server).unwrap();
+            let unreal = build_vehicle_mesh(bytes, None, Space::Unreal).unwrap();
+            for (travel, steer, spin) in [(0.12, 0.0, 0.0), (0.0, 0.35, 0.0), (0.0, 0.0, 1.3), (-0.1, -0.3, 2.5)] {
+                let ws = wheels(travel, steer, spin);
+                let wu = wheels(travel * Space::Unreal.metres(), steer, spin);
+                let (ps, pu) = (server.pose(&ws), unreal.pose(&wu));
+                // The same vertex in each space (Unreal reverses each triangle's winding, so its
+                // vertex order differs): the server vertex converted.
+                for (i, vs) in server.vertices.iter().enumerate() {
+                    if vs.section != VL_VEHICLE_SECTION_POSED {
+                        continue;
+                    }
+                    let k = server.posed.iter().position(|r| r.part == vs.part).unwrap();
+                    let a = Vec3::from_array(Space::Unreal.pos(posed_vertex(Vec3::from_array(vs.pos), &server.posed[k], &ps[k])));
+                    let vu = Vec3::from_array(Space::Unreal.pos(Vec3::from_array(vs.pos)));
+                    let b = posed_vertex(vu, &unreal.posed[k], &pu[k]);
+                    assert!(a.distance(b) < 0.05, "{path:?} vertex {i} (part {}), wheels {travel} {steer} {spin}: server->unreal {a} vs unreal {b}", vs.part);
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0);
+    }
+
+    /// However far the wheels have turned, every posed vertex stays on the car: within the car's
+    /// own extent (its rest vertices' farthest reach) of the actor origin.
+    #[test]
+    fn spinning_wheels_stay_on_the_car() {
+        for (path, bytes) in cached_cars() {
+            let mesh = build_vehicle_mesh(&bytes, None, Space::Server).unwrap();
+            let reach = mesh.vertices.iter().map(|v| Vec3::from_array(v.pos).length()).fold(0.0f32, f32::max);
+            for spin in [0.5f32, 1.0, 2.4, 3.1, 5.0, 40.0] {
+                let pose = mesh.pose(&wheels(0.0, 0.0, spin));
+                for v in mesh.vertices.iter().filter(|v| v.section == VL_VEHICLE_SECTION_POSED) {
+                    let k = mesh.posed.iter().position(|r| r.part == v.part).unwrap();
+                    let (r, p) = (&mesh.posed[k], &pose[k]);
+                    let local = (glam::Quat::from_array(r.rest_quat).inverse() * (Vec3::from_array(v.pos) - Vec3::from_array(r.rest_pos))) / Vec3::from_array(r.rest_scale);
+                    let posed = Vec3::from_array(p.pos) + glam::Quat::from_array(p.quat) * (Vec3::from_array(p.scale) * local);
+                    assert!(posed.length() <= reach + 0.01, "{path:?} part {} at spin {spin}: posed vertex {posed} beyond the car's reach {reach}", v.part);
+                }
+            }
+        }
     }
 
     /// A wheel's spin turns its wheel and hub about the axle by that angle and nothing else.

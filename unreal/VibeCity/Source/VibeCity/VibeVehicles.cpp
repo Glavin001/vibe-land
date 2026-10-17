@@ -338,6 +338,44 @@ void AVibeVehicles::PoseRig(uint32 Handle, FCar& Car, const VlCar& C)
 	}
 }
 
+TPair<double, FString> AVibeVehicles::FarthestRigPart(uint32 Handle) const
+{
+	const FCar* Car = Cars.Find(Handle);
+	TPair<double, FString> Out(0.0, TEXT("none"));
+	if (!Car || !Car->Root)
+	{
+		return Out;
+	}
+	const FVector Origin = Car->Root->GetComponentLocation();
+	for (int32 i = 0; i < Car->PosedMeshes.Num(); ++i)
+	{
+		const UProceduralMeshComponent* C = Car->PosedMeshes[i];
+		if (!C || !C->IsVisible())
+		{
+			continue;
+		}
+		const double D = FVector::Dist(C->Bounds.Origin, Origin);
+		if (D > Out.Key)
+		{
+			Out.Key = D;
+			const VlPosedPart R = Car->Posed.IsValidIndex(i) ? Car->Posed[i] : VlPosedPart{};
+			const VlPartPose P = Car->Poses.IsValidIndex(i) ? Car->Poses[i] : VlPartPose{};
+			Out.Value = FString::Printf(TEXT("rig %d (part %u): bounds %s r %.0f, relative %s, world %s, parent %s; rest pos (%.1f %.1f %.1f) quat (%.3f %.3f %.3f %.3f) scale (%.3f %.3f %.3f); pose part %u pos (%.1f %.1f %.1f) quat (%.3f %.3f %.3f %.3f) scale (%.3f %.3f %.3f); %d poses, %d posed"),
+				i, R.part, *C->Bounds.Origin.ToString(), C->Bounds.SphereRadius, *C->GetRelativeLocation().ToString(), *C->GetComponentLocation().ToString(),
+				C->GetAttachParent() ? *C->GetAttachParent()->GetName() : TEXT("none"),
+				R.rest_pos[0], R.rest_pos[1], R.rest_pos[2], R.rest_quat[0], R.rest_quat[1], R.rest_quat[2], R.rest_quat[3], R.rest_scale[0], R.rest_scale[1], R.rest_scale[2],
+				P.part, P.pos[0], P.pos[1], P.pos[2], P.quat[0], P.quat[1], P.quat[2], P.quat[3], P.scale[0], P.scale[1], P.scale[2], Car->Poses.Num(), Car->Posed.Num());
+		}
+	}
+	return Out;
+}
+
+int32 AVibeVehicles::DetachedParts(uint32 Handle) const
+{
+	const FCar* Car = Cars.Find(Handle);
+	return Car ? Car->Detached.Num() : 0;
+}
+
 int32 AVibeVehicles::RigPosings(uint32 Handle) const
 {
 	const FCar* Car = Cars.Find(Handle);

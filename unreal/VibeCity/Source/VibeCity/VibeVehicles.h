@@ -40,6 +40,10 @@ public:
 	TPair<int32, int32> PosedPartsMoved(uint32 Handle) const;
 	/** How many times a car's rig has been posed (tests). */
 	int32 RigPosings(uint32 Handle) const;
+	/** Parts that have come off the car (drawn on their own), for tests. */
+	int32 DetachedParts(uint32 Handle) const;
+	/** Tests: the visible rig component farthest from its car's root (cm), with a description. */
+	TPair<double, FString> FarthestRigPart(uint32 Handle) const;
 	/** Cars whose rig parts are drawn as moving components now, and rig components in all (tests). */
 	int32 ActiveRigs() const;
 	int32 RigComponents() const;

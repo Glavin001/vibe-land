@@ -560,8 +560,8 @@ typedef struct VlDustParcel {
 
 /**
  * A car part that has come off its car (a detached group of the wire 4 stream), as drawn now: the
- * transform that maps the part's authored geometry (the car asset's source frame: part + shape +
- * vertex, metres, +Y up) to the world, as the web's `presentVehicleDebris` does. Renderer space.
+ * transform that maps the part's geometry (part + shape + vertex, metres, in the car's actor
+ * frame, as `metadata.json` carries it) to the world, as the web's `presentVehicleDebris` does.
  */
 typedef struct VlCarPart {
   /**
@@ -778,8 +778,8 @@ typedef struct VlVehicleMeshView {
   float hubs[4][3];
   float wheel_radius;
   /**
-   * The actor frame is the source frame less this height: a `VlCarPart` transform applies to a
-   * vertex at `pos + origin_height * up`.
+   * Always 0: the vertices are in the actor frame, the frame a `VlCarPart` transform maps from,
+   * so a renderer adds nothing to them. (Kept so the layout does not change.)
    */
   float origin_height;
   /**

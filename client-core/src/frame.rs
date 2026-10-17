@@ -225,8 +225,8 @@ pub struct VlCar {
 }
 
 /// A car part that has come off its car (a detached group of the wire 4 stream), as drawn now: the
-/// transform that maps the part's authored geometry (the car asset's source frame: part + shape +
-/// vertex, metres, +Y up) to the world, as the web's `presentVehicleDebris` does. Renderer space.
+/// transform that maps the part's geometry (part + shape + vertex, metres, in the car's actor
+/// frame, as `metadata.json` carries it) to the world, as the web's `presentVehicleDebris` does.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VlCarPart {

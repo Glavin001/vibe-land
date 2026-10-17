@@ -556,8 +556,8 @@ pub struct VlVehicleMeshView {
     /// Stream wheel i's hub: the pivot its sections spin and steer about.
     pub hubs: [[f32; 3]; 4],
     pub wheel_radius: f32,
-    /// The actor frame is the source frame less this height: a `VlCarPart` transform applies to a
-    /// vertex at `pos + origin_height * up`.
+    /// Always 0: the vertices are in the actor frame, the frame a `VlCarPart` transform maps from,
+    /// so a renderer adds nothing to them. (Kept so the layout does not change.)
     pub origin_height: f32,
     /// The parts the suspension rig moves, with their rest frames; `vl_vehicle_mesh_pose` gives
     /// their frames now, in this order.

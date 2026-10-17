@@ -944,7 +944,10 @@ bool FVibeCityPlayDrive::RunTest(const FString& Parameters)
 			}
 			// A rolling car turns its wheels (spin = distance / radius), so the rig has moved them off rest.
 			const TPair<int32, int32> Rig = V->PosedPartsMoved(S->Car);
-			AddInfo(FString::Printf(TEXT("rig: %d of %d posed parts away from rest"), Rig.Key, Rig.Value));
+			AddInfo(FString::Printf(TEXT("rig: %d of %d posed parts away from rest; %d parts off the car"), Rig.Key, Rig.Value, V->DetachedParts(S->Car)));
+			const TPair<double, FString> Far = V->FarthestRigPart(S->Car);
+			AddInfo(FString::Printf(TEXT("farthest rig part %.0f cm from the car: %s"), Far.Key, *Far.Value));
+			TestTrue(TEXT("every rig part stays on its car (within 4 m of its root)"), Far.Key < 400.0);
 			TestTrue(TEXT("the car has a suspension rig"), Rig.Value >= 4);
 			TestTrue(TEXT("driving moved the rig's parts"), Rig.Key > 0);
 		}
