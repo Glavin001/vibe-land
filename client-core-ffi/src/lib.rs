@@ -27,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 14;
+pub const VL_ABI_VERSION: u32 = 15;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -755,7 +755,7 @@ pub extern "C" fn vl_audio_clip_id(index: u32) -> *const c_char {
 /// null past the end. Static.
 #[no_mangle]
 pub extern "C" fn vl_weather(index: u32) -> *const vibe_client_core::weather::VlWeather {
-    vibe_client_core::weather::PRESETS.get(index as usize).map_or(std::ptr::null(), |w| w as *const _)
+    vibe_client_core::weather::presets().get(index as usize).map_or(std::ptr::null(), |w| w as *const _)
 }
 
 /// A preset's index from the web's name (`clear`, `dust_storm`, `snow_storm`), or -1.

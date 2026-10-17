@@ -74,6 +74,9 @@ pub struct VlGrassBlade {
     pub stiffness: f32,
     /// foliageProfiles.ts `FOLIAGE_SPECIES` index: 0 grass, 1 reed, 2 wheat, 3 corn, 4 fern.
     pub species: u32,
+    /// The paint's health and dryness (0..1), which tint the leaf (grassMaterial.ts).
+    pub health: f32,
+    pub dryness: f32,
 }
 
 /// foliageProfiles.ts `FOLIAGE_PROFILES`, by species id: (density per m², width, stiffness).
@@ -342,6 +345,8 @@ pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[VlGrassExclu
             color: [style[2], style[3], style[4]],
             stiffness: style[11] * 0.5 + profile_stiffness * 0.5,
             species: species as u32,
+            health: style[6],
+            dryness: style[7],
         });
     }
 }

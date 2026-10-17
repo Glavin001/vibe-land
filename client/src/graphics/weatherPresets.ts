@@ -2,9 +2,11 @@
 // in-fiction atmospheric phenomenon and drives the GPU particle renderer in
 // `client/src/scene/WeatherParticles.tsx`.
 //
-// The keys here are the canonical string identifiers persisted to localStorage
-// by `fogSettings.ts` — add to this table and the rest of the pipeline picks
-// it up automatically.
+// The keys are the canonical string identifiers persisted to localStorage by
+// `fogSettings.ts`. The table itself is shared/assets/weather/presets.json,
+// which the Unreal client reads too: add a preset there.
+
+import table from '../../../shared/assets/weather/presets.json';
 
 export type WeatherPreset = 'clear' | 'dust_storm' | 'snow_storm';
 
@@ -33,49 +35,11 @@ export type WeatherPresetConfig = {
   windFollow: number;
 };
 
-export const WEATHER_PRESETS: Record<WeatherPreset, WeatherPresetConfig> = {
-  clear: {
-    label: 'Clear',
-    fogColor: '#b7c7d8',
-    particleCount: 0,
-    particleColor: '#ffffff',
-    particleSizePx: 0,
-    particleBlending: 'normal',
-    boxSizeM: 60,
-    fallSpeedMps: 0,
-    tumbleHz: 0,
-    tumbleAmplitudeM: 0,
-    windFollow: 0,
-  },
-  dust_storm: {
-    label: 'Dust Storm',
-    fogColor: '#b89968',
-    particleCount: 3500,
-    particleColor: '#d9b57a',
-    particleSizePx: 36,
-    particleBlending: 'normal',
-    boxSizeM: 60,
-    fallSpeedMps: 1.5,
-    tumbleHz: 0.6,
-    tumbleAmplitudeM: 0.35,
-    windFollow: 1.0,
-  },
-  snow_storm: {
-    label: 'Snow Storm',
-    fogColor: '#e4ecf3',
-    particleCount: 5000,
-    particleColor: '#ffffff',
-    particleSizePx: 52,
-    particleBlending: 'additive',
-    boxSizeM: 60,
-    fallSpeedMps: 2.5,
-    tumbleHz: 1.1,
-    tumbleAmplitudeM: 0.55,
-    windFollow: 0.75,
-  },
-};
+// One table for both clients: shared/assets/weather/presets.json (client-core weather.rs reads
+// the same file for the Unreal client).
+export const WEATHER_PRESETS = table.presets as Record<WeatherPreset, WeatherPresetConfig>;
 
-export const WEATHER_PRESET_ORDER: WeatherPreset[] = ['clear', 'dust_storm', 'snow_storm'];
+export const WEATHER_PRESET_ORDER = table.order as WeatherPreset[];
 
 /**
  * Convert the scalar wind config to a world-space velocity vector.

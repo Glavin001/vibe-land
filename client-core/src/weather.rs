@@ -1,7 +1,7 @@
-//! Weather presets, shared by every renderer: a port of the web's table
-//! (client/src/graphics/weatherPresets.ts, fogSettings.ts). Each preset re-skins the fog that ends
-//! sight at the server's area of interest as dust or snow, with a particle volume wrapped around
-//! the camera.
+//! Weather presets, shared by every renderer: shared/assets/weather/presets.json (the table the
+//! web's weatherPresets.ts imports too) and fogSettings.ts's fog density. Each preset re-skins the
+//! fog that ends sight at the server's area of interest as dust or snow, with a particle volume
+//! wrapped around the camera.
 
 use vibe_land_shared::constants::PLAYER_AOI_RADIUS_M;
 
@@ -38,18 +38,74 @@ pub const VL_WEATHER_CLEAR: u32 = 0;
 pub const VL_WEATHER_DUST_STORM: u32 = 1;
 pub const VL_WEATHER_SNOW_STORM: u32 = 2;
 
-/// weatherPresets.ts `WEATHER_PRESETS`, in `WEATHER_PRESET_ORDER`.
-pub const PRESETS: [VlWeather; 3] = [
-    VlWeather { fog_rgba: 0xB7C7_D8FF, particle_count: 0, particle_rgba: 0xFFFF_FFFF, particle_size_px: 0.0, additive: 0, box_m: 60.0, fall_mps: 0.0, tumble_hz: 0.0, tumble_m: 0.0, wind_follow: 0.0 },
-    VlWeather { fog_rgba: 0xB899_68FF, particle_count: 3500, particle_rgba: 0xD9B5_7AFF, particle_size_px: 36.0, additive: 0, box_m: 60.0, fall_mps: 1.5, tumble_hz: 0.6, tumble_m: 0.35, wind_follow: 1.0 },
-    VlWeather { fog_rgba: 0xE4EC_F3FF, particle_count: 5000, particle_rgba: 0xFFFF_FFFF, particle_size_px: 52.0, additive: 1, box_m: 60.0, fall_mps: 2.5, tumble_hz: 1.1, tumble_m: 0.55, wind_follow: 0.75 },
-];
+/// The presets file both clients read (the web's weatherPresets.ts imports it too).
+pub const PRESETS_JSON: &str = include_str!("../../shared/assets/weather/presets.json");
 
-/// The preset names the web stores (`'clear' | 'dust_storm' | 'snow_storm'`).
-pub const NAMES: [&str; 3] = ["clear", "dust_storm", "snow_storm"];
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Preset {
+    fog_color: String,
+    particle_count: u32,
+    particle_color: String,
+    particle_size_px: f32,
+    particle_blending: String,
+    box_size_m: f32,
+    fall_speed_mps: f32,
+    tumble_hz: f32,
+    tumble_amplitude_m: f32,
+    wind_follow: f32,
+}
 
+#[derive(serde::Deserialize)]
+struct Table {
+    order: Vec<String>,
+    presets: std::collections::HashMap<String, Preset>,
+}
+
+struct Presets {
+    names: Vec<String>,
+    presets: Vec<VlWeather>,
+}
+
+fn rgba(hex: &str) -> u32 {
+    u32::from_str_radix(hex.trim_start_matches('#'), 16).map_or(0xFFFF_FFFF, |rgb| rgb << 8 | 0xFF)
+}
+
+fn table() -> &'static Presets {
+    static TABLE: std::sync::OnceLock<Presets> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let t: Table = serde_json::from_str(PRESETS_JSON).expect("shared/assets/weather/presets.json");
+        let presets = t
+            .order
+            .iter()
+            .map(|name| {
+                let p = &t.presets[name];
+                VlWeather {
+                    fog_rgba: rgba(&p.fog_color),
+                    particle_count: p.particle_count,
+                    particle_rgba: rgba(&p.particle_color),
+                    particle_size_px: p.particle_size_px,
+                    additive: u32::from(p.particle_blending == "additive"),
+                    box_m: p.box_size_m,
+                    fall_mps: p.fall_speed_mps,
+                    tumble_hz: p.tumble_hz,
+                    tumble_m: p.tumble_amplitude_m,
+                    wind_follow: p.wind_follow,
+                }
+            })
+            .collect();
+        Presets { names: t.order, presets }
+    })
+}
+
+/// The presets in the shared order (`VL_WEATHER_*`).
+pub fn presets() -> &'static [VlWeather] {
+    &table().presets
+}
+
+/// A preset's index from its name (`clear`, `dust_storm`, `snow_storm`).
 pub fn by_name(name: &str) -> Option<u32> {
-    NAMES.iter().position(|n| *n == name).map(|i| i as u32)
+    table().names.iter().position(|n| n == name).map(|i| i as u32)
 }
 
 /// fogSettings.ts `fogDensityForAoi`: the FogExp2 density (per metre) whose opacity,
@@ -87,7 +143,9 @@ mod tests {
     #[test]
     fn presets_in_the_web_order() {
         assert_eq!(by_name("dust_storm"), Some(VL_WEATHER_DUST_STORM));
-        assert_eq!(PRESETS[VL_WEATHER_SNOW_STORM as usize].particle_count, 5000);
-        assert_eq!(PRESETS[VL_WEATHER_CLEAR as usize].particle_count, 0);
+        assert_eq!(presets()[VL_WEATHER_SNOW_STORM as usize].particle_count, 5000);
+        assert_eq!(presets()[VL_WEATHER_CLEAR as usize].particle_count, 0);
+        assert_eq!(presets()[VL_WEATHER_DUST_STORM as usize].fog_rgba, 0xB899_68FF);
+        assert_eq!(presets()[VL_WEATHER_SNOW_STORM as usize].additive, 1);
     }
 }

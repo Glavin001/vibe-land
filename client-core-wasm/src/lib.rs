@@ -59,3 +59,81 @@ impl CoreInputBundler {
             .collect()
     }
 }
+
+/// A shared grass layout (the web's `GrassPaint` document), parsed by the core (`grass::GrassPaint`).
+#[wasm_bindgen]
+pub struct CoreGrassPaint {
+    inner: vibe_client_core::grass::GrassPaint,
+}
+
+#[wasm_bindgen]
+impl CoreGrassPaint {
+    /// From `GrassPaint.export()` / `patchDocument()` as JSON; throws on an invalid layout.
+    #[wasm_bindgen(constructor)]
+    pub fn new(document_json: &str) -> Result<CoreGrassPaint, JsValue> {
+        vibe_client_core::grass::GrassPaint::from_layout_json(document_json.as_bytes())
+            .map(|inner| CoreGrassPaint { inner })
+            .map_err(JsValue::from_str)
+    }
+}
+
+/// One patch packed as `grassPlacement.ts` `GrassPatchData` (roots: local x, local z, height, yaw;
+/// shapes: width, lean, variation, rank as unorm16; colors: unorm8 RGB; traits: health, dryness,
+/// stiffness, species).
+#[wasm_bindgen]
+pub struct CoreGrassPatch {
+    roots: Vec<f32>,
+    shapes: Vec<u16>,
+    colors: Vec<u8>,
+    traits: Vec<u8>,
+    max_height: f32,
+}
+
+#[wasm_bindgen]
+impl CoreGrassPatch {
+    pub fn roots(&self) -> Box<[f32]> {
+        self.roots.clone().into_boxed_slice()
+    }
+    pub fn shapes(&self) -> Box<[u16]> {
+        self.shapes.clone().into_boxed_slice()
+    }
+    pub fn colors(&self) -> Box<[u8]> {
+        self.colors.clone().into_boxed_slice()
+    }
+    pub fn traits(&self) -> Box<[u8]> {
+        self.traits.clone().into_boxed_slice()
+    }
+    #[wasm_bindgen(getter)]
+    pub fn max_height(&self) -> f32 {
+        self.max_height
+    }
+    #[wasm_bindgen(getter)]
+    pub fn count(&self) -> u32 {
+        (self.roots.len() / 4) as u32
+    }
+}
+
+/// `generateGrassPatch(px, pz, quality, exclusions, paint)` from the core (`grass::generate_patch`,
+/// the Unreal client's meadow): `density` is the quality's grass density, `exclusions` four floats
+/// (minX, minZ, maxX, maxZ) per footprint. Behind `?coreGrass=1` (`scene/grass/grass.worker.ts`).
+#[wasm_bindgen]
+pub fn grass_patch(px: i32, pz: i32, density: f32, exclusions: &[f32], paint: Option<CoreGrassPaint>) -> CoreGrassPatch {
+    use vibe_client_core::grass::{generate_patch, VlGrassExclusion, GRASS_PATCH_SIZE};
+    let ex: Vec<VlGrassExclusion> = exclusions.chunks_exact(4).map(|e| VlGrassExclusion { min_x: e[0], min_z: e[1], max_x: e[2], max_z: e[3] }).collect();
+    let mut blades = Vec::new();
+    generate_patch(px, pz, density, &ex, paint.as_ref().map(|p| &p.inner), &mut blades);
+    // JavaScript typed arrays truncate (ToUint16 / ToUint8 of values in range).
+    let u16_of = |v: f32| (f64::from(v) * 65535.0) as u16;
+    let u8_of = |v: f32| (f64::from(v) * 255.0) as u8;
+    let n = blades.len();
+    let (ox, oz) = (px as f32 * GRASS_PATCH_SIZE, pz as f32 * GRASS_PATCH_SIZE);
+    let mut patch = CoreGrassPatch { roots: Vec::with_capacity(n * 4), shapes: Vec::with_capacity(n * 4), colors: Vec::with_capacity(n * 3), traits: Vec::with_capacity(n * 4), max_height: 0.0 };
+    for (i, b) in blades.iter().enumerate() {
+        patch.max_height = patch.max_height.max(b.height);
+        patch.roots.extend([b.x - ox, b.z - oz, b.height, b.yaw]);
+        patch.shapes.extend([u16_of(b.width), u16_of(b.lean), u16_of(b.variation), ((i as f64 / n as f64) * 65535.0).floor() as u16]);
+        patch.colors.extend(b.color.map(u8_of));
+        patch.traits.extend([u8_of(b.health), u8_of(b.dryness), u8_of(b.stiffness), b.species as u8]);
+    }
+    patch
+}

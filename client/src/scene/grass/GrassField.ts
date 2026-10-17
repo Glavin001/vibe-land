@@ -1,3 +1,4 @@
+import { coreGrassEnabled } from '../../core/coreFlags';
 import { FoliageCanopy } from './FoliageCanopy';
 import { FOLIAGE_HANDOFF, grassCanopyDensity } from './foliageLod';
 import { attachFoliageTemplate } from './foliageBuffers';
@@ -262,7 +263,7 @@ export class GrassField {
       if (this.generator.available) {
         this.generator.request({ ...next, revision: this.paint.revision, quality: this.quality,
           exclusions: this.exclusions.filter(b => b.maxX >= next.x*8 && b.minX <= next.x*8+8 && b.maxZ >= next.z*8 && b.minZ <= next.z*8+8),
-          paint: this.paint.patchDocument(next.x, next.z) });
+          paint: this.paint.patchDocument(next.x, next.z), core: coreGrassEnabled() });
       } else this.build(next.x, next.z, time);
     }
     this.stats.pendingPatches = this.candidates.length + Number(this.generator.busy) + this.canopy.pendingChunks;

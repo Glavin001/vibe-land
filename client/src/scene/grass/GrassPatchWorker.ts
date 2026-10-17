@@ -3,6 +3,8 @@ import type { GrassExclusion, GrassPatchData, GrassQuality } from './grassPlacem
 export interface GrassPatchRequest {
   x: number; z: number; revision: number; quality: GrassQuality;
   exclusions: readonly GrassExclusion[]; paint: GrassPaintDocument;
+  /** Generate with the shared client core (client-core grass.rs through WASM), `?coreGrass=1`. */
+  core?: boolean;
 }
 export interface GrassPatchResult { x: number; z: number; revision: number; data: GrassPatchData }
 
