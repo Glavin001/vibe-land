@@ -27,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 22;
+pub const VL_ABI_VERSION: u32 = 23;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -230,6 +230,9 @@ pub struct VlMeshView {
     pub vertex_count: usize,
     pub indices: *const u32,
     pub index_count: usize,
+    /// Per vertex: 1 on an interior face (one bonded neighbours cover, shown once its chunk breaks
+    /// away, wearing its material's fracture surface), else 0.
+    pub interior: *const u8,
 }
 
 /// A client: the native transport and the shared core. Opaque to C.
@@ -735,6 +738,7 @@ fn mesh_view(m: &vibe_client_core::geometry::ChunkMeshes) -> VlMeshView {
         vertex_count: m.positions.len(),
         indices: m.indices.as_ptr(),
         index_count: m.indices.len(),
+        interior: m.interior.as_ptr(),
     }
 }
 

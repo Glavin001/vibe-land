@@ -180,10 +180,10 @@ fn city_model_matches_the_client() {
     assert_eq!(model.meshes.ranges.len(), model.chunks.len(), "one mesh per chunk");
 }
 
-/// Interior faces are the interfaces the fracture pattern cut: every bonded city has some, and
-/// their area is bounded by the bonds. Each bond credits its area to one face of each of its two
-/// chunks (2 × the bond area in all), and a face is interior only when its credit is at least half
-/// its area, so the interior area is at most twice the credit: 4 × the bond area.
+/// Interior faces are the interfaces the fracture pattern cut: every bonded city has some, and a
+/// face is interior only where neighbours' solids contain it, so their area can never exceed the
+/// faces' own share of the interfaces: twice the bonded area (each interface hides a face of each
+/// of its two chunks).
 #[test]
 fn interior_faces_are_the_bonded_interfaces() {
     for scene in ["high-rise-3f-local.json", "house-1story.json"] {
@@ -207,6 +207,19 @@ fn interior_faces_are_the_bonded_interfaces() {
         let bonded: f64 = manifest.structures.iter().flat_map(|s| s.bonds.iter()).map(|b| f64::from(b.area)).sum();
         println!("{scene}: interior {interior:.1} m² of {total:.1} m²; bonds {bonded:.1} m² (x2 = {:.1})", 2.0 * bonded);
         assert!(interior > 0.0, "{scene}: no interior faces");
-        assert!(interior <= 4.0 * bonded + 1e-3, "{scene}: interior {interior} beyond the faces bonds can cover");
+        assert!(interior <= 2.0 * bonded * 1.001, "{scene}: interior {interior} beyond the faces bonds can cover");
     }
+}
+
+/// Glass hides nothing: with the catalog surfaces known, faces covered only by panes stay outside,
+/// so a pack with glazing has fewer interior faces than it would if its panes were opaque.
+#[test]
+fn faces_behind_glass_stay_outside() {
+    use vibe_client_core::materials::{chunk_surfaces, Catalog};
+    let manifest = city("house-1story.json", 1);
+    let catalog = Catalog::get();
+    let surfaces = chunk_surfaces(&manifest, catalog);
+    let opaque = ChunkMeshes::build(&manifest, Space::Server).interior.iter().filter(|&&i| i == 1).count();
+    let glazed = ChunkMeshes::build_with_surfaces(&manifest, Space::Server, Some((&surfaces, catalog))).interior.iter().filter(|&&i| i == 1).count();
+    assert!(glazed < opaque, "glazed {glazed} vs opaque {opaque}");
 }

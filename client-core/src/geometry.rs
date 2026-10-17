@@ -21,13 +21,15 @@
 //! tangent (the direction of +u along its face) and the sign that, with the normal, gives the
 //! direction of +v (`v_dir = w · normal × tangent`), for normal maps.
 //!
-//! A face that a neighbouring chunk covers (an interface the fracture pattern cut, hidden while the
-//! structure stands) is an *interior* face, the inside material of Blast and Chaos (Houdini's
-//! "inside" group): it shows only once its chunk breaks away, and wears its material's fracture
-//! surface (the catalog's `fracture`, e.g. broken concrete). Each bond is an interface of known
-//! area and normal; on a convex chunk it lies on the one face whose outward normal points most
-//! nearly toward the bonded neighbour, and a face is interior when its bonds cover at least half
-//! its area (most of what shows of it after a break is broken surface).
+//! A face that bonded neighbouring chunks cover (an interface the fracture pattern cut, hidden
+//! while the structure stands) is an *interior* face, the inside material of Blast and Chaos
+//! (Houdini's "inside" group): it shows only once its chunk breaks away, and wears its material's
+//! fracture surface (the catalog's `fracture`, e.g. broken concrete). A face counts as covered only
+//! when the neighbours' solids contain all of it (sampled at its triangles' corners, edge midpoints
+//! and centroids): a face partly in view on the intact building, such as a panel's top under a
+//! narrower slab, the sides of an open joint, a face flush with a neighbour's outside or a face
+//! behind glass, keeps its outside material, so broken surface never shows on a standing
+//! structure.
 
 use std::collections::HashMap;
 
@@ -81,28 +83,26 @@ pub struct ChunkMeshes {
     pub indices: Vec<u32>,
 }
 
-/// One bond as a chunk sees it: the unit direction toward its neighbour across the interface (the
-/// bond normal, signed by where the neighbour's centroid lies) and the interface's area (m²).
+/// A bonded neighbour as a chunk sees it: its index in the structure's chunks, and its centroid
+/// relative to this chunk's (structure frame).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Contact {
-    pub toward: Vec3,
-    pub area: f32,
+    pub neighbour: usize,
+    pub offset: Vec3,
 }
 
-/// Each chunk's contacts, in the structure's chunk order (structure frame).
+/// Each chunk's bonded neighbours, in the structure's chunk order.
 pub fn structure_contacts(structure: &StructureManifest) -> Vec<Vec<Contact>> {
     let slot: HashMap<u32, usize> = structure.chunks.iter().enumerate().map(|(i, c)| (c.node_index, i)).collect();
     let mut out = vec![Vec::new(); structure.chunks.len()];
     for bond in &structure.bonds {
         let (Some(&a), Some(&b)) = (slot.get(&bond.node0), slot.get(&bond.node1)) else { continue };
-        let n = Vec3::from_array(bond.normal).normalize_or_zero();
-        let side = n.dot(Vec3::from_array(structure.chunks[b].centroid) - Vec3::from_array(structure.chunks[a].centroid));
-        if a == b || n == Vec3::ZERO || side == 0.0 || !(bond.area > 0.0) {
+        if a == b {
             continue;
         }
-        let toward = n * side.signum();
-        out[a].push(Contact { toward, area: bond.area });
-        out[b].push(Contact { toward: -toward, area: bond.area });
+        let offset = Vec3::from_array(structure.chunks[b].centroid) - Vec3::from_array(structure.chunks[a].centroid);
+        out[a].push(Contact { neighbour: b, offset });
+        out[b].push(Contact { neighbour: a, offset: -offset });
     }
     out
 }
@@ -112,34 +112,56 @@ pub fn structure_contacts(structure: &StructureManifest) -> Vec<Vec<Contact>> {
 /// orders of margin; distinct faces of a convex chunk differ by far more.
 const SAME_FACE: f32 = 1e-4;
 
+/// A point on a face is inside a bonded neighbour when it is within this of the neighbour's solid:
+/// authored packs place touching chunks exactly face to face, and f32 positions a few tens of
+/// metres from their structure's origin carry ~10 µm of rounding; a joint left open in the
+/// authoring is centimetres.
+const CONTACT_GAP_M: f32 = 1e-3;
+
 /// Which of a convex chunk's `triangles` (chunk frame, CCW from outside) are interior: grouped into
-/// planar faces by normal, each contact's area is credited to the face whose outward normal points
-/// most nearly along it, and a face is interior when its credited area is at least half its own.
-pub fn interior_triangles(triangles: &[[Vec3; 3]], contacts: &[Contact]) -> Vec<bool> {
+/// planar faces by normal, a face is interior when every sample of it (each triangle's corners,
+/// edge midpoints and centroid) lies inside one of its bonded neighbours (`contacts`; their
+/// triangles in `neighbours`, each in its own frame), so a face partly in view stays outside.
+pub fn interior_triangles(triangles: &[[Vec3; 3]], contacts: &[Contact], neighbours: &[Vec<[Vec3; 3]>]) -> Vec<bool> {
+    if contacts.is_empty() {
+        return vec![false; triangles.len()];
+    }
     let mut face_of = Vec::with_capacity(triangles.len());
-    // Per face: its normal, its area and the bonded area credited to it.
-    let mut faces: Vec<(Vec3, f32, f32)> = Vec::new();
+    let mut normals: Vec<Vec3> = Vec::new();
     for tri in triangles {
-        let cross = (tri[1] - tri[0]).cross(tri[2] - tri[0]);
-        let normal = cross.normalize_or_zero();
-        let area = 0.5 * cross.length();
-        let face = match faces.iter().position(|f| 1.0 - f.0.dot(normal) <= SAME_FACE) {
+        let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
+        let face = match normals.iter().position(|n| 1.0 - n.dot(normal) <= SAME_FACE) {
             Some(i) => i,
             None => {
-                faces.push((normal, 0.0, 0.0));
-                faces.len() - 1
+                normals.push(normal);
+                normals.len() - 1
             }
         };
-        faces[face].1 += area;
         face_of.push(face);
     }
-    for contact in contacts {
-        let best = faces.iter().enumerate().max_by(|a, b| a.1 .0.dot(contact.toward).total_cmp(&b.1 .0.dot(contact.toward)));
-        if let Some((i, _)) = best {
-            faces[i].2 += contact.area;
+    // Hidden in a convex neighbour: behind (to within the gap) every one of its faces' planes, and
+    // not on one that faces the same way as the face (there the two are one outside surface).
+    let hidden = |p: Vec3, facing: Vec3| {
+        contacts.iter().any(|c| {
+            let Some(solid) = neighbours.get(c.neighbour) else { return false };
+            !solid.is_empty()
+                && solid.iter().all(|t| {
+                    let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
+                    let d = n.dot(p - (t[0] + c.offset));
+                    d <= CONTACT_GAP_M && !(d >= -CONTACT_GAP_M && n.dot(facing) > 0.0)
+                })
+        })
+    };
+    let mut covered = vec![true; normals.len()];
+    for (tri, &face) in triangles.iter().zip(&face_of) {
+        if !covered[face] {
+            continue;
         }
+        let [a, b, c] = *tri;
+        let samples = [a, b, c, (a + b) * 0.5, (b + c) * 0.5, (c + a) * 0.5, (a + b + c) / 3.0];
+        covered[face] = samples.iter().all(|&p| hidden(p, normals[face]));
     }
-    face_of.iter().map(|&f| faces[f].1 > 0.0 && faces[f].2 >= 0.5 * faces[f].1).collect()
+    face_of.iter().map(|&f| covered[f]).collect()
 }
 
 impl ChunkMeshes {
@@ -160,12 +182,28 @@ impl ChunkMeshes {
         let mut scratch = Vec::new();
         let mut slot = 0usize;
         for structure in &manifest.structures {
-            let contacts = structure_contacts(structure);
+            let mut contacts = structure_contacts(structure);
+            // Glass hides nothing: a face behind a pane stays in view.
+            if let Some((all, catalog)) = surfaces {
+                let glass = |i: usize| all.get(slot + i).is_some_and(|s| catalog.is_glass(s.wall));
+                for list in &mut contacts {
+                    list.retain(|c| !glass(c.neighbour));
+                }
+            }
+            let shapes: Vec<(Vec<[Vec3; 3]>, bool)> = structure
+                .chunks
+                .iter()
+                .map(|chunk| {
+                    let hull = server_triangles(chunk, &manifest.shape_library, &mut scratch);
+                    (scratch.clone(), hull)
+                })
+                .collect();
+            let triangles: Vec<Vec<[Vec3; 3]>> = shapes.iter().map(|(t, _)| t.clone()).collect();
             for (i, chunk) in structure.chunks.iter().enumerate() {
-                let hull = server_triangles(chunk, &manifest.shape_library, &mut scratch);
-                let interior = interior_triangles(&scratch, &contacts[i]);
+                let (ref scratch, hull) = shapes[i];
+                let interior = interior_triangles(scratch, &contacts[i], &triangles);
                 let surface = surfaces.and_then(|(s, catalog)| s.get(slot).map(|s| (*s, catalog)));
-                out.push_chunk_surfaced(chunk, &scratch, &interior, space, flip, hull, surface);
+                out.push_chunk_surfaced(chunk, scratch, &interior, space, flip, hull, surface);
                 slot += 1;
             }
         }
@@ -533,61 +571,90 @@ mod tests {
         assert_eq!(uv_at(&a, shared), [0.5, -0.5]);
     }
 
-    /// The outward normals of the triangles flagged interior.
-    fn interior_normals(half: [f32; 3], contacts: &[Contact]) -> Vec<Vec3> {
+    fn boxed(half: [f32; 3]) -> Vec<[Vec3; 3]> {
         let mut tris = Vec::new();
         box_triangles(Vec3::from_array(half), &mut tris);
-        let inside = interior_triangles(&tris, contacts);
+        tris
+    }
+
+    /// The outward normals of a box's triangles flagged interior, given its bonded neighbours
+    /// (boxes of half extents `.0` centred at `.1` relative to it).
+    fn interior_normals(half: [f32; 3], neighbours: &[([f32; 3], Vec3)]) -> Vec<Vec3> {
+        let tris = boxed(half);
+        let shapes: Vec<Vec<[Vec3; 3]>> = neighbours.iter().map(|n| boxed(n.0)).collect();
+        let contacts: Vec<Contact> = neighbours.iter().enumerate().map(|(i, n)| Contact { neighbour: i, offset: n.1 }).collect();
+        let inside = interior_triangles(&tris, &contacts, &shapes);
         tris.iter().zip(inside).filter(|(_, i)| *i).map(|(t, _)| (t[1] - t[0]).cross(t[2] - t[0]).normalize()).collect()
     }
 
     #[test]
-    fn a_face_fully_bonded_to_its_neighbour_is_interior_and_no_other() {
-        // Two 1 m cubes stacked: the bond is their whole 1 m² interface.
-        let lower = interior_normals([0.5; 3], &[Contact { toward: Vec3::Y, area: 1.0 }]);
+    fn a_face_its_neighbour_covers_is_interior_and_no_other() {
+        // Two 1 m cubes stacked.
+        let lower = interior_normals([0.5; 3], &[([0.5; 3], Vec3::Y)]);
         assert_eq!(lower.len(), 2, "both triangles of the top face, nothing else");
         assert!(lower.iter().all(|n| n.dot(Vec3::Y) > 0.9999));
-        let upper = interior_normals([0.5; 3], &[Contact { toward: Vec3::NEG_Y, area: 1.0 }]);
+        let upper = interior_normals([0.5; 3], &[([0.5; 3], Vec3::NEG_Y)]);
         assert_eq!(upper.len(), 2);
         assert!(upper.iter().all(|n| n.dot(Vec3::NEG_Y) > 0.9999));
-        // A bond normal off the face's axis still lands on the face it points most nearly through.
-        let tilted = interior_normals([0.5; 3], &[Contact { toward: Vec3::new(0.3, 0.9, 0.1).normalize(), area: 1.0 }]);
-        assert!(tilted.len() == 2 && tilted.iter().all(|n| n.dot(Vec3::Y) > 0.9999));
+        // A neighbour wider than the face covers it too.
+        assert_eq!(interior_normals([0.5; 3], &[([2.0, 0.5, 2.0], Vec3::Y)]).len(), 2);
         assert!(interior_normals([0.5; 3], &[]).is_empty(), "an unbonded chunk is all outside");
     }
 
     #[test]
-    fn a_face_is_interior_only_when_bonds_cover_half_its_area() {
-        // A 4 m x 4 m slab (top face 16 m²) with a 1 m post on it: the post's foot is interior, the
-        // slab's top (1/16 covered) stays its own outside surface.
-        assert!(interior_normals([2.0, 0.1, 2.0], &[Contact { toward: Vec3::Y, area: 1.0 }]).is_empty());
-        assert_eq!(interior_normals([0.5; 3], &[Contact { toward: Vec3::NEG_Y, area: 1.0 }]).len(), 2);
-        // Eight such posts cover exactly half: interior.
-        let posts = [Contact { toward: Vec3::Y, area: 1.0 }; 8];
-        assert_eq!(interior_normals([2.0, 0.1, 2.0], &posts).len(), 2);
-        assert!(interior_normals([2.0, 0.1, 2.0], &posts[..7]).is_empty());
+    fn a_face_partly_in_view_stays_outside() {
+        // A 4 m x 4 m slab with a 1 m post standing on it: the post's foot is interior, the slab's
+        // top stays its own outside surface.
+        let post = |x: f32, z: f32| ([0.5; 3], Vec3::new(x, 0.6, z));
+        assert!(interior_normals([2.0, 0.1, 2.0], &[post(0.0, 0.0)]).is_empty());
+        assert_eq!(interior_normals([0.5; 3], &[([2.0, 0.1, 2.0], Vec3::new(0.0, -0.6, 0.0))]).len(), 2);
+        // Sixteen posts tiling the slab cover its top; without the corner one, it shows.
+        let grid: Vec<_> = [-1.5f32, -0.5, 0.5, 1.5].iter().flat_map(|&x| [-1.5f32, -0.5, 0.5, 1.5].map(|z| post(x, z))).collect();
+        assert_eq!(interior_normals([2.0, 0.1, 2.0], &grid).len(), 2);
+        assert!(interior_normals([2.0, 0.1, 2.0], &grid[..15]).is_empty());
+        // A wall panel 0.3 m thick under a slab 0.2 m deep set to its back: the panel's top shows
+        // its front 0.1 m.
+        let slab = ([2.0, 0.1, 0.1], Vec3::new(0.0, 1.1, -0.05));
+        assert!(interior_normals([2.0, 1.0, 0.15], &[slab]).is_empty());
     }
 
     #[test]
-    fn contacts_point_toward_the_neighbour_whatever_the_bond_normal_sign() {
+    fn a_face_flush_with_its_neighbours_outside_stays_outside() {
+        // A slab 0.2 m thick whose edge runs into a wall panel, its front flush with the panel's
+        // front: the edge's front face lies on the panel's surface, in view (the two are one wall
+        // face), not inside it. Its top and bottom, inside the panel, are covered.
+        let panel = ([0.5, 1.0, 0.1], Vec3::new(0.0, 0.0, 0.0));
+        let inside = interior_normals([0.5, 0.1, 0.1], &[panel]);
+        assert!(inside.iter().all(|n| n.dot(Vec3::Z).abs() < 0.5), "the flush front (and back) stay outside: {inside:?}");
+        assert!(!inside.is_empty(), "the faces buried in the panel are interior");
+    }
+
+    #[test]
+    fn a_bond_across_an_open_joint_leaves_the_face_in_view() {
+        // Two 1 m cubes bonded across a 5 cm joint (an authored gap between panels): the faces
+        // either side of it stay outside; closed to 0.5 mm they touch.
+        assert!(interior_normals([0.5; 3], &[([0.5; 3], Vec3::new(0.0, 1.05, 0.0))]).is_empty());
+        assert_eq!(interior_normals([0.5; 3], &[([0.5; 3], Vec3::new(0.0, 1.0005, 0.0))]).len(), 2);
+    }
+
+    #[test]
+    fn contacts_name_each_bonded_neighbour_both_ways() {
         use vibe_land_destruction::manifest::BondDef;
         let mut a = cuboid([0.5; 3]);
         a.centroid = [0.0, 0.5, 0.0];
         let mut b = cuboid([0.5; 3]);
         b.node_index = 1;
         b.centroid = [0.0, 1.5, 0.0];
-        for normal in [[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]] {
-            let structure = StructureManifest {
-                chunks: vec![a.clone(), b.clone()],
-                bonds: vec![BondDef { bond_index: 0, node0: 0, node1: 1, centroid: [0.0, 1.0, 0.0], normal, area: 1.0, material: 0 }],
-                structure_id: 0,
-                world_position: [0.0; 3],
-                world_rotation: [0.0, 0.0, 0.0, 1.0],
-            };
-            let c = structure_contacts(&structure);
-            assert_eq!(c[0], vec![Contact { toward: Vec3::Y, area: 1.0 }]);
-            assert_eq!(c[1], vec![Contact { toward: Vec3::NEG_Y, area: 1.0 }]);
-        }
+        let structure = StructureManifest {
+            chunks: vec![a, b],
+            bonds: vec![BondDef { bond_index: 0, node0: 0, node1: 1, centroid: [0.0, 1.0, 0.0], normal: [0.0, 1.0, 0.0], area: 1.0, material: 0 }],
+            structure_id: 0,
+            world_position: [0.0; 3],
+            world_rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        let c = structure_contacts(&structure);
+        assert_eq!(c[0], vec![Contact { neighbour: 1, offset: Vec3::Y }]);
+        assert_eq!(c[1], vec![Contact { neighbour: 0, offset: Vec3::NEG_Y }]);
     }
 
     #[test]

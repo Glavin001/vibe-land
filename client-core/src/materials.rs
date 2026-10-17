@@ -179,6 +179,11 @@ impl Catalog {
         Ok(catalog)
     }
 
+    /// Whether entry `id` is glass (see-through).
+    pub fn is_glass(&self, id: u16) -> bool {
+        id == self.glass
+    }
+
     /// The entry an interior (fractured) face of entry `id` wears.
     pub fn fracture_of(&self, id: u16) -> u16 {
         self.fracture.get(id as usize).copied().unwrap_or(id)
