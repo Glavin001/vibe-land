@@ -1110,6 +1110,16 @@ function decodeDamageEventPacket(view: DataView, o: number): DamageEventPacket {
   };
 }
 
+/**
+ * The SnapshotV2 decoder in use: this file's, or the shared Rust one (net/sharedDecode.ts) once
+ * the WASM is loaded and its flag is on (wasm/sharedPhysics.ts installs it).
+ */
+let snapshotV2Decoder: ((bytes: Uint8Array) => SnapshotV2Packet) | null = null;
+
+export function provideSnapshotV2Decoder(decoder: ((bytes: Uint8Array) => SnapshotV2Packet) | null): void {
+  snapshotV2Decoder = decoder;
+}
+
 export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): ServerDatagramPacket {
   const bytes = toBytes(data);
   if (bytes[0] === PKT_VEHICLE_RIG) return decodeVehicleRig(bytes);
@@ -1121,7 +1131,7 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
     case PKT_SNAPSHOT:
       return decodeSnapshotPacket(view, o);
     case PKT_SNAPSHOT_V2:
-      return decodeSnapshotV2Packet(view, o);
+      return snapshotV2Decoder ? snapshotV2Decoder(bytes) : decodeSnapshotV2Packet(view, o);
     default:
       throw new Error(`unknown datagram packet kind: ${kind}`);
   }

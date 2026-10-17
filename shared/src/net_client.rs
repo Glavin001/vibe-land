@@ -343,6 +343,116 @@ fn decode_snapshot_v2(r: &mut Reader) -> Result<SnapshotV2Packet, DecodeError> {
     Ok(packet)
 }
 
+/// Layout of [`snapshot_v2_flat`]: the header slots, then the self state, then each list.
+pub const SNAPSHOT_V2_FLAT_HEADER: usize = 13;
+pub const SNAPSHOT_V2_FLAT_SELF: usize = 18;
+pub const SNAPSHOT_V2_FLAT_REMOTE: usize = 11;
+pub const SNAPSHOT_V2_FLAT_SPHERE: usize = 10;
+pub const SNAPSHOT_V2_FLAT_BOX: usize = 14;
+pub const SNAPSHOT_V2_FLAT_VEHICLE: usize = 17;
+pub const SNAPSHOT_V2_FLAT_REMOVAL: usize = 2;
+
+/// A SnapshotV2 packet (kind byte included) as one flat array of its wire integers, for a client
+/// that builds its own objects from it (the web: `client/src/net/sharedDecode.ts`). Every value is
+/// the integer the wire carries (no unit conversion), so a reader that converts as the TypeScript
+/// decoder does gets bit-identical numbers.
+///
+/// Header (`SNAPSHOT_V2_FLAT_HEADER` slots): server tick, ack input seq, anchor x/y/z mm, server
+/// wall µs (-1 when the packet has no trailer), counts of remote players, spheres, boxes,
+/// vehicles, removals (-1 when the packet has no removals section), input-queue depth and target
+/// (-1 when absent). Then the self state (vx vy vz yaw pitch hp flags, support handle, local
+/// q2.5 mm ×3, velocity cm/s ×3, flags, angular mrad/s ×3), then each list in wire field order,
+/// then the removals (raw handle, age ticks).
+pub fn snapshot_v2_flat(bytes: &[u8]) -> Result<Vec<f64>, DecodeError> {
+    let ServerMessage::SnapshotV2(s) = decode_server_packet(bytes)? else {
+        return Err(DecodeError::Truncated { kind: bytes.first().copied().unwrap_or(0), needed: 1, remaining: 0 });
+    };
+    // Which optional tail parts the packet carries: the decoder reads each exactly when these hold
+    // (`decode_snapshot_v2`), and absent parts leave defaults the web must not see as values.
+    let entities = s.remote_players.len() * REMOTE_PLAYER_BYTES
+        + s.sphere_states.len() * SPHERE_BYTES
+        + s.box_states.len() * BOX_BYTES
+        + s.vehicle_states.len() * VEHICLE_BYTES;
+    let header = 1 + 4 + 2 + 12 + 4;
+    let left = bytes.len() - header;
+    let self_len = if left >= SELF_FULL_BYTES + entities {
+        SELF_FULL_BYTES
+    } else if left >= SELF_WITH_SUPPORT_BYTES + entities {
+        SELF_WITH_SUPPORT_BYTES
+    } else {
+        SNAPSHOT_V2_COMPACT_SELF_PLAYER_BYTES
+    };
+    let trailer_at = header + self_len + entities;
+    let has_trailer = bytes.len() >= trailer_at + SNAPSHOT_V2_TRAILER_BYTES;
+    let tail = trailer_at + SNAPSHOT_V2_TRAILER_BYTES;
+    let has_removals = has_trailer
+        && bytes.len() >= tail + 2
+        && bytes[tail] == SNAPSHOT_V2_REMOVALS_TAG
+        && bytes.len() - (tail + 2) >= usize::from(bytes[tail + 1]) * SNAPSHOT_V2_REMOVAL_BYTES;
+
+    let mut out = Vec::with_capacity(
+        SNAPSHOT_V2_FLAT_HEADER
+            + SNAPSHOT_V2_FLAT_SELF
+            + s.remote_players.len() * SNAPSHOT_V2_FLAT_REMOTE
+            + s.sphere_states.len() * SNAPSHOT_V2_FLAT_SPHERE
+            + s.box_states.len() * SNAPSHOT_V2_FLAT_BOX
+            + s.vehicle_states.len() * SNAPSHOT_V2_FLAT_VEHICLE
+            + s.removals.len() * SNAPSHOT_V2_FLAT_REMOVAL,
+    );
+    let (depth, target) = s.input_queue.map_or((-1.0, -1.0), |(d, t)| (f64::from(d), f64::from(t)));
+    out.extend_from_slice(&[
+        f64::from(s.server_tick),
+        f64::from(s.ack_input_seq),
+        f64::from(s.anchor_px_mm),
+        f64::from(s.anchor_py_mm),
+        f64::from(s.anchor_pz_mm),
+        if has_trailer { f64::from(s.server_wall_us) } else { -1.0 },
+        s.remote_players.len() as f64,
+        s.sphere_states.len() as f64,
+        s.box_states.len() as f64,
+        s.vehicle_states.len() as f64,
+        if has_removals { s.removals.len() as f64 } else { -1.0 },
+        depth,
+        target,
+    ]);
+    let st = &s.self_state;
+    out.extend([st.vx_cms, st.vy_cms, st.vz_cms, st.yaw_i16, st.pitch_i16].map(f64::from));
+    out.extend([f64::from(st.hp), f64::from(st.flags), f64::from(st.support_handle)]);
+    out.extend(st.support_local_q2_5mm.map(f64::from));
+    out.extend(st.support_velocity_cms.map(f64::from));
+    out.push(f64::from(st.support_flags));
+    out.extend(st.support_angular_velocity_mrads.map(f64::from));
+    for p in &s.remote_players {
+        out.push(f64::from(p.handle));
+        out.extend([p.dx_q2_5mm, p.dy_q2_5mm, p.dz_q2_5mm, p.vx_cms, p.vy_cms, p.vz_cms, p.yaw_i16, p.pitch_i16].map(f64::from));
+        out.extend([f64::from(p.hp), f64::from(p.flags)]);
+    }
+    for b in &s.sphere_states {
+        out.push(f64::from(b.handle));
+        out.extend([b.dx_q2_5mm, b.dy_q2_5mm, b.dz_q2_5mm, b.vx_cms, b.vy_cms, b.vz_cms, b.wx_mrads, b.wy_mrads, b.wz_mrads].map(f64::from));
+    }
+    for b in &s.box_states {
+        out.push(f64::from(b.handle));
+        out.extend(
+            [b.dx_q2_5mm, b.dy_q2_5mm, b.dz_q2_5mm, b.qx_snorm, b.qy_snorm, b.qz_snorm, b.qw_snorm, b.vx_cms, b.vy_cms, b.vz_cms, b.wx_mrads, b.wy_mrads, b.wz_mrads]
+                .map(f64::from),
+        );
+    }
+    for v in &s.vehicle_states {
+        out.extend([v.handle, v.vehicle_type, v.driver_handle, v.flags].map(f64::from));
+        out.extend(
+            [v.dx_q2_5mm, v.dy_q2_5mm, v.dz_q2_5mm, v.qx_snorm, v.qy_snorm, v.qz_snorm, v.qw_snorm, v.vx_cms, v.vy_cms, v.vz_cms, v.wx_mrads, v.wy_mrads, v.wz_mrads]
+                .map(f64::from),
+        );
+    }
+    if has_removals {
+        for r in &s.removals {
+            out.extend([f64::from(r.handle), f64::from(r.age_ticks)]);
+        }
+    }
+    Ok(out)
+}
+
 /// Movement capability bits a client advertises in its hello. A client that renders the server's
 /// authoritative movement without predicting it (the Unreal client today) sends
 /// [`CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE`], which PhysX servers require.

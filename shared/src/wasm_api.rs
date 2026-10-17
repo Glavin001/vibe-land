@@ -2370,3 +2370,13 @@ impl WasmClockSync {
         self.estimator.rtt_ms()
     }
 }
+
+/// A SnapshotV2 packet (kind byte included) decoded by the shared decoder the Unreal client uses
+/// (`net_client::snapshot_v2_flat`; layout there). The web builds its packet objects from it
+/// behind a flag (`client/src/net/sharedDecode.ts`).
+#[wasm_bindgen]
+pub fn decode_snapshot_v2_flat(bytes: &[u8]) -> Result<Box<[f64]>, JsValue> {
+    crate::net_client::snapshot_v2_flat(bytes)
+        .map(Vec::into_boxed_slice)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
