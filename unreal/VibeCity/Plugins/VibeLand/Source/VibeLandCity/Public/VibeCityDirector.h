@@ -5,6 +5,8 @@
 
 #include "VibeCityDirector.generated.h"
 
+class UMaterialBillboardComponent;
+class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UProceduralMeshComponent;
 class UVibeNetSubsystem;
@@ -63,6 +65,8 @@ private:
 	void AppendChunk(int32 ChunkIndex, const FTransform& ToComponent, FSectionBuffers& Opaque, FSectionBuffers& Glass) const;
 	void ApplySections(UProceduralMeshComponent* Component, FSectionBuffers& Opaque, FSectionBuffers& Glass) const;
 	UProceduralMeshComponent* NewChunkComponent();
+	void SpawnDust(const VlFrameView& Frame);
+	void TickDust(float DeltaSeconds);
 	void ShowStatus(const VlFrameView& Frame) const;
 	void LogTransitions(const VlFrameView& Frame, float DeltaSeconds);
 	void MaybeScreenshot(float DeltaSeconds);
@@ -80,6 +84,29 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> GlassMaterial;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> DustMaterial;
+
+	/** Live dust puffs (client-core effects.rs VlDust), drawn as soft billboards. */
+	struct FDustPuff
+	{
+		FVector Origin = FVector::ZeroVector;
+		FVector Drift = FVector::ZeroVector;
+		float Radius = 0.0f;
+		float Lifetime = 1.0f;
+		float Age = 0.0f;
+		int32 Slot = INDEX_NONE;
+	};
+	TArray<FDustPuff> DustPuffs;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialBillboardComponent>> DustSlots;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> DustMaterials;
+
+	TArray<int32> FreeDustSlots;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> BaseMaterial;

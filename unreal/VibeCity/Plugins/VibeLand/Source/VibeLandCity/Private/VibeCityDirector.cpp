@@ -32,6 +32,8 @@ AVibeCityDirector::AVibeCityDirector()
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Chunk(TEXT("/Game/VibeCity/Materials/M_VibeCityChunk.M_VibeCityChunk"));
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Glass(TEXT("/Game/VibeCity/Materials/M_VibeCityGlass.M_VibeCityGlass"));
 	ChunkMaterial = Chunk.Get();
+	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Dust(TEXT("/Game/VibeCity/Materials/M_VibeCityDust.M_VibeCityDust"));
+	DustMaterial = Dust.Get();
 	// The 2K sources (import-city-materials.sh --hd) when they were built, unless -VibeWebTextures.
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Hd(TEXT("/Game/VibeCity/Materials/M_VibeCityChunkHD.M_VibeCityChunkHD"));
 	if (Hd.Get() && !FParse::Param(FCommandLine::Get(), TEXT("VibeWebTextures")))
@@ -81,7 +83,9 @@ void AVibeCityDirector::Tick(float DeltaSeconds)
 	if (bCityBuilt)
 	{
 		ApplyFrame(*Frame);
+		SpawnDust(*Frame);
 	}
+	TickDust(DeltaSeconds);
 	ShowStatus(*Frame);
 	LogTransitions(*Frame, DeltaSeconds);
 	MaybeScreenshot(DeltaSeconds);
