@@ -1291,6 +1291,7 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		double LowestPelvisZ = TNumericLimits<double>::Max();
 		double LastPelvisZ = 0.0;
 		int32 PelvisSamples = 0;
+		FString PelvisTrace;
 	};
 	TSharedRef<FState> S = MakeShared<FState>();
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
@@ -1409,6 +1410,10 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 				S->LowestPelvisZ = FMath::Min(S->LowestPelvisZ, Pelvis->Z);
 				S->LastPelvisZ = Pelvis->Z;
 				S->PelvisSamples += 1;
+				if (S->PelvisSamples % 20 == 1)
+				{
+					S->PelvisTrace += FString::Printf(TEXT(" %.0f"), Pelvis->Z);
+				}
 			}
 		}
 		return Now() > S->Deadline;
@@ -1417,6 +1422,7 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 	{
 		TActorIterator<AVibeRemotePlayers> Players(GameWorld());
 		AddInfo(FString::Printf(TEXT("death drawn on %d frames"), Players ? Players->RagdollSeen() : 0));
+		AddInfo(FString::Printf(TEXT("pelvis height every 20 frames (cm):%s"), *S->PelvisTrace));
 		TestTrue(TEXT("the dead player is drawn dying"), Players && Players->RagdollSeen() > 0);
 		AddInfo(FString::Printf(TEXT("ragdoll rig: %d bodies, %d joints; pelvis over %d frames: lowest %.1f cm, last %.1f cm (standing %.1f cm)"),
 			Players ? Players->RagdollBodies() : 0, Players ? Players->RagdollJoints() : 0, S->PelvisSamples,
