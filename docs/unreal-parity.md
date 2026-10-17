@@ -109,6 +109,11 @@ textures under its environment light.
 The owner's direction (2026-10-17): Unreal need not match the web's look; it should use what Unreal
 does better and match /city's function.
 
+Parity accepted by the owner (2026-10-17), semantically: every /city feature has its Unreal
+counterpart (dust where the web has dust, a material where the web has one), so the two are
+clearly the same game; how each looks is Unreal's to do as well as Unreal can, not bound to what
+or how the web draws.
+
 - **Lighting.** The web lights with its sky gradient's environment map and ACES tone mapping;
   Unreal uses its physical sky, sky light, Lumen global illumination and reflections, and virtual
   shadow maps, over 2K PBR materials (above), so it renders brighter and more physically.
