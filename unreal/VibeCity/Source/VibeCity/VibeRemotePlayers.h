@@ -49,6 +49,9 @@ public:
 	/** A ragdolling player's pelvis in the world, and whether its bodies have come to rest (tests). */
 	TOptional<FVector> RagdollPelvis(uint32 PlayerId) const;
 	bool RagdollAtRest(uint32 PlayerId) const;
+	/** Tests: a player that dies standing at `Centre` (the server's capsule centre, 0.8 m over the
+	 * feet) moving at `Velocity` (cm/s), with no server player behind it. Returns its id. */
+	uint32 DropTestRagdoll(const FVector& Centre, const FVector& Velocity);
 
 protected:
 	virtual void BeginPlay() override;

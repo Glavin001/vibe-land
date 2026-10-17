@@ -403,6 +403,14 @@ UPhysicsAsset* AVibeRemotePlayers::RagdollAsset()
 	}
 	Physics->UpdateBodySetupIndexMap();
 	Physics->UpdateBoundsBodiesArray();
+	// Jointed parts never touch each other, as the web's joints are built (contacts_enabled(false)).
+	// The constraint's own flag above does not reach Chaos for a physics asset built at runtime; the
+	// asset's collision table does. Left colliding, a thigh and the pelvis (which overlap where they
+	// meet) push apart every step and the body never comes to rest.
+	for (const FRagdollJoint& J : RagdollRigJoints)
+	{
+		Physics->DisableCollision(J.B1, J.B2);
+	}
 	RagdollPhysics = Physics;
 	UE_LOG(LogTemp, Display, TEXT("ragdoll: %d bodies, %d joints, %.1f cm per rig metre"), Physics->SkeletalBodySetups.Num(),
 		Physics->ConstraintSetup.Num(), S);
@@ -476,6 +484,19 @@ TOptional<FVector> AVibeRemotePlayers::RagdollPelvis(uint32 PlayerId) const
 	const FAvatar* A = Avatars.Find(PlayerId);
 	return A && A->Skeletal && A->bRagdoll && A->Skeletal->IsSimulatingPhysics()
 		? TOptional<FVector>(A->Skeletal->GetBoneLocation(TEXT("pelvis"))) : TOptional<FVector>();
+}
+
+uint32 AVibeRemotePlayers::DropTestRagdoll(const FVector& Centre, const FVector& Velocity)
+{
+	static uint32 NextTestId = 0x7fff0000;
+	const uint32 Id = NextTestId++;
+	FAvatar& A = AvatarFor(Id);
+	A.Root->SetWorldLocationAndRotation(Centre, FRotator::ZeroRotator);
+	if (A.Skeletal)
+	{
+		SetRagdoll(A, true, Velocity);
+	}
+	return Id;
 }
 
 bool AVibeRemotePlayers::RagdollAtRest(uint32 PlayerId) const

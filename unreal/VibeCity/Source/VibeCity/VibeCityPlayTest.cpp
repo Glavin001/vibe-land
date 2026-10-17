@@ -1268,8 +1268,9 @@ bool FVibeCityPlayWreckCar::RunTest(const FString& Parameters)
 
 // VibeCity.Play.KillRemote: fire the rifle at the nearest other player until the server marks them
 // dead; they fall as the web's cosmetic ragdoll (AVibeRemotePlayers): the web's rig (13 bodies, 12
-// joints), and under gravity the pelvis drops below half its standing height while the ground
-// stops it (never below the city ground). -VibeShotDir saves dead.png.
+// joints), and under gravity it lies down: the pelvis under half its standing height over the
+// ground (95 cm) for the last 0.5 s, never below the city ground. The stand-in waits at a fixed
+// point: vl-headless --jump --drop 20,1,60. -VibeShotDir saves dead.png.
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayKillRemote, "VibeCity.Play.KillRemote",
 	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
@@ -1292,6 +1293,7 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		double LastPelvisZ = 0.0;
 		int32 PelvisSamples = 0;
 		FString PelvisTrace;
+		double HighestLatePelvisZ = -TNumericLimits<double>::Max();
 	};
 	TSharedRef<FState> S = MakeShared<FState>();
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
@@ -1409,6 +1411,10 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 			{
 				S->LowestPelvisZ = FMath::Min(S->LowestPelvisZ, Pelvis->Z);
 				S->LastPelvisZ = Pelvis->Z;
+				if (Now() > S->Deadline - 0.5)
+				{
+					S->HighestLatePelvisZ = FMath::Max(S->HighestLatePelvisZ, Pelvis->Z);
+				}
 				S->PelvisSamples += 1;
 				if (S->PelvisSamples % 20 == 1)
 				{
@@ -1430,7 +1436,9 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 		TestEqual(TEXT("the web's ragdoll rig: 13 bodies"), Players ? Players->RagdollBodies() : 0, 13);
 		TestEqual(TEXT("the web's ragdoll rig: 12 joints"), Players ? Players->RagdollJoints() : 0, 12);
 		TestTrue(TEXT("the dead player ragdolls"), S->PelvisSamples > 0);
-		TestTrue(TEXT("the ragdoll falls: its pelvis drops below half its standing height"), S->PelvisSamples > 0 && S->LastPelvisZ < S->StandingPelvisZ * 0.5);
+		// Standing, the pelvis is 95 cm over the ground (z 0); lying, about the body's half-thickness.
+		TestTrue(FString::Printf(TEXT("the ragdoll lies down: its pelvis under half its standing height over the ground for the last 0.5 s (%.1f cm)"), S->HighestLatePelvisZ),
+			S->PelvisSamples > 0 && S->HighestLatePelvisZ < 95.0 * 0.5);
 		// The crosshair turned red over them while aimed at (the server's hitscan classifier).
 		TestTrue(FString::Printf(TEXT("the crosshair marked the target (zone %u)"), S->CrosshairZone), S->CrosshairZone > 0);
 		// Their energy, dropped where they died (server kill_player_with_cause, PKT_BATTERY_SYNC):
