@@ -60,5 +60,32 @@ for path in imported:
         moved_anims += 1
 
 assert mesh, "no skeletal mesh was imported"
+
+# UAL2 carries the rest of the web's clips (Melee_Hook among them) for the same skeleton: import only
+# its animations, onto UAL1's skeleton.
+src2 = os.environ.get("VIBE_CHARACTER_GLB2")
+if src2:
+    stage2 = f"{ROOT}/Import2"
+    if assets.does_directory_exist(stage2):
+        assets.delete_directory(stage2)
+    skeleton = unreal.load_asset(f"{ROOT}/UAL1_Standard").get_editor_property("skeleton")
+    pipeline = unreal.InterchangeGenericAssetsPipeline()
+    common = pipeline.get_editor_property("common_skeletal_meshes_and_animations_properties")
+    common.set_editor_property("skeleton", skeleton)
+    common.set_editor_property("import_only_animations", True)
+    params = unreal.ImportAssetParameters()
+    params.is_automated = True
+    params.override_pipelines.append(unreal.SoftObjectPath(pipeline.get_path_name()))
+    source = unreal.InterchangeManager.create_source_data(src2)
+    unreal.InterchangeManager.get_interchange_manager_scripted().import_asset(stage2, source, params)
+    for path in assets.list_assets(stage2, recursive=True, include_folder=False):
+        data = assets.find_asset_data(path)
+        if str(data.asset_class_path.asset_name) != "AnimSequence":
+            continue
+        name = str(data.asset_name)
+        clip = name[len("UAL2_Standard"):] if name.startswith("UAL2_Standard") else name
+        if not assets.does_asset_exist(f"{ANIMS}/{clip}"):
+            assets.rename_asset(path, f"{ANIMS}/{clip}")
+            moved_anims += 1
 assets.save_directory(ROOT, only_if_is_dirty=False, recursive=True)
 print(f"VIBE_IMPORT_OK mesh={ROOT}/UAL1_Standard anims={moved_anims}")

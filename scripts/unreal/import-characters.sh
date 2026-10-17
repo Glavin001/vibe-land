@@ -16,7 +16,7 @@ LOG="$ROOT/target/unreal-import-characters.log"
 mkdir -p "$(dirname "$LOG")"
 [[ -f "$GLB" ]] || { echo "import-characters: $GLB missing" >&2; exit 1; }
 
-VIBE_CHARACTER_GLB="$GLB" \
+VIBE_CHARACTER_GLB="$GLB" VIBE_CHARACTER_GLB2="$ROOT/client/public/models/UAL2_Standard.glb" \
   "$UE_ROOT/Engine/Binaries/Mac/UnrealEditor-Cmd" "$ROOT/unreal/VibeCity/VibeCity.uproject" \
   -run=pythonscript -script="$ROOT/unreal/VibeCity/Scripts/import_characters.py" \
   -unattended -nop4 -nosplash -abslog="$LOG" >/dev/null 2>&1 || true
