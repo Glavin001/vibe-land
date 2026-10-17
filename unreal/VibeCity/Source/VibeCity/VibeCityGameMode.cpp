@@ -22,6 +22,7 @@
 #include "VibeCityPlayerController.h"
 #include "VibePlayerPawn.h"
 #include "VibeDynamicBodies.h"
+#include "VibeAudio.h"
 #include "VibeShotEffects.h"
 #include "VibeVehicles.h"
 #include "VibeLandNet.h"
@@ -67,6 +68,7 @@ void AVibeCityGameMode::StartPlay()
 	World->SpawnActor<AVibeShotEffects>();
 	World->SpawnActor<AVibeDynamicBodies>();
 	World->SpawnActor<AVibeVehicles>();
+	World->SpawnActor<AVibeAudio>();
 
 	if (GetDefault<UVibeNetSettings>()->bAutoConnect)
 	{
