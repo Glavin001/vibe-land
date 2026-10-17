@@ -319,6 +319,10 @@ pub struct SceneFrame {
     pub meteors: Vec<VlMeteor>,
     /// Audible contacts since the previous poll.
     pub audio_contacts: Vec<VlAudioContact>,
+    /// Sounds to start this poll (client-core audio.rs: the web's policy), renderer space.
+    pub sounds: Vec<crate::audio::VlSound>,
+    /// Dust puffs to raise this poll (client-core effects.rs), renderer space.
+    pub dust: Vec<crate::effects::VlDust>,
     pub stats: VlStats,
 }
 
@@ -332,5 +336,7 @@ impl SceneFrame {
         self.dynamic_bodies.clear();
         self.meteors.clear();
         self.audio_contacts.clear();
+        self.sounds.clear();
+        self.dust.clear();
     }
 }

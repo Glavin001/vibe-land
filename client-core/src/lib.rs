@@ -93,6 +93,9 @@ pub struct ClientCore {
     /// Meteor launches since the last poll, with their arrival times.
     meteors: Vec<(MeteorLaunched, u64)>,
     audio_contacts: Vec<crate::frame::VlAudioContact>,
+    audio: audio::AudioDirector,
+    /// Where sounds are heard from (server space): the local player's eye unless the renderer says.
+    listener: Option<Vec3>,
     vehicle_assets: std::collections::HashMap<u32, VehicleAsset>,
     /// Each car's newest rig (wheel states), for cars drawn from the snapshot.
     vehicle_rigs: std::collections::HashMap<u32, VehicleRig>,
@@ -137,6 +140,8 @@ impl ClientCore {
             last_melee_us: None,
             meteors: Vec::new(),
             audio_contacts: Vec::new(),
+            audio: audio::AudioDirector::default(),
+            listener: None,
             vehicle_assets: std::collections::HashMap::new(),
             vehicle_rigs: std::collections::HashMap::new(),
             driving: None,
@@ -476,9 +481,82 @@ impl ClientCore {
                 radius: m.radius_m * self.space.metres(),
             });
         }
+        self.present_effects(now_ms);
         stats.remote_players = self.frame.remote_players.len() as u32;
         self.frame.stats = stats;
         &self.frame
+    }
+
+    /// Where sounds are heard from, in the renderer's space (a spectator's camera). Without it the
+    /// local player's eye is the listener.
+    pub fn set_listener(&mut self, position: [f32; 3]) {
+        self.listener = Some(self.space.pos_to_server(position));
+    }
+
+    /// This poll's destruction sources, shots and server contacts as sounds (through the web's
+    /// director and voice choices, audio.rs) and dust (effects.rs), in the renderer's space.
+    fn present_effects(&mut self, now_ms: f64) {
+        let listener = self.listener.unwrap_or_else(|| {
+            let eye = self.frame.local.eye;
+            if self.frame.local.player.player_id != 0 { self.space.pos_to_server(eye) } else { Vec3::ZERO }
+        });
+        self.audio.listener = listener;
+        let space = self.space;
+        let to_server_dir = |d: [f32; 3]| (space.pos_to_server(d)).normalize_or_zero();
+
+        if let Some(city) = self.city.as_mut() {
+            let sources = std::mem::take(&mut city.sources);
+            let table = city.source_table();
+            for source in &sources {
+                let acoustic = table.acoustic(source.material);
+                if let Some(sound) = effects::sound_from_source(source, acoustic, now_ms) {
+                    self.audio.enqueue(sound);
+                }
+                // Dust in the material's colour (authored, else concrete).
+                let mut dust = source.dust(table.color(source.material));
+                dust.position = space.pos(Vec3::from_array(dust.position));
+                dust.normal = Vec3::from_array(space.pos(Vec3::from_array(dust.normal))).normalize_or_zero().to_array();
+                dust.radius *= space.metres();
+                self.frame.dust.push(dust);
+            }
+        }
+        // Shots (gameEvents.ts soundFromShot): anyone's resolved hitscan shots, and this client's
+        // own at once.
+        for e in &self.frame.events {
+            let origin = || space.pos_to_server(e.p0);
+            let shot = match e.kind {
+                crate::frame::VL_EVENT_SHOT_FIRED if e.player != self.player_id => audio::sound_from_shot(e.player, e.id, e.weapon as u8, origin(), now_ms),
+                crate::frame::VL_EVENT_LOCAL_SHOT => audio::sound_from_shot(self.player_id, e.id, e.weapon as u8, origin(), now_ms),
+                _ => None,
+            };
+            if let Some(s) = shot {
+                self.audio.enqueue(s);
+            }
+        }
+        // The server's audible contacts (GameAudioLayer.tsx): impacts as one-shots.
+        for c in &self.frame.audio_contacts {
+            let contact = audio::AudioContact {
+                sim_tick: 0,
+                entity_a: c.entity_a,
+                entity_b: c.entity_b,
+                scrape: c.kind == crate::frame::VL_CONTACT_SCRAPE,
+                position: space.pos_to_server(c.pos),
+                normal: to_server_dir(c.normal),
+                normal_speed: c.normal_speed / space.metres(),
+                tangent_speed: c.tangent_speed / space.metres(),
+                intensity: c.intensity,
+                size: c.size,
+            };
+            if let Some(s) = audio::sound_from_contact(&contact, audio::AcousticMaterial::Concrete, false, now_ms) {
+                self.audio.enqueue(s);
+            }
+        }
+        let mut voices = Vec::new();
+        self.audio.drain(now_ms, |e| audio::voices(e, listener, now_ms, audio::DEFAULT_MIX, &mut voices));
+        for mut v in voices {
+            v.position = space.pos(Vec3::from_array(v.position));
+            self.frame.sounds.push(v);
+        }
     }
 
     /// What the player is doing, in the renderer's space (see [`VlInput`]). Held until changed; each

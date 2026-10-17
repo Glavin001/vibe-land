@@ -18,6 +18,8 @@ use vibe_land_destruction::manifest::DestructionManifest;
 
 use crate::audio::{acoustic_material, physical_intensity, AcousticMaterial, SoundEvent, SoundKind};
 
+/// Unauthored materials' dust: the catalog's concrete wall (#8d8a86).
+const CONCRETE_RGBA: u32 = 0x8d8a_86ff;
 /// Breaks closer than this are one source (destructionEvents.ts DEFAULT_DUST_EXTRACT_OPTIONS).
 const CELL_SIZE_M: f32 = 4.0;
 /// Largest sources kept per fracture.
@@ -77,6 +79,8 @@ pub struct SourceTable {
     structures: HashMap<u32, StructureInfo>,
     /// Per manifest material: its acoustic material.
     acoustics: Vec<AcousticMaterial>,
+    /// Per manifest material: its authored colour (0xRRGGBBAA), or concrete grey.
+    colors: Vec<u32>,
 }
 
 impl SourceTable {
@@ -118,7 +122,17 @@ impl SourceTable {
             .iter()
             .map(|a| acoustic_material(a.name.as_deref().unwrap_or(""), a.metalness.unwrap_or(0.0)))
             .collect();
-        Self { structures, acoustics }
+        let colors = manifest
+            .material_appearance
+            .iter()
+            .map(|a| a.color.as_deref().and_then(crate::materials::parse_hex_rgba).unwrap_or(CONCRETE_RGBA))
+            .collect();
+        Self { structures, acoustics, colors }
+    }
+
+    /// A manifest material's colour, for its dust.
+    pub fn color(&self, material: u32) -> u32 {
+        self.colors.get(material as usize).copied().unwrap_or(CONCRETE_RGBA)
     }
 
     pub fn acoustic(&self, material: u32) -> AcousticMaterial {

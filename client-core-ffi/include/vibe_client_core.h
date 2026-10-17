@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 8
+#define VL_ABI_VERSION 9
 
 #define VL_OK 0
 
@@ -188,6 +188,11 @@
 #define VL_TRANSPORT_CLOSED 5
 
 #define VL_TRANSPORT_FAILED 6
+
+/**
+ * `VlSound::flags`: a sound the player must hear (a near threat).
+ */
+#define VL_SOUND_PROTECTED 1
 
 /**
  * Where the session is, as the core sees it.
@@ -448,6 +453,50 @@ typedef struct VlAudioContact {
 } VlAudioContact;
 
 /**
+ * One clip to play: a renderer plays `clip` at `position` with `gain` (attenuation included,
+ * no further distance falloff) and playback `rate`, `delay_s` from now.
+ */
+typedef struct VlSound {
+  /**
+   * Index into the clip table (`clip_id`).
+   */
+  uint32_t clip;
+  float position[3];
+  float gain;
+  float rate;
+  float delay_s;
+  /**
+   * `VL_SOUND_*` bits.
+   */
+  uint32_t flags;
+} VlSound;
+
+/**
+ * A dust puff for a renderer: where, which way it billows, how big it grows and for how long.
+ * Presentation, sized from the source's dust units: a renderer draws it as soft particles.
+ */
+typedef struct VlDust {
+  float position[3];
+  /**
+   * Outward face direction (unit, or zero): the puff drifts this way.
+   */
+  float normal[3];
+  /**
+   * Final radius of the cloud.
+   */
+  float radius;
+  /**
+   * Seconds from appearing to gone.
+   */
+  float lifetime_s;
+  /**
+   * 0xRRGGBBAA.
+   */
+  uint32_t color_rgba;
+  uint32_t flags;
+} VlDust;
+
+/**
  * Counters and clocks, for overlays, logs and test gates.
  */
 typedef struct VlStats {
@@ -518,6 +567,17 @@ typedef struct VlFrameView {
    */
   const struct VlAudioContact *audio_contacts;
   size_t audio_contact_count;
+  /**
+   * Sounds to start now (client-core audio.rs, the web's policy): play clip `vl_audio_clip_id(clip)`
+   * at `position` with `gain` (distance falloff included: add none) and `rate`, after `delay_s`.
+   */
+  const struct VlSound *sounds;
+  size_t sound_count;
+  /**
+   * Dust puffs to raise now (client-core effects.rs).
+   */
+  const struct VlDust *dust;
+  size_t dust_count;
   struct VlStats stats;
 } VlFrameView;
 
@@ -857,6 +917,21 @@ int32_t vl_client_chunk_surfaces(struct VlClient *client,
  * `out_materials` and `out_count` must be writable.
  */
 int32_t vl_catalog(const struct VlMaterial **out_materials, size_t *out_count);
+
+/**
+ * Where sounds are heard from, in the renderer's space (a spectator's camera; without it the
+ * local player's eye).
+ *
+ * # Safety
+ * `client` must be a live client.
+ */
+int32_t vl_client_set_listener(struct VlClient *client, float x, float y, float z);
+
+/**
+ * An audio clip's id (the web's catalog name, e.g. "concrete-impact-2"), NUL-terminated; null
+ * past the end. Static. `VlSound::clip` indexes these.
+ */
+const char *vl_audio_clip_id(uint32_t index);
 
 /**
  * A catalog entry's stable id (e.g. "brick"), NUL-terminated; null past the end. Static.

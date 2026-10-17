@@ -19,6 +19,7 @@ use vibe_land_perplayer::wire::{
 };
 
 use crate::coords::Space;
+use crate::effects::{classify_motion_impact, MotionSample, Source, SourceKind, SourceTable};
 use crate::frame::*;
 
 /// Playout delay of the city stream, ticks (the browser's `delayTicks`).
@@ -77,12 +78,20 @@ pub struct CityStream {
     pub fractures: u64,
     pub resync_requests: u64,
     pub acks_sent: u64,
+    /// Destruction sources (fractures, crushed chunks, impacts) since the last drain, server space.
+    pub(crate) sources: Vec<Source>,
+    source_table: SourceTable,
+    physics: Physics,
+    sim_hz: u32,
+    /// Per moving body: its last motion sample and when it last raised an impact (ms).
+    motion: HashMap<BodyKey, (MotionSample, f64)>,
 }
 
 impl CityStream {
     pub fn new(manifest: &DestructionManifest, sim_hz: u32, space: Space) -> Self {
         let gravity_y = -(vibe_netcode::movement::GRAVITY as f32);
-        let client = Client::new(structure_defs(manifest), Physics::at_hz(sim_hz, gravity_y), sim_hz, CITY_DELAY_TICKS);
+        let physics = Physics::at_hz(sim_hz, gravity_y);
+        let client = Client::new(structure_defs(manifest), physics, sim_hz, CITY_DELAY_TICKS);
 
         let colors: Vec<u32> = manifest
             .material_appearance
@@ -133,7 +142,17 @@ impl CityStream {
             fractures: 0,
             resync_requests: 0,
             acks_sent: 0,
+            sources: Vec::new(),
+            source_table: SourceTable::new(manifest),
+            physics,
+            sim_hz,
+            motion: HashMap::new(),
         }
+    }
+
+    /// The manifest facts destruction sources are made from.
+    pub(crate) fn source_table(&self) -> &SourceTable {
+        &self.source_table
     }
 
     pub fn chunks(&self) -> &[VlChunk] {
@@ -157,8 +176,19 @@ impl CityStream {
                         self.reassign_structure(structure, frame);
                     }
                 }
-                BodyChange::Fracture { structure, removed_chunks, changed, .. } => {
+                BodyChange::Fracture { tick, structure, broken_bonds, removed_chunks, changed, .. } => {
                     self.fractures += 1;
+                    // Where it broke and how much: bonds clustered by cell, crushed chunks. Parted =
+                    // the bond's two chunks now ride different bodies (the fracture is applied).
+                    let client = &self.client;
+                    self.source_table.fracture_sources(
+                        structure,
+                        tick,
+                        &broken_bonds,
+                        &removed_chunks,
+                        |a, b| client.chunk_body(structure, a) != client.chunk_body(structure, b),
+                        &mut self.sources,
+                    );
                     let mut sum = [0.0f32; 3];
                     let mut count = 0u32;
                     let mut note = |this: &Self, node: u32| {
@@ -199,6 +229,11 @@ impl CityStream {
                 continue; // a car's detached group: vehicles come later
             }
             let settled = settled.is_some();
+            if let (Some(r), false) = (render, settled) {
+                self.note_motion(key, p, r);
+            } else if settled {
+                self.motion.remove(&key);
+            }
             let moved = match self.last_pose.get(&key) {
                 Some(&(lp, lq, ls)) => ls != settled || lp.distance_squared(p) > 1e-10 || lq.dot(q).abs() < 1.0 - 1e-9,
                 None => true,
@@ -215,6 +250,53 @@ impl CityStream {
             }
         }
         render
+    }
+
+    /// Impacts off the body velocity stream (motion.ts `classifyMotionImpact`): a body whose
+    /// velocity drops sharply between render samples hit something; at most one every 220 ms.
+    fn note_motion(&mut self, key: BodyKey, position: Vec3, render_tick: f32) {
+        let Some(track) = self.client.track(key) else { return };
+        let (velocity, _) = track.velocity_at(render_tick, self.physics);
+        let time_ms = f64::from(render_tick) / f64::from(self.sim_hz) * 1000.0;
+        let mass_guess = 1.0;
+        let sample = MotionSample { position, velocity, time_ms, mass: mass_guess };
+        let Some((previous, last_impact_ms)) = self.motion.get(&key).copied() else {
+            self.motion.insert(key, (sample, f64::NEG_INFINITY));
+            return;
+        };
+        if time_ms <= previous.time_ms {
+            return;
+        }
+        let mut impact_at = last_impact_ms;
+        // Cheap test first (a real drop at all), then weigh the body.
+        if velocity.length() < previous.velocity.length() * 0.85 && time_ms - last_impact_ms > 220.0 {
+            let members: Vec<u32> = self
+                .structure_chunks
+                .get(&key.structure)
+                .map(|nodes| nodes.iter().filter(|(n, _)| self.client.chunk_body(key.structure, *n) == Some(key.body)).map(|(n, _)| *n).collect())
+                .unwrap_or_default();
+            let mass = self.source_table.mass_of(key.structure, &members);
+            let weighed = MotionSample { mass, ..sample };
+            let previous = MotionSample { mass, ..previous };
+            if let Some((energy, intensity)) = classify_motion_impact(&previous, &weighed) {
+                impact_at = time_ms;
+                let material = members.first().map_or(0, |&n| self.source_table.material_of(key.structure, n));
+                self.sources.push(Source {
+                    kind: SourceKind::Impact,
+                    structure: key.structure,
+                    tick: render_tick as u32,
+                    ordinal: key.body,
+                    position,
+                    normal: Vec3::Y,
+                    // destructionEvents.ts: impact dust units = kinetic energy lost / 5000 J.
+                    magnitude: energy / 5000.0,
+                    count: 1,
+                    material,
+                    intensity,
+                });
+            }
+        }
+        self.motion.insert(key, (sample, impact_at));
     }
 
     /// The cars, drawn at `car_tick`: the web draws them on the players' clock (its

@@ -16,6 +16,8 @@ use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use vibe_client_core::coords::Space;
+use vibe_client_core::audio::VlSound;
+use vibe_client_core::effects::VlDust;
 use vibe_client_core::geometry::VlMeshRange;
 use vibe_client_core::materials::{Catalog, VlChunkSurface, VlMaterial};
 use vibe_client_core::frame::{VlAudioContact, VlBodyPose, VlCar, VlChunk, VlChunkAssignment, VlDynamicBody, VlEvent, VlInput, VlLocal, VlMeteor, VlPlayer, VlStats};
@@ -24,7 +26,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 8;
+pub const VL_ABI_VERSION: u32 = 9;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -189,6 +191,13 @@ pub struct VlFrameView {
     /// Audible contacts since the previous poll.
     pub audio_contacts: *const VlAudioContact,
     pub audio_contact_count: usize,
+    /// Sounds to start now (client-core audio.rs, the web's policy): play clip `vl_audio_clip_id(clip)`
+    /// at `position` with `gain` (distance falloff included: add none) and `rate`, after `delay_s`.
+    pub sounds: *const VlSound,
+    pub sound_count: usize,
+    /// Dust puffs to raise now (client-core effects.rs).
+    pub dust: *const VlDust,
+    pub dust_count: usize,
     pub stats: VlStats,
 }
 
@@ -371,6 +380,10 @@ pub unsafe extern "C" fn vl_client_poll(client: *mut VlClient, out: *mut VlFrame
             meteor_count: frame.meteors.len(),
             audio_contacts: frame.audio_contacts.as_ptr(),
             audio_contact_count: frame.audio_contacts.len(),
+            sounds: frame.sounds.as_ptr(),
+            sound_count: frame.sounds.len(),
+            dust: frame.dust.as_ptr(),
+            dust_count: frame.dust.len(),
             stats: frame.stats,
         });
         VL_OK
@@ -647,6 +660,34 @@ pub unsafe extern "C" fn vl_catalog(out_materials: *mut *const VlMaterial, out_c
         Err(_) => VL_ERR_PANIC,
     }
 }
+
+/// Where sounds are heard from, in the renderer's space (a spectator's camera; without it the
+/// local player's eye).
+///
+/// # Safety
+/// `client` must be a live client.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_set_listener(client: *mut VlClient, x: f32, y: f32, z: f32) -> i32 {
+    guard(client, |c| {
+        c.core.set_listener([x, y, z]);
+        VL_OK
+    })
+}
+
+/// An audio clip's id (the web's catalog name, e.g. "concrete-impact-2"), NUL-terminated; null
+/// past the end. Static. `VlSound::clip` indexes these.
+#[no_mangle]
+pub extern "C" fn vl_audio_clip_id(index: u32) -> *const c_char {
+    static IDS: std::sync::OnceLock<Vec<std::ffi::CString>> = std::sync::OnceLock::new();
+    let ids = IDS.get_or_init(|| {
+        vibe_client_core::audio::Clips::get().ids.iter().map(|id| std::ffi::CString::new(id.as_str()).unwrap_or_default()).collect()
+    });
+    ids.get(index as usize).map_or(std::ptr::null(), |id| id.as_ptr())
+}
+
+/// `VlSound::flags`: a sound the player must hear (a near threat).
+pub const VL_SOUND_PROTECTED: u32 = 1;
+const _: () = assert!(VL_SOUND_PROTECTED == vibe_client_core::audio::VL_SOUND_PROTECTED);
 
 /// A catalog entry's stable id (e.g. "brick"), NUL-terminated; null past the end. Static.
 #[no_mangle]

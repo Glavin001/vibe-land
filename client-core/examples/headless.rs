@@ -40,6 +40,8 @@ fn main() {
     let mut core = ClientCore::new(Space::Server);
     let started = Instant::now();
     let mut joined_at: Option<Instant> = None;
+    // Sounds and dust puffs the core emitted (client-core audio.rs, effects.rs).
+    let (mut sounds, mut dust) = (0usize, 0usize);
     // (server tick, snapshots received) at the first snapshot after joining: the core reaches
     // Playing at Welcome, before any snapshot has carried a tick.
     let mut at_join: Option<(u32, u64)> = None;
@@ -87,6 +89,8 @@ fn main() {
             remote_changes += 1;
             last_remote = ids;
         }
+        sounds += frame.sounds.len();
+        dust += frame.dust.len();
         for pose in &frame.body_poses {
             tracks.entry((pose.structure, pose.body)).or_default().push((r, pose.pos[1]));
         }
@@ -150,7 +154,7 @@ fn main() {
     let received_snapshots = (stats.snapshots - at_join.1) as f64;
     let server_sim_rate = server_ticks / (f64::from(sim_hz) * joined_s.max(1e-9));
     println!(
-        "{{\"joined_s\":{joined_s:.2},\"snapshots\":{},\"snapshot_rate\":{:.2},\"snapshot_hz\":{snapshot_hz},\"server_sim_rate\":{server_sim_rate:.3},\"snapshots_expected\":{expected_snapshots:.0},\"chunks\":{},\"fractures\":{},\"keyframes\":{},\"late_keyframes\":{},\"hash_checks\":{},\"hash_mismatches\":{},\"decode_errors\":{},\"unknown_packets\":{},\"acks\":{},\"bodies_tracked\":{},\"free_fall_accel\":{},\"closed\":{:?}}}",
+        "{{\"joined_s\":{joined_s:.2},\"snapshots\":{},\"snapshot_rate\":{:.2},\"snapshot_hz\":{snapshot_hz},\"server_sim_rate\":{server_sim_rate:.3},\"snapshots_expected\":{expected_snapshots:.0},\"chunks\":{},\"fractures\":{},\"keyframes\":{},\"late_keyframes\":{},\"hash_checks\":{},\"hash_mismatches\":{},\"decode_errors\":{},\"unknown_packets\":{},\"acks\":{},\"bodies_tracked\":{},\"sounds\":{sounds},\"dust\":{dust},\"free_fall_accel\":{},\"closed\":{:?}}}",
         stats.snapshots, stats.snapshots as f64 / joined_s.max(1e-9), stats.chunks, stats.fractures, stats.keyframes,
         stats.late_keyframes, stats.hash_checks, stats.hash_mismatches, stats.decode_errors, stats.unknown_packets,
         stats.acks_sent, tracks.len(), fall.map_or("null".to_string(), |a| format!("{a:.3}")), closed,
