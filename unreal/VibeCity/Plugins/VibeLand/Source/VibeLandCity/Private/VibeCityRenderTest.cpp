@@ -15,6 +15,7 @@
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
 #include "Camera/PlayerCameraManager.h"
+#include "GameFramework/HUD.h"
 #include "GameFramework/PlayerController.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
@@ -826,6 +827,104 @@ bool FVibeCityPerfMeteor::RunTest(const FString& Parameters)
 		TestTrue(TEXT("the meteor freed bodies"), PeakBodies > 0);
 		return true;
 	}));
+	return true;
+}
+
+// VibeCity.Render.Showcase: one scripted shot for judging the look, before and after a change. The
+// camera parks at (-18, 5, -16) looking at the building at (-42, 4, -42) (server metres); the player
+// stands beside it; a meteor is sent at the building's top at 1 s and the cannon fires at it at
+// 1.5 s (a server sharing the GPU flies them slower than real time). The HUD is hidden; frames
+// every 0.5 s for 20 s go to -VibeShotDir as showcase_NN.png.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityRenderShowcase, "VibeCity.Render.Showcase",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		double Started = 0.0;
+		double T0 = 0.0;
+		int32 Shots = 0;
+		bool bCannon = false;
+		bool bMeteor = false;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		UVibeNetSubsystem* N = Net();
+		if (S->Started == 0.0)
+		{
+			S->Started = FPlatformTime::Seconds();
+		}
+		if (!D || !D->IsCityBuilt() || !N || !(N->LastFrame().local.player.flags & VL_PLAYER_VALID))
+		{
+			if (FPlatformTime::Seconds() - S->Started > 120.0)
+			{
+				AddError(TEXT("not ready"));
+				return true;
+			}
+			return false;
+		}
+		// Let the meadow and the materials settle.
+		if (FPlatformTime::Seconds() - S->Started < 8.0)
+		{
+			return false;
+		}
+		// The player beside the camera, facing the building (server (-22, 1, -20) toward (-42, -42)).
+		const FVector From(100.0 * -20.0, -100.0 * -22.0, 100.0);
+		const FVector To(100.0 * -42.0, -100.0 * -42.0, 400.0);
+		N->CameraDrop(From, static_cast<float>((To - From).Rotation().Yaw), 0.0f);
+		VibeCityCapture::Park(GameWorld(), FVector3f(-18.0f, 5.0f, -16.0f), FVector3f(-42.0f, 4.0f, -42.0f), 60.0f);
+		if (APlayerController* PC = GameWorld()->GetFirstPlayerController(); PC && PC->GetHUD())
+		{
+			PC->GetHUD()->bShowHUD = false;
+		}
+		GEngine->bEnableOnScreenDebugMessages = false;
+		S->T0 = FPlatformTime::Seconds();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		const double T = FPlatformTime::Seconds() - S->T0;
+		UVibeNetSubsystem* N = Net();
+		if (N && !S->bCannon && T > 1.5)
+		{
+			S->bCannon = true;
+			N->Fire(VL_WEAPON_CANNON);
+		}
+		if (N && !S->bMeteor && T > 1.0)
+		{
+			S->bMeteor = true;
+			// The building's highest chunk.
+			FVector Top(0.0, 0.0, -1.0e9);
+			for (const VlChunk& C : N->Chunks())
+			{
+				const FVector P = VibeCityCells::RestTransform(C).GetLocation();
+				if (FVector::Dist2D(P, FVector(-4200.0, 4200.0, 0.0)) < 1500.0 && P.Z > Top.Z)
+				{
+					Top = P;
+				}
+			}
+			Post(N->CurrentApiBaseUrl() / TEXT("city-meteor") / N->CurrentMatchId(),
+				FString::Printf(TEXT("{\"targets\":[[%f,%f,%f]]}"), -Top.Y / 100.0, Top.Z / 100.0, Top.X / 100.0));
+		}
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir) && T >= 0.5 * S->Shots)
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / FString::Printf(TEXT("showcase_%02d.png"), S->Shots), false, false);
+			++S->Shots;
+		}
+		return T > 20.0;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		VibeCityCapture::Park(GameWorld(), FVector3f::ZeroVector, FVector3f::ZeroVector, 0.0f);
+		AddInfo(FString::Printf(TEXT("showcase: %d frames"), S->Shots));
+		TestTrue(TEXT("frames saved (with -VibeShotDir)"), S->Shots > 0 || !FParse::Param(FCommandLine::Get(), TEXT("VibeShotDir")));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
 	return true;
 }
 
