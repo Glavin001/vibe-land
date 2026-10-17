@@ -14,9 +14,19 @@ pub struct PhysicsRuntimeConfig {
     pub capabilities: PhysicsCapabilities,
 }
 
+/// The backend when VIBE_PHYSICS_BACKEND is unset: rubble in a build that
+/// has rubble and no PhysX (the PhysX-free profile), Rapier otherwise.
+pub const fn default_backend_name() -> &'static str {
+    if cfg!(all(feature = "rubble", not(feature = "physx-gpu"))) {
+        "rubble"
+    } else {
+        "rapier"
+    }
+}
+
 impl PhysicsRuntimeConfig {
     pub fn from_env() -> Result<Self> {
-        let raw = std::env::var("VIBE_PHYSICS_BACKEND").unwrap_or_else(|_| "rapier".to_string());
+        let raw = std::env::var("VIBE_PHYSICS_BACKEND").unwrap_or_else(|_| default_backend_name().to_string());
         Self::parse(&raw)
     }
 
@@ -33,6 +43,12 @@ impl PhysicsRuntimeConfig {
                     );
                 }
                 PhysicsCapabilities::physx_gpu(PHYSX_SNAPSHOT_HZ)
+            }
+            PhysicsBackendKind::Rubble => {
+                if !cfg!(feature = "rubble") {
+                    bail!("VIBE_PHYSICS_BACKEND=rubble requires building web-fps-server with --features rubble");
+                }
+                PhysicsCapabilities::rubble(PHYSX_SNAPSHOT_HZ)
             }
         };
         Ok(Self {
@@ -57,7 +73,7 @@ impl PhysicsRuntimeConfig {
     pub const fn client_movement_mode(self) -> u8 {
         match self.backend {
             PhysicsBackendKind::Rapier => CLIENT_MOVEMENT_FULL_PREDICTION,
-            PhysicsBackendKind::PhysxGpu => CLIENT_MOVEMENT_THIN_AUTHORITATIVE,
+            PhysicsBackendKind::PhysxGpu | PhysicsBackendKind::Rubble => CLIENT_MOVEMENT_THIN_AUTHORITATIVE,
         }
     }
 }

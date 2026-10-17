@@ -229,6 +229,35 @@ impl RubbleWorld {
         self.sim.write_bodies(id, &[b]);
     }
 
+    pub fn wake(&mut self, id: BodyId) {
+        let mut b = self.sim.read_body(id);
+        wake(&mut b);
+        self.sim.write_bodies(id, &[b]);
+    }
+
+    /// Retire a body. rubble bodies are append-only, so it becomes static at
+    /// `parked` (far outside the world), where it pairs with nothing, and its
+    /// index can be revived later.
+    pub fn park(&mut self, id: BodyId, parked: [f32; 3]) {
+        let mut b = self.sim.read_body(id);
+        b.inv_mass = 0.0;
+        b.inv_inertia = [0.0; 3];
+        b.flags = 0;
+        b.linear_vel = [0.0; 3];
+        b.angular_vel = [0.0; 3];
+        b.position = parked;
+        self.sim.write_bodies(id, &[b]);
+    }
+
+    /// Bring a parked sphere back as a dynamic body of `mass` at `position`,
+    /// at rest. Its collider (and so its radius) is the one it was made with.
+    pub fn revive_sphere(&mut self, id: BodyId, position: [f32; 3], radius: f32, mass: f32) {
+        let i = 0.4 * mass * radius * radius;
+        let mut b = BodyState::dynamic(position.into(), Quat::IDENTITY, mass, Vec3::splat(i));
+        b.generation = self.sim.read_body(id).generation;
+        self.sim.write_bodies(id, &[b]);
+    }
+
     /// Instantaneous impulse `j` (N s) at world `point`: dv = J/m, dw = I^-1 (r x J),
     /// with the world inverse inertia R diag(I^-1) R^T. Host-side until rubble's
     /// force command lands on the GPU.
@@ -372,6 +401,27 @@ mod tests {
         let p = world.body(ball);
         assert!((p.linear_velocity[0] - 8.0 / m).abs() < 1e-6);
         assert!(Vec3::from(p.angular_velocity).length() < 1e-6);
+    }
+
+    /// A parked body stops taking part (no gravity, no contacts); revived, it
+    /// is a dynamic body again where it was put, and falls.
+    #[test]
+    fn a_parked_sphere_is_inert_and_revives() {
+        let mut world = RubbleWorld::new(WorldConfig::default()).expect("wgpu device");
+        ground(&mut world);
+        let ball = world.add_dynamic_sphere([0.0, 3.0, 0.0], 0.5, 2.0, 0);
+        world.park(ball, [0.0, -10_000.0, 0.0]);
+        for _ in 0..10 {
+            world.step().unwrap();
+        }
+        let parked = world.body(ball);
+        assert!(!parked.dynamic && parked.position[1] == -10_000.0, "{parked:?}");
+        world.revive_sphere(ball, [4.0, 5.0, 0.0], 0.5, 2.0);
+        for _ in 0..10 {
+            world.step().unwrap();
+        }
+        let revived = world.body(ball);
+        assert!(revived.dynamic && revived.position[1] < 5.0 && (revived.position[0] - 4.0).abs() < 1e-4, "{revived:?}");
     }
 
     #[test]

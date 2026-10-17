@@ -4053,6 +4053,7 @@ dependencies = [
  "vibe-land-destruction",
  "vibe-land-perplayer",
  "vibe-land-physx-bridge",
+ "vibe-land-rubble-bridge",
  "vibe-land-shared",
  "vibe-netcode",
  "wtransport",

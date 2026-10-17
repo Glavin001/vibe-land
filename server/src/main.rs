@@ -33,6 +33,8 @@ mod outbound;
 mod pose_feed;
 #[cfg(feature = "physx-gpu")]
 mod physx_runtime;
+#[cfg(feature = "rubble")]
+mod rubble_runtime;
 mod protocol;
 mod send_log;
 mod session_capture;

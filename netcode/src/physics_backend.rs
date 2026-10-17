@@ -10,6 +10,7 @@ use crate::physics_arena::DynamicArena;
 
 pub const PHYSICS_BACKEND_RAPIER: u8 = 0;
 pub const PHYSICS_BACKEND_PHYSX_GPU: u8 = 1;
+pub const PHYSICS_BACKEND_RUBBLE: u8 = 2;
 
 pub const CLIENT_MOVEMENT_FULL_PREDICTION: u8 = 0;
 pub const CLIENT_MOVEMENT_THIN_AUTHORITATIVE: u8 = 1;
@@ -19,6 +20,8 @@ pub enum PhysicsBackendKind {
     #[default]
     Rapier,
     PhysxGpu,
+    /// rubble (AVBD on the GPU through wgpu): the PhysX replacement.
+    Rubble,
 }
 
 impl PhysicsBackendKind {
@@ -26,6 +29,7 @@ impl PhysicsBackendKind {
         match self {
             Self::Rapier => PHYSICS_BACKEND_RAPIER,
             Self::PhysxGpu => PHYSICS_BACKEND_PHYSX_GPU,
+            Self::Rubble => PHYSICS_BACKEND_RUBBLE,
         }
     }
 
@@ -33,6 +37,7 @@ impl PhysicsBackendKind {
         match self {
             Self::Rapier => "rapier",
             Self::PhysxGpu => "physx_gpu",
+            Self::Rubble => "rubble",
         }
     }
 
@@ -40,8 +45,9 @@ impl PhysicsBackendKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "" | "rapier" => Ok(Self::Rapier),
             "physx" | "physx_gpu" | "physx-gpu" => Ok(Self::PhysxGpu),
+            "rubble" => Ok(Self::Rubble),
             other => Err(format!(
-                "unsupported physics backend {other:?}; expected rapier or physx_gpu"
+                "unsupported physics backend {other:?}; expected rapier, physx_gpu or rubble"
             )),
         }
     }
@@ -62,6 +68,17 @@ impl PhysicsCapabilities {
             gpu_required: false,
             snapshot_hz,
             client_movement_mode: CLIENT_MOVEMENT_FULL_PREDICTION,
+        }
+    }
+
+    /// The client cannot predict a GPU solve it does not run, so rubble is
+    /// thin-authoritative like PhysX.
+    pub const fn rubble(snapshot_hz: u16) -> Self {
+        Self {
+            backend: PhysicsBackendKind::Rubble,
+            gpu_required: true,
+            snapshot_hz,
+            client_movement_mode: CLIENT_MOVEMENT_THIN_AUTHORITATIVE,
         }
     }
 

@@ -14,6 +14,8 @@ use vibe_netcode::{movement::Vec3d, physics_backend::PhysicsBackendKind};
 
 #[cfg(feature = "physx-gpu")]
 use crate::physx_runtime::PhysxPhysicsArena;
+#[cfg(feature = "rubble")]
+use crate::rubble_runtime::RubblePhysicsArena;
 
 pub type Vec3 = Vector3<f32>;
 pub use vibe_land_shared::physics_arena::{MoveConfig, PlayerDamageOutcome};
@@ -97,6 +99,8 @@ enum PhysicsBackend {
     Rapier(RapierPhysicsArena),
     #[cfg(feature = "physx-gpu")]
     Physx(PhysxPhysicsArena),
+    #[cfg(feature = "rubble")]
+    Rubble(RubblePhysicsArena),
 }
 
 /// A vehicle's state for the per-player stream (`vehicle_stream_states`).
@@ -274,6 +278,16 @@ impl PhysicsArena {
                     anyhow::bail!("PhysX GPU backend was not compiled into this server")
                 }
             }
+            PhysicsBackendKind::Rubble => {
+                #[cfg(feature = "rubble")]
+                {
+                    PhysicsBackend::Rubble(RubblePhysicsArena::new(config)?)
+                }
+                #[cfg(not(feature = "rubble"))]
+                {
+                    anyhow::bail!("rubble was not compiled into this server (build with --features rubble)")
+                }
+            }
         };
         Ok(Self {
             backend,
@@ -292,6 +306,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.config(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.config(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.config(),
         }
     }
 
@@ -302,6 +318,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => {}
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.set_tolerate_rejected_steps(tolerate),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => {}
         }
     }
 
@@ -310,6 +328,8 @@ impl PhysicsArena {
         match &mut self.backend {
             PhysicsBackend::Rapier(_) => None,
             PhysicsBackend::Physx(arena) => Some(arena.world_mut()),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => None,
         }
     }
 
@@ -324,6 +344,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.set_spawn_areas(areas),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.set_spawn_areas(areas),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.set_spawn_areas(areas),
         }
     }
 
@@ -333,6 +355,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => &arena.spawn_areas,
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.spawn_areas(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => &arena.spawn_areas,
         }
     }
 
@@ -353,6 +377,11 @@ impl PhysicsArena {
             PhysicsBackend::Physx(arena) => {
                 arena.add_runtime_static_cuboid(token.0, center, half_extents, user_data)
             }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
+                let native = arena.add_static_cuboid(center, half_extents, user_data);
+                self.rapier_colliders.insert(token, native);
+            }
         }
         token
     }
@@ -366,6 +395,12 @@ impl PhysicsArena {
             }
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.remove_runtime_collider(handle.0),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
+                if let Some(native) = self.rapier_colliders.remove(&handle) {
+                    arena.remove_collider(native);
+                }
+            }
         }
     }
 
@@ -377,6 +412,11 @@ impl PhysicsArena {
                 .and_then(|native| arena.collider_user_data(*native)),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.runtime_collider_user_data(handle.0),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => self
+                .rapier_colliders
+                .get(&handle)
+                .and_then(|native| arena.collider_user_data(*native)),
         }
     }
 
@@ -385,6 +425,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.wake_bodies_near(center, radius),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.wake_bodies_near(center, radius),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.wake_bodies_near(center, radius),
         }
     }
 
@@ -393,6 +435,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.spawn_dynamic_ball(position, radius),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.spawn_dynamic_ball(position, radius),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.spawn_dynamic_ball(position, radius),
         }
     }
 
@@ -416,6 +460,10 @@ impl PhysicsArena {
             PhysicsBackend::Physx(arena) => {
                 arena.launch_ball(position, direction, radius, mass, speed, ttl_ticks)
             }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
+                arena.launch_ball(position, direction, radius, mass, speed, ttl_ticks)
+            }
         }
     }
 
@@ -424,6 +472,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => None,
             #[cfg(feature="physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.launch_ball_from_muzzle(position,velocity,radius,mass,ttl_ticks),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.launch_ball_from_muzzle(position,velocity,radius,mass,ttl_ticks),
         }
     }
 
@@ -433,6 +483,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => Vec::new(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.reserve_ball_pool(count),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.reserve_ball_pool(count),
         }
     }
 
@@ -442,6 +494,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => Vec::new(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.reserve_meteor_pool(count),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.reserve_meteor_pool(count),
         }
     }
 
@@ -461,6 +515,10 @@ impl PhysicsArena {
             PhysicsBackend::Physx(arena) => {
                 arena.launch_meteor(position, velocity, radius, mass, ttl_ticks)
             }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
+                arena.launch_meteor(position, velocity, radius, mass, ttl_ticks)
+            }
         }
     }
 
@@ -478,6 +536,10 @@ impl PhysicsArena {
             PhysicsBackend::Physx(arena) => {
                 arena.cast_solid_ray_point(origin, direction, max_distance)
             }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
+                arena.cast_solid_ray_point(origin, direction, max_distance)
+            }
         }
     }
 
@@ -487,6 +549,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => 0,
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.balls_clamped(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.balls_clamped(),
         }
     }
 
@@ -496,6 +560,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => 0,
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.launched_ball_count(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.launched_ball_count(),
         }
     }
 
@@ -504,6 +570,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.spawn_player(player_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.spawn_player(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.spawn_player(player_id),
         }
     }
 
@@ -512,6 +580,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.remove_player(player_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.remove_player(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.remove_player(player_id),
         }
     }
 
@@ -520,6 +590,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.drop_player_from_camera(player_id, cmd),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.drop_player_from_camera(player_id, cmd),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.drop_player_from_camera(player_id, cmd),
         }
     }
 
@@ -528,6 +600,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.respawn_player(player_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.respawn_player(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.respawn_player(player_id),
         }
     }
 
@@ -541,6 +615,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.simulate_player_tick(player_id, input, dt),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.simulate_player_tick(player_id, input, dt),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.simulate_player_tick(player_id, input, dt),
         }
     }
 
@@ -552,6 +628,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.snapshot_player(player_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.snapshot_player(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.snapshot_player(player_id),
         }
     }
 
@@ -572,6 +650,20 @@ impl PhysicsArena {
             }
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.player_state(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => {
+                arena
+                    .players
+                    .get(&player_id)
+                    .map(|state| PlayerStateSummary {
+                        position: state.position,
+                        last_input: state.last_input.clone(),
+                        on_ground: state.on_ground,
+                        hp: state.hp,
+                        dead: state.dead,
+                        energy: state.energy,
+                    })
+            }
         }
     }
 
@@ -580,6 +672,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.players.keys().copied().collect(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.player_ids(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.players.keys().copied().collect(),
         }
     }
 
@@ -590,6 +684,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => None,
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.player_support(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => None,
         }
     }
 
@@ -617,6 +713,12 @@ impl PhysicsArena {
             }
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.add_player_energy(player_id, delta),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => {
+                let state = arena.players.get_mut(&player_id)?;
+                state.energy = (state.energy + delta).max(0.0);
+                Some(state.energy)
+            }
         }
     }
 
@@ -625,6 +727,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.player_energy(player_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.player_energy(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.player_energy(player_id),
         }
     }
 
@@ -633,6 +737,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.set_player_dead(player_id, dead),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.set_player_dead(player_id, dead),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.set_player_dead(player_id, dead),
         }
     }
 
@@ -641,6 +747,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.set_player_spawn_protected(player_id, value),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.set_player_spawn_protected(player_id, value),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.set_player_spawn_protected(player_id, value),
         }
     }
 
@@ -649,6 +757,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.apply_player_damage(player_id, damage),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.apply_player_damage(player_id, damage),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.apply_player_damage(player_id, damage),
         }
     }
 
@@ -657,6 +767,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.vehicle_of_player.contains_key(&player_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.is_player_in_vehicle(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.vehicle_of_player.contains_key(&player_id),
         }
     }
 
@@ -665,6 +777,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.vehicle_of_player.get(&player_id).copied(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.player_vehicle_id(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.vehicle_of_player.get(&player_id).copied(),
         }
     }
 
@@ -673,6 +787,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.vehicles.contains_key(&vehicle_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.vehicle_exists(vehicle_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.vehicles.contains_key(&vehicle_id),
         }
     }
 
@@ -681,6 +797,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.enter_vehicle(player_id, vehicle_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.enter_vehicle(player_id, vehicle_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.enter_vehicle(player_id, vehicle_id),
         }
     }
 
@@ -689,6 +807,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.exit_vehicle(player_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.exit_vehicle(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.exit_vehicle(player_id),
         }
     }
 
@@ -698,6 +818,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => None,
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.step_phases(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => None,
         }
     }
 
@@ -707,6 +829,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => { let _ = (reducer, tick); }
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.reduce_audio_contacts(reducer, tick),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => { let _ = (reducer, tick); }
         }
     }
 
@@ -715,6 +839,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.step_vehicles_and_dynamics(dt),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.step_vehicles_and_dynamics(dt),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.step_vehicles_and_dynamics(dt),
         }
     }
 
@@ -728,6 +854,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => false,
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(_) => true,
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => false,
         }
     }
 
@@ -742,6 +870,11 @@ impl PhysicsArena {
             }
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.begin_dynamics(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => {
+                let _ = dt;
+                panic!("begin_dynamics on a backend without split-step support")
+            }
         }
     }
 
@@ -752,6 +885,10 @@ impl PhysicsArena {
             }
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.finish_dynamics(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => {
+                panic!("finish_dynamics on a backend without split-step support")
+            }
         }
     }
 
@@ -761,6 +898,10 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.dynamic.step_dynamics(dt),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => {
+                let _ = arena.step_vehicles_and_dynamics(dt);
+            }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
                 let _ = arena.step_vehicles_and_dynamics(dt);
             }
         }
@@ -773,6 +914,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => Vec::new(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.apply_debris_player_collisions(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => Vec::new(),
         }
     }
 
@@ -781,6 +924,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.apply_vehicle_player_collisions(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.apply_vehicle_player_collisions(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.apply_vehicle_player_collisions(),
         }
     }
 
@@ -791,6 +936,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.snapshot_dynamic_bodies(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.snapshot_dynamic_bodies(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.snapshot_dynamic_bodies(),
         }
     }
 
@@ -799,6 +946,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.snapshot_vehicles(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.snapshot_vehicles(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.snapshot_vehicles(),
         }
     }
 
@@ -817,6 +966,10 @@ impl PhysicsArena {
             PhysicsBackend::Physx(arena) => {
                 arena.cast_static_world_ray(origin, direction, max_distance, exclude_player)
             }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => {
+                arena.cast_static_world_ray(origin, direction, max_distance, exclude_player)
+            }
         }
     }
 
@@ -830,6 +983,11 @@ impl PhysicsArena {
             }
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.cast_chunk_ray(origin, direction, max_distance),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => {
+                let _ = (origin, direction, max_distance);
+                None
+            }
         }
     }
 
@@ -846,6 +1004,10 @@ impl PhysicsArena {
             }
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => {
+                arena.cast_dynamic_body_ray(origin, direction, max_distance, exclude_player)
+            }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
                 arena.cast_dynamic_body_ray(origin, direction, max_distance, exclude_player)
             }
         }
@@ -865,6 +1027,10 @@ impl PhysicsArena {
             PhysicsBackend::Physx(arena) => {
                 arena.apply_dynamic_body_impulse(body_id, impulse, point)
             }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
+                arena.apply_dynamic_body_impulse(body_id, impulse, point)
+            }
         }
     }
 
@@ -876,6 +1042,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => None,
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.lowest_ground_y(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.lowest_ground_y(),
         }
     }
 
@@ -890,6 +1058,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.spawn_battery(position, energy, radius, height),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.spawn_battery(position, energy, radius, height),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.spawn_battery(position, energy, radius, height),
         }
     }
 
@@ -898,6 +1068,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.collect_batteries_for_player(player_id),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.collect_batteries_for_player(player_id),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.collect_batteries_for_player(player_id),
         }
     }
 
@@ -906,6 +1078,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.snapshot_batteries(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.snapshot_batteries(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.snapshot_batteries(),
         }
     }
 
@@ -933,6 +1107,14 @@ impl PhysicsArena {
                 was_on_ground,
                 dt,
             ),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.apply_on_foot_energy_drain(
+                player_id,
+                previous_input,
+                input,
+                was_on_ground,
+                dt,
+            ),
         }
     }
 
@@ -941,6 +1123,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(arena) => arena.apply_vehicle_energy_drain(dt),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.apply_vehicle_energy_drain(dt),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(RubblePhysicsArena { rapier: arena, .. }) => arena.apply_vehicle_energy_drain(dt),
         }
     }
 
@@ -953,6 +1137,8 @@ impl PhysicsArena {
             ),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.counts(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.counts(),
         }
     }
 
@@ -961,6 +1147,8 @@ impl PhysicsArena {
             PhysicsBackend::Rapier(_) => PhysicsHealth::default(),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => arena.health(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => arena.health(),
         }
     }
 
@@ -970,6 +1158,8 @@ impl PhysicsArena {
         match &self.backend {
             PhysicsBackend::Rapier(_) => Vec::new(),
             PhysicsBackend::Physx(arena) => arena.take_physics_spans(),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(_) => Vec::new(),
         }
     }
     #[cfg(not(feature = "physx-gpu"))]
@@ -1011,6 +1201,10 @@ impl PhysicsArena {
             PhysicsBackend::Physx(arena) => {
                 arena.awake_dynamic_body_counts(player_centers, near_radius)
             }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
+                arena.awake_dynamic_body_counts(player_centers, near_radius)
+            }
         }
     }
 }
@@ -1030,6 +1224,10 @@ impl WorldDocumentArena for PhysicsArena {
             ),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => WorldDocumentArena::add_static_heightfield(
+                arena, center, heights, scale, user_data, material,
+            ),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => WorldDocumentArena::add_static_heightfield(
                 arena, center, heights, scale, user_data, material,
             ),
         }
@@ -1052,6 +1250,14 @@ impl WorldDocumentArena for PhysicsArena {
             ),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => WorldDocumentArena::add_static_cuboid(
+                arena,
+                center,
+                rotation,
+                half_extents,
+                user_data,
+            ),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => WorldDocumentArena::add_static_cuboid(
                 arena,
                 center,
                 rotation,
@@ -1084,6 +1290,14 @@ impl WorldDocumentArena for PhysicsArena {
                 rotation,
                 half_extents,
             ),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => WorldDocumentArena::spawn_dynamic_box_with_id(
+                arena,
+                id,
+                position,
+                rotation,
+                half_extents,
+            ),
         }
     }
 
@@ -1094,6 +1308,10 @@ impl WorldDocumentArena for PhysicsArena {
             }
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => {
+                WorldDocumentArena::spawn_dynamic_ball_with_id(arena, id, position, radius)
+            }
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => {
                 WorldDocumentArena::spawn_dynamic_ball_with_id(arena, id, position, radius)
             }
         }
@@ -1122,6 +1340,14 @@ impl WorldDocumentArena for PhysicsArena {
                 position,
                 rotation,
             ),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => WorldDocumentArena::spawn_vehicle_with_id(
+                arena,
+                id,
+                vehicle_type,
+                position,
+                rotation,
+            ),
         }
     }
 
@@ -1141,6 +1367,10 @@ impl WorldDocumentArena for PhysicsArena {
             PhysicsBackend::Physx(arena) => WorldDocumentArena::spawn_battery_with_id(
                 arena, id, position, energy, radius, height,
             ),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => WorldDocumentArena::spawn_battery_with_id(
+                arena, id, position, energy, radius, height,
+            ),
         }
     }
 
@@ -1149,6 +1379,8 @@ impl WorldDocumentArena for PhysicsArena {
             PhysicsBackend::Rapier(arena) => WorldDocumentArena::rebuild_broad_phase(arena),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => WorldDocumentArena::rebuild_broad_phase(arena),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => WorldDocumentArena::rebuild_broad_phase(arena),
         }
     }
 
@@ -1157,6 +1389,8 @@ impl WorldDocumentArena for PhysicsArena {
             PhysicsBackend::Rapier(arena) => WorldDocumentArena::set_material_field(arena, field),
             #[cfg(feature = "physx-gpu")]
             PhysicsBackend::Physx(arena) => WorldDocumentArena::set_material_field(arena, field),
+            #[cfg(feature = "rubble")]
+            PhysicsBackend::Rubble(arena) => WorldDocumentArena::set_material_field(arena, field),
         }
     }
 }

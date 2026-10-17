@@ -26,6 +26,11 @@ blast-core = ["destruction", "vibe-land-destruction/blast-core"]
 # Needs no Blast checkout, so on its own it is the build for machines without
 # one (macOS/Metal included).
 native-destruction = ["physx-city", "vibe-land-destruction/native-destruction"]
+# rubble (AVBD on the GPU through wgpu) as the physics engine. Implies no
+# PhysX: `--features rubble` alone builds a server that never compiles or links
+# PhysX, CuMetal, CUDA or Blast (tests/rubble_is_physx_free.rs). Additive with
+# the PhysX features, so one binary can A/B both. Needs slangc to build.
+rubble = ["dep:vibe-land-rubble-bridge"]
 
 [dependencies]
 libc = "0.2"
@@ -38,6 +43,7 @@ flate2 = "1"
 crc32fast = "1"
 glam = "0.27"
 vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
+vibe-land-rubble-bridge = { path = "../rubble-bridge", optional = true }
 anyhow = "1"
 dotenvy = "0.15"
 axum = { version = "0.7", features = ["macros", "ws"] }
