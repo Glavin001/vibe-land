@@ -34,6 +34,7 @@
 #include "VibeCityHUD.h"
 #include "VibeShotEffects.h"
 #include "EngineUtils.h"
+#include "VibeCityDirector.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
 
@@ -638,9 +639,30 @@ bool FVibeCityPlayCannonAndMeteor::RunTest(const FString& Parameters)
 			TestTrue(TEXT("its flight was drawn"), S->MaxFlights > 0);
 			TestTrue(FString::Printf(TEXT("the meteor broke something (fractures %llu -> %llu)"), S->FracturesBefore, S->Fractures), S->Fractures > S->FracturesBefore);
 			AddInfo(FString::Printf(TEXT("meteor: %d launch(es), fractures %llu -> %llu"), S->Meteors, S->FracturesBefore, S->Fractures));
+			S->Deadline = Now() + 15.0;
 			return true;
 		}
 		return false;
+	}));
+	// Where it lands: a ground surge and a scorch mark; the debris it throws trails dust.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Bodies]()
+	{
+		const AVibeDynamicBodies* B = Bodies();
+		const AVibeCityDirector* D = nullptr;
+		for (TActorIterator<AVibeCityDirector> It(GameWorld()); It; ++It)
+		{
+			D = *It;
+			break;
+		}
+		const bool bDone = B && D && B->Landings() > 0 && D->TrailPuffs() > 0;
+		if (!bDone && Now() < S->Deadline)
+		{
+			return false;
+		}
+		AddInfo(FString::Printf(TEXT("landing: %d landing(s), %d scorch mark(s), %lld trail puffs"), B ? B->Landings() : -1, B ? B->ScorchMarks() : -1, D ? D->TrailPuffs() : -1));
+		TestTrue(TEXT("the meteor landed (surge and scorch)"), B && B->Landings() > 0 && B->ScorchMarks() > 0);
+		TestTrue(TEXT("falling debris trailed dust"), D && D->TrailPuffs() > 0);
+		return true;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
 	{

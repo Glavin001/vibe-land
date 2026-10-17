@@ -476,6 +476,39 @@ def hd_ground_material(albedo_array, normal_array, arm_array):
     return m
 
 
+def scorch_material():
+    """M_VibeCityScorch: a deferred decal where a meteor lands, soot-black at the centre fading out
+    with a ragged edge (world noise), rough. Scalar Fade (0..1) for its age."""
+    m = fresh_material("M_VibeCityScorch")
+    m.set_editor_property("material_domain", unreal.MaterialDomain.MD_DEFERRED_DECAL)
+    m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
+    uv = expr(m, unreal.MaterialExpressionTextureCoordinate, -1200, 0)
+    world = expr(m, unreal.MaterialExpressionWorldPosition, -1200, 200)
+    n = expr(m, unreal.MaterialExpressionNoise, -1000, 200)
+    n.set_editor_property("scale", 0.004)
+    n.set_editor_property("levels", 4)
+    n.set_editor_property("output_min", 0.0)
+    n.set_editor_property("output_max", 1.0)
+    mel.connect_material_expressions(world, "", n, "Position")
+    fade = expr(m, unreal.MaterialExpressionScalarParameter, -1000, 350)
+    fade.set_editor_property("parameter_name", "Fade")
+    fade.set_editor_property("default_value", 1.0)
+    shape = custom(m, "float r = length(UV - 0.5) * 2.0; float edge = 1.0 - smoothstep(0.35 + 0.4 * N, 1.0, r); return saturate(edge * (0.55 + 0.45 * N)) * Fade;",
+        ["UV", "N", "Fade"], unreal.CustomMaterialOutputType.CMOT_FLOAT1, -700, 100)
+    mel.connect_material_expressions(uv, "", shape, "UV")
+    mel.connect_material_expressions(n, "", shape, "N")
+    mel.connect_material_expressions(fade, "", shape, "Fade")
+    soot = expr(m, unreal.MaterialExpressionConstant3Vector, -700, -100)
+    soot.set_editor_property("constant", unreal.LinearColor(0.018, 0.016, 0.014, 0.0))
+    mel.connect_material_property(soot, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    mel.connect_material_property(shape, "", unreal.MaterialProperty.MP_OPACITY)
+    rough = expr(m, unreal.MaterialExpressionConstant, -700, 300)
+    rough.set_editor_property("r", 0.95)
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.recompile_material(m)
+    return m
+
+
 def projectile_materials():
     """The meteor, its fire trail, and the cannonball.
 
@@ -1025,6 +1058,7 @@ if only == "chunkhd":
     raise SystemExit(0)
 if only == "projectiles":
     projectile_materials()
+    scorch_material()
     saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
     unreal.log(f"VIBE_IMPORT_OK projectiles saved={saved}")
     raise SystemExit(0)
@@ -1057,6 +1091,7 @@ glass = glass_material()
 dust_material()
 dust_volume_material()
 projectile_materials()
+scorch_material()
 grass_material()
 weather_material("M_VibeCityWeather", additive=False)
 weather_material("M_VibeCityWeatherAdditive", additive=True)

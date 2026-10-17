@@ -61,6 +61,11 @@ public:
 	/** Tests: draw `Parcels` as if a frame had brought them (no server needed); returns the ring
 	 * slot of the first. */
 	int32 InjectDustForTest(TArrayView<const VlDustParcel> Parcels);
+	/** Dust of Unreal's own (renderer space: cm, cm/s), drawn with the core's parcels: debris trails,
+	 * a meteor's ground surge. Returns the first slot used. */
+	int32 EmitDust(TArrayView<const VlDustParcel> Parcels) { return InjectDustForTest(Parcels); }
+	/** Trail puffs emitted behind falling debris so far (tests). */
+	int64 TrailPuffs() const { return TrailPuffCount; }
 	/** Tests: the drawn box of ring slot `Slot` (centre and size, cm), unset while it is not live. */
 	TOptional<FBox> DustBox(int32 Slot) const;
 	/** Cells drawn from the imported city now, and cells in all. */
@@ -126,6 +131,17 @@ private:
 	UProceduralMeshComponent* NewChunkComponent();
 	void SpawnDust(const VlFrameView& Frame);
 	void TickDust(float DeltaSeconds);
+	/** Dust trails behind fast debris (an Unreal addition): a short-lived puff where a body moving
+	 * faster than TrailSpeed has been, every TrailEvery seconds. */
+	void EmitTrails(const VlFrameView& Frame);
+	struct FTrail
+	{
+		FVector Pos = FVector::ZeroVector;
+		double At = 0.0;
+		double LastPuff = 0.0;
+	};
+	TMap<uint64, FTrail> Trails;
+	int64 TrailPuffCount = 0;
 	void ShowStatus(const VlFrameView& Frame) const;
 	void LogTransitions(const VlFrameView& Frame, float DeltaSeconds);
 	void MaybeScreenshot(float DeltaSeconds);

@@ -28,6 +28,9 @@ public:
 
 	int32 VisibleBodies() const { return Shown; }
 	int32 FlyingMeteors() const { return Flights.Num(); }
+	/** Meteors that have landed (surge and scorch made), and scorch marks on the ground now (tests). */
+	int32 Landings() const { return LandingCount; }
+	int32 ScorchMarks() const { return Scorches.Num(); }
 
 protected:
 	virtual void BeginPlay() override;
@@ -48,7 +51,11 @@ private:
 		TObjectPtr<UMaterialInstanceDynamic> Material;
 		FVector LastPos = FVector::ZeroVector;
 		double LastPosAt = 0.0;
+		bool bLanded = false;
 	};
+
+	/** Where a meteor lands: a ground surge of dust rolling out and a scorch mark. */
+	void Land(FFlight& F);
 
 	/** Draws the meteor at `Pos` moving at `Velocity` (cm/s), its trail behind it. */
 	void PlaceMeteor(FFlight& F, const FVector& Pos, const FVector& Velocity);
@@ -71,6 +78,11 @@ private:
 	TArray<TObjectPtr<UStaticMeshComponent>> Spheres;
 	TArray<TObjectPtr<UStaticMeshComponent>> Boxes;
 	TMap<uint32, FFlight> Flights;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> ScorchBase;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UDecalComponent>> Scorches;
+	int32 LandingCount = 0;
 	TSet<uint32> BodiesSeen;
 	int32 Shown = 0;
 	FDelegateHandle FrameHandle;

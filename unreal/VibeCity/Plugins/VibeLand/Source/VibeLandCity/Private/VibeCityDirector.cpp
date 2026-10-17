@@ -104,6 +104,7 @@ void AVibeCityDirector::Tick(float DeltaSeconds)
 		Sample.ApplyMs = static_cast<float>((FPlatformTime::Seconds() - ApplyStart) * 1000.0);
 		Sample.PosesApplied = static_cast<int32>(Frame->body_pose_count);
 		SpawnDust(*Frame);
+		EmitTrails(*Frame);
 		SoundsSeenCount += static_cast<int64>(Frame->sound_count);
 		LoopsSeenCount += static_cast<int64>(Frame->loop_count);
 		DustSeenCount += static_cast<int64>(Frame->dust_count);

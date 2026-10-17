@@ -190,6 +190,55 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 	DustInstances->MarkRenderStateDirty();
 }
 
+void AVibeCityDirector::EmitTrails(const VlFrameView& Frame)
+{
+	// Debris falling or thrown sheds dust as it goes: a puff where it was, while it moves faster than
+	// a brisk fall (4 m/s, about 0.8 m of free fall), every 0.12 s, small and short-lived (the entry
+	// shape: 5 s), at most 24 a frame. An Unreal addition to the shared dust, in its parcels.
+	constexpr double TrailSpeedCmS = 400.0;
+	constexpr double TrailEveryS = 0.12;
+	constexpr int32 MaxPuffsPerFrame = 24;
+	const double Now = FPlatformTime::Seconds();
+	TArray<VlDustParcel, TInlineAllocator<MaxPuffsPerFrame>> Puffs;
+	for (size_t i = 0; i < Frame.body_pose_count; ++i)
+	{
+		const VlBodyPose& P = Frame.body_poses[i];
+		const uint64 Key = (static_cast<uint64>(P.structure) << 32) | P.body;
+		const FVector Pos(P.pos[0], P.pos[1], P.pos[2]);
+		FTrail& T = Trails.FindOrAdd(Key);
+		const double Dt = Now - T.At;
+		if (T.At > 0.0 && Dt > 0.0 && Dt < 0.5 && Puffs.Num() < MaxPuffsPerFrame
+			&& FVector::Dist(Pos, T.Pos) / Dt > TrailSpeedCmS && Now - T.LastPuff >= TrailEveryS)
+		{
+			VlDustParcel D = {};
+			D.position[0] = T.Pos.X; D.position[1] = T.Pos.Y; D.position[2] = T.Pos.Z;
+			D.radius0 = 30.0f;
+			D.intensity = 0.35f;
+			D.shape = 3; // VL_DUST_ENTRY (client-core dust.rs)
+			D.palette = 0; // VL_PALETTE_CONCRETE
+			D.color_rgba = 0xa8a39bff;
+			D.seed = static_cast<uint32>(Key * 2654435761u) ^ static_cast<uint32>(TrailPuffCount);
+			Puffs.Add(D);
+			T.LastPuff = Now;
+			++TrailPuffCount;
+		}
+		T.Pos = Pos;
+		T.At = Now;
+	}
+	if (Puffs.Num() > 0)
+	{
+		EmitDust(Puffs);
+	}
+	// Forget bodies not seen for 2 s.
+	for (auto It = Trails.CreateIterator(); It; ++It)
+	{
+		if (Now - It.Value().At > 2.0)
+		{
+			It.RemoveCurrent();
+		}
+	}
+}
+
 int32 AVibeCityDirector::InjectDustForTest(TArrayView<const VlDustParcel> Parcels)
 {
 	const int32 First = DustHead;

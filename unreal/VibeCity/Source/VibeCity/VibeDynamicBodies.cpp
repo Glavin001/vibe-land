@@ -1,6 +1,9 @@
 #include "VibeDynamicBodies.h"
 
+#include "Components/DecalComponent.h"
 #include "Components/PointLightComponent.h"
+#include "EngineUtils.h"
+#include "VibeCityDirector.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/GameInstance.h"
@@ -56,6 +59,7 @@ void AVibeDynamicBodies::BeginPlay()
 	// Forged iron and glowing basalt (M_VibeCityCannonball, M_VibeCityMeteor), else flat colours.
 	UMaterialInterface* Iron = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityCannonball.M_VibeCityCannonball"));
 	UMaterialInterface* Basalt = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityMeteor.M_VibeCityMeteor"));
+	ScorchBase = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityScorch.M_VibeCityScorch"));
 	TrailBase = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityMeteorTrail.M_VibeCityMeteorTrail"));
 	BallMaterial = UMaterialInstanceDynamic::Create(Iron ? Iron : Base, this);
 	BallMaterial->SetVectorParameterValue(TEXT("Color"), CannonballColor);
@@ -181,6 +185,10 @@ void AVibeDynamicBodies::Tick(float DeltaSeconds)
 		const double SinceImpact = Now - F.LaunchedAt - F.Meteor.flight_time_s;
 		const float Heat = SinceImpact <= 0.0 ? 1.0f : static_cast<float>(FMath::Exp(-SinceImpact / CoolingS));
 		F.Light->SetIntensity(MeteorLightIntensity * Heat);
+		if (SinceImpact >= 0.0 && !F.bLanded)
+		{
+			Land(F);
+		}
 		F.Material->SetScalarParameterValue(TEXT("Glow"), Heat);
 		if (F.Trail && SinceImpact > 0.0)
 		{
@@ -196,6 +204,58 @@ void AVibeDynamicBodies::Tick(float DeltaSeconds)
 		const FVector V(M.velocity[0], M.velocity[1], M.velocity[2]);
 		const FVector G(M.gravity[0], M.gravity[1], M.gravity[2]);
 		PlaceMeteor(F, Start + V * T + 0.5 * G * T * T, V + G * T);
+	}
+}
+
+void AVibeDynamicBodies::Land(FFlight& F)
+{
+	F.bLanded = true;
+	++LandingCount;
+	const FVector At = F.Mesh->GetComponentLocation();
+	const double Radius = F.Meteor.radius;
+	// The surge rolls along the ground (the city's ground is the plane at height 0; the core's
+	// collapse waves sit 0.3 m above it), under the impact even when it struck a roof.
+	const FVector Ground(At.X, At.Y, 30.0);
+	// The ground surge: a ring of low, wide, long-lived clouds (the wave shape: 24 s) thrown outward
+	// from the impact, slowed by the shape's drag: the base surge of a heavy impact.
+	if (AVibeCityDirector* Director = [this]() -> AVibeCityDirector* { for (TActorIterator<AVibeCityDirector> It(GetWorld()); It;) return *It; return nullptr; }())
+	{
+		constexpr int32 RingParcels = 20;
+		constexpr double SurgeCmS = 800.0;
+		TArray<VlDustParcel, TInlineAllocator<RingParcels>> Ring;
+		for (int32 k = 0; k < RingParcels; ++k)
+		{
+			const double A = 2.0 * PI * k / RingParcels;
+			const FVector Out(FMath::Cos(A), FMath::Sin(A), 0.0);
+			const FVector P = Ground + Out * Radius * 1.5;
+			VlDustParcel D = {};
+			D.position[0] = P.X; D.position[1] = P.Y; D.position[2] = P.Z;
+			D.velocity[0] = Out.X * SurgeCmS; D.velocity[1] = Out.Y * SurgeCmS; D.velocity[2] = 60.0f;
+			D.radius0 = static_cast<float>(Radius);
+			D.intensity = 0.8f;
+			D.shape = 4; // VL_DUST_WAVE (client-core dust.rs)
+			D.palette = 0; // VL_PALETTE_CONCRETE
+			D.color_rgba = 0x9d968cff;
+			D.seed = 0x9e3779b9u * static_cast<uint32>(LandingCount * RingParcels + k + 1);
+			Ring.Add(D);
+		}
+		Director->EmitDust(Ring);
+	}
+	// The scorch mark on the ground beneath (at most 16 kept, the oldest replaced).
+	if (ScorchBase)
+	{
+		if (Scorches.Num() >= 16)
+		{
+			Scorches[0]->DestroyComponent();
+			Scorches.RemoveAt(0);
+		}
+		UDecalComponent* Decal = NewObject<UDecalComponent>(this);
+		Decal->SetDecalMaterial(ScorchBase);
+		Decal->DecalSize = FVector(Radius * 3.0, Radius * 5.0, Radius * 5.0);
+		Decal->SetupAttachment(RootComponent);
+		Decal->RegisterComponent();
+		Decal->SetWorldLocationAndRotation(Ground, FRotator(-90.0, FMath::FRandRange(0.0, 360.0), 0.0));
+		Scorches.Add(Decal);
 	}
 }
 
