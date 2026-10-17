@@ -193,13 +193,14 @@ fn vehicle_tape() -> bool {
 /// `VIBE_VEHICLE_INPUT_PACING=1`: a driver's inputs are queued in order,
 /// never collapsed, and the client paces them to a jitter-derived queue depth
 /// the server reports (`vehicle_input_pacing`). Off by default.
-/// On foot, a tick that found no input frame repeats the held one; with this on
-/// (`VIBE_FOOT_INPUT_DEBT=1`), the late frame for that slot, when it matches the
-/// repeat, is acknowledged without being simulated again (see
-/// `pay_repeat_debt`). Off by default.
+/// On foot, a tick that found no input frame repeats the held one; the late
+/// frame for that slot, when it matches the repeat, is then acknowledged without
+/// being simulated again (see `pay_repeat_debt`), so a jittery link walks no
+/// further than the frames it sent. On by default since 2026-10-17 (without it
+/// players walked ~14.5% fast); `VIBE_FOOT_INPUT_DEBT=0` turns it off.
 fn foot_input_debt() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("VIBE_FOOT_INPUT_DEBT").is_ok_and(|v| !v.is_empty() && v != "0"))
+    *ON.get_or_init(|| std::env::var("VIBE_FOOT_INPUT_DEBT").map_or(true, |v| v != "0"))
 }
 
 fn vehicle_input_pacing() -> bool {
