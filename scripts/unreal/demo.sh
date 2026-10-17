@@ -4,8 +4,9 @@
 #   scripts/unreal/demo.sh [--match citypp-demo] [--synthetic] [--no-unreal]
 #
 # Starts what is not already running:
-#   * the city server on :4001/:4002 -- the PhysX play server (scripts/perf/play-server.sh, in a
-#     shared GPU slot), or with --synthetic the physics-free city (no GPU; shots do nothing there);
+#   * the city server on :4001/:4002 -- the PhysX city server built against the garage SDK
+#     (scripts/perf/garage-vehicle-server.sh, ../PhysX/out/install/garage-multihull, in a shared
+#     GPU slot), or with --synthetic the physics-free city (no GPU; shots do nothing there);
 #   * the web client (Vite, :3003);
 # then prints the browser URL and launches the Unreal client (unreal/VibeCity) on the same match.
 # Logs go to target/unreal-demo/. Stop with Ctrl-C; servers this script started are stopped too.
@@ -30,7 +31,15 @@ UE_ROOT="${UE_ROOT:-/Users/Shared/Epic Games/UE_5.8}"
 LOGS="$ROOT/target/unreal-demo"
 mkdir -p "$LOGS"
 STARTED=()
-cleanup() { for pid in "${STARTED[@]:-}"; do [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true; done; }
+OWN_PORTS=()
+# Stop what this script started. Servers run under gpu-run.sh, which a kill of its shell leaves
+# running (holding its GPU slot), so stop them by the port they listen on.
+cleanup() {
+  for port in "${OWN_PORTS[@]:-}"; do
+    [[ -n "$port" ]] && kill $(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null) 2>/dev/null || true
+  done
+  for pid in "${STARTED[@]:-}"; do [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true; done
+}
 trap cleanup EXIT INT TERM
 
 listening() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
@@ -42,12 +51,14 @@ wait_for() { # wait_for <url> <seconds> <what>
 if listening 4001; then
   echo "demo: a server is already on :4001; using it"
 elif [[ "$SYNTHETIC" == 1 ]]; then
-  (cd "$ROOT" && cargo build --release -p web-fps-server --bin web-fps-server)
+  (cd "$ROOT" && cargo build -q --release -p web-fps-server --bin web-fps-server 2>&1 | grep -E '^error' || true)
   VIBE_CITY_SYNTHETIC=1 RUST_LOG=info "$ROOT/target/release/web-fps-server" > "$LOGS/server.log" 2>&1 &
-  STARTED+=($!)
+  STARTED+=($!); OWN_PORTS+=(4001)
 else
-  VIBE_GPU_SHARED=1 "$ROOT/scripts/perf/play-server.sh" > "$LOGS/server.log" 2>&1 &
-  STARTED+=($!)
+  # play-server.sh links ../PhysX/out/install/macos-cumetal, which predates this branch's bridge
+  # (destruction scene v18); the garage SDK (v24) is the one the native app and this server use.
+  VIBE_GPU_SHARED=1 "$ROOT/scripts/perf/garage-vehicle-server.sh" > "$LOGS/server.log" 2>&1 &
+  STARTED+=($!); OWN_PORTS+=(4001)
 fi
 wait_for "http://127.0.0.1:4001/healthz" 1800 "the city server"
 
@@ -55,7 +66,7 @@ if listening 3003; then
   echo "demo: a web client is already on :3003; using it"
 else
   (cd "$ROOT/client" && exec npx vite --port 3003 --strictPort) > "$LOGS/client.log" 2>&1 &
-  STARTED+=($!)
+  STARTED+=($!); OWN_PORTS+=(3003)
 fi
 wait_for "http://127.0.0.1:3003/" 120 "the web client"
 
