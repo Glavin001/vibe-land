@@ -21,7 +21,6 @@ rapier3d = { version = "0.30", default-features = false, features = ["dim3", "f3
 vibe-client-transport-wt = { path = "../client-transport-wt" }
 web-fps-server = { path = "../server" }
 flate2 = "1"
-serde_json = "1"
 
 [[example]]
 name = "headless"

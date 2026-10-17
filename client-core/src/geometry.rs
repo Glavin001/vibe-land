@@ -226,11 +226,18 @@ mod tests {
     }
 
     fn chunk(geometry: ChunkGeometry, size: [f32; 3]) -> ChunkDef {
-        serde_json::from_value(serde_json::json!({
-            "nodeIndex": 0, "centroid": [1.0, 2.0, 3.0], "size": size, "mass": 1.0, "volume": 1.0,
-            "support": false, "geometry": serde_json::to_value(&geometry).unwrap(),
-        }))
-        .expect("chunk def")
+        ChunkDef {
+            node_index: 0,
+            centroid: [1.0, 2.0, 3.0],
+            mass: 1.0,
+            volume: 1.0,
+            size,
+            geometry,
+            radius: 1.0,
+            support: false,
+            material: 0,
+            mass_offset: [0.0; 3],
+        }
     }
 
     fn mesh_of(chunk: &ChunkDef, library: &[Vec<f32>], space: Space) -> (Vec<Vec3>, Vec<u32>, bool) {
@@ -283,8 +290,9 @@ mod tests {
         let c = cuboid([0.5, 1.5, 2.0]);
         let (p, idx, _) = mesh_of(&c, &[], Space::Unreal);
         assert_closed(&p, &idx);
-        // Unreal is left-handed and in centimetres: outward winding reads as negative volume ×100³.
-        let expected = -8.0 * 0.5 * 1.5 * 2.0 * 1e6;
+        // Centimetres, and the mirror's negative determinant cancelled by the reversed winding:
+        // the right-hand rule still gives outward normals, so the volume reads +V·100³.
+        let expected = 8.0 * 0.5 * 1.5 * 2.0 * 1e6;
         assert!((signed_volume(&p, &idx) - expected).abs() < 1e-4 * expected.abs());
     }
 

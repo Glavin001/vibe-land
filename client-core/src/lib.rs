@@ -12,6 +12,7 @@
 pub mod city;
 pub mod coords;
 pub mod frame;
+pub mod geometry;
 pub mod input;
 pub mod players;
 pub mod predictor;
