@@ -13,12 +13,16 @@
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Misc/AutomationTest.h"
 #include "Tests/AutomationCommon.h"
+#include "UObject/UObjectIterator.h"
 #include "VibeCityDirector.h"
+#include "Components/ExponentialHeightFogComponent.h"
 #include "VibeCityGrass.h"
+#include "VibeCityWeather.h"
 #include "VibeNetSubsystem.h"
 #include "vibe_client_core.h"
 
@@ -198,6 +202,86 @@ bool FVibeCityRenderCityAndEffects::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("loops (scrapes, air) over the meteor: %lld loop-frames"), Director->LoopsSeen() - State->LoopsAtMeteor));
 		AddInfo(FString::Printf(TEXT("after the meteor: %llu fractures, %lld sounds, %lld dust (peak %d live), %lld body vertices"),
 			Fractures, Director->SoundsSeen() - State->SoundsAtMeteor, Director->DustSeen() - State->DustAtMeteor, State->PeakDust, Director->DrawnBodyVertices()));
+		return true;
+	}));
+	return true;
+}
+
+// VibeCity.Render.WeatherAndGrass: the web's weather presets and shared painted grass.
+//
+//  * `vibe.weather snow_storm` fills the camera box with the preset's 5000 particles and turns
+//    the fog the preset's colour; `vibe.weather clear` empties it and restores the clear fog;
+//  * the shared grass layout loads from the server (the stored city-default layout, 84 painted
+//    tiles) and every patch around the camera regenerates over it.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityRenderWeatherAndGrass, "VibeCity.Render.WeatherAndGrass",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityRenderWeatherAndGrass::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		double Started = 0.0;
+		int32 Patches = 0;
+	};
+	TSharedRef<FState> State = MakeShared<FState>();
+	auto FogColor = []() {
+		UWorld* World = GameWorld();
+		for (TObjectIterator<UExponentialHeightFogComponent> It; It; ++It)
+		{
+			if (It->GetWorld() == World)
+			{
+				return It->FogInscatteringLuminance;
+			}
+		}
+		return FLinearColor::Transparent;
+	};
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, FogColor]() {
+		AVibeCityWeather* Weather = Find<AVibeCityWeather>();
+		if (!Weather)
+		{
+			return false;
+		}
+		const VlWeather* Snow = vl_weather(static_cast<uint32>(vl_weather_index("snow_storm")));
+		IConsoleManager::Get().ProcessUserConsoleInput(TEXT("vibe.weather snow_storm"), *GLog, GameWorld());
+		TestEqual(TEXT("snow storm particles"), Weather->DrawnParticles(), static_cast<int32>(Snow->particle_count));
+		const FLinearColor Want(FColor((Snow->fog_rgba >> 24) & 0xFF, (Snow->fog_rgba >> 16) & 0xFF, (Snow->fog_rgba >> 8) & 0xFF));
+		TestTrue(FString::Printf(TEXT("snow storm fog %s is the preset's %s"), *FogColor().ToString(), *Want.ToString()), FogColor().Equals(Want, 1e-3f));
+		IConsoleManager::Get().ProcessUserConsoleInput(TEXT("vibe.weather clear"), *GLog, GameWorld());
+		TestEqual(TEXT("clear: no particles"), Weather->DrawnParticles(), 0);
+		const VlWeather* Clear = vl_weather(0);
+		TestTrue(TEXT("clear fog restored"), FogColor().Equals(FLinearColor(FColor((Clear->fog_rgba >> 24) & 0xFF, (Clear->fog_rgba >> 16) & 0xFF, (Clear->fog_rgba >> 8) & 0xFF)), 1e-3f));
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([State]() {
+		UVibeNetSubsystem* N = Net();
+		AVibeCityGrass* Grass = Find<AVibeCityGrass>();
+		if (!N || !Grass || Grass->DrawnPatches() < 4)
+		{
+			return false;
+		}
+		Grass->SetLayoutUrl(N->CurrentApiBaseUrl() / TEXT("match-stats/city-default/grass"));
+		State->Patches = Grass->DrawnPatches();
+		State->Started = FPlatformTime::Seconds();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, State]() {
+		AVibeCityGrass* Grass = Find<AVibeCityGrass>();
+		if (!Grass)
+		{
+			AddError(TEXT("lost the grass"));
+			return true;
+		}
+		// The match's own (empty) layout may land first: wait for the painted one.
+		const bool bLoaded = Grass->PaintTiles() > 0 && Grass->PatchesOnCurrentPaint() >= State->Patches;
+		if (!bLoaded && FPlatformTime::Seconds() - State->Started < 20.0)
+		{
+			return false;
+		}
+		TestEqual(TEXT("shared layout revision is 64 hex digits"), Grass->PaintRevision().Len(), 64);
+		TestEqual(TEXT("painted tiles of the stored city-default layout"), Grass->PaintTiles(), 84);
+		TestTrue(FString::Printf(TEXT("patches regenerated over the layout (%d of %d)"), Grass->PatchesOnCurrentPaint(), State->Patches),
+			Grass->PatchesOnCurrentPaint() >= State->Patches);
+		AddInfo(FString::Printf(TEXT("layout %s: %d tiles; %d patches, %lld blades"), *Grass->PaintRevision().Left(8), Grass->PaintTiles(), Grass->DrawnPatches(), Grass->DrawnBlades()));
 		return true;
 	}));
 	return true;

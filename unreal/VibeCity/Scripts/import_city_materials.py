@@ -12,6 +12,7 @@ Creates under /Game/VibeCity:
   Materials/M_VibeCityGlass                           translucent glass
   Materials/M_VibeCityDust                            dust puffs
   Materials/M_VibeCityGrass                           meadow blades
+  Materials/M_VibeCityWeather, ...WeatherAdditive     dust- and snow-storm particles
   Materials/M_VibeCityChunkHD                         2K Poly Haven sources (with --hd)
 
 M_VibeCityChunk reads what the client core puts on every chunk vertex:
@@ -287,6 +288,97 @@ def grass_material():
     return m
 
 
+# client/src/scene/WeatherParticles.tsx's vertex shader, in Unreal space (cm, Z up): each quad's
+# four corners sit at its particle's base position; drift with the wind and fall, tumble, wrap
+# inside a box centred on the camera, then spread the corners facing the camera.
+WEATHER_WPO = """
+float3 drift = Wind * Time + float3(0.0, 0.0, -Fall * Time);
+float phase = Time * 6.2831853 * TumbleHz + Seed * 12.566;
+float3 tumble = float3(cos(phase), sin(phase * 0.71), 0.0) * TumbleCm;
+float3 d = Base + drift + tumble - Cam;
+float3 w = d - BoxCm * floor((d + BoxCm * 0.5) / BoxCm);
+float3 f = normalize(w + float3(0.0, 0.0, 0.001));
+float3 r = normalize(cross(float3(0.0, 0.0, 1.0), f) + float3(0.0001, 0.0, 0.0));
+float3 u = cross(f, r);
+float2 c = Corner - 0.5;
+return Cam + w + (r * c.x - u * c.y) * SizeCm - Base;
+"""
+# Its fragment shader's soft disc, and the fade toward the box's edge.
+WEATHER_OPACITY = """
+float disc = 1.0 - smoothstep(0.35, 1.0, length(Corner - 0.5) * 2.0);
+float edge = 1.0 - smoothstep(0.75, 1.0, length(P - Cam) / (BoxCm * 0.5));
+return disc * edge;
+"""
+
+
+def custom(m, code, inputs, output, x, y):
+    e = expr(m, unreal.MaterialExpressionCustom, x, y)
+    e.set_editor_property("code", code)
+    e.set_editor_property("output_type", output)
+    pins = []
+    for n in inputs:
+        pin = unreal.CustomInput()
+        pin.set_editor_property("input_name", n)
+        pins.append(pin)
+    e.set_editor_property("inputs", pins)
+    return e
+
+
+def weather_material(name, additive):
+    """Weather particles (client-core weather.rs presets, AVibeCityWeather): lit as a volume like
+    dust, in the preset's Color; parameters BoxCm, Wind (cm/s), Fall (cm/s), TumbleHz, TumbleCm,
+    SizeCm set by the renderer. UV0 = quad corner, UV1.x = per-particle seed."""
+    m = fresh_material(name)
+    m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_ADDITIVE if additive else unreal.BlendMode.BLEND_TRANSLUCENT)
+    m.set_editor_property("translucency_lighting_mode", unreal.TranslucencyLightingMode.TLM_VOLUMETRIC_NON_DIRECTIONAL)
+    m.set_editor_property("two_sided", True)
+
+    def scalar(n, v, x, y):
+        s = expr(m, unreal.MaterialExpressionScalarParameter, x, y)
+        s.set_editor_property("parameter_name", n)
+        s.set_editor_property("default_value", v)
+        return s
+    color = expr(m, unreal.MaterialExpressionVectorParameter, -600, -200)
+    color.set_editor_property("parameter_name", "Color")
+    color.set_editor_property("default_value", unreal.LinearColor(1.0, 1.0, 1.0, 1.0))
+    mel.connect_material_property(color, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    rough = expr(m, unreal.MaterialExpressionConstant, -600, -50)
+    rough.set_editor_property("r", 1.0)
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+
+    corner = expr(m, unreal.MaterialExpressionTextureCoordinate, -1400, 0)
+    seed_uv = expr(m, unreal.MaterialExpressionTextureCoordinate, -1400, 100)
+    seed_uv.set_editor_property("coordinate_index", 1)
+    seed = mask(m, "r", -1250, 100)
+    mel.connect_material_expressions(seed_uv, "", seed, "")
+    base = expr(m, unreal.MaterialExpressionWorldPosition, -1400, 200)
+    cam = expr(m, unreal.MaterialExpressionCameraPositionWS, -1400, 300)
+    time = expr(m, unreal.MaterialExpressionTime, -1400, 400)
+    box = scalar("BoxCm", 6000.0, -1400, 500)
+    wind = expr(m, unreal.MaterialExpressionVectorParameter, -1400, 600)
+    wind.set_editor_property("parameter_name", "Wind")
+    wind.set_editor_property("default_value", unreal.LinearColor(0.0, 0.0, 0.0, 0.0))
+    wind3 = mask(m, "rgb", -1250, 600)
+    mel.connect_material_expressions(wind, "", wind3, "")
+    fall = scalar("Fall", 0.0, -1400, 700)
+    hz = scalar("TumbleHz", 0.0, -1400, 800)
+    amp = scalar("TumbleCm", 0.0, -1400, 900)
+    size = scalar("SizeCm", 5.0, -1400, 1000)
+    wpo = custom(m, WEATHER_WPO, ["Base", "Cam", "Time", "Seed", "Corner", "BoxCm", "Wind", "Fall", "TumbleHz", "TumbleCm", "SizeCm"],
+                 unreal.CustomMaterialOutputType.CMOT_FLOAT3, -900, 400)
+    for src, pin in [(base, "Base"), (cam, "Cam"), (time, "Time"), (seed, "Seed"), (corner, "Corner"), (box, "BoxCm"),
+                     (wind3, "Wind"), (fall, "Fall"), (hz, "TumbleHz"), (amp, "TumbleCm"), (size, "SizeCm")]:
+        mel.connect_material_expressions(src, "", wpo, pin)
+    mel.connect_material_property(wpo, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
+    pixel = expr(m, unreal.MaterialExpressionWorldPosition, -900, 100)
+    opacity = custom(m, WEATHER_OPACITY, ["P", "Cam", "BoxCm", "Corner"], unreal.CustomMaterialOutputType.CMOT_FLOAT1, -600, 150)
+    for src, pin in [(pixel, "P"), (cam, "Cam"), (box, "BoxCm"), (corner, "Corner")]:
+        mel.connect_material_expressions(src, "", opacity, pin)
+    mel.connect_material_property(opacity, "", unreal.MaterialProperty.MP_OPACITY)
+    mel.recompile_material(m)
+    return m
+
+
 def glass_material():
     m = fresh_material("M_VibeCityGlass")
     m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
@@ -313,6 +405,15 @@ def glass_material():
     return m
 
 
+only = os.environ.get("VIBE_MATERIALS_ONLY", "")
+if only == "weather":
+    # Just the weather materials (no textures needed).
+    weather_material("M_VibeCityWeather", additive=False)
+    weather_material("M_VibeCityWeatherAdditive", additive=True)
+    saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
+    unreal.log(f"VIBE_IMPORT_OK weather saved={saved}")
+    raise SystemExit(0)
+
 albedo_layers = import_layers("albedo", srgb=True)
 surface_layers = import_layers("surface", srgb=False)
 albedo_array = texture_array("T_CityAlbedoArray", albedo_layers, srgb=True)
@@ -323,6 +424,8 @@ chunk_material(albedo_array, surface_array, "M_VibeCityChunkFlat", normal_map=Fa
 glass = glass_material()
 dust_material()
 grass_material()
+weather_material("M_VibeCityWeather", additive=False)
+weather_material("M_VibeCityWeatherAdditive", additive=True)
 hd_dir = os.environ.get("VIBE_CITY_HD_TEXTURES", "")
 if hd_dir:
     hd_albedo = import_layers("albedo", srgb=True, directory=hd_dir, ext="jpg", suffix="HD")

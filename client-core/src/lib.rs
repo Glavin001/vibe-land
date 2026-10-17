@@ -21,6 +21,7 @@ pub mod materials;
 pub mod players;
 pub mod predictor;
 pub mod vehicles;
+pub mod weather;
 
 use glam::Vec3;
 use vibe_land_shared::constants::{

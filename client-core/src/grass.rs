@@ -9,6 +9,8 @@
 //!
 //! Positions are in server space (x, z on the ground plane; y up).
 
+use std::collections::HashMap;
+
 use glam::{Quat, Vec3};
 use vibe_land_destruction::manifest::DestructionManifest;
 
@@ -21,7 +23,6 @@ const CELLS: i32 = 16;
 const CELL: f32 = 0.5;
 const CHANNELS: usize = 12;
 /// The grass species' stiffness (foliageProfiles.ts).
-const GRASS_STIFFNESS: f32 = 0.3;
 
 /// A building's original footprint, grown by the verge: no grass inside.
 #[repr(C)]
@@ -71,6 +72,106 @@ pub struct VlGrassBlade {
     pub variation: f32,
     pub color: [f32; 3],
     pub stiffness: f32,
+    /// foliageProfiles.ts `FOLIAGE_SPECIES` index: 0 grass, 1 reed, 2 wheat, 3 corn, 4 fern.
+    pub species: u32,
+}
+
+/// foliageProfiles.ts `FOLIAGE_PROFILES`, by species id: (density per m², width, stiffness).
+const FOLIAGE_PROFILES: [(f32, f32, f32); 5] = [(150.0, 1.0, 0.3), (28.0, 1.5, 0.7), (55.0, 0.7, 0.55), (3.0, 5.0, 0.8), (5.0, 2.5, 0.4)];
+
+/// The shared painted grass (GrassPaint.ts): sparse 8 m tiles of 16 × 16 half-metre cells, 12
+/// byte channels each (density, height/4 m, colour RGB, species, health, dryness, maturity, row
+/// spacing/4 m, row angle/360°, stiffness). Unpainted ground is the default meadow.
+#[derive(Clone, Debug, Default)]
+pub struct GrassPaint {
+    tiles: HashMap<(i32, i32), Vec<u8>>,
+}
+
+#[derive(serde::Deserialize)]
+struct LayoutTile {
+    x: i32,
+    z: i32,
+    data: Vec<u32>,
+}
+
+#[derive(serde::Deserialize)]
+struct Layout {
+    version: u32,
+    tiles: Vec<LayoutTile>,
+}
+
+#[derive(serde::Deserialize)]
+struct Snapshot {
+    revision: String,
+    layout: Layout,
+}
+
+impl GrassPaint {
+    /// `GrassPaint.import`: a layout document (versions 1 to 3), validated as the web does.
+    fn from_layout(doc: Layout) -> Result<Self, &'static str> {
+        if !(1..=3).contains(&doc.version) || doc.tiles.len() > 4096 {
+            return Err("invalid grass layout");
+        }
+        let channels = if doc.version == 3 { CHANNELS } else { 5 };
+        let cells = (CELLS * CELLS) as usize;
+        let mut tiles = HashMap::new();
+        for tile in doc.tiles {
+            if !(-32..32).contains(&tile.x) || !(-32..32).contains(&tile.z) || tile.data.len() != cells * channels || tile.data.iter().any(|&v| v > 255) {
+                return Err("invalid grass tile");
+            }
+            let mut data = vec![0u8; cells * CHANNELS];
+            for cell in 0..cells {
+                let at = cell * CHANNELS;
+                data[at..at + CHANNELS].copy_from_slice(&[0, 0, 0, 0, 0, 0, 255, 0, 255, 0, 0, 128]);
+                for k in 0..channels {
+                    data[at + k] = tile.data[cell * channels + k] as u8;
+                }
+                if data[at + 5] > 4 {
+                    return Err("invalid foliage species");
+                }
+                if doc.version == 1 {
+                    data[at + 1] = ((f32::from(data[at + 1]) * 2.0 / GRASS_MAX_HEIGHT) + 0.5).floor() as u8;
+                }
+            }
+            if tiles.insert((tile.x, tile.z), data).is_some() {
+                return Err("duplicate grass tile");
+            }
+        }
+        Ok(Self { tiles })
+    }
+
+    /// A layout document (`{version, tiles}`) as JSON.
+    pub fn from_layout_json(bytes: &[u8]) -> Result<Self, &'static str> {
+        Self::from_layout(serde_json::from_slice(bytes).map_err(|_| "invalid grass layout")?)
+    }
+
+    /// The server's `/match-stats/<match>/grass` response (`{revision, layout}`): its revision and
+    /// paint (GrassLayoutSync.ts `fetchSharedGrass`).
+    pub fn from_snapshot_json(bytes: &[u8]) -> Result<(String, Self), &'static str> {
+        let s: Snapshot = serde_json::from_slice(bytes).map_err(|_| "invalid shared grass response")?;
+        if s.revision.len() != 64 || !s.revision.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) || ![2, 3].contains(&s.layout.version) {
+            return Err("invalid shared grass response");
+        }
+        Ok((s.revision, Self::from_layout(s.layout)?))
+    }
+
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
+    }
+
+    /// `GrassPaint.cell`: a cell's channels, painted or default.
+    fn cell(&self, ix: i32, iz: i32, out: &mut [f32]) {
+        let (tx, tz) = (ix.div_euclid(CELLS), iz.div_euclid(CELLS));
+        match self.tiles.get(&(tx, tz)) {
+            None => default_cell((ix as f32 + 0.5) * CELL, (iz as f32 + 0.5) * CELL, out),
+            Some(tile) => {
+                let at = (((iz - tz * CELLS) * CELLS + ix - tx * CELLS) as usize) * CHANNELS;
+                for c in 0..CHANNELS {
+                    out[c] = f32::from(tile[at + c]);
+                }
+            }
+        }
+    }
 }
 
 /// grassPlacement.ts `randomFor` (a mulberry32 variant), bit-identical to the web's.
@@ -124,17 +225,20 @@ fn default_cell(x: f32, z: f32, out: &mut [f32]) {
     out[11] = 128.0;
 }
 
-/// One patch's blades at `density` blades per m² (≤ the pretty density), as the web generates them.
-pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[VlGrassExclusion], out: &mut Vec<VlGrassBlade>) {
+/// One patch's blades at `density` blades per m² of grass (≤ the pretty density), as the web
+/// generates them (grassPlacement.ts `generateGrassPatch`), over `paint` (none: the default meadow).
+pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[VlGrassExclusion], paint: Option<&GrassPaint>, out: &mut Vec<VlGrassBlade>) {
     out.clear();
-    // The default paint grid for the patch, with a one-cell border, as GrassPaint.sampler builds it.
+    let unpainted = GrassPaint::default();
+    let paint = paint.unwrap_or(&unpainted);
+    // The paint grid for the patch, with a one-cell border, as GrassPaint.sampler builds it.
     let stride = (CELLS + 2) as usize;
     let mut grid = vec![0.0f32; stride * stride * CHANNELS];
     for z in -1..=CELLS {
         for x in -1..=CELLS {
             let (ix, iz) = (px * CELLS + x, pz * CELLS + z);
             let at = (((z + 1) as usize) * stride + (x + 1) as usize) * CHANNELS;
-            default_cell((ix as f32 + 0.5) * CELL, (iz as f32 + 0.5) * CELL, &mut grid[at..at + CHANNELS]);
+            paint.cell(ix, iz, &mut grid[at..at + CHANNELS]);
         }
     }
     let mut style = [0.0f32; CHANNELS];
@@ -178,12 +282,24 @@ pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[VlGrassExclu
             continue;
         }
         sample(x, z, &mut style);
-        // The default meadow is all grass (species 0).
-        if i >= grass_limit {
+        let species = ((style[5] * 255.0) + 0.5).floor() as usize;
+        let species = if species < FOLIAGE_PROFILES.len() { species } else { 0 };
+        let (profile_density, profile_width, profile_stiffness) = FOLIAGE_PROFILES[species];
+        if species == 0 && i >= grass_limit {
             continue;
         }
-        if coverage >= style[0] {
+        if coverage >= style[0] * (profile_density / GRASS_DENSITY_PRETTY).min(1.0) {
             continue;
+        }
+        // Crops in rows: only near a row line.
+        let spacing = style[9] * 4.0;
+        if spacing > 0.1 {
+            let angle = style[10] * std::f32::consts::TAU;
+            let across = wx * angle.cos() - wz * angle.sin();
+            let to_row = (across / spacing - js_round(across / spacing)).abs() * spacing;
+            if to_row > spacing * 0.3 {
+                continue;
+            }
         }
         let fertility = 0.5 + 0.25 * (wx * 0.23 + (wz * 0.31).sin()).sin() + 0.25 * (wz * 0.49 + wx * 0.17).sin();
         if variation < 0.08 * (1.0 - fertility) {
@@ -198,13 +314,19 @@ pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[VlGrassExclu
             z: wz,
             height: blade_height,
             yaw,
-            width: (0.009 + variation * 0.015) * (1.0 + tallness * 2.0) * (0.7 + style[6] * 0.3),
+            width: (0.009 + variation * 0.015) * (1.0 + tallness * 2.0) * profile_width * (0.7 + style[6] * 0.3),
             lean: (0.18 + lean * 0.6) * (1.0 - tallness * 0.65),
             variation,
             color: [style[2], style[3], style[4]],
-            stiffness: style[11] * 0.5 + GRASS_STIFFNESS * 0.5,
+            stiffness: style[11] * 0.5 + profile_stiffness * 0.5,
+            species: species as u32,
         });
     }
+}
+
+/// JS `Math.round` (half toward +∞).
+fn js_round(v: f32) -> f32 {
+    (v + 0.5).floor()
 }
 
 /// grassPlacement.ts `grassDensityAtDistance`: the fraction of a patch's blades to draw at
@@ -232,7 +354,7 @@ mod tests {
         let cases = WEB_PATCHES;
         let mut out = Vec::new();
         for &(px, pz, count, first) in cases {
-            generate_patch(px, pz, GRASS_DENSITY_PRETTY, &[], &mut out);
+            generate_patch(px, pz, GRASS_DENSITY_PRETTY, &[], None, &mut out);
             assert_eq!(out.len(), count, "patch {px},{pz} count");
             let b = out[0];
             let got = [b.x - px as f32 * GRASS_PATCH_SIZE, b.z - pz as f32 * GRASS_PATCH_SIZE, b.height, b.yaw];
@@ -251,10 +373,52 @@ mod tests {
     ];
 
     #[test]
+    fn painted_patches_match_the_web() {
+        // client-core/tests/fixtures/grass_paint_web.json: GrassPaint.ts painted with the wheat
+        // brush at (2.5, 2.5) r 2.2 and reeds at (5.5, 5.5) r 2, exported, and
+        // generateGrassPatch(0, 0, 'pretty', [], paint), run with tsx.
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            layout: serde_json::Value,
+            count: usize,
+            species: [usize; 5],
+            first: [f32; 4],
+            last: [f32; 4],
+        }
+        let f: Fixture = serde_json::from_str(include_str!("../tests/fixtures/grass_paint_web.json")).unwrap();
+        let paint = GrassPaint::from_layout_json(f.layout.to_string().as_bytes()).unwrap();
+        assert_eq!(paint.tile_count(), 1);
+        let mut out = Vec::new();
+        generate_patch(0, 0, GRASS_DENSITY_PRETTY, &[], Some(&paint), &mut out);
+        assert_eq!(out.len(), f.count);
+        let mut species = [0usize; 5];
+        for b in &out {
+            species[b.species as usize] += 1;
+        }
+        assert_eq!(species, f.species);
+        for (b, w) in [(out[0], f.first), (out[out.len() - 1], f.last)] {
+            let got = [b.x, b.z, b.height, b.yaw];
+            for (g, w) in got.iter().zip(w) {
+                assert!((g - w).abs() < 1e-4, "{got:?} vs {w:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn shared_snapshots_are_validated_like_the_web() {
+        let ok = format!(r#"{{"revision":"{}","layout":{{"version":3,"tiles":[]}}}}"#, "a".repeat(64));
+        let (revision, paint) = GrassPaint::from_snapshot_json(ok.as_bytes()).unwrap();
+        assert_eq!((revision.len(), paint.tile_count()), (64, 0));
+        assert!(GrassPaint::from_snapshot_json(br#"{"revision":"x","layout":{"version":3,"tiles":[]}}"#).is_err());
+        let bad_species = format!(r#"{{"version":3,"tiles":[{{"x":0,"z":0,"data":[{}]}}]}}"#, vec!["0,0,0,0,0,9,0,0,0,0,0,0"; 256].join(","));
+        assert!(GrassPaint::from_layout_json(bad_species.as_bytes()).is_err());
+    }
+
+    #[test]
     fn exclusions_keep_footprints_bare() {
         let ex = [VlGrassExclusion { min_x: 1.0, min_z: 1.0, max_x: 6.0, max_z: 6.0 }];
         let mut out = Vec::new();
-        generate_patch(0, 0, GRASS_DENSITY_PRETTY, &ex, &mut out);
+        generate_patch(0, 0, GRASS_DENSITY_PRETTY, &ex, None, &mut out);
         assert!(!out.is_empty());
         assert!(out.iter().all(|b| !(b.x >= 1.0 && b.x <= 6.0 && b.z >= 1.0 && b.z <= 6.0)));
     }

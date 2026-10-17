@@ -5,6 +5,7 @@
 
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "GenericPlatform/GenericPlatformHttp.h"
 #include "VibeCityGrass.h"
 
 #include "Engine/World.h"
@@ -115,6 +116,8 @@ void AVibeCityDirector::BuildCity(UVibeNetSubsystem* NetSubsystem)
 		if (AVibeCityGrass* Grass = GetWorld()->SpawnActor<AVibeCityGrass>())
 		{
 			Grass->SetExclusions(NetSubsystem->GrassExclusions());
+			// GrassLayoutSync.ts grassLayoutUrl: the match's shared painted grass.
+			Grass->SetLayoutUrl(NetSubsystem->CurrentApiBaseUrl() / TEXT("match-stats") / FGenericPlatformHttp::UrlEncode(NetSubsystem->CurrentMatchId()) / TEXT("grass"));
 		}
 	}
 	UE_LOG(LogVibeLand, Display, TEXT("city built: %d chunks (%llu vertices) in %d cells, %.1f ms; bounds %s"),

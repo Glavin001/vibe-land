@@ -4,6 +4,9 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "HttpModule.h"
+#include "Interfaces/IHttpRequest.h"
+#include "Interfaces/IHttpResponse.h"
 #include "Materials/MaterialInterface.h"
 #include "ProceduralMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
@@ -18,6 +21,9 @@ namespace
 	// churn them.
 	constexpr float ReleaseDistanceM = DrawDistanceM + 12.0f;
 	constexpr float UpdateEvery = 0.2f;
+	// GrassLayoutSync.ts: one conditional request per two seconds, ten-second timeout.
+	constexpr float PollEvery = 2.0f;
+	constexpr float PollTimeout = 10.0f;
 	// Distance LOD bands (fractions of a patch's blades), chosen from grass.rs density_at_distance.
 	constexpr float Bands[] = { 1.0f, 0.7f, 0.45f, 0.28f, 0.16f };
 
@@ -58,9 +64,81 @@ void AVibeCityGrass::SetExclusions(TArrayView<const VlGrassExclusion> InExclusio
 	bHasExclusions = true;
 }
 
+int32 AVibeCityGrass::PaintTiles() const
+{
+	return Paint ? static_cast<int32>(vl_grass_paint_tiles(Paint->Handle)) : 0;
+}
+
+void AVibeCityGrass::Generate(FPatch& Patch, FIntPoint Key)
+{
+	TArray<VlGrassExclusion> Ex = Exclusions;
+	TSharedPtr<FPaint, ESPMode::ThreadSafe> Over = Paint;
+	const int32 Px = Key.X, Pz = Key.Y;
+	Patch.Pending = Async(EAsyncExecution::ThreadPool, [Ex = MoveTemp(Ex), Over = MoveTemp(Over), Px, Pz]() {
+		TArray<VlGrassBlade> Blades;
+		Blades.SetNumUninitialized(12000);
+		const size_t Count = vl_grass_patch(Over ? Over->Handle : nullptr, Ex.GetData(), Ex.Num(), Px, Pz, DensityPretty, Blades.GetData(), Blades.Num());
+		Blades.SetNum(FMath::Min<int32>(static_cast<int32>(Count), Blades.Num()));
+		return Blades;
+	});
+}
+
+void AVibeCityGrass::PollLayout()
+{
+	if (LayoutUrl.IsEmpty() || bPolling)
+	{
+		return;
+	}
+	bPolling = true;
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+	Request->SetURL(LayoutUrl);
+	Request->SetVerb(TEXT("GET"));
+	Request->SetTimeout(PollTimeout);
+	if (!Revision.IsEmpty())
+	{
+		Request->SetHeader(TEXT("If-None-Match"), FString::Printf(TEXT("\"%s\""), *Revision));
+	}
+	TWeakObjectPtr<AVibeCityGrass> Self(this);
+	Request->OnProcessRequestComplete().BindLambda([Self](FHttpRequestPtr, FHttpResponsePtr Response, bool bOk) {
+		AVibeCityGrass* Grass = Self.Get();
+		if (!Grass)
+		{
+			return;
+		}
+		Grass->bPolling = false;
+		Grass->SincePoll = 0.0f;
+		// 304: unchanged. Errors keep the last shared layout (or the default meadow).
+		if (!bOk || !Response.IsValid() || Response->GetResponseCode() != 200)
+		{
+			return;
+		}
+		const TArray<uint8>& Body = Response->GetContent();
+		ANSICHAR Rev[65] = {};
+		VlGrassPaint* Parsed = vl_grass_paint_parse(Body.GetData(), Body.Num(), Rev, sizeof(Rev));
+		if (!Parsed)
+		{
+			return;
+		}
+		Grass->Paint = MakeShared<FPaint, ESPMode::ThreadSafe>(Parsed);
+		Grass->Revision = UTF8_TO_TCHAR(Rev);
+		Grass->GeneratedOnPaint = 0;
+		// Regenerate every patch over the new layout; each keeps its blades until the new land.
+		for (TPair<FIntPoint, FPatch>& Pair : Grass->Patches)
+		{
+			Grass->Generate(Pair.Value, Pair.Key);
+		}
+	});
+	Request->ProcessRequest();
+}
+
 void AVibeCityGrass::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	SincePoll += DeltaSeconds;
+	if (SincePoll >= PollEvery)
+	{
+		PollLayout();
+	}
 	if (!bHasExclusions || !GrassMaterial)
 	{
 		return;
@@ -69,11 +147,13 @@ void AVibeCityGrass::Tick(float DeltaSeconds)
 	for (TPair<FIntPoint, FPatch>& Pair : Patches)
 	{
 		FPatch& Patch = Pair.Value;
-		if (!Patch.bReady && Patch.Pending.IsValid() && Patch.Pending.IsReady())
+		if (Patch.Pending.IsValid() && Patch.Pending.IsReady())
 		{
 			Patch.Blades = Patch.Pending.Get();
+			Patch.Pending = TFuture<TArray<VlGrassBlade>>();
 			Patch.bReady = true;
 			Patch.Band = -1;
+			++GeneratedOnPaint;
 		}
 	}
 	SinceUpdate += DeltaSeconds;
@@ -111,14 +191,7 @@ void AVibeCityGrass::Tick(float DeltaSeconds)
 			if (!Patch)
 			{
 				Patch = &Patches.Add(FIntPoint(Px, Pz));
-				TArray<VlGrassExclusion> Ex = Exclusions;
-				Patch->Pending = Async(EAsyncExecution::ThreadPool, [Ex = MoveTemp(Ex), Px, Pz]() {
-					TArray<VlGrassBlade> Blades;
-					Blades.SetNumUninitialized(12000);
-					const size_t Count = vl_grass_patch(Ex.GetData(), Ex.Num(), Px, Pz, DensityPretty, Blades.GetData(), Blades.Num());
-					Blades.SetNum(FMath::Min<int32>(static_cast<int32>(Count), Blades.Num()));
-					return Blades;
-				});
+				Generate(*Patch, FIntPoint(Px, Pz));
 				continue;
 			}
 			if (Patch->bReady)

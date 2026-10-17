@@ -11,13 +11,15 @@ class UPostProcessComponent;
 class UProceduralMeshComponent;
 class USkyAtmosphereComponent;
 class USkyLightComponent;
+class AVibeCityWeather;
 
 /**
  * The city's sky, light and ground, matching the web client's (client/src/scene/CityEnvironment.tsx,
  * client/src/graphics/sunSky.ts): the sun at the same elevation and azimuth, a physical sky
  * atmosphere with a sky light captured from it in real time (the web's hemisphere/ambient fill
  * becomes the sky's own light), height fog in the web's clear-weather colour, and the flat ±256 m
- * ground (server y = 0) wearing the catalog's ground material like any chunk.
+ * ground (server y = 0) wearing the catalog's ground material like any chunk. Weather presets
+ * (AVibeCityWeather) recolour the fog and add dust or snow.
  */
 UCLASS()
 class VIBELANDCITY_API AVibeCityEnvironment : public AActor
@@ -53,6 +55,10 @@ private:
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UProceduralMeshComponent> Ground;
+
+	/** Dust and snow storms over the fog (the web's weather presets). */
+	UPROPERTY(Transient)
+	TObjectPtr<AVibeCityWeather> Weather;
 
 	bool bHdGround = false;
 };

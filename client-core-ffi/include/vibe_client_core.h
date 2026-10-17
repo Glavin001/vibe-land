@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 12
+#define VL_ABI_VERSION 13
 
 #define VL_OK 0
 
@@ -232,6 +232,12 @@ typedef uint32_t VlCoreState;
  * A client: the native transport and the shared core. Opaque to C.
  */
 typedef struct VlClient VlClient;
+
+/**
+ * A shared grass layout (the web's GrassPaint), immutable: read by `vl_grass_patch` from any
+ * thread until `vl_grass_paint_free`.
+ */
+typedef struct VlGrassPaint VlGrassPaint;
 
 /**
  * A car mesh built by `vl_vehicle_mesh_build`. Opaque to C.
@@ -793,6 +799,41 @@ typedef struct VlMaterial {
 } VlMaterial;
 
 /**
+ * One preset (weatherPresets.ts `WeatherPresetConfig`), in SI units and linear-free sRGB colours.
+ */
+typedef struct VlWeather {
+  /**
+   * Fog and background colour, 0xRRGGBBAA (sRGB).
+   */
+  uint32_t fog_rgba;
+  /**
+   * Particles in the volume around the camera (0: none).
+   */
+  uint32_t particle_count;
+  uint32_t particle_rgba;
+  /**
+   * Sprite size in pixels at 1 m (the web's point size, `size / distance` pixels).
+   */
+  float particle_size_px;
+  /**
+   * 1: additive (snow glows), 0: normal.
+   */
+  uint32_t additive;
+  /**
+   * Edge of the cube around the camera the particles wrap inside, metres.
+   */
+  float box_m;
+  float fall_mps;
+  float tumble_hz;
+  float tumble_m;
+  /**
+   * Share of the wind the particles follow (grit drifts less than snow).
+   */
+  float wind_follow;
+} VlWeather;
+
+/**
+ * The grass species' stiffness (foliageProfiles.ts).
  * A building's original footprint, grown by the verge: no grass inside.
  */
 typedef struct VlGrassExclusion {
@@ -821,6 +862,10 @@ typedef struct VlGrassBlade {
   float variation;
   float color[3];
   float stiffness;
+  /**
+   * foliageProfiles.ts `FOLIAGE_SPECIES` index: 0 grass, 1 reed, 2 wheat, 3 corn, 4 fern.
+   */
+  uint32_t species;
 } VlGrassBlade;
 
 #ifdef __cplusplus
@@ -1030,6 +1075,35 @@ int32_t vl_client_set_listener(struct VlClient *client, float x, float y, float 
 const char *vl_audio_clip_id(uint32_t index);
 
 /**
+ * A weather preset (client-core weather.rs, the web's weatherPresets.ts table): `VL_WEATHER_*`,
+ * null past the end. Static.
+ */
+const struct VlWeather *vl_weather(uint32_t index);
+
+/**
+ * A preset's index from the web's name (`clear`, `dust_storm`, `snow_storm`), or -1.
+ *
+ * # Safety
+ * `name` is null or a NUL-terminated string.
+ */
+int32_t vl_weather_index(const char *name);
+
+/**
+ * The web's fog density (FogExp2, per metre): opacity 0.55 at the server's area of interest.
+ */
+float vl_weather_fog_exp2_density(void);
+
+/**
+ * fogSettings.ts wind (strength m/s toward compass degrees, 0° = server +z) as a server-space
+ * velocity into `out[3]` (`vl_coords_pos_to_unreal` converts it). The web's default is
+ * `vl_weather_wind(8, 45, out)`.
+ *
+ * # Safety
+ * `out` points to three floats.
+ */
+void vl_weather_wind(float strength_mps, float direction_deg, float *out);
+
+/**
  * Where the meadow is bare (each building's original footprint plus a verge), in server space
  * (x, z metres), for `vl_grass_patch`. Valid until `vl_client_destroy`; empty until the manifest
  * has arrived.
@@ -1042,15 +1116,44 @@ int32_t vl_client_grass_exclusions(struct VlClient *client,
                                    size_t *out_count);
 
 /**
- * The web's meadow blades of 8 m patch (`px`, `pz`) at `density` blades per m² (150 at most; the
- * renderer's distance LOD draws a prefix), in server space (client-core grass.rs). Writes at most
- * `capacity` blades to `out` and returns how many the patch has. Touches no client: safe from any
- * thread.
+ * Parse the server's `/match-stats/<match>/grass` response (`{revision, layout}`, validated as the
+ * web validates it). Writes the revision (64 hex digits, NUL-terminated) to `revision` when
+ * `revision_capacity` ≥ 65. Null when the response is invalid.
  *
  * # Safety
- * `exclusions` must be readable for `exclusion_count` records; `out` writable for `capacity`.
+ * `bytes` readable for `len`; `revision` null or writable for `revision_capacity` bytes.
  */
-size_t vl_grass_patch(const struct VlGrassExclusion *exclusions,
+struct VlGrassPaint *vl_grass_paint_parse(const uint8_t *bytes,
+                                          size_t len,
+                                          char *revision,
+                                          size_t revision_capacity);
+
+/**
+ * Painted tiles in a layout.
+ *
+ * # Safety
+ * `paint` null or from `vl_grass_paint_parse`.
+ */
+size_t vl_grass_paint_tiles(const struct VlGrassPaint *paint);
+
+/**
+ * # Safety
+ * `paint` null or from `vl_grass_paint_parse`, not used after this (by any thread).
+ */
+void vl_grass_paint_free(struct VlGrassPaint *paint);
+
+/**
+ * The web's grass of 8 m patch (`px`, `pz`) at `density` grass blades per m² (150 at most; the
+ * renderer's distance LOD draws a prefix) over `paint` (null: the default meadow), in server space
+ * (client-core grass.rs). Writes at most `capacity` blades to `out` and returns how many the patch
+ * has. Touches no client: safe from any thread.
+ *
+ * # Safety
+ * `exclusions` must be readable for `exclusion_count` records; `paint` null or live; `out`
+ * writable for `capacity`.
+ */
+size_t vl_grass_patch(const struct VlGrassPaint *paint,
+                      const struct VlGrassExclusion *exclusions,
                       size_t exclusion_count,
                       int32_t px,
                       int32_t pz,

@@ -28,7 +28,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 TESTS=(VibeCity.Cursor VibeCity.Play.WalkAndShoot VibeCity.Play.AimAndReset VibeCity.Play.CannonAndMeteor
-  VibeCity.Play.AerialAndMelee VibeCity.Play.Drive VibeCity.Play.WreckCar)
+  VibeCity.Play.AerialAndMelee VibeCity.Play.Drive VibeCity.Play.WreckCar VibeCity.Render.CityAndEffects
+  VibeCity.Render.WeatherAndGrass)
 if [[ -n "$ONLY" ]]; then
   IFS=',' read -r -a TESTS <<< "$ONLY"
 fi

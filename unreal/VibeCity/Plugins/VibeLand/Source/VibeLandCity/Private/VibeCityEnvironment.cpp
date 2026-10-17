@@ -5,10 +5,12 @@
 #include "Components/PostProcessComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "Engine/World.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "ProceduralMeshComponent.h"
+#include "VibeCityWeather.h"
 #include "UObject/ConstructorHelpers.h"
 #include "vibe_client_core.h"
 
@@ -86,6 +88,15 @@ void AVibeCityEnvironment::BeginPlay()
 	Sun->SetWorldRotation((-SunDirection).Rotation());
 	SkyLight->RecaptureSky();
 	BuildGround();
+	FActorSpawnParameters Params;
+	Params.Owner = this;
+	Params.bDeferConstruction = true;
+	Weather = GetWorld()->SpawnActor<AVibeCityWeather>(AVibeCityWeather::StaticClass(), FTransform::Identity, Params);
+	if (Weather)
+	{
+		Weather->SetFog(Fog, Fog->FogDensity);
+		Weather->FinishSpawning(FTransform::Identity);
+	}
 }
 
 void AVibeCityEnvironment::BuildGround()

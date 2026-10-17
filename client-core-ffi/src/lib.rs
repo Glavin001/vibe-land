@@ -27,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 12;
+pub const VL_ABI_VERSION: u32 = 13;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -719,6 +719,47 @@ pub extern "C" fn vl_audio_clip_id(index: u32) -> *const c_char {
     ids.get(index as usize).map_or(std::ptr::null(), |id| id.as_ptr())
 }
 
+/// A weather preset (client-core weather.rs, the web's weatherPresets.ts table): `VL_WEATHER_*`,
+/// null past the end. Static.
+#[no_mangle]
+pub extern "C" fn vl_weather(index: u32) -> *const vibe_client_core::weather::VlWeather {
+    vibe_client_core::weather::PRESETS.get(index as usize).map_or(std::ptr::null(), |w| w as *const _)
+}
+
+/// A preset's index from the web's name (`clear`, `dust_storm`, `snow_storm`), or -1.
+///
+/// # Safety
+/// `name` is null or a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn vl_weather_index(name: *const c_char) -> i32 {
+    if name.is_null() {
+        return -1;
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(name) };
+    name.to_str().ok().and_then(vibe_client_core::weather::by_name).map_or(-1, |i| i as i32)
+}
+
+/// The web's fog density (FogExp2, per metre): opacity 0.55 at the server's area of interest.
+#[no_mangle]
+pub extern "C" fn vl_weather_fog_exp2_density() -> f32 {
+    vibe_client_core::weather::default_fog_exp2_density()
+}
+
+/// fogSettings.ts wind (strength m/s toward compass degrees, 0° = server +z) as a server-space
+/// velocity into `out[3]` (`vl_coords_pos_to_unreal` converts it). The web's default is
+/// `vl_weather_wind(8, 45, out)`.
+///
+/// # Safety
+/// `out` points to three floats.
+#[no_mangle]
+pub unsafe extern "C" fn vl_weather_wind(strength_mps: f32, direction_deg: f32, out: *mut f32) {
+    if out.is_null() {
+        return;
+    }
+    let w = vibe_client_core::weather::wind_vector(strength_mps, direction_deg);
+    unsafe { std::ptr::copy_nonoverlapping(w.as_ptr(), out, 3) };
+}
+
 /// Where the meadow is bare (each building's original footprint plus a verge), in server space
 /// (x, z metres), for `vl_grass_patch`. Valid until `vl_client_destroy`; empty until the manifest
 /// has arrived.
@@ -742,15 +783,64 @@ pub unsafe extern "C" fn vl_client_grass_exclusions(
     })
 }
 
-/// The web's meadow blades of 8 m patch (`px`, `pz`) at `density` blades per m² (150 at most; the
-/// renderer's distance LOD draws a prefix), in server space (client-core grass.rs). Writes at most
-/// `capacity` blades to `out` and returns how many the patch has. Touches no client: safe from any
-/// thread.
+/// A shared grass layout (the web's GrassPaint), immutable: read by `vl_grass_patch` from any
+/// thread until `vl_grass_paint_free`.
+pub struct VlGrassPaint(vibe_client_core::grass::GrassPaint);
+
+/// Parse the server's `/match-stats/<match>/grass` response (`{revision, layout}`, validated as the
+/// web validates it). Writes the revision (64 hex digits, NUL-terminated) to `revision` when
+/// `revision_capacity` ≥ 65. Null when the response is invalid.
 ///
 /// # Safety
-/// `exclusions` must be readable for `exclusion_count` records; `out` writable for `capacity`.
+/// `bytes` readable for `len`; `revision` null or writable for `revision_capacity` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn vl_grass_paint_parse(bytes: *const u8, len: usize, revision: *mut c_char, revision_capacity: usize) -> *mut VlGrassPaint {
+    if bytes.is_null() {
+        return std::ptr::null_mut();
+    }
+    let body = std::slice::from_raw_parts(bytes, len);
+    catch_unwind(|| match vibe_client_core::grass::GrassPaint::from_snapshot_json(body) {
+        Ok((rev, paint)) => {
+            if !revision.is_null() && revision_capacity > rev.len() {
+                std::ptr::copy_nonoverlapping(rev.as_ptr().cast::<c_char>(), revision, rev.len());
+                *revision.add(rev.len()) = 0;
+            }
+            Box::into_raw(Box::new(VlGrassPaint(paint)))
+        }
+        Err(_) => std::ptr::null_mut(),
+    })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+/// Painted tiles in a layout.
+///
+/// # Safety
+/// `paint` null or from `vl_grass_paint_parse`.
+#[no_mangle]
+pub unsafe extern "C" fn vl_grass_paint_tiles(paint: *const VlGrassPaint) -> usize {
+    paint.as_ref().map_or(0, |p| p.0.tile_count())
+}
+
+/// # Safety
+/// `paint` null or from `vl_grass_paint_parse`, not used after this (by any thread).
+#[no_mangle]
+pub unsafe extern "C" fn vl_grass_paint_free(paint: *mut VlGrassPaint) {
+    if !paint.is_null() {
+        drop(Box::from_raw(paint));
+    }
+}
+
+/// The web's grass of 8 m patch (`px`, `pz`) at `density` grass blades per m² (150 at most; the
+/// renderer's distance LOD draws a prefix) over `paint` (null: the default meadow), in server space
+/// (client-core grass.rs). Writes at most `capacity` blades to `out` and returns how many the patch
+/// has. Touches no client: safe from any thread.
+///
+/// # Safety
+/// `exclusions` must be readable for `exclusion_count` records; `paint` null or live; `out`
+/// writable for `capacity`.
 #[no_mangle]
 pub unsafe extern "C" fn vl_grass_patch(
+    paint: *const VlGrassPaint,
     exclusions: *const VlGrassExclusion,
     exclusion_count: usize,
     px: i32,
@@ -762,7 +852,7 @@ pub unsafe extern "C" fn vl_grass_patch(
     let ex = if exclusions.is_null() { &[][..] } else { std::slice::from_raw_parts(exclusions, exclusion_count) };
     catch_unwind(|| {
         let mut blades = Vec::new();
-        vibe_client_core::grass::generate_patch(px, pz, density, ex, &mut blades);
+        vibe_client_core::grass::generate_patch(px, pz, density, ex, paint.as_ref().map(|p| &p.0), &mut blades);
         if !out.is_null() {
             std::ptr::copy_nonoverlapping(blades.as_ptr(), out, blades.len().min(capacity));
         }
