@@ -7,8 +7,8 @@ import init, {
   vehicle_definitions_json as wasmVehicleDefinitionsJson,
 } from './pkg/vibe_land_shared.js';
 import { provideWasmClockSync } from '../net/interpolation';
-import { provideSnapshotV2Decoder } from '../net/protocol';
-import { decodeSnapshotV2Shared, sharedDecodeEnabled } from '../net/sharedDecode';
+import { provideReliablePacketDecoder, provideSnapshotV2Decoder } from '../net/protocol';
+import { decodeServerPacketShared, decodeSnapshotV2Shared, sharedDecodeEnabled } from '../net/sharedDecode';
 import { installWasmSimWorldCompat } from './compat';
 import {
   DEFAULT_SHARED_VEHICLE_TYPE,
@@ -288,7 +288,10 @@ export async function initSharedPhysics(): Promise<void> {
       if (__NATIVE__) initSync({ module: await nativeFileBytes('vibe_land_shared_bg.wasm') });
       else await init();
       provideWasmClockSync(WasmClockSync);
-      if (sharedDecodeEnabled()) provideSnapshotV2Decoder(decodeSnapshotV2Shared);
+      if (sharedDecodeEnabled()) {
+        provideSnapshotV2Decoder(decodeSnapshotV2Shared);
+        provideReliablePacketDecoder(decodeServerPacketShared);
+      }
       sharedPlayerNavigationProfile = readSharedPlayerNavigationProfileFromWasm();
       hydrateSharedVehicleDefinitions(wasmVehicleDefinitionsJson());
       initialized = true;

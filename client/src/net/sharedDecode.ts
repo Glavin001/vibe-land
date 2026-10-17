@@ -8,9 +8,21 @@
  * same objects decodeSnapshotV2Packet does, with the same unit conversions, so the numbers are
  * bit-identical.
  */
-import { decode_snapshot_v2_flat } from '../wasm/pkg/vibe_land_shared.js';
+import { decode_server_packet_flat, decode_snapshot_v2_flat } from '../wasm/pkg/vibe_land_shared.js';
+import {
+  PKT_DAMAGE_EVENT,
+  PKT_DYNAMIC_BODY_META,
+  PKT_LOCAL_PLAYER_ENERGY,
+  PKT_PING,
+  PKT_PLAYER_ROSTER,
+  PKT_PONG,
+  PKT_SHOT_FIRED,
+  PKT_SHOT_RESULT,
+  PKT_WELCOME,
+} from './sharedConstants';
 import {
   SERVER_TICK_US,
+  type ServerReliablePacket,
   SNAPSHOT_V2_REMOVAL_VEHICLE_BIT,
   type DynamicBoxStateV2,
   type DynamicSphereStateV2,
@@ -167,4 +179,91 @@ export function decodeSnapshotV2Shared(bytes: Uint8Array): SnapshotV2Packet {
     ...(removals ? { removals } : {}),
     ...(queueDepth >= 0 ? { inputQueue: { depth: queueDepth, target: queueTarget } } : {}),
   };
+}
+
+/**
+ * Decode a reliable server packet (its kind byte first) with the shared decoder: Welcome, ShotResult,
+ * ShotFired, DamageEvent, LocalPlayerEnergy, PlayerRoster, DynamicBodyMeta, Ping, Pong. Null for
+ * any other kind, which protocol.ts decodes itself.
+ */
+export function decodeServerPacketShared(bytes: Uint8Array): ServerReliablePacket | null {
+  const f = decode_server_packet_flat(bytes);
+  if (!f) return null;
+  switch (f[0]) {
+    case PKT_WELCOME:
+      return {
+        type: 'welcome',
+        playerId: f[1],
+        protocolVersion: f[2],
+        physicsBackend: f[3],
+        clientMovementMode: f[4],
+        simHz: f[5],
+        snapshotHz: f[6],
+        serverTimeUs: f[7],
+        interpolationDelayMs: f[8],
+      };
+    case PKT_SHOT_RESULT:
+      return {
+        type: 'shotResult',
+        shotId: f[1],
+        weapon: f[2],
+        confirmed: f[3] !== 0,
+        hitPlayerId: f[4],
+        hitZone: f[5],
+        serverResolution: f[6],
+        serverDynamicBodyId: f[7],
+        serverDynamicHitToiCm: f[8],
+        serverDynamicImpulseCenti: f[9],
+      };
+    case PKT_SHOT_FIRED:
+      return {
+        type: 'shotFired',
+        shooterPlayerId: f[1],
+        shotId: f[2],
+        weapon: f[3],
+        hitKind: f[4],
+        hitZone: f[5],
+        serverFireTimeUs: f[6],
+        originPxMm: f[7],
+        originPyMm: f[8],
+        originPzMm: f[9],
+        endPxMm: f[10],
+        endPyMm: f[11],
+        endPzMm: f[12],
+      };
+    case PKT_DAMAGE_EVENT:
+      return {
+        type: 'damageEvent',
+        attackerPlayerId: f[1],
+        damageAmount: f[2],
+        hitZone: f[3],
+        attackerPosition: [f[4] / 1000, f[5] / 1000, f[6] / 1000],
+        serverTimeMs: f[7],
+      };
+    case PKT_LOCAL_PLAYER_ENERGY:
+      return { type: 'localPlayerEnergy', energyCenti: f[1] };
+    case PKT_PLAYER_ROSTER: {
+      const entries = [];
+      for (let i = 0, o = 2; i < f[1]; i += 1, o += 2) entries.push({ handle: f[o], playerId: f[o + 1] });
+      return { type: 'playerRoster', entries };
+    }
+    case PKT_DYNAMIC_BODY_META: {
+      const entries = [];
+      for (let i = 0, o = 2; i < f[1]; i += 1, o += 6) {
+        entries.push({
+          handle: f[o],
+          bodyId: f[o + 1],
+          shapeType: f[o + 2],
+          halfExtents: [f[o + 3] / 100, f[o + 4] / 100, f[o + 5] / 100] as [number, number, number],
+        });
+      }
+      return { type: 'dynamicBodyMeta', entries };
+    }
+    case PKT_PING:
+      return { type: 'serverPing', value: f[1] };
+    case PKT_PONG:
+      return { type: 'pong', value: f[1] };
+    default:
+      return null;
+  }
 }

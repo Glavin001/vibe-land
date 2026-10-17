@@ -623,8 +623,20 @@ export function frameReliablePacket(payload: Uint8Array): Uint8Array {
   return out;
 }
 
+/**
+ * The shared Rust decoder for the reliable kinds it covers (net/sharedDecode.ts), once the WASM is
+ * loaded and its flag is on; it returns null for the kinds this file still decodes.
+ */
+let reliablePacketDecoder: ((bytes: Uint8Array) => ServerReliablePacket | null) | null = null;
+
+export function provideReliablePacketDecoder(decoder: ((bytes: Uint8Array) => ServerReliablePacket | null) | null): void {
+  reliablePacketDecoder = decoder;
+}
+
 export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): ServerReliablePacket {
   const bytes = toBytes(data);
+  const shared = reliablePacketDecoder?.(bytes);
+  if (shared) return shared;
   if (bytes[0] === PKT_VEHICLE_RIG) return decodeVehicleRig(bytes);
   if (bytes[0] === PKT_VEHICLE_ASSET) return decodeVehicleAsset(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

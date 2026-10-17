@@ -2380,3 +2380,12 @@ pub fn decode_snapshot_v2_flat(bytes: &[u8]) -> Result<Box<[f64]>, JsValue> {
         .map(Vec::into_boxed_slice)
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
+
+/// A reliable server packet decoded by the shared decoder (`net_client::server_packet_flat`;
+/// layout there), or `undefined` for a kind it leaves to the web's own decoder.
+#[wasm_bindgen]
+pub fn decode_server_packet_flat(bytes: &[u8]) -> Result<Option<Box<[f64]>>, JsValue> {
+    crate::net_client::server_packet_flat(bytes)
+        .map(|flat| flat.map(Vec::into_boxed_slice))
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}

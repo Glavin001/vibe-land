@@ -164,12 +164,23 @@ pub fn decode_server_packet(bytes: &[u8]) -> Result<ServerMessage, DecodeError> 
     })
 }
 
+/// Welcome body bytes from servers that send protocol version, physics backend and movement mode
+/// (22; the packet is 23 with its kind byte). Older servers send 18 and are protocol 1, Rapier, full
+/// prediction (as the TypeScript decoder reads them).
+const WELCOME_WITH_CAPABILITIES_BYTES: usize = 22;
+
 fn decode_welcome(r: &mut Reader) -> Result<WelcomePacket, DecodeError> {
+    let player_id = r.u32()?;
+    let (protocol_version, physics_backend, client_movement_mode) = if r.remaining() + 4 >= WELCOME_WITH_CAPABILITIES_BYTES {
+        (r.u16()?, r.u8()?, r.u8()?)
+    } else {
+        (1, PHYSICS_BACKEND_RAPIER, CLIENT_MOVEMENT_FULL_PREDICTION)
+    };
     Ok(WelcomePacket {
-        player_id: r.u32()?,
-        protocol_version: r.u16()?,
-        physics_backend: r.u8()?,
-        client_movement_mode: r.u8()?,
+        player_id,
+        protocol_version,
+        physics_backend,
+        client_movement_mode,
         sim_hz: r.u16()?,
         snapshot_hz: r.u16()?,
         server_time_us: r.u64()?,
@@ -341,6 +352,88 @@ fn decode_snapshot_v2(r: &mut Reader) -> Result<SnapshotV2Packet, DecodeError> {
         }
     }
     Ok(packet)
+}
+
+/// A reliable server packet (kind byte included) as its kind and wire integers, for the web
+/// (`client/src/net/sharedDecode.ts`), or `None` for a kind this module does not decode (the web
+/// keeps its own decoder for those). After the kind, in wire order:
+/// Welcome: player id, protocol version, physics backend, movement mode, sim Hz, snapshot Hz,
+/// server time µs, interpolation delay ms. ShotResult: shot id, weapon, confirmed (0/1), hit
+/// player, hit zone, resolution, dynamic body id, hit TOI cm, impulse centi. ShotFired: shooter,
+/// shot id, weapon, hit kind, hit zone, fire time µs, origin mm ×3, end mm ×3. DamageEvent:
+/// attacker, damage, hit zone, attacker mm ×3, server time ms. LocalPlayerEnergy: energy centi.
+/// PlayerRoster: count, then (handle, player id) each. DynamicBodyMeta: count, then (handle, body
+/// id, shape, half extents cm ×3) each. Ping, Pong: the value.
+pub fn server_packet_flat(bytes: &[u8]) -> Result<Option<Vec<f64>>, DecodeError> {
+    let kind = f64::from(*bytes.first().ok_or(DecodeError::Empty)?);
+    Ok(Some(match decode_server_packet(bytes)? {
+        ServerMessage::Welcome(w) => vec![
+            kind,
+            f64::from(w.player_id),
+            f64::from(w.protocol_version),
+            f64::from(w.physics_backend),
+            f64::from(w.client_movement_mode),
+            f64::from(w.sim_hz),
+            f64::from(w.snapshot_hz),
+            w.server_time_us as f64,
+            f64::from(w.interpolation_delay_ms),
+        ],
+        ServerMessage::ShotResult(s) => vec![
+            kind,
+            f64::from(s.shot_id),
+            f64::from(s.weapon),
+            f64::from(u8::from(s.confirmed)),
+            f64::from(s.hit_player_id),
+            f64::from(s.hit_zone),
+            f64::from(s.server_resolution),
+            f64::from(s.server_dynamic_body_id),
+            f64::from(s.server_dynamic_hit_toi_cm),
+            f64::from(s.server_dynamic_impulse_centi),
+        ],
+        ServerMessage::ShotFired(s) => vec![
+            kind,
+            f64::from(s.shooter_player_id),
+            f64::from(s.shot_id),
+            f64::from(s.weapon),
+            f64::from(s.hit_kind),
+            f64::from(s.hit_zone),
+            s.server_fire_time_us as f64,
+            f64::from(s.origin_px_mm),
+            f64::from(s.origin_py_mm),
+            f64::from(s.origin_pz_mm),
+            f64::from(s.end_px_mm),
+            f64::from(s.end_py_mm),
+            f64::from(s.end_pz_mm),
+        ],
+        ServerMessage::DamageEvent(d) => vec![
+            kind,
+            f64::from(d.attacker_player_id),
+            f64::from(d.damage_amount),
+            f64::from(d.hit_zone),
+            f64::from(d.attacker_px_mm),
+            f64::from(d.attacker_py_mm),
+            f64::from(d.attacker_pz_mm),
+            f64::from(d.server_time_ms),
+        ],
+        ServerMessage::LocalPlayerEnergy(e) => vec![kind, f64::from(e.energy_centi)],
+        ServerMessage::PlayerRoster(r) => {
+            let mut out = vec![kind, r.entries.len() as f64];
+            for e in &r.entries {
+                out.extend([f64::from(e.handle), f64::from(e.player_id)]);
+            }
+            out
+        }
+        ServerMessage::DynamicBodyMeta(m) => {
+            let mut out = vec![kind, m.entries.len() as f64];
+            for e in &m.entries {
+                out.extend([f64::from(e.handle), f64::from(e.body_id), f64::from(e.shape_type)]);
+                out.extend([e.hx_cm, e.hy_cm, e.hz_cm].map(f64::from));
+            }
+            out
+        }
+        ServerMessage::Ping(v) | ServerMessage::Pong(v) => vec![kind, f64::from(v)],
+        ServerMessage::SnapshotV2(_) | ServerMessage::Other { .. } => return Ok(None),
+    }))
 }
 
 /// Layout of [`snapshot_v2_flat`]: the header slots, then the self state, then each list.
@@ -775,7 +868,8 @@ mod tests {
     #[test]
     fn empty_and_truncated_packets_are_errors_not_panics() {
         assert_eq!(decode_server_packet(&[]).unwrap_err(), DecodeError::Empty);
-        for len in 1..23 {
+        // Under 19 bytes a Welcome is truncated; 19 to 22 is the pre-capabilities layout.
+        for len in 1..19 {
             let mut welcome = vec![0u8; len];
             welcome[0] = PKT_WELCOME;
             assert!(matches!(decode_server_packet(&welcome), Err(DecodeError::Truncated { kind: PKT_WELCOME, .. })), "len {len}");
@@ -785,6 +879,32 @@ mod tests {
             snapshot[0] = PKT_SNAPSHOT_V2;
             assert!(decode_server_packet(&snapshot).is_err(), "len {len}");
         }
+    }
+
+    #[test]
+    fn a_welcome_without_capabilities_is_protocol_1_rapier_full_prediction() {
+        // The layout servers sent before protocol version, backend and movement mode (19 bytes),
+        // read as the TypeScript decoder reads it.
+        let mut w = vec![PKT_WELCOME];
+        w.extend(7u32.to_le_bytes());
+        w.extend(60u16.to_le_bytes());
+        w.extend(30u16.to_le_bytes());
+        w.extend(123_456u64.to_le_bytes());
+        w.extend(50u16.to_le_bytes());
+        let ServerMessage::Welcome(p) = decode_server_packet(&w).unwrap() else { panic!() };
+        assert_eq!(
+            p,
+            WelcomePacket {
+                player_id: 7,
+                protocol_version: 1,
+                physics_backend: PHYSICS_BACKEND_RAPIER,
+                client_movement_mode: CLIENT_MOVEMENT_FULL_PREDICTION,
+                sim_hz: 60,
+                snapshot_hz: 30,
+                server_time_us: 123_456,
+                interpolation_delay_ms: 50,
+            }
+        );
     }
 
     #[test]

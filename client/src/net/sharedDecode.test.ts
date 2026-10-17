@@ -2,13 +2,26 @@ import { describe, expect, it } from 'vitest';
 import { initWasmForTests } from '../wasm/testInit';
 import {
   decodeServerDatagramPacket,
+  decodeServerReliablePacket,
   decodeSnapshotV2Packet,
+  provideReliablePacketDecoder,
   provideSnapshotV2Decoder,
   SNAPSHOT_V2_INPUT_QUEUE_TAG,
   SNAPSHOT_V2_REMOVALS_TAG,
 } from './protocol';
-import { PKT_SNAPSHOT_V2 } from './sharedConstants';
-import { decodeSnapshotV2Shared } from './sharedDecode';
+import {
+  PKT_DAMAGE_EVENT,
+  PKT_DYNAMIC_BODY_META,
+  PKT_LOCAL_PLAYER_ENERGY,
+  PKT_PING,
+  PKT_PLAYER_ROSTER,
+  PKT_PONG,
+  PKT_SHOT_FIRED,
+  PKT_SHOT_RESULT,
+  PKT_SNAPSHOT_V2,
+  PKT_WELCOME,
+} from './sharedConstants';
+import { decodeServerPacketShared, decodeSnapshotV2Shared } from './sharedDecode';
 
 /** A small deterministic generator (mulberry32), so a failure reproduces from its seed. */
 function rng(seed: number): () => number {
@@ -105,5 +118,70 @@ describe('shared SnapshotV2 decoder (the Unreal client\'s, via WASM)', () => {
     }
     decodeServerDatagramPacket(bytes);
     expect(calls).toBe(1);
+  });
+});
+
+/** Random bytes in a reliable packet's layout: `fields` are the byte widths after the kind. */
+function reliable(next: () => number, kind: number, fields: number[]): Uint8Array {
+  const out = [kind];
+  for (const width of fields) for (let i = 0; i < width; i += 1) out.push(Math.floor(next() * 256));
+  return Uint8Array.from(out);
+}
+
+describe('shared reliable-packet decoder (the Unreal client\'s, via WASM)', () => {
+  initWasmForTests();
+
+  // Wire layouts (server/src/protocol.rs encoders), byte widths after the kind byte.
+  const shapes: Array<[string, number, () => number[]]> = [
+    ['welcome', PKT_WELCOME, () => [4, 2, 1, 1, 2, 2, 8, 2]],
+    ['welcome without capabilities', PKT_WELCOME, () => [4, 2, 2, 8, 2]],
+    ['shotResult', PKT_SHOT_RESULT, () => [4, 1, 1, 4, 1, 1, 4, 2, 2]],
+    ['shotFired', PKT_SHOT_FIRED, () => [4, 4, 1, 1, 1, 8, 4, 4, 4, 4, 4, 4]],
+    ['damageEvent', PKT_DAMAGE_EVENT, () => [4, 1, 1, 4, 4, 4, 4]],
+    ['localPlayerEnergy', PKT_LOCAL_PLAYER_ENERGY, () => [4]],
+    ['serverPing', PKT_PING, () => [4]],
+    ['pong', PKT_PONG, () => [4]],
+  ];
+
+  it.each(shapes)('%s equals the TypeScript decoder', (_name, kind, fields) => {
+    const next = rng(kind * 31 + fields().length);
+    for (let i = 0; i < 200; i += 1) {
+      const bytes = reliable(next, kind, fields());
+      // Server times are u64 µs; keep them under 2^53 as real ones are (both decoders give a JS number).
+      if (kind === PKT_WELCOME || kind === PKT_SHOT_FIRED) {
+        const at = kind === PKT_WELCOME ? bytes.length - 3 : 1 + 4 + 4 + 3 + 7;
+        bytes[at] &= 0x1f;
+      }
+      expect(decodeServerPacketShared(bytes)).toStrictEqual(decodeServerReliablePacket(bytes));
+    }
+  });
+
+  it.each([0, 1, 5])('playerRoster with %i entries equals the TypeScript decoder', (count) => {
+    const next = rng(100 + count);
+    const bytes = reliable(next, PKT_PLAYER_ROSTER, [1, ...Array(count).fill([1, 4]).flat()]);
+    bytes[1] = count;
+    expect(decodeServerPacketShared(bytes)).toStrictEqual(decodeServerReliablePacket(bytes));
+  });
+
+  it.each([0, 1, 4])('dynamicBodyMeta with %i entries equals the TypeScript decoder', (count) => {
+    const next = rng(200 + count);
+    const bytes = reliable(next, PKT_DYNAMIC_BODY_META, [2, ...Array(count).fill([2, 4, 1, 2, 2, 2]).flat()]);
+    bytes[1] = count;
+    bytes[2] = 0;
+    expect(decodeServerPacketShared(bytes)).toStrictEqual(decodeServerReliablePacket(bytes));
+  });
+
+  it('leaves other kinds to the TypeScript decoder, and the hook routes the rest through it', () => {
+    const snapshot = packet(rng(5), { self: 33, trailer: true, removals: null, inputQueue: false });
+    expect(decodeServerPacketShared(snapshot)).toBeNull();
+    const ping = Uint8Array.from([PKT_PING, 1, 2, 3, 4]);
+    let calls = 0;
+    provideReliablePacketDecoder((b) => { calls += 1; return decodeServerPacketShared(b); });
+    try {
+      expect(decodeServerReliablePacket(ping)).toStrictEqual({ type: 'serverPing', value: 0x04030201 });
+      expect(calls).toBe(1);
+    } finally {
+      provideReliablePacketDecoder(null);
+    }
   });
 });
