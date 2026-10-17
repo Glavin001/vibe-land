@@ -121,13 +121,19 @@ void AVibeCityGrass::PollLayout()
 		{
 			return;
 		}
+		// An empty layout is the default meadow: nothing to regenerate when nothing was painted.
+		const bool bUnchanged = vl_grass_paint_tiles(Parsed) == 0 && Grass->PaintTiles() == 0;
 		Grass->Paint = MakeShared<FPaint, ESPMode::ThreadSafe>(Parsed);
+		Grass->Revision = UTF8_TO_TCHAR(Rev);
+		if (bUnchanged)
+		{
+			return;
+		}
 		// The ground takes its canopy tint from the same layout.
 		for (TActorIterator<AVibeCityEnvironment> It(Grass->GetWorld()); It; ++It)
 		{
 			It->SetGroundCover(Parsed);
 		}
-		Grass->Revision = UTF8_TO_TCHAR(Rev);
 		Grass->GeneratedOnPaint = 0;
 		// Regenerate every patch over the new layout; each keeps its blades until the new land.
 		for (TPair<FIntPoint, FPatch>& Pair : Grass->Patches)
