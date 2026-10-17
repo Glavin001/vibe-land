@@ -104,6 +104,22 @@ uint32 UVibeNetSubsystem::Fire(uint32 Weapon)
 	return ShotId;
 }
 
+bool UVibeNetSubsystem::ChunkMeshes(VlMeshView& Out) const
+{
+	return Client && vl_client_chunk_meshes(Client, &Out) == VL_OK && Out.range_count > 0;
+}
+
+TArrayView<const VlChunkSurface> UVibeNetSubsystem::ChunkSurfaces() const
+{
+	const VlChunkSurface* Data = nullptr;
+	size_t Count = 0;
+	if (!Client || vl_client_chunk_surfaces(Client, &Data, &Count) != VL_OK || !Data)
+	{
+		return {};
+	}
+	return TArrayView<const VlChunkSurface>(Data, static_cast<int32>(Count));
+}
+
 TArrayView<const VlChunk> UVibeNetSubsystem::Chunks() const
 {
 	if (!Client)

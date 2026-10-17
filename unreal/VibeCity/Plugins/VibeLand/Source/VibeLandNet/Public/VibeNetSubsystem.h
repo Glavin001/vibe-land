@@ -49,6 +49,13 @@ public:
 	/** The city's chunks (empty until the manifest arrived). */
 	TArrayView<const VlChunk> Chunks() const;
 
+	/** Every chunk's mesh as the core's flat arrays (false until the manifest arrived). Valid until
+	 * the client is destroyed. */
+	bool ChunkMeshes(VlMeshView& Out) const;
+
+	/** Every chunk's catalog materials, in chunk-table order (empty until the manifest arrived). */
+	TArrayView<const VlChunkSurface> ChunkSurfaces() const;
+
 	FString LastError() const;
 	const FString& CurrentMatchId() const { return MatchId; }
 	const FString& CurrentApiBaseUrl() const { return ApiBaseUrl; }
