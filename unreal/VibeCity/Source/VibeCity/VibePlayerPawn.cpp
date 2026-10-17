@@ -20,6 +20,8 @@
 #include "GenericPlatform/GenericPlatformHttp.h"
 #include "HttpModule.h"
 #include "Misc/ConfigCacheIni.h"
+#include "GameFramework/InputSettings.h"
+#include "VibeSettings.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
 #include "VibeLandNet.h"
@@ -154,18 +156,42 @@ void AVibePlayerPawn::CreateInput()
 	InteractAction = Action(TEXT("IA_Interact"), EInputActionValueType::Boolean);
 	AerialAction = Action(TEXT("IA_Aerial"), EInputActionValueType::Boolean);
 
+	PadLookAction = Action(TEXT("IA_PadLook"), EInputActionValueType::Axis2D);
+	PadRightTriggerAction = Action(TEXT("IA_PadRightTrigger"), EInputActionValueType::Axis1D);
+	PadLeftTriggerAction = Action(TEXT("IA_PadLeftTrigger"), EInputActionValueType::Axis1D);
+	PadCycleAction = Action(TEXT("IA_PadCycleOrReset"), EInputActionValueType::Boolean);
 	Mapping = NewObject<UInputMappingContext>(this, TEXT("IMC_VibeCity"));
-	// Move: X right, Y forward. W/S drive Y (swizzled), S and A negated.
+	MapKeys();
+	// Rebind live when the player changes a key in the settings.
+	SettingsHandle = FVibeSettings::OnChanged().AddWeakLambda(this, [this]()
+	{
+		MapKeys();
+		const APlayerController* PC = Cast<APlayerController>(GetController());
+		const ULocalPlayer* LocalPlayer = PC ? PC->GetLocalPlayer() : nullptr;
+		if (UEnhancedInputLocalPlayerSubsystem* Input = LocalPlayer ? LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr)
+		{
+			Input->RequestRebuildControlMappings();
+		}
+	});
+	FVibeSettings::Get().ApplySound();
+}
+
+void AVibePlayerPawn::MapKeys()
+{
+	using EAction = FVibeSettings::EAction;
+	const FVibeSettings& Settings = FVibeSettings::Get();
+	Mapping->UnmapAll();
+	// Move: X right, Y forward. Forward/back drive Y (swizzled), back and left negated.
 	auto Negate = [this]() { return NewObject<UInputModifierNegate>(Mapping); };
 	auto ToY = [this]() { return NewObject<UInputModifierSwizzleAxis>(Mapping); }; // default order YXZ
-	Mapping->MapKey(MoveAction, EKeys::W).Modifiers.Add(ToY());
+	Mapping->MapKey(MoveAction, Settings.Key(EAction::MoveForward)).Modifiers.Add(ToY());
 	{
-		FEnhancedActionKeyMapping& S = Mapping->MapKey(MoveAction, EKeys::S);
+		FEnhancedActionKeyMapping& S = Mapping->MapKey(MoveAction, Settings.Key(EAction::MoveBackward));
 		S.Modifiers.Add(ToY());
 		S.Modifiers.Add(Negate());
 	}
-	Mapping->MapKey(MoveAction, EKeys::A).Modifiers.Add(Negate());
-	Mapping->MapKey(MoveAction, EKeys::D);
+	Mapping->MapKey(MoveAction, Settings.Key(EAction::MoveLeft)).Modifiers.Add(Negate());
+	Mapping->MapKey(MoveAction, Settings.Key(EAction::MoveRight));
 	// Look: mouse up looks up (the first-person template's negated Y).
 	{
 		FEnhancedActionKeyMapping& Look = Mapping->MapKey(LookAction, EKeys::Mouse2D);
@@ -174,20 +200,42 @@ void AVibePlayerPawn::CreateInput()
 		NegateY->bZ = false;
 		Look.Modifiers.Add(NegateY);
 	}
-	Mapping->MapKey(JumpAction, EKeys::SpaceBar);
-	Mapping->MapKey(SprintAction, EKeys::LeftShift);
-	Mapping->MapKey(CrouchAction, EKeys::C);
+	Mapping->MapKey(JumpAction, Settings.Key(EAction::Jump));
+	Mapping->MapKey(SprintAction, Settings.Key(EAction::Sprint));
+	Mapping->MapKey(CrouchAction, Settings.Key(EAction::Crouch));
 	Mapping->MapKey(FireAction, EKeys::LeftMouseButton);
-	Mapping->MapKey(RifleAction, EKeys::One);
-	Mapping->MapKey(CannonAction, EKeys::Two);
-	Mapping->MapKey(MeteorAction, EKeys::Three);
+	Mapping->MapKey(RifleAction, Settings.Key(EAction::Rifle));
+	Mapping->MapKey(CannonAction, Settings.Key(EAction::Cannon));
+	Mapping->MapKey(MeteorAction, Settings.Key(EAction::Meteor));
 	Mapping->MapKey(CycleAction, EKeys::MouseWheelAxis);
 	Mapping->MapKey(AimAction, EKeys::RightMouseButton);
-	Mapping->MapKey(AimAction, EKeys::LeftAlt); // input/bindings.ts aimSecondaryKey
-	Mapping->MapKey(ResetAction, EKeys::R);
-	Mapping->MapKey(MeleeAction, EKeys::V);
-	Mapping->MapKey(InteractAction, EKeys::E);
-	Mapping->MapKey(AerialAction, EKeys::N);
+	Mapping->MapKey(AimAction, Settings.Key(EAction::Aim)); // input/bindings.ts aimSecondaryKey
+	Mapping->MapKey(ResetAction, Settings.Key(EAction::Reset));
+	Mapping->MapKey(MeleeAction, Settings.Key(EAction::Melee));
+	Mapping->MapKey(InteractAction, Settings.Key(EAction::Interact));
+	Mapping->MapKey(AerialAction, Settings.Key(EAction::Aerial));
+
+	// Gamepad (input/bindings.ts DEFAULT_BINDINGS.gamepad, standard mapping): left stick moves (radial
+	// deadzone 0.18, gamepad.ts LEFT_STICK_DEADZONE), right stick looks (ApplyPadLook), A jumps (the
+	// handbrake in a car), B crouches and melees, X interacts, Y switches weapon (resets the car in
+	// one), left stick click sprints, RT fires (throttle in a car), LT aims (brake in a car).
+	{
+		FEnhancedActionKeyMapping& Stick = Mapping->MapKey(MoveAction, EKeys::Gamepad_Left2D);
+		UInputModifierDeadZone* Dead = NewObject<UInputModifierDeadZone>(Mapping);
+		Dead->Type = EDeadZoneType::Radial;
+		Dead->LowerThreshold = 0.18f;
+		Dead->UpperThreshold = 1.0f;
+		Stick.Modifiers.Add(Dead);
+	}
+	Mapping->MapKey(PadLookAction, EKeys::Gamepad_Right2D);
+	Mapping->MapKey(JumpAction, EKeys::Gamepad_FaceButton_Bottom);
+	Mapping->MapKey(CrouchAction, EKeys::Gamepad_FaceButton_Right);
+	Mapping->MapKey(MeleeAction, EKeys::Gamepad_FaceButton_Right);
+	Mapping->MapKey(InteractAction, EKeys::Gamepad_FaceButton_Left);
+	Mapping->MapKey(PadCycleAction, EKeys::Gamepad_FaceButton_Top);
+	Mapping->MapKey(SprintAction, EKeys::Gamepad_LeftThumbstick);
+	Mapping->MapKey(PadRightTriggerAction, EKeys::Gamepad_RightTriggerAxis);
+	Mapping->MapKey(PadLeftTriggerAction, EKeys::Gamepad_LeftTriggerAxis);
 }
 
 void AVibePlayerPawn::PawnClientRestart()
@@ -253,6 +301,25 @@ void AVibePlayerPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 		}
 	});
 	Input->BindActionValueLambda(AerialAction, ETriggerEvent::Started, [this](const FInputActionValue&) { ToggleAerial(); });
+	Input->BindActionValueLambda(PadLookAction, ETriggerEvent::Triggered, [this](const FInputActionValue& V) { PadLook = V.Get<FVector2D>(); });
+	Input->BindActionValueLambda(PadLookAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { PadLook = FVector2D::ZeroVector; });
+	Input->BindActionValueLambda(PadRightTriggerAction, ETriggerEvent::Triggered, [this](const FInputActionValue& V) { PadRightTrigger = V.Get<float>(); });
+	Input->BindActionValueLambda(PadRightTriggerAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { PadRightTrigger = 0.0f; });
+	Input->BindActionValueLambda(PadLeftTriggerAction, ETriggerEvent::Triggered, [this](const FInputActionValue& V) { PadLeftTrigger = V.Get<float>(); });
+	Input->BindActionValueLambda(PadLeftTriggerAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { PadLeftTrigger = 0.0f; });
+	// Y: the car's reset in one (held, like R), the next weapon on foot (gamepad.ts switchWeaponButton).
+	Input->BindActionValueLambda(PadCycleAction, ETriggerEvent::Started, [this](const FInputActionValue&)
+	{
+		if (bInVehicle)
+		{
+			OnButton(VL_BTN_RELOAD, true);
+		}
+		else
+		{
+			CycleWeapon(FInputActionValue(1.0f));
+		}
+	});
+	Input->BindActionValueLambda(PadCycleAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { OnButton(VL_BTN_RELOAD, false); });
 }
 
 void AVibePlayerPawn::OnMove(const FInputActionValue& Value)
@@ -267,7 +334,46 @@ void AVibePlayerPawn::OnMoveStopped(const FInputActionValue&)
 
 void AVibePlayerPawn::OnLook(const FInputActionValue& Value)
 {
-	const FVector2D Look = Value.Get<FVector2D>() * (IsAiming() ? AimLookMultiplier : 1.0f);
+	// The player's mouse settings, relative to the web's default sensitivity (inputSettings.ts).
+	const FVibeSettings& S = FVibeSettings::Get();
+	const float Gain = S.MouseSensitivity / FVibeSettings::DefaultMouseSensitivity;
+	FVector2D Look = Value.Get<FVector2D>();
+	Look.X *= Gain;
+	Look.Y *= Gain * S.MouseYOverX * (S.bMouseInvertY ? -1.0f : 1.0f);
+	ApplyLook(Look);
+}
+
+void AVibePlayerPawn::ApplyPadLook(float DeltaSeconds)
+{
+	if (PadLook.IsNearlyZero())
+	{
+		return;
+	}
+	const FVibeSettings& S = FVibeSettings::Get();
+	// gamepad.ts: radial deadzone rescaled to the rim, then sign(v)·|v|^exponent per axis, at the yaw
+	// speed (rad/s) and pitch = yaw × ratio.
+	const double Magnitude = PadLook.Size();
+	if (Magnitude <= S.GamepadAimDeadzone)
+	{
+		return;
+	}
+	const FVector2D Stick = PadLook * (((Magnitude - S.GamepadAimDeadzone) / (1.0 - S.GamepadAimDeadzone)) / Magnitude);
+	auto Shape = [&S](double V) { return FMath::Sign(V) * FMath::Pow(FMath::Abs(V), S.GamepadCurveExponent); };
+	const double YawDeg = FMath::RadiansToDegrees(Shape(Stick.X) * S.GamepadYawSpeed * DeltaSeconds);
+	const double PitchDeg = FMath::RadiansToDegrees(Shape(Stick.Y) * S.GamepadYawSpeed * S.GamepadYOverX * DeltaSeconds)
+		* (S.bGamepadInvertY ? -1.0 : 1.0);
+	// Into the mouse path's units: degrees over the controller's (legacy) input scale, pitch in the
+	// sense of the mouse's negated Y (stick up looks up).
+	const APlayerController* PC = Cast<APlayerController>(GetController());
+	const bool bLegacy = GetDefault<UInputSettings>()->bEnableLegacyInputScales;
+	const double YawScale = PC && bLegacy ? PC->InputYawScale_DEPRECATED : 1.0;
+	const double PitchScale = PC && bLegacy ? -PC->InputPitchScale_DEPRECATED : 1.0;
+	ApplyLook(FVector2D(YawDeg / FMath::Max(YawScale, 1e-3), PitchDeg / FMath::Max(PitchScale, 1e-3)));
+}
+
+void AVibePlayerPawn::ApplyLook(const FVector2D& Raw)
+{
+	const FVector2D Look = Raw * (IsAiming() ? AimLookMultiplier : 1.0f);
 	if (bInVehicle)
 	{
 		// In a car the mouse orbits the chase camera about the car (input/resolver.ts); the legacy
@@ -515,6 +621,7 @@ void AVibePlayerPawn::Tick(float DeltaSeconds)
 	{
 		return;
 	}
+	ApplyPadLook(DeltaSeconds);
 	const FRotator View = PC->GetControlRotation();
 	VlInput Input = {};
 	Input.yaw = static_cast<float>(View.Yaw);
@@ -535,11 +642,16 @@ void AVibePlayerPawn::Tick(float DeltaSeconds)
 	}
 	Input.move_x = static_cast<float>(MoveAxes.X);
 	Input.move_y = static_cast<float>(MoveAxes.Y);
+	if (bInVehicle && FMath::IsNearlyZero(Input.move_y))
+	{
+		// gamepad.ts: in a car RT is the throttle and LT the brake.
+		Input.move_y = FMath::Clamp(PadRightTrigger - PadLeftTrigger, -1.0f, 1.0f);
+	}
 	// In a car Space stays (the handbrake rides the jump bit); sprint and crouch are on-foot only.
 	Input.buttons = bInVehicle ? (Buttons & ~(VL_BTN_SPRINT | VL_BTN_CROUCH)) : Buttons;
 	LastSentButtons = Input.buttons;
 	NetSubsystem->SetInput(Input);
-	if (bFireHeld && bJoined && CanUseAim())
+	if ((bFireHeld || PadRightTrigger > PadPressed) && bJoined && CanUseAim())
 	{
 		// The core repeats at most at the server's fire interval and stamps the shot.
 		NetSubsystem->Fire(CurrentWeapon);

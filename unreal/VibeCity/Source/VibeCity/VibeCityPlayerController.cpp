@@ -8,6 +8,9 @@
 #include "InputCoreTypes.h"
 #include "Kismet/GameplayStatics.h"
 #include "VibeLandNet.h"
+#include "VibeSettings.h"
+#include "Engine/GameViewportClient.h"
+#include "Widgets/SWidget.h"
 
 void AVibeCityPlayerController::BeginPlay()
 {
@@ -21,6 +24,12 @@ void AVibeCityPlayerController::BeginPlay()
 		ActivationHandle = FSlateApplication::Get().OnApplicationActivationStateChanged().AddUObject(
 			this, &AVibeCityPlayerController::OnApplicationActivationChanged);
 	}
+	if (GEngine && GEngine->GameViewport)
+	{
+		SettingsWidget = FVibeSettings::MakePanel();
+		SettingsWidget->SetVisibility(EVisibility::Collapsed);
+		GEngine->GameViewport->AddViewportWidgetContent(SettingsWidget.ToSharedRef(), 10);
+	}
 	// Start captured, as bCaptureMouseOnLaunch does, but through the same path as a click so the
 	// state below always matches what the viewport is doing.
 	CaptureCursor();
@@ -33,6 +42,11 @@ void AVibeCityPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason
 		FSlateApplication::Get().OnApplicationActivationStateChanged().Remove(ActivationHandle);
 	}
 	ActivationHandle.Reset();
+	if (SettingsWidget && GEngine && GEngine->GameViewport)
+	{
+		GEngine->GameViewport->RemoveViewportWidgetContent(SettingsWidget.ToSharedRef());
+	}
+	SettingsWidget.Reset();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -63,6 +77,7 @@ void AVibeCityPlayerController::FreeCursor()
 	SetInputMode(Mode);
 	// Counted, so it composes with scripted views that also ignore look input (-VibeView).
 	SetIgnoreLookInput(true);
+	ShowSettings(true);
 	UE_LOG(LogVibeLand, Display, TEXT("cursor free (click the window to look around)"));
 }
 
@@ -74,6 +89,7 @@ void AVibeCityPlayerController::CaptureCursor()
 	}
 	const bool bWasFree = Cursor == ECursor::Free;
 	Cursor = ECursor::Captured;
+	ShowSettings(false);
 	bShowMouseCursor = false;
 	FInputModeGameOnly Mode;
 	// The click that captures the cursor is not also a game input.
@@ -83,6 +99,19 @@ void AVibeCityPlayerController::CaptureCursor()
 	{
 		SetIgnoreLookInput(false);
 		UE_LOG(LogVibeLand, Display, TEXT("cursor captured (Esc frees it)"));
+	}
+}
+
+bool AVibeCityPlayerController::SettingsShown() const
+{
+	return SettingsWidget && SettingsWidget->GetVisibility() != EVisibility::Collapsed;
+}
+
+void AVibeCityPlayerController::ShowSettings(bool bShow)
+{
+	if (SettingsWidget)
+	{
+		SettingsWidget->SetVisibility(bShow ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed);
 	}
 }
 

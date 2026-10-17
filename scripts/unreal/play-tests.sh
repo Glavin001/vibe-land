@@ -29,7 +29,7 @@ done
 
 TESTS=(VibeCity.Cursor VibeCity.Play.WalkAndShoot VibeCity.Play.AimAndReset VibeCity.Play.CannonAndMeteor
   VibeCity.Play.AerialAndMelee VibeCity.Play.Drive VibeCity.Play.WreckCar VibeCity.Render.CityAndEffects
-  VibeCity.Render.WeatherAndGrass VibeCity.Render.Species VibeCity.Render.Materials)
+  VibeCity.Render.WeatherAndGrass VibeCity.Render.Species VibeCity.Render.Materials VibeCity.Settings)
 if [[ -n "$ONLY" ]]; then
   IFS=',' read -r -a TESTS <<< "$ONLY"
 fi

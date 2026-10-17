@@ -12,6 +12,7 @@
  *   * a click in the window captures it again (the click itself is consumed, never a game input);
  *   * the app losing focus (Cmd-Tab, Mission Control, another window) frees it, and returning to
  *     the window does not grab it until you click.
+ * While the cursor is free the Sound and Controls settings (FVibeSettings) are shown top right.
  * Console: vibe.cursor free|capture.
  */
 UCLASS()
@@ -25,6 +26,8 @@ public:
 	/** Hide the cursor and capture the mouse for mouse-look. */
 	void CaptureCursor();
 	bool IsCursorFree() const { return Cursor == ECursor::Free; }
+	/** Whether the settings panel is shown (tests). */
+	bool SettingsShown() const;
 
 protected:
 	virtual void BeginPlay() override;
@@ -38,4 +41,6 @@ private:
 	enum class ECursor : uint8 { Unset, Free, Captured };
 	ECursor Cursor = ECursor::Unset;
 	FDelegateHandle ActivationHandle;
+	TSharedPtr<class SWidget> SettingsWidget;
+	void ShowSettings(bool bShow);
 };

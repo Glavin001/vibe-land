@@ -39,7 +39,9 @@ public:
 	/** The selected weapon (VL_WEAPON_*). */
 	uint32 Weapon() const { return CurrentWeapon; }
 	/** Whether the scope is up: aim held, on foot and alive (the web's canUseScopedAim). */
-	bool IsAiming() const { return bAiming && CanUseAim(); }
+	bool IsAiming() const { return (bAiming || PadLeftTrigger > PadPressed) && CanUseAim(); }
+	/** A trigger counts as pressed past this (gamepad.ts PRESSED_EPSILON). */
+	static constexpr float PadPressed = 0.35f;
 	/** The buttons sent with the last input (tests). */
 	uint32 SentButtons() const { return LastSentButtons; }
 	static const TCHAR* WeaponName(uint32 Weapon);
@@ -77,6 +79,8 @@ private:
 	void OnMove(const FInputActionValue& Value);
 	void OnMoveStopped(const FInputActionValue& Value);
 	void OnLook(const FInputActionValue& Value);
+	/** Gamepad look this frame (input/gamepad.ts: radial deadzone, response curve, rad/s). */
+	void ApplyPadLook(float DeltaSeconds);
 	void OnFire(const FInputActionValue& Value);
 	void OnFireStopped(const FInputActionValue& Value);
 	void OnButton(uint32 Bit, bool bDown);
@@ -91,6 +95,22 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UInputMappingContext> Mapping;
+	/** The keys from the player's settings (FVibeSettings), and the web's gamepad defaults. */
+	void MapKeys();
+	FDelegateHandle SettingsHandle;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadLookAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadRightTriggerAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadLeftTriggerAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> PadCycleAction;
+	FVector2D PadLook = FVector2D::ZeroVector;
+	float PadRightTrigger = 0.0f;
+	float PadLeftTrigger = 0.0f;
+	/** Turn the view by a look input in the mouse path's units (the car orbits instead). */
+	void ApplyLook(const FVector2D& Look);
 	UPROPERTY(Transient)
 	TObjectPtr<UInputAction> MoveAction;
 	UPROPERTY(Transient)
