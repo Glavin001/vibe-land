@@ -1,0 +1,304 @@
+//! Players from SnapshotV2: the local player's server state and every remote player, interpolated
+//! to a render tick.
+//!
+//! The render tick comes from the same `RenderClock` the city stream plays on (perplayer), fed the
+//! snapshots' server ticks and arrival times, with the session's interpolation delay as its
+//! playout delay. Positions are anchor-relative on the wire: the anchor (mm) is the local player's
+//! position and a remote player is the anchor plus its delta in 2.5 mm units.
+//!
+//! The server leaves unchanged remote players out of most snapshots (snapshot_builder.rs
+//! `idle_cold`: resent a few times as they come to rest, then once per cold refresh), so each remote
+//! player keeps its own history and stays until the roster drops it, as in the web client
+//! (`netcodeClient.ts` `applyPlayerRoster`). When one is resent after such a gap, a copy of its
+//! resting sample one snapshot interval earlier holds it still until it actually moved
+//! (`interpolation.ts` `insertWithRestHold`).
+
+use std::collections::{HashMap, VecDeque};
+
+use glam::Vec3;
+use vibe_land_perplayer::client::RenderClock;
+use vibe_land_shared::protocol::{PlayerRosterPacket, SnapshotV2Packet};
+use vibe_netcode::unit_conv::i16_to_angle;
+
+use crate::coords::Space;
+use crate::frame::{VlPlayer, VL_PLAYER_VALID};
+
+/// Samples kept per player (about a second at 60 Hz).
+const HISTORY: usize = 64;
+const Q2_5MM_M: f32 = 0.0025;
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PlayerSample {
+    pub pos: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub hp: u8,
+}
+
+/// One player's samples by server tick, oldest first.
+#[derive(Clone, Debug, Default)]
+struct Track {
+    samples: VecDeque<(u32, PlayerSample)>,
+}
+
+impl Track {
+    fn push(&mut self, tick: u32, sample: PlayerSample, interval_ticks: u32) {
+        if let Some(&(last_tick, last)) = self.samples.back() {
+            if tick <= last_tick {
+                return; // late or duplicate: keep tick order
+            }
+            // Resent after a gap (it was left out while unchanged): hold the resting sample until
+            // the snapshot before this one, so it does not start moving early.
+            let hold = tick.saturating_sub(interval_ticks);
+            if tick - last_tick > interval_ticks + interval_ticks / 2 && hold > last_tick {
+                self.samples.push_back((hold, last));
+            }
+        }
+        self.samples.push_back((tick, sample));
+        while self.samples.len() > HISTORY {
+            self.samples.pop_front();
+        }
+    }
+
+    fn at(&self, r: f32) -> Option<PlayerSample> {
+        let first = self.samples.front()?;
+        if r <= first.0 as f32 || self.samples.len() == 1 {
+            return Some(first.1);
+        }
+        match self.samples.iter().position(|&(tick, _)| tick as f32 >= r) {
+            None => self.samples.back().map(|&(_, s)| s),
+            Some(i) => {
+                let ((ta, a), (tb, b)) = (self.samples[i - 1], self.samples[i]);
+                let span = (tb - ta).max(1) as f32;
+                Some(lerp(a, b, ((r - ta as f32) / span).clamp(0.0, 1.0)))
+            }
+        }
+    }
+}
+
+pub struct Players {
+    clock: RenderClock,
+    sim_hz: u32,
+    interval_ticks: u32,
+    local: Track,
+    /// By wire handle.
+    remote: HashMap<u8, Track>,
+    /// Handle to player id, from the newest roster (None until the first arrives).
+    roster: Option<HashMap<u8, u32>>,
+    local_player_id: u32,
+    pub snapshots: u64,
+    pub newest_tick: u32,
+}
+
+impl Players {
+    pub fn new(sim_hz: u32, interpolation_delay_ms: u16) -> Self {
+        let delay_ticks = (f32::from(interpolation_delay_ms) * sim_hz as f32 / 1000.0).max(1.0);
+        Self {
+            clock: RenderClock::new(sim_hz, delay_ticks),
+            sim_hz: sim_hz.max(1),
+            interval_ticks: 1,
+            local: Track::default(),
+            remote: HashMap::new(),
+            roster: None,
+            local_player_id: 0,
+            snapshots: 0,
+            newest_tick: 0,
+        }
+    }
+
+    /// The session's snapshot rate: a remote player missing for more than ~1.5 intervals was left out.
+    pub fn set_snapshot_hz(&mut self, snapshot_hz: u16) {
+        self.interval_ticks = (self.sim_hz / u32::from(snapshot_hz.max(1))).max(1);
+    }
+
+    pub fn set_local_player(&mut self, player_id: u32) {
+        self.local_player_id = player_id;
+    }
+
+    pub fn on_roster(&mut self, roster: &PlayerRosterPacket) {
+        let map: HashMap<u8, u32> = roster.entries.iter().map(|e| (e.handle, e.player_id)).collect();
+        self.remote.retain(|handle, _| map.contains_key(handle));
+        self.roster = Some(map);
+    }
+
+    pub fn on_snapshot(&mut self, s: &SnapshotV2Packet, arrival_ms: f64) {
+        self.snapshots += 1;
+        self.clock.observe(s.server_tick, arrival_ms);
+        self.newest_tick = self.newest_tick.max(s.server_tick);
+        let anchor = Vec3::new(s.anchor_px_mm as f32, s.anchor_py_mm as f32, s.anchor_pz_mm as f32) / 1000.0;
+        let local = PlayerSample {
+            pos: anchor,
+            yaw: i16_to_angle(s.self_state.yaw_i16),
+            pitch: i16_to_angle(s.self_state.pitch_i16),
+            hp: s.self_state.hp,
+        };
+        self.local.push(s.server_tick, local, self.interval_ticks);
+        for r in &s.remote_players {
+            let delta = Vec3::new(f32::from(r.dx_q2_5mm), f32::from(r.dy_q2_5mm), f32::from(r.dz_q2_5mm)) * Q2_5MM_M;
+            let sample = PlayerSample { pos: anchor + delta, yaw: i16_to_angle(r.yaw_i16), pitch: i16_to_angle(r.pitch_i16), hp: r.hp };
+            self.remote.entry(r.handle).or_default().push(s.server_tick, sample, self.interval_ticks);
+        }
+    }
+
+    /// Players at `now_ms`, written in `space`. Returns the render tick.
+    pub fn sample(&mut self, now_ms: f64, space: Space, local: &mut VlPlayer, remote: &mut Vec<VlPlayer>) -> Option<f32> {
+        let r = self.clock.render_tick(now_ms)?;
+        let write = |player_id: u32, s: PlayerSample| {
+            let (yaw, pitch) = space.yaw_pitch(s.yaw, s.pitch);
+            VlPlayer { player_id, flags: VL_PLAYER_VALID, pos: space.pos(s.pos), yaw, pitch, hp: u32::from(s.hp) }
+        };
+        if let Some(s) = self.local.at(r) {
+            *local = write(self.local_player_id, s);
+        }
+        for (&handle, track) in &self.remote {
+            let id = match &self.roster {
+                Some(roster) => match roster.get(&handle) {
+                    Some(&id) => id,
+                    None => continue,
+                },
+                None => u32::from(handle),
+            };
+            if id == self.local_player_id {
+                continue;
+            }
+            if let Some(s) = track.at(r) {
+                remote.push(write(id, s));
+            }
+        }
+        Some(r)
+    }
+
+    /// A remote player's interpolated state at render tick `r`.
+    #[cfg(test)]
+    pub(crate) fn remote_at(&self, handle: u8, r: f32) -> Option<PlayerSample> {
+        self.remote.get(&handle)?.at(r)
+    }
+}
+
+fn lerp(a: PlayerSample, b: PlayerSample, t: f32) -> PlayerSample {
+    PlayerSample {
+        pos: a.pos.lerp(b.pos, t),
+        yaw: lerp_angle(a.yaw, b.yaw, t),
+        pitch: a.pitch + (b.pitch - a.pitch) * t,
+        hp: if t < 0.5 { a.hp } else { b.hp },
+    }
+}
+
+/// Interpolate along the shorter way round.
+fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
+    let tau = std::f32::consts::TAU;
+    let mut d = (b - a) % tau;
+    if d > std::f32::consts::PI {
+        d -= tau;
+    } else if d < -std::f32::consts::PI {
+        d += tau;
+    }
+    a + d * t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vibe_land_shared::protocol::{PlayerRosterEntry, RemotePlayerStateV2, SnapshotV2Packet};
+
+    fn snap(tick: u32, x_mm: i32, remote_dx: i16) -> SnapshotV2Packet {
+        SnapshotV2Packet {
+            server_tick: tick,
+            anchor_px_mm: x_mm,
+            remote_players: vec![RemotePlayerStateV2 { handle: 3, dx_q2_5mm: remote_dx, hp: 100, ..Default::default() }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn remote_players_are_anchor_plus_delta_and_named_by_the_roster() {
+        let mut p = Players::new(60, 33);
+        p.set_local_player(1);
+        p.on_roster(&PlayerRosterPacket { entries: vec![PlayerRosterEntry { handle: 3, player_id: 42 }] });
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        for tick in 0..30 {
+            p.on_snapshot(&snap(tick, 1000, 400), ms(tick));
+        }
+        let (mut local, mut remote) = (VlPlayer::default(), Vec::new());
+        p.sample(ms(30), Space::Server, &mut local, &mut remote).unwrap();
+        assert_eq!(local.player_id, 1);
+        assert!((local.pos[0] - 1.0).abs() < 1e-6);
+        assert_eq!(remote.len(), 1);
+        assert_eq!(remote[0].player_id, 42);
+        // 400 units of 2.5 mm = 1 m beyond the anchor.
+        assert!((remote[0].pos[0] - 2.0).abs() < 1e-6, "{:?}", remote[0].pos);
+    }
+
+    #[test]
+    fn interpolation_moves_linearly_between_snapshots() {
+        let mut p = Players::new(60, 33);
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        // The local player walks +x at 6 m/s: 100 mm per tick.
+        for tick in 0..120 {
+            p.on_snapshot(&snap(tick, tick as i32 * 100, 0), ms(tick));
+        }
+        let (mut local, mut remote) = (VlPlayer::default(), Vec::new());
+        let r = p.sample(ms(120), Space::Server, &mut local, &mut remote).unwrap();
+        // Drawn at the render tick: x = 0.1 m per tick there.
+        assert!((local.pos[0] - 0.1 * r).abs() < 1e-3, "x {} at tick {r}", local.pos[0]);
+    }
+
+    fn snap_without_remote(tick: u32) -> SnapshotV2Packet {
+        SnapshotV2Packet { server_tick: tick, ..Default::default() }
+    }
+
+    #[test]
+    fn a_resting_player_the_server_stops_resending_stays_until_the_roster_drops_them() {
+        // snapshot_builder.rs `idle_cold`: an unchanged remote player is sent a few times, then only
+        // on a cold refresh. The client keeps it, as the web client does, until the roster drops it.
+        let mut p = Players::new(60, 33);
+        p.set_snapshot_hz(30);
+        p.set_local_player(1);
+        p.on_roster(&PlayerRosterPacket { entries: vec![PlayerRosterEntry { handle: 3, player_id: 42 }] });
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        for tick in (0..10).map(|i| i * 2) {
+            p.on_snapshot(&snap(tick, 0, 400), ms(tick));
+        }
+        for tick in (10..60).map(|i| i * 2) {
+            p.on_snapshot(&snap_without_remote(tick), ms(tick));
+        }
+        let (mut local, mut remote) = (VlPlayer::default(), Vec::new());
+        p.sample(ms(120), Space::Server, &mut local, &mut remote).unwrap();
+        assert_eq!(remote.len(), 1, "a player at rest must not vanish between cold refreshes");
+        assert!((remote[0].pos[0] - 1.0).abs() < 1e-6, "{:?}", remote[0].pos);
+
+        p.on_roster(&PlayerRosterPacket { entries: vec![] });
+        remote.clear();
+        p.sample(ms(122), Space::Server, &mut local, &mut remote).unwrap();
+        assert!(remote.is_empty(), "the roster dropped the player");
+    }
+
+    #[test]
+    fn a_player_resent_after_a_gap_holds_still_until_the_snapshot_before_it_moved() {
+        let mut p = Players::new(60, 33);
+        p.set_snapshot_hz(30);
+        p.set_local_player(1);
+        p.on_roster(&PlayerRosterPacket { entries: vec![PlayerRosterEntry { handle: 3, player_id: 42 }] });
+        let ms = |tick: u32| f64::from(tick) * 1000.0 / 60.0;
+        // At rest at dx=0 until tick 10, then silent, then seen at dx=400 (1 m) at tick 40.
+        for tick in [0u32, 2, 4, 6, 8, 10] {
+            p.on_snapshot(&snap(tick, 0, 0), ms(tick));
+        }
+        for tick in (12..40).step_by(2) {
+            p.on_snapshot(&snap_without_remote(tick), ms(tick));
+        }
+        p.on_snapshot(&snap(40, 0, 400), ms(40));
+        // Halfway between ticks 10 and 40 the player is still where it stood: the hold at tick 38.
+        let at = |p: &Players, r: f32| p.remote_at(3, r).map(|s| s.pos.x);
+        assert!((at(&p, 25.0).unwrap() - 0.0).abs() < 1e-6, "moved before it did: {:?}", at(&p, 25.0));
+        assert!((at(&p, 39.0).unwrap() - 0.5).abs() < 1e-3, "{:?}", at(&p, 39.0));
+    }
+
+    #[test]
+    fn angles_take_the_short_way() {
+        let a = 179f32.to_radians();
+        let b = (-179f32).to_radians();
+        let mid = lerp_angle(a, b, 0.5).to_degrees();
+        assert!((mid.abs() - 180.0).abs() < 1e-3, "{mid}");
+    }
+}

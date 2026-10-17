@@ -1,0 +1,25 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1",
+	"FriendlyName": "VibeLand",
+	"Description": "vibe-land client: connects to the vibe-land server through the shared Rust client core and renders the city.",
+	"Category": "Networking",
+	"CreatedBy": "vibe-land",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": true,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "VibeLandNet",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "VibeLandCity",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

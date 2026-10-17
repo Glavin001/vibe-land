@@ -1,0 +1,17 @@
+[package]
+name = "vibe-client-transport-wt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Native WebTransport adapter for vibe-land's sans-IO client core (Unreal client, headless tools)"
+publish = false
+
+[dependencies]
+vibe-land-shared = { path = "../shared" }
+# ring only: the client core's static library must not pull in aws-lc (scripts/unreal/build-core.sh checks).
+wtransport = { version = "0.7", default-features = false, features = ["ring", "quinn"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+hex = "0.4"
+tracing = "0.1"

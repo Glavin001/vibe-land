@@ -1,5 +1,8 @@
 [workspace]
 members = [
+    "client-core",
+    "client-core-ffi",
+    "client-transport-wt",
     "destruction",
     "netcode",
     "perplayer",

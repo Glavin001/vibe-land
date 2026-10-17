@@ -1,0 +1,25 @@
+[package]
+name = "vibe-client-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "vibe-land's sans-IO client core: server bytes in, render-ready scene state out. Shared by the Unreal client (natively) and the web client (WASM)."
+publish = false
+
+[dependencies]
+vibe-land-shared = { path = "../shared" }
+vibe-netcode = { path = "../netcode" }
+vibe-land-perplayer = { path = "../perplayer" }
+vibe-land-destruction = { path = "../destruction" }
+glam = "0.27"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+vibe-client-transport-wt = { path = "../client-transport-wt" }
+web-fps-server = { path = "../server" }
+flate2 = "1"
+
+[[example]]
+name = "headless"
+path = "examples/headless.rs"

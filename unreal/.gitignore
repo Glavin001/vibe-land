@@ -1,0 +1,18 @@
+# Unreal build output and caches
+**/Binaries/
+**/Intermediate/
+**/DerivedDataCache/
+**/.vs/
+*.xcworkspace/
+*.xcodeproj/
+*.code-workspace
+
+# Saved/ is per-machine, except the UBT setting every Mac build needs (see README).
+VibeCity/Saved/*
+!VibeCity/Saved/UnrealBuildTool/
+VibeCity/Saved/UnrealBuildTool/*
+!VibeCity/Saved/UnrealBuildTool/BuildConfiguration.xml
+
+# The Rust client core is built by scripts/unreal/build-core.sh, never committed.
+**/ThirdParty/VibeClientCore/lib/
+**/ThirdParty/VibeClientCore/include-gen/
