@@ -359,7 +359,7 @@ pub struct SceneFrame {
     /// Sounds to start this poll (client-core audio.rs: the web's policy), renderer space.
     pub sounds: Vec<crate::audio::VlSound>,
     /// Dust puffs to raise this poll (client-core effects.rs), renderer space.
-    pub dust: Vec<crate::effects::VlDust>,
+    pub dust: Vec<crate::dust::VlDustParcel>,
     /// The continuous sounds playing this poll (scrapes, air); a loop missing from a poll ends.
     pub loops: Vec<crate::audio::VlLoop>,
     /// Every battery in the world now (the server's `PKT_BATTERY_SYNC` state).

@@ -52,7 +52,7 @@ public:
 	int32 RemovedChunks() const;
 	/** The vertices that should be drawn: every chunk's core mesh but the removed ones'. */
 	int64 ExpectedVertices() const;
-	int32 LiveDust() const { return DustPuffs.Num(); }
+	int32 LiveDust() const { return LiveDustCount; }
 	/** Cells drawn from the imported city now, and cells in all. */
 	int32 ImportedCellsDrawn() const;
 	int32 CellCount() const { return CellChunks.Num(); }
@@ -125,31 +125,24 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> DustMaterial;
 
-	/** Live dust puffs (client-core effects.rs VlDust), each a cluster of soft lit sprites. */
-	struct FDustPuff
+	/** Dust parcels (client-core dust.rs, the web's policy), in a ring of the web's capacity
+	 * (dustParcelStore.ts DUST_CAPACITY): a full ring overwrites its oldest. Each drawn as one
+	 * instance of a sphere stretched to its cloud's box (vl_dust_eval), in M_VibeCityDustVolume. */
+	struct FDustParcel
 	{
-		FVector Origin = FVector::ZeroVector;
-		FVector Drift = FVector::ZeroVector;
-		float Radius = 0.0f;
-		float Lifetime = 1.0f;
+		VlDustParcel P = {};
 		float Age = 0.0f;
-		int32 Slot = INDEX_NONE;
-		/** Per sprite of the cluster: offset (unit, scaled by the radius) and size factor. */
-		FVector Offsets[4];
-		float Sizes[4] = { 1, 1, 1, 1 };
+		bool bAlive = false;
 	};
-	TArray<FDustPuff> DustPuffs;
-
-	/** Sprites, four per slot (slot * 4 + k). */
-	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMaterialBillboardComponent>> DustSprites;
+	TArray<FDustParcel> DustParcels;
+	int32 DustHead = 0;
+	int32 LiveDustCount = 0;
 
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMaterialInstanceDynamic>> DustMaterials;
+	TObjectPtr<class UInstancedStaticMeshComponent> DustInstances;
 
-	int32 DustSlotCount = 0;
-
-	TArray<int32> FreeDustSlots;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> DustVolumeMaterial;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> BaseMaterial;

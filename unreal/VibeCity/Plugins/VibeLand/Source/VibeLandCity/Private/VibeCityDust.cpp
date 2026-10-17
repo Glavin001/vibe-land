@@ -1,139 +1,100 @@
-// Dust from the client core's destruction sources (client-core effects.rs VlDust): each puff a
-// cluster of soft sprites (M_VibeCityDust: lit as a volume, depth-faded) at different offsets and
-// sizes, so a cloud has depth and parallax, as particle dust does. See AVibeCityDirector.
+// Dust from the client core's dust policy (client-core dust.rs, the web's city/dustPolicy.ts): the
+// parcels each frame brings, kept in a ring of the web's capacity and drawn as the web's curves
+// say (vl_dust_eval: growth, rise, drag, the weather's wind), each one instance of a sphere
+// stretched to its cloud's box in M_VibeCityDustVolume. See AVibeCityDirector.
 
 #include "VibeCityDirector.h"
 
-#include "Components/MaterialBillboardComponent.h"
-#include "Materials/MaterialInstanceDynamic.h"
+#include "Components/InstancedStaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "Materials/MaterialInterface.h"
+#include "VibeLandNet.h"
 #include "vibe_client_core.h"
 
 namespace
 {
-	// Live puffs at once (the core sets no dust budget; a collapse raises hundreds): the faintest
-	// are recycled.
-	constexpr int32 MaxDustPuffs = 64;
-	constexpr int32 SpritesPerPuff = 4;
-	// Peak opacity of a sprite's centre (four overlap toward the cloud's core).
-	constexpr float DustOpacity = 0.4f;
-	// Upward drift of warm dust, cm/s, and outward drift along the broken face.
-	constexpr float DustRiseCmPerS = 40.0f;
-	constexpr float DustOutCmPerS = 60.0f;
+	// dustParcelStore.ts DUST_CAPACITY.
+	constexpr int32 DustCapacity = 4096;
+	// /Engine/BasicShapes/Sphere is 100 cm across.
+	constexpr double SphereCm = 100.0;
 
-	FLinearColor ToLinear(uint32 Rgba)
+	float Fade(float LifeFraction)
 	{
-		return FLinearColor(FColor((Rgba >> 24) & 0xFF, (Rgba >> 16) & 0xFF, (Rgba >> 8) & 0xFF, 0xFF));
-	}
-
-	float Fade(float T)
-	{
-		// In over the first 10%, out over the rest (ease-out).
-		return T < 0.1f ? T / 0.1f : FMath::Square(1.0f - (T - 0.1f) / 0.9f);
+		// In over the first 5% of its life, then thinning out to nothing.
+		return LifeFraction < 0.05f ? LifeFraction / 0.05f : FMath::Pow(1.0f - LifeFraction, 1.5f);
 	}
 }
 
 void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
 {
-	if (!DustMaterial || Frame.dust_count == 0)
+	if (Frame.dust_count == 0)
 	{
 		return;
 	}
+	if (!DustInstances)
+	{
+		if (!DustVolumeMaterial)
+		{
+			UE_LOG(LogVibeLand, Warning, TEXT("M_VibeCityDustVolume is missing: VIBE_MATERIALS_ONLY=dustvolume scripts/unreal/import-city-materials.sh. No dust is drawn."));
+		}
+		DustInstances = NewObject<UInstancedStaticMeshComponent>(this, TEXT("DustParcels"));
+		DustInstances->SetStaticMesh(LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere")));
+		DustInstances->SetMaterial(0, DustVolumeMaterial);
+		DustInstances->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		DustInstances->SetCastShadow(false);
+		DustInstances->SetMobility(EComponentMobility::Movable);
+		DustInstances->NumCustomDataFloats = 4;
+		DustInstances->SetupAttachment(RootComponent);
+		DustInstances->RegisterComponent();
+		DustParcels.SetNum(DustCapacity);
+	}
 	for (size_t i = 0; i < Frame.dust_count; ++i)
 	{
-		const VlDust& D = Frame.dust[i];
-		int32 Slot = INDEX_NONE;
-		if (FreeDustSlots.Num() > 0)
+		FDustParcel& Slot = DustParcels[DustHead];
+		LiveDustCount += Slot.bAlive ? 0 : 1;
+		Slot.P = Frame.dust[i];
+		Slot.Age = Frame.dust[i].age_s;
+		Slot.bAlive = true;
+		if (DustHead >= DustInstances->GetInstanceCount())
 		{
-			Slot = FreeDustSlots.Pop();
+			DustInstances->AddInstance(FTransform(FQuat::Identity, FVector::ZeroVector, FVector::ZeroVector), /*bWorldSpace=*/true);
 		}
-		else if (DustSlotCount < MaxDustPuffs)
-		{
-			Slot = DustSlotCount++;
-			for (int32 k = 0; k < SpritesPerPuff; ++k)
-			{
-				UMaterialBillboardComponent* Sprite = NewObject<UMaterialBillboardComponent>(this);
-				Sprite->SetupAttachment(RootComponent);
-				Sprite->SetCastShadow(false);
-				Sprite->RegisterComponent();
-				UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(DustMaterial, this);
-				Sprite->AddElement(Material, nullptr, false, 100.0f, 100.0f, nullptr);
-				DustSprites.Add(Sprite);
-				DustMaterials.Add(Material);
-			}
-		}
-		else
-		{
-			// Recycle the faintest live puff.
-			int32 Faintest = INDEX_NONE;
-			float Least = TNumericLimits<float>::Max();
-			for (int32 p = 0; p < DustPuffs.Num(); ++p)
-			{
-				const float Level = Fade(DustPuffs[p].Age / DustPuffs[p].Lifetime) * DustPuffs[p].Radius;
-				if (Level < Least)
-				{
-					Least = Level;
-					Faintest = p;
-				}
-			}
-			if (Faintest == INDEX_NONE)
-			{
-				continue;
-			}
-			Slot = DustPuffs[Faintest].Slot;
-			DustPuffs.RemoveAtSwap(Faintest);
-		}
-		const FVector Normal(D.normal[0], D.normal[1], D.normal[2]);
-		FDustPuff& Puff = DustPuffs.AddDefaulted_GetRef();
-		Puff.Origin = FVector(D.position[0], D.position[1], D.position[2]);
-		Puff.Drift = Normal * DustOutCmPerS + FVector::UpVector * DustRiseCmPerS;
-		Puff.Radius = D.radius;
-		Puff.Lifetime = FMath::Max(0.2f, D.lifetime_s);
-		Puff.Slot = Slot;
-		// A stable cluster per puff: sprites spread through the cloud, larger toward its centre.
-		FRandomStream Random(static_cast<int32>(Puff.Origin.X * 7.0 + Puff.Origin.Y * 13.0 + Puff.Origin.Z * 17.0));
-		for (int32 k = 0; k < SpritesPerPuff; ++k)
-		{
-			Puff.Offsets[k] = k == 0 ? FVector::ZeroVector : Random.GetUnitVector() * Random.FRandRange(0.3f, 0.6f) + FVector::UpVector * 0.2f;
-			Puff.Sizes[k] = k == 0 ? 1.0f : Random.FRandRange(0.55f, 0.85f);
-			DustMaterials[Slot * SpritesPerPuff + k]->SetVectorParameterValue(TEXT("Color"), ToLinear(D.color_rgba));
-			DustSprites[Slot * SpritesPerPuff + k]->SetVisibility(true);
-		}
+		DustHead = (DustHead + 1) % DustCapacity;
 	}
 }
 
 void AVibeCityDirector::TickDust(float DeltaSeconds)
 {
-	for (int32 p = DustPuffs.Num() - 1; p >= 0; --p)
+	if (!DustInstances || LiveDustCount == 0)
 	{
-		FDustPuff& Puff = DustPuffs[p];
-		Puff.Age += DeltaSeconds;
-		const float T = Puff.Age / Puff.Lifetime;
-		if (T >= 1.0f)
+		return;
+	}
+	// The web's default wind (fogSettings.ts): 8 m/s toward compass 45°, server space.
+	float Wind[3];
+	vl_weather_wind(8.0f, 45.0f, Wind);
+	const int32 Count = DustInstances->GetInstanceCount();
+	for (int32 i = 0; i < Count; ++i)
+	{
+		FDustParcel& D = DustParcels[i];
+		if (!D.bAlive)
 		{
-			for (int32 k = 0; k < SpritesPerPuff; ++k)
-			{
-				DustSprites[Puff.Slot * SpritesPerPuff + k]->SetVisibility(false);
-			}
-			FreeDustSlots.Add(Puff.Slot);
-			DustPuffs.RemoveAtSwap(p);
 			continue;
 		}
-		// Grows from 30% to full size, fast at first (a puff billows, then hangs); the cluster
-		// spreads as it grows.
-		const float Radius = Puff.Radius * (0.3f + 0.7f * (1.0f - FMath::Square(1.0f - T)));
-		const FVector Centre = Puff.Origin + Puff.Drift * Puff.Age;
-		for (int32 k = 0; k < SpritesPerPuff; ++k)
+		D.Age += DeltaSeconds;
+		VlDustEval E = {};
+		if (vl_dust_eval(&D.P, D.Age, Wind[0], Wind[1], Wind[2], 1 /* Unreal space */, &E) != 1)
 		{
-			UMaterialBillboardComponent* Sprite = DustSprites[Puff.Slot * SpritesPerPuff + k];
-			Sprite->SetWorldLocation(Centre + Puff.Offsets[k] * Radius);
-			if (Sprite->Elements.Num() > 0)
-			{
-				const float Size = Radius * 2.0f * Puff.Sizes[k];
-				Sprite->Elements[0].BaseSizeX = Size;
-				Sprite->Elements[0].BaseSizeY = Size;
-				Sprite->MarkRenderStateDirty();
-			}
-			DustMaterials[Puff.Slot * SpritesPerPuff + k]->SetScalarParameterValue(TEXT("Opacity"), DustOpacity * Fade(T));
+			D.bAlive = false;
+			--LiveDustCount;
+			DustInstances->UpdateInstanceTransform(i, FTransform(FQuat::Identity, FVector::ZeroVector, FVector::ZeroVector), true, false, true);
+			continue;
 		}
+		const FVector Size(E.size[0], E.size[1], E.size[2]);
+		DustInstances->UpdateInstanceTransform(i, FTransform(FQuat::Identity, FVector(E.centre[0], E.centre[1], E.centre[2]), Size / SphereCm),
+			/*bWorldSpace=*/true, /*bMarkRenderStateDirty=*/false, /*bTeleport=*/true);
+		const FLinearColor Color(FColor((D.P.color_rgba >> 24) & 0xFF, (D.P.color_rgba >> 16) & 0xFF, (D.P.color_rgba >> 8) & 0xFF, 0xFF));
+		const float Opacity = FMath::Clamp(D.P.intensity * E.density * 0.35f * Fade(E.life_fraction), 0.0f, 1.0f);
+		DustInstances->SetCustomData(i, { Color.R, Color.G, Color.B, Opacity }, /*bMarkRenderStateDirty=*/false);
 	}
+	DustInstances->MarkRenderStateDirty();
 }

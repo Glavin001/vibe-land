@@ -228,6 +228,8 @@ pub struct SourceTable {
     structures: HashMap<u32, StructureInfo>,
     /// Per manifest material: its acoustic material.
     acoustics: Vec<AcousticMaterial>,
+    /// Per manifest material: its dust palette.
+    palettes: Vec<u32>,
     /// Per manifest material: its authored colour (0xRRGGBBAA), or concrete grey.
     colors: Vec<u32>,
 }
@@ -277,7 +279,17 @@ impl SourceTable {
             .iter()
             .map(|a| a.color.as_deref().and_then(crate::materials::parse_hex_rgba).unwrap_or(CONCRETE_RGBA))
             .collect();
-        Self { structures, acoustics, colors }
+        let palettes = manifest
+            .material_appearance
+            .iter()
+            .map(|a| crate::dust::palette_from_appearance(a.name.as_deref(), a.texture_key.as_deref()))
+            .collect();
+        Self { structures, acoustics, colors, palettes }
+    }
+
+    /// A manifest material's dust palette (dustPolicy.ts `paletteFromAppearance`; absent: concrete).
+    pub fn palette(&self, material: u32) -> u32 {
+        self.palettes.get(material as usize).copied().unwrap_or(crate::dust::VL_PALETTE_CONCRETE)
     }
 
     /// A manifest material's colour, for its dust.
@@ -445,41 +457,6 @@ impl SourceTable {
     /// Manifest material of a chunk.
     pub fn material_of(&self, structure: u32, chunk: u32) -> u32 {
         self.structures.get(&structure).and_then(|s| s.chunk_material.get(&chunk)).copied().unwrap_or(0)
-    }
-}
-
-/// A dust puff for a renderer: where, which way it billows, how big it grows and for how long.
-/// Presentation, sized from the source's dust units: a renderer draws it as soft particles.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct VlDust {
-    pub position: [f32; 3],
-    /// Outward face direction (unit, or zero): the puff drifts this way.
-    pub normal: [f32; 3],
-    /// Final radius of the cloud.
-    pub radius: f32,
-    /// Seconds from appearing to gone.
-    pub lifetime_s: f32,
-    /// 0xRRGGBBAA.
-    pub color_rgba: u32,
-    pub flags: u32,
-}
-
-impl Source {
-    /// The puff this source raises: radius growing with the cube root of its dust units (a volume
-    /// of dust), lifetime with its square root, tinted toward pale grey from `material_rgba`.
-    pub fn dust(&self, material_rgba: u32) -> VlDust {
-        let m = self.magnitude.max(0.0);
-        let mix = |c: u32| ((c as f32) * 0.35 + 190.0 * 0.65) as u32;
-        let (r, g, b) = ((material_rgba >> 24) & 0xff, (material_rgba >> 16) & 0xff, (material_rgba >> 8) & 0xff);
-        VlDust {
-            position: self.position.to_array(),
-            normal: self.normal.to_array(),
-            radius: (0.6 + 1.4 * m.cbrt()).min(12.0),
-            lifetime_s: (2.0 + 1.2 * m.sqrt()).min(9.0),
-            color_rgba: (mix(r) << 24) | (mix(g) << 16) | (mix(b) << 8) | 0xff,
-            flags: 0,
-        }
     }
 }
 

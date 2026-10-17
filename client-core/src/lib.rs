@@ -12,6 +12,7 @@
 pub mod audio;
 pub mod city;
 pub mod coords;
+pub mod dust;
 pub mod effects;
 pub mod frame;
 pub mod geometry;
@@ -101,6 +102,9 @@ pub struct ClientCore {
     audio_contacts: Vec<crate::frame::VlAudioContact>,
     audio: audio::AudioDirector,
     flybys: audio::FlybyTracker,
+    /// The web's dust policy (dust.rs): sources to parcels, the per-tick cap, smouldering cells.
+    dust_policy: dust::DustPolicy,
+    dust_parcels: Vec<dust::Parcel>,
     /// Batteries by id, server space (PKT_BATTERY_SYNC; a full resync replaces them all).
     batteries: std::collections::BTreeMap<u32, vibe_land_shared::protocol::NetBatteryState>,
     /// Debris energy per region, for the continuous debris beds (destructionActivity.ts).
@@ -170,6 +174,8 @@ impl ClientCore {
             audio_contacts: Vec::new(),
             audio: audio::AudioDirector::default(),
             flybys: audio::FlybyTracker::default(),
+            dust_policy: dust::DustPolicy::default(),
+            dust_parcels: Vec::new(),
             batteries: Default::default(),
             activity: audio::Activity::default(),
             occlusion: audio::Occlusion::default(),
@@ -665,12 +671,34 @@ impl ClientCore {
                 if let Some(sound) = effects::sound_from_source(source, acoustic, now_ms) {
                     emit_sound(&mut self.audio, &mut self.activity, sound, listener, now_ms);
                 }
-                // Dust in the material's colour (authored, else concrete).
-                let mut dust = source.dust(table.color(source.material));
-                dust.position = space.pos(Vec3::from_array(dust.position));
-                dust.normal = Vec3::from_array(space.pos(Vec3::from_array(dust.normal))).normalize_or_zero().to_array();
-                dust.radius *= space.metres();
-                self.frame.dust.push(dust);
+                // Dust: the web's policy (dustPolicy.ts) on the source, in its material's palette.
+                // The core places a break at rest, so the material's own motion is zero.
+                let d = |v: Vec3| [f64::from(v.x), f64::from(v.y), f64::from(v.z)];
+                let dust_source = dust::DustSource {
+                    kind: match source.kind {
+                        effects::SourceKind::Fracture => dust::DustKind::Fracture,
+                        effects::SourceKind::Crush => dust::DustKind::Crush,
+                        effects::SourceKind::Impact => dust::DustKind::Impact,
+                        effects::SourceKind::Entry => dust::DustKind::Entry,
+                        effects::SourceKind::Shed => dust::DustKind::Shed,
+                        effects::SourceKind::Wave => dust::DustKind::Wave,
+                    },
+                    structure: source.structure,
+                    tick: source.tick,
+                    ordinal: source.ordinal,
+                    position: d(source.position),
+                    normal: d(source.normal),
+                    velocity: [0.0; 3],
+                    magnitude: f64::from(source.magnitude),
+                    material: source.material,
+                    at_ms: now_ms,
+                };
+                self.dust_policy.emit(&dust_source, table.palette(source.material), &mut self.dust_parcels);
+            }
+            // Smouldering cells keep puffing for a while after their last break.
+            self.dust_policy.tick(now_ms, &mut self.dust_parcels);
+            for p in self.dust_parcels.drain(..) {
+                self.frame.dust.push(p.to_vl(now_ms, space));
             }
         }
         // Shots (gameEvents.ts soundFromShot): anyone's resolved hitscan shots, and this client's

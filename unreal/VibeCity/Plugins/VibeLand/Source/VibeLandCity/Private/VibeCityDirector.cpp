@@ -35,6 +35,8 @@ AVibeCityDirector::AVibeCityDirector()
 	ChunkMaterial = Chunk.Get();
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Dust(TEXT("/Game/VibeCity/Materials/M_VibeCityDust.M_VibeCityDust"));
 	DustMaterial = Dust.Get();
+	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> DustVolume(TEXT("/Game/VibeCity/Materials/M_VibeCityDustVolume.M_VibeCityDustVolume"));
+	DustVolumeMaterial = DustVolume.Get();
 	// The 2K sources (import-city-materials.sh --hd) when they were built, unless -VibeWebTextures.
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Hd(TEXT("/Game/VibeCity/Materials/M_VibeCityChunkHD.M_VibeCityChunkHD"));
 	if (Hd.Get() && !FParse::Param(FCommandLine::Get(), TEXT("VibeWebTextures")))

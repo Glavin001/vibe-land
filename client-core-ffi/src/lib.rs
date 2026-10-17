@@ -17,7 +17,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use vibe_client_core::coords::Space;
 use vibe_client_core::audio::{VlLoop, VlSound};
-use vibe_client_core::effects::VlDust;
+use vibe_client_core::dust::{VlDustEval, VlDustParcel};
 use vibe_client_core::geometry::VlMeshRange;
 use vibe_client_core::grass::{VlGrassBlade, VlGrassExclusion};
 use vibe_client_core::materials::{Catalog, VlChunkSurface, VlMaterial};
@@ -27,7 +27,7 @@ use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportCo
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 20;
+pub const VL_ABI_VERSION: u32 = 21;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -197,8 +197,9 @@ pub struct VlFrameView {
     /// at `position` with `gain` (distance falloff included: add none) and `rate`, after `delay_s`.
     pub sounds: *const VlSound,
     pub sound_count: usize,
-    /// Dust puffs to raise now (client-core effects.rs).
-    pub dust: *const VlDust,
+    /// Dust parcels born since the last poll (client-core dust.rs, the web's dust policy): keep each
+    /// and draw it with `vl_dust_eval` until that returns 0.
+    pub dust: *const VlDustParcel,
     pub dust_count: usize,
     /// Every car part off its car, as drawn now (its authored geometry through `pos`/`quat`).
     pub car_parts: *const VlCarPart,
@@ -699,6 +700,27 @@ pub unsafe extern "C" fn vl_client_chunk_surfaces(
         out_count.write(s.len());
         VL_OK
     })
+}
+
+/// A dust parcel from a frame (`VlFrameView::dust`), drawn at age `age_s` (its `age_s` when the
+/// frame carried it, plus the time since) in a wind of (`wind_x`, `wind_y`, `wind_z`) (server
+/// space, m/s: `vl_weather_wind`): the cloud's box in `space` (as `VlConfig::space`). Returns 1
+/// with `out` written while it lives, 0 once its life is over (the renderer frees it), or an
+/// error. The web's curves (`dustParcelStore.ts` `evalParcel`). Needs no client.
+///
+/// # Safety
+/// `parcel` must point to a parcel; `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn vl_dust_eval(parcel: *const VlDustParcel, age_s: f32, wind_x: f32, wind_y: f32, wind_z: f32, space: u32, out: *mut VlDustEval) -> i32 {
+    let (Some(p), false) = (parcel.as_ref(), out.is_null()) else { return VL_ERR_ARG };
+    let Some(space) = Space::from_u32(space) else { return VL_ERR_ARG };
+    match vibe_client_core::dust::eval_vl(p, age_s, [wind_x, wind_y, wind_z], space) {
+        Some(e) => {
+            out.write(e);
+            1
+        }
+        None => 0,
+    }
 }
 
 fn mesh_view(m: &vibe_client_core::geometry::ChunkMeshes) -> VlMeshView {

@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 20
+#define VL_ABI_VERSION 21
 
 #define VL_OK 0
 
@@ -519,29 +519,44 @@ typedef struct VlSound {
 } VlSound;
 
 /**
- * A dust puff for a renderer: where, which way it billows, how big it grows and for how long.
- * Presentation, sized from the source's dust units: a renderer draws it as soft particles.
+ * One parcel of dust (dustParcelStore.ts `DustParcel`, without the room measurement). A
+ * renderer keeps it until its shape's life is over and draws it through [`eval_parcel`].
  */
-typedef struct VlDust {
+typedef struct VlDustParcel {
+  /**
+   * Birth position and the push it was thrown with (server space, or the renderer's: see
+   * `ClientCore`), m and m/s.
+   */
   float position[3];
+  float velocity[3];
+  float radius0;
   /**
-   * Outward face direction (unit, or zero): the puff drifts this way.
+   * Optical thickness, 0..1.
    */
-  float normal[3];
+  float intensity;
   /**
-   * Final radius of the cloud.
+   * When it was born, in the core's clock (ms).
    */
-  float radius;
+  double born_ms;
+  uint32_t seed;
   /**
-   * Seconds from appearing to gone.
+   * `VL_DUST_*`.
    */
-  float lifetime_s;
+  uint32_t shape;
   /**
-   * 0xRRGGBBAA.
+   * `VL_PALETTE_*`.
+   */
+  uint32_t palette;
+  /**
+   * Its age when the frame carried it, s (a smoulder parcel can be born a little before).
+   */
+  float age_s;
+  /**
+   * The palette's colour (the web's dust renderers'), 0xRRGGBBAA.
    */
   uint32_t color_rgba;
-  uint32_t flags;
-} VlDust;
+  uint32_t _pad;
+} VlDustParcel;
 
 /**
  * A car part that has come off its car (a detached group of the wire 4 stream), as drawn now: the
@@ -678,9 +693,10 @@ typedef struct VlFrameView {
   const struct VlSound *sounds;
   size_t sound_count;
   /**
-   * Dust puffs to raise now (client-core effects.rs).
+   * Dust parcels born since the last poll (client-core dust.rs, the web's dust policy): keep each
+   * and draw it with `vl_dust_eval` until that returns 0.
    */
-  const struct VlDust *dust;
+  const struct VlDustParcel *dust;
   size_t dust_count;
   /**
    * Every car part off its car, as drawn now (its authored geometry through `pos`/`quat`).
@@ -866,6 +882,21 @@ typedef struct VlChunkSurface {
    */
   uint32_t tint_rgba;
 } VlChunkSurface;
+
+/**
+ * A parcel drawn now (`DustEval`): the cloud's box centre and size, server space.
+ */
+typedef struct VlDustEval {
+  float centre[3];
+  float size[3];
+  float radius;
+  float age_s;
+  /**
+   * age / life, 0..1.
+   */
+  float life_fraction;
+  float density;
+} VlDustEval;
 
 /**
  * One catalog entry, as renderers read it.
@@ -1201,6 +1232,24 @@ int32_t vl_client_chunk_meshes(struct VlClient *client, struct VlMeshView *out);
 int32_t vl_client_chunk_surfaces(struct VlClient *client,
                                  const struct VlChunkSurface **out_surfaces,
                                  size_t *out_count);
+
+/**
+ * A dust parcel from a frame (`VlFrameView::dust`), drawn at age `age_s` (its `age_s` when the
+ * frame carried it, plus the time since) in a wind of (`wind_x`, `wind_y`, `wind_z`) (server
+ * space, m/s: `vl_weather_wind`): the cloud's box in `space` (as `VlConfig::space`). Returns 1
+ * with `out` written while it lives, 0 once its life is over (the renderer frees it), or an
+ * error. The web's curves (`dustParcelStore.ts` `evalParcel`). Needs no client.
+ *
+ * # Safety
+ * `parcel` must point to a parcel; `out` must be writable.
+ */
+int32_t vl_dust_eval(const struct VlDustParcel *parcel,
+                     float age_s,
+                     float wind_x,
+                     float wind_y,
+                     float wind_z,
+                     uint32_t space,
+                     struct VlDustEval *out);
 
 /**
  * Build the city an uncompressed manifest (VLCM, as `<api>/city-manifest/<hash>` serves it)

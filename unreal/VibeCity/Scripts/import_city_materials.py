@@ -11,6 +11,7 @@ Creates under /Game/VibeCity:
   Materials/M_VibeCityChunkFlat                       the same without the normal map
   Materials/M_VibeCityGlass                           translucent glass
   Materials/M_VibeCityDust                            dust puffs
+  Materials/M_VibeCityDustVolume                      dust parcels (instanced spheres)
   Materials/M_VibeCityGrass                           meadow blades
   Materials/M_VibeCityWeather, ...WeatherAdditive     dust- and snow-storm particles
   Materials/M_VibeCityCanopy                          distant foliage canopy cards
@@ -374,6 +375,52 @@ def hd_ground_material(albedo_array, normal_array, arm_array):
     return m
 
 
+def dust_volume_material():
+    """Dust parcels (client-core dust.rs, the web's dust policy): one instance of a sphere per
+    parcel, stretched to its cloud's box, translucent and lit as a volume. Per-instance custom data
+    0-2 is its colour (linear) and 3 its opacity; the edge softens toward the silhouette (the view
+    against the surface normal), and it fades where it meets the city."""
+    m = fresh_material("M_VibeCityDustVolume")
+    m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
+    m.set_editor_property("translucency_lighting_mode", unreal.TranslucencyLightingMode.TLM_VOLUMETRIC_NON_DIRECTIONAL)
+    m.set_editor_property("used_with_instanced_static_meshes", True)
+    channels = []
+    for i in range(4):
+        c = expr(m, unreal.MaterialExpressionPerInstanceCustomData, -900, -200 + i * 120)
+        c.set_editor_property("data_index", i)
+        channels.append(c)
+    rg = expr(m, unreal.MaterialExpressionAppendVector, -700, -150)
+    mel.connect_material_expressions(channels[0], "", rg, "A")
+    mel.connect_material_expressions(channels[1], "", rg, "B")
+    rgb = expr(m, unreal.MaterialExpressionAppendVector, -550, -120)
+    mel.connect_material_expressions(rg, "", rgb, "A")
+    mel.connect_material_expressions(channels[2], "", rgb, "B")
+    mel.connect_material_property(rgb, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    # Soft silhouette: (N . V)^1.5.
+    normal = expr(m, unreal.MaterialExpressionVertexNormalWS, -1000, 300)
+    view = expr(m, unreal.MaterialExpressionCameraVectorWS, -1000, 400)
+    dot = expr(m, unreal.MaterialExpressionDotProduct, -850, 340)
+    mel.connect_material_expressions(normal, "", dot, "A")
+    mel.connect_material_expressions(view, "", dot, "B")
+    sat = expr(m, unreal.MaterialExpressionSaturate, -720, 340)
+    mel.connect_material_expressions(dot, "", sat, "")
+    soft = expr(m, unreal.MaterialExpressionPower, -600, 340)
+    soft.set_editor_property("const_exponent", 1.5)
+    mel.connect_material_expressions(sat, "", soft, "Base")
+    mul = expr(m, unreal.MaterialExpressionMultiply, -450, 300)
+    mel.connect_material_expressions(soft, "", mul, "A")
+    mel.connect_material_expressions(channels[3], "", mul, "B")
+    fade = expr(m, unreal.MaterialExpressionDepthFade, -250, 300)
+    fade.set_editor_property("fade_distance_default", 150.0)
+    mel.connect_material_expressions(mul, "", fade, "Opacity")
+    mel.connect_material_property(fade, "", unreal.MaterialProperty.MP_OPACITY)
+    rough = expr(m, unreal.MaterialExpressionConstant, -700, 500)
+    rough.set_editor_property("r", 1.0)
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.recompile_material(m)
+    return m
+
+
 def dust_material():
     """Dust puffs (client-core effects.rs VlDust): a soft round sprite, lit as a volume, in the
     puff's Color at the puff's Opacity (both set per puff by the renderer as it grows and fades)."""
@@ -640,6 +687,11 @@ if only == "battery":
     saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
     unreal.log(f"VIBE_IMPORT_OK battery saved={saved}")
     raise SystemExit(0)
+if only == "dustvolume":
+    dust_volume_material()
+    saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
+    unreal.log(f"VIBE_IMPORT_OK dustvolume saved={saved}")
+    raise SystemExit(0)
 if only == "canopy":
     canopy_material()
     saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
@@ -662,6 +714,7 @@ chunk = chunk_material(albedo_array, surface_array)
 chunk_material(albedo_array, surface_array, "M_VibeCityChunkFlat", normal_map=False)
 glass = glass_material()
 dust_material()
+dust_volume_material()
 grass_material()
 weather_material("M_VibeCityWeather", additive=False)
 weather_material("M_VibeCityWeatherAdditive", additive=True)
