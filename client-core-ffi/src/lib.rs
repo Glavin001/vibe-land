@@ -18,13 +18,13 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use vibe_client_core::coords::Space;
 use vibe_client_core::geometry::VlMeshRange;
 use vibe_client_core::materials::{Catalog, VlChunkSurface, VlMaterial};
-use vibe_client_core::frame::{VlBodyPose, VlChunk, VlChunkAssignment, VlEvent, VlInput, VlLocal, VlPlayer, VlStats};
+use vibe_client_core::frame::{VlBodyPose, VlCar, VlChunk, VlChunkAssignment, VlDynamicBody, VlEvent, VlInput, VlLocal, VlMeteor, VlPlayer, VlStats};
 use vibe_client_core::{ClientCore, Lane};
 use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportConfig, TransportState};
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
-pub const VL_ABI_VERSION: u32 = 4;
+pub const VL_ABI_VERSION: u32 = 5;
 
 pub const VL_OK: i32 = 0;
 /// A null or invalid argument.
@@ -69,6 +69,16 @@ pub const VL_BTN_RELOAD: u32 = 256;
 pub const VL_WEAPON_RIFLE: u32 = 1;
 pub const VL_WEAPON_CANNON: u32 = 3;
 pub const VL_WEAPON_METEOR: u32 = 4;
+/// `VlCar::flags`: the car's wheel states are present.
+pub const VL_CAR_HAS_WHEELS: u32 = 1;
+/// `VlDynamicBody::shape`.
+pub const VL_SHAPE_BOX: u32 = 0;
+pub const VL_SHAPE_SPHERE: u32 = 1;
+const _: () = {
+    use vibe_client_core::frame as f;
+    assert!(VL_CAR_HAS_WHEELS == f::VL_CAR_HAS_WHEELS && VL_SHAPE_BOX == f::VL_SHAPE_BOX && VL_SHAPE_SPHERE == f::VL_SHAPE_SPHERE);
+    assert!(VL_SHAPE_BOX == vibe_land_shared::constants::SHAPE_BOX as u32 && VL_SHAPE_SPHERE == vibe_land_shared::constants::SHAPE_SPHERE as u32);
+};
 /// `VlEvent::kind` (see client-core `frame.rs` for each kind's fields).
 pub const VL_EVENT_SHOT_FIRED: u32 = 1;
 pub const VL_EVENT_SHOT_RESULT: u32 = 2;
@@ -146,6 +156,15 @@ pub struct VlFrameView {
     /// Events since the previous poll (shots, verdicts, damage), in order.
     pub events: *const VlEvent,
     pub event_count: usize,
+    /// Every car the city stream carries, on the car clock (the players' render time).
+    pub cars: *const VlCar,
+    pub car_count: usize,
+    /// Free dynamic bodies (cannonballs, meteors) at the render time.
+    pub dynamic_bodies: *const VlDynamicBody,
+    pub dynamic_body_count: usize,
+    /// Meteors launched since the previous poll.
+    pub meteors: *const VlMeteor,
+    pub meteor_count: usize,
     pub stats: VlStats,
 }
 
@@ -320,6 +339,12 @@ pub unsafe extern "C" fn vl_client_poll(client: *mut VlClient, out: *mut VlFrame
             body_pose_count: frame.body_poses.len(),
             events: frame.events.as_ptr(),
             event_count: frame.events.len(),
+            cars: frame.cars.as_ptr(),
+            car_count: frame.cars.len(),
+            dynamic_bodies: frame.dynamic_bodies.as_ptr(),
+            dynamic_body_count: frame.dynamic_bodies.len(),
+            meteors: frame.meteors.as_ptr(),
+            meteor_count: frame.meteors.len(),
             stats: frame.stats,
         });
         VL_OK
@@ -354,6 +379,39 @@ pub unsafe extern "C" fn vl_client_fire(client: *mut VlClient, weapon: u32, out_
         if !out_shot_id.is_null() {
             out_shot_id.write(shot);
         }
+        VL_OK
+    })
+}
+
+/// Swing a melee attack along the view last given to `vl_client_set_input`. Writes the swing id to
+/// `out_swing_id` (0 when nothing was sent: not playing, or inside the server's 900 ms cooldown).
+///
+/// # Safety
+/// `client` must be a live client; `out_swing_id` must be writable (or null).
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_melee(client: *mut VlClient, out_swing_id: *mut u32) -> i32 {
+    guard(client, |c| {
+        let now_us = c.transport.as_ref().map_or(0, |t| t.now_us());
+        let swing = c.core.melee(now_us);
+        if !out_swing_id.is_null() {
+            out_swing_id.write(swing);
+        }
+        VL_OK
+    })
+}
+
+/// Put the player at a pose in the client's space (leaving an aerial camera). Sent at the next poll.
+///
+/// # Safety
+/// `client` must be a live client; `pos` must point to three floats.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_camera_drop(client: *mut VlClient, pos: *const f32, yaw: f32, pitch: f32) -> i32 {
+    if pos.is_null() {
+        return VL_ERR_ARG;
+    }
+    let p = [*pos, *pos.add(1), *pos.add(2)];
+    guard(client, |c| {
+        c.core.camera_drop(p, yaw, pitch);
         VL_OK
     })
 }

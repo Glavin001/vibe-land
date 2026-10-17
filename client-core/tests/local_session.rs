@@ -197,3 +197,18 @@ fn a_shot_from_the_core_comes_back_resolved_by_the_server() {
     let aimed = glam::Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
     assert!(dir.dot(aimed) > 0.999, "shot along {dir}, aimed {aimed}");
 }
+
+/// The aerial camera's drop: the server moves the player to the pose the core sends (and the
+/// player then falls to the ground below it).
+#[test]
+fn a_camera_drop_from_the_core_moves_the_server_player() {
+    let mut h = Harness::start("citypp-core-drop");
+    h.run(120);
+    let target = [57.0f32, 3.0, -61.0];
+    h.core.camera_drop(target, 0.5, 0.0);
+    h.run(90);
+    let pos = h.core.poll(u64::from(h.tick) * TICK_US + TICK_US / 2).local.player.pos;
+    let horizontal = (pos[0] - target[0]).hypot(pos[2] - target[2]);
+    assert!(horizontal < 0.5, "dropped at {target:?}, player at {pos:?}");
+    assert!(pos[1] < target[1], "the player should have fallen from the drop height: {pos:?}");
+}

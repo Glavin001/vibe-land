@@ -23,8 +23,12 @@ use vibe_land_shared::constants::{
     FLAG_IN_VEHICLE, FLAG_ON_GROUND, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, WEAPON_CANNONBALL, WEAPON_HITSCAN,
     WEAPON_METEOR,
 };
-use vibe_land_shared::net_client::{decode_server_packet, encode_fire, encode_input_bundle, ServerMessage, SessionConfig};
-use vibe_land_shared::protocol::FireCmd;
+use vibe_land_shared::constants::{MELEE_COOLDOWN_MS, PKT_METEOR_LAUNCHED};
+use vibe_land_shared::net_client::{
+    decode_meteor_launched, decode_server_packet, encode_city_camera_drop, encode_fire, encode_input_bundle, encode_melee,
+    MeteorLaunched, ServerMessage, SessionConfig,
+};
+use vibe_land_shared::protocol::{FireCmd, MeleeCmd};
 
 use crate::city::{decode_manifest, is_city_packet, CityStream, CITY_DELAY_TICKS};
 use crate::coords::Space;
@@ -80,6 +84,10 @@ pub struct ClientCore {
     events: Vec<VlEvent>,
     next_shot_id: u32,
     last_fire_us: Option<u64>,
+    next_swing_id: u32,
+    last_melee_us: Option<u64>,
+    /// Meteor launches since the last poll, with their arrival times.
+    meteors: Vec<(MeteorLaunched, u64)>,
 }
 
 impl ClientCore {
@@ -106,6 +114,9 @@ impl ClientCore {
             events: Vec::new(),
             next_shot_id: 1,
             last_fire_us: None,
+            next_swing_id: 1,
+            last_melee_us: None,
+            meteors: Vec::new(),
         }
     }
 
@@ -188,6 +199,13 @@ impl ClientCore {
     pub fn on_packet(&mut self, _lane: Lane, bytes: &[u8], arrival_us: u64) {
         let Some(&kind) = bytes.first() else { return };
         let arrival_ms = arrival_us as f64 / 1000.0;
+        if kind == PKT_METEOR_LAUNCHED {
+            match decode_meteor_launched(bytes) {
+                Ok(meteor) => self.meteors.push((meteor, arrival_us)),
+                Err(_) => self.protocol_decode_errors += 1,
+            }
+            return;
+        }
         if is_city_packet(kind) {
             if let Some(city) = self.city.as_mut() {
                 city.ingest(bytes, arrival_ms);
@@ -245,7 +263,11 @@ impl ClientCore {
                 ..Default::default()
             }),
             Ok(ServerMessage::LocalPlayerEnergy(e)) => self.energy = e.energy_centi as f32 / 100.0,
-            Ok(ServerMessage::DynamicBodyMeta(_)) => {}
+            Ok(ServerMessage::DynamicBodyMeta(meta)) => {
+                if let Some(players) = self.players.as_mut() {
+                    players.on_body_meta(&meta);
+                }
+            }
             // Pings are echoed by the transport on its own thread.
             Ok(ServerMessage::Ping(_)) | Ok(ServerMessage::Pong(_)) => {}
             Ok(ServerMessage::Other { .. }) => self.unknown_packets += 1,
@@ -315,6 +337,25 @@ impl ClientCore {
             }
             stats.snapshots = players.snapshots;
             stats.newest_server_tick = players.newest_tick;
+            players.dynamic_bodies(self.space, &mut self.frame.dynamic_bodies);
+            // Cars on the players' clock (the web's setVehicleClock), so a driver sits in its car.
+            if let Some(city) = self.city.as_mut() {
+                city.cars(stats.player_render_tick, &mut self.frame.cars);
+            }
+        }
+        for (m, arrival_us) in self.meteors.drain(..) {
+            let g = Vec3::new(0.0, -m.gravity_ms2, 0.0);
+            self.frame.meteors.push(crate::frame::VlMeteor {
+                body_id: m.body_id,
+                shooter: m.shooter_player_id,
+                age_s: now_us.saturating_sub(arrival_us) as f32 / 1e6,
+                flight_time_s: m.flight_time_s,
+                start: self.space.pos(Vec3::from_array(m.start)),
+                velocity: self.space.pos(Vec3::from_array(m.velocity)),
+                gravity: self.space.pos(g),
+                target: self.space.pos(Vec3::from_array(m.target)),
+                radius: m.radius_m * self.space.metres(),
+            });
         }
         stats.remote_players = self.frame.remote_players.len() as u32;
         self.frame.stats = stats;
@@ -374,6 +415,43 @@ impl ClientCore {
             ..Default::default()
         });
         shot_id
+    }
+
+    /// Swing a melee attack along the current view (the web's V key). Returns the swing id, or 0
+    /// when not playing or inside the server's cooldown (`MELEE_COOLDOWN_MS`).
+    pub fn melee(&mut self, now_us: u64) -> u32 {
+        if self.state != VlCoreState::Playing
+            || self.last_melee_us.is_some_and(|last| now_us.saturating_sub(last) < u64::from(MELEE_COOLDOWN_MS) * 1000)
+        {
+            return 0;
+        }
+        let (Some(config), Some(players), Some(bundler)) = (self.config.as_ref(), self.players.as_ref(), self.bundler.as_ref()) else {
+            return 0;
+        };
+        let Some(server_tick) = players.server_tick_now() else { return 0 };
+        self.last_melee_us = Some(now_us);
+        let swing_id = self.next_swing_id;
+        self.next_swing_id = self.next_swing_id.wrapping_add(1).max(1);
+        let cmd = MeleeCmd {
+            seq: bundler.next_seq(),
+            swing_id,
+            client_time_us: (server_tick.max(0.0) as u64) * server_ms_per_tick(config.sim_hz) * 1000,
+            yaw: self.input.yaw,
+            pitch: self.input.pitch,
+        };
+        self.outgoing.push(Outgoing { datagram: true, bytes: encode_melee(&cmd) });
+        swing_id
+    }
+
+    /// Put the player at a pose (the web's aerial camera: leaving it drops the player where the
+    /// camera is). Renderer space; sent on the reliable stream; the server rate-limits it.
+    pub fn camera_drop(&mut self, pos: [f32; 3], yaw: f32, pitch: f32) {
+        if self.state != VlCoreState::Playing {
+            return;
+        }
+        let p = self.space.pos_to_server(pos);
+        let (yaw, pitch) = self.space.yaw_pitch_to_server(yaw, pitch);
+        self.outgoing.push(Outgoing { datagram: false, bytes: encode_city_camera_drop(p.to_array(), yaw, pitch) });
     }
 
     /// The frame the last [`poll`](Self::poll) produced.

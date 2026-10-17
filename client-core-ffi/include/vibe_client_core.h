@@ -13,7 +13,7 @@
  * Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
  * compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
  */
-#define VL_ABI_VERSION 4
+#define VL_ABI_VERSION 5
 
 #define VL_OK 0
 
@@ -109,6 +109,18 @@
 #define VL_WEAPON_CANNON 3
 
 #define VL_WEAPON_METEOR 4
+
+/**
+ * `VlCar::flags`: the car's wheel states are present.
+ */
+#define VL_CAR_HAS_WHEELS 1
+
+/**
+ * `VlDynamicBody::shape`.
+ */
+#define VL_SHAPE_BOX 0
+
+#define VL_SHAPE_SPHERE 1
 
 /**
  * `VlEvent::kind` (see client-core `frame.rs` for each kind's fields).
@@ -312,6 +324,77 @@ typedef struct VlEvent {
 } VlEvent;
 
 /**
+ * A car wheel as drawn: suspension travel (m, renderer units), steer and spin angles (radians,
+ * about the wheel's own axes), and whether it touches the ground.
+ */
+typedef struct VlWheel {
+  float travel;
+  float steer;
+  float spin;
+  uint32_t grounded;
+} VlWheel;
+
+/**
+ * A car the city stream carries, drawn on the car clock (the players' render time, so a driver and
+ * the car agree): the chassis pose and velocity, and its wheels when the stream has them.
+ */
+typedef struct VlCar {
+  /**
+   * The car's handle (its asset is announced by `PKT_VEHICLE_ASSET` under this handle).
+   */
+  uint32_t handle;
+  /**
+   * [`VL_CAR_HAS_WHEELS`].
+   */
+  uint32_t flags;
+  float pos[3];
+  float quat[4];
+  float vel[3];
+  struct VlWheel wheels[4];
+} VlCar;
+
+/**
+ * A free dynamic body from the game snapshots (cannonballs, meteors): interpolated to the render
+ * time. Spheres carry no rotation on the wire (identity).
+ */
+typedef struct VlDynamicBody {
+  uint32_t body_id;
+  /**
+   * [`VL_SHAPE_SPHERE`] or [`VL_SHAPE_BOX`] (`shared::constants::SHAPE_*`).
+   */
+  uint32_t shape;
+  float pos[3];
+  float quat[4];
+  /**
+   * Half extents (a sphere's radius in each), renderer units.
+   */
+  float half_extents[3];
+} VlDynamicBody;
+
+/**
+ * A meteor the server launched this frame (`PKT_METEOR_LAUNCHED`): the arc a renderer draws it on
+ * until its body appears among the dynamic bodies. Renderer space; times in seconds.
+ */
+typedef struct VlMeteor {
+  uint32_t body_id;
+  uint32_t shooter;
+  /**
+   * Seconds since the launch, on the caller's clock, at this poll (the launch is in the past by
+   * the network delay).
+   */
+  float age_s;
+  float flight_time_s;
+  float start[3];
+  /**
+   * Initial velocity and the downward gravity vector, renderer units per second (squared).
+   */
+  float velocity[3];
+  float gravity[3];
+  float target[3];
+  float radius;
+} VlMeteor;
+
+/**
  * Counters and clocks, for overlays, logs and test gates.
  */
 typedef struct VlStats {
@@ -362,6 +445,21 @@ typedef struct VlFrameView {
    */
   const struct VlEvent *events;
   size_t event_count;
+  /**
+   * Every car the city stream carries, on the car clock (the players' render time).
+   */
+  const struct VlCar *cars;
+  size_t car_count;
+  /**
+   * Free dynamic bodies (cannonballs, meteors) at the render time.
+   */
+  const struct VlDynamicBody *dynamic_bodies;
+  size_t dynamic_body_count;
+  /**
+   * Meteors launched since the previous poll.
+   */
+  const struct VlMeteor *meteors;
+  size_t meteor_count;
   struct VlStats stats;
 } VlFrameView;
 
@@ -542,6 +640,23 @@ int32_t vl_client_set_input(struct VlClient *client, const struct VlInput *input
  * `client` must be a live client; `out_shot_id` must be writable (or null).
  */
 int32_t vl_client_fire(struct VlClient *client, uint32_t weapon, uint32_t *out_shot_id);
+
+/**
+ * Swing a melee attack along the view last given to `vl_client_set_input`. Writes the swing id to
+ * `out_swing_id` (0 when nothing was sent: not playing, or inside the server's 900 ms cooldown).
+ *
+ * # Safety
+ * `client` must be a live client; `out_swing_id` must be writable (or null).
+ */
+int32_t vl_client_melee(struct VlClient *client, uint32_t *out_swing_id);
+
+/**
+ * Put the player at a pose in the client's space (leaving an aerial camera). Sent at the next poll.
+ *
+ * # Safety
+ * `client` must be a live client; `pos` must point to three floats.
+ */
+int32_t vl_client_camera_drop(struct VlClient *client, const float *pos, float yaw, float pitch);
 
 /**
  * The city's chunk table: empty until the manifest has arrived (`VlStats::chunks` > 0), then
