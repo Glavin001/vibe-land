@@ -622,3 +622,137 @@ bool FVibeCityPlayCannonAndMeteor::RunTest(const FString& Parameters)
 }
 
 #endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+// VibeCity.Play.AerialAndMelee: N flies the camera (the web's aerialFlight: 30 m/s along the view)
+// while the server player stands; N again drops the player at the camera (the server puts its
+// capsule there, within 1 m horizontally); V swings (the server sets the meleeing flag on the
+// player for a swing it executed).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayAerialAndMelee, "VibeCity.Play.AerialAndMelee",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayAerialAndMelee::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		VlLocal Local = {};
+		bool bSawMeleeFlag = false;
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+		double FlyStart = 0.0;
+		FVector EyeStart = FVector::ZeroVector;
+		FVector PlayerStart = FVector::ZeroVector;
+		FVector DropEye = FVector::ZeroVector;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	auto PlayerPos = [S]() { return FVector(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]); };
+	auto Pawn = []() { return Cast<AVibePlayerPawn>(UGameplayStatics::GetPlayerPawn(GameWorld(), 0)); };
+	auto CameraEye = [Pawn]() -> FVector
+	{
+		const AVibePlayerPawn* P = Pawn();
+		const UCameraComponent* C = P ? P->FindComponentByClass<UCameraComponent>() : nullptr;
+		return C ? C->GetComponentLocation() : FVector::ZeroVector;
+	};
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 90.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
+			{
+				S->Local = Frame.local;
+				S->bSawMeleeFlag |= (Frame.local.player.state_flags & VL_STATE_MELEEING) != 0;
+			});
+		}
+		if (S->Local.player.flags & VL_PLAYER_VALID)
+		{
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("never joined"));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
+	// Melee first, on the ground.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Click();
+		Key(EKeys::V, true);
+		Key(EKeys::V, false);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, PlayerPos, CameraEye]()
+	{
+		TestTrue(TEXT("V swung (the server set the meleeing flag)"), S->bSawMeleeFlag);
+		// Into the aerial camera, facing away from the city, level.
+		S->Deadline = 0.0;
+		const FVector P = PlayerPos();
+		if (APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0))
+		{
+			PC->SetControlRotation(FRotator(0.0, FMath::RadiansToDegrees(FMath::Atan2(P.Y, P.X)), 0.0));
+		}
+		Key(EKeys::N, true);
+		Key(EKeys::N, false);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.2f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Pawn, PlayerPos, CameraEye]()
+	{
+		TestTrue(TEXT("N entered the aerial camera"), Pawn() && Pawn()->IsAerial());
+		S->EyeStart = CameraEye();
+		S->PlayerStart = PlayerPos();
+		S->FlyStart = Now();
+		Key(EKeys::W, true);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, PlayerPos, CameraEye]()
+	{
+		Key(EKeys::W, false);
+		const double Seconds = Now() - S->FlyStart;
+		const double Flown = FVector::Dist(CameraEye(), S->EyeStart) / 100.0;
+		const double Speed = Flown / Seconds;
+		AddInfo(FString::Printf(TEXT("aerial: flew %.1f m in %.2f s (%.1f m/s)"), Flown, Seconds, Speed));
+		// Frames cap at 0.1 s each, so a hitch only slows it; within 10% of 30 m/s otherwise.
+		TestTrue(FString::Printf(TEXT("aerial speed %.1f m/s near 30"), Speed), Speed > 27.0 && Speed < 31.0);
+		TestTrue(TEXT("the player stood still meanwhile"), FVector::Dist2D(PlayerPos(), S->PlayerStart) < 50.0);
+		S->DropEye = CameraEye();
+		Key(EKeys::N, true);
+		Key(EKeys::N, false);
+		S->Deadline = Now() + 5.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, PlayerPos]()
+	{
+		const double Off = FVector::Dist2D(PlayerPos(), S->DropEye);
+		if (Off < 100.0 || Now() > S->Deadline)
+		{
+			AddInfo(FString::Printf(TEXT("dropped: player %.2f m from the camera's spot"), Off / 100.0));
+			TestTrue(FString::Printf(TEXT("the drop put the player at the camera (%.2f m off)"), Off / 100.0), Off < 100.0);
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif

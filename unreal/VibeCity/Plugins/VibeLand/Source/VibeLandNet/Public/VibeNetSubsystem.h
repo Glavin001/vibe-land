@@ -46,6 +46,13 @@ public:
 	 * when nothing was fired (not playing yet, or inside the fire interval). */
 	uint32 Fire(uint32 Weapon);
 
+	/** Swing a melee attack along the view last given to SetInput. Returns the swing id, or 0 when
+	 * nothing was sent (not playing, or inside the server's cooldown). */
+	uint32 Melee();
+
+	/** Put the player at a pose (Unreal space, degrees): leaving the aerial camera. */
+	void CameraDrop(const FVector& Position, float YawDeg, float PitchDeg);
+
 	/** The city's chunks (empty until the manifest arrived). */
 	TArrayView<const VlChunk> Chunks() const;
 

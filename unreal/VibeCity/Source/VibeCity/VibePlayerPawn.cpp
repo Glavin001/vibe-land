@@ -32,6 +32,10 @@ namespace
 	constexpr float AimLookMultiplier = 0.45f;
 	// city/cityReset.ts.
 	constexpr double CityResetCooldownS = 1.0;
+	// scene/aerialFlight.ts and App.tsx (aerialSpeed 30).
+	constexpr double AerialSpeedCmS = 3000.0;
+	constexpr double AerialSprintMultiplier = 3.0;
+	constexpr double AerialMaxStepS = 0.1;
 
 	/** Control rotation pitch in (-180, 180], as the core expects (Unreal keeps it in [0, 360)). */
 	float SignedPitch(float Pitch)
@@ -110,6 +114,8 @@ void AVibePlayerPawn::CreateInput()
 	CycleAction = Action(TEXT("IA_CycleWeapon"), EInputActionValueType::Axis1D);
 	AimAction = Action(TEXT("IA_Aim"), EInputActionValueType::Boolean);
 	ResetAction = Action(TEXT("IA_ResetCity"), EInputActionValueType::Boolean);
+	MeleeAction = Action(TEXT("IA_Melee"), EInputActionValueType::Boolean);
+	AerialAction = Action(TEXT("IA_Aerial"), EInputActionValueType::Boolean);
 
 	Mapping = NewObject<UInputMappingContext>(this, TEXT("IMC_VibeCity"));
 	// Move: X right, Y forward. W/S drive Y (swizzled), S and A negated.
@@ -141,6 +147,8 @@ void AVibePlayerPawn::CreateInput()
 	Mapping->MapKey(CycleAction, EKeys::MouseWheelAxis);
 	Mapping->MapKey(AimAction, EKeys::RightMouseButton);
 	Mapping->MapKey(ResetAction, EKeys::R);
+	Mapping->MapKey(MeleeAction, EKeys::V);
+	Mapping->MapKey(AerialAction, EKeys::N);
 }
 
 void AVibePlayerPawn::PawnClientRestart()
@@ -183,7 +191,15 @@ void AVibePlayerPawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 	Input->BindAction(CycleAction, ETriggerEvent::Triggered, this, &AVibePlayerPawn::CycleWeapon);
 	Input->BindActionValueLambda(AimAction, ETriggerEvent::Started, [this](const FInputActionValue&) { bAiming = true; });
 	Input->BindActionValueLambda(AimAction, ETriggerEvent::Completed, [this](const FInputActionValue&) { bAiming = false; });
-	Input->BindActionValueLambda(ResetAction, ETriggerEvent::Started, [this](const FInputActionValue&) { ResetCity(); });
+	Input->BindActionValueLambda(ResetAction, ETriggerEvent::Started, [this](const FInputActionValue&) { if (!bAerial) { ResetCity(); } });
+	Input->BindActionValueLambda(MeleeAction, ETriggerEvent::Started, [this](const FInputActionValue&)
+	{
+		if (UVibeNetSubsystem* NetSubsystem = Net(); NetSubsystem && bJoined && !bAerial)
+		{
+			NetSubsystem->Melee();
+		}
+	});
+	Input->BindActionValueLambda(AerialAction, ETriggerEvent::Started, [this](const FInputActionValue&) { ToggleAerial(); });
 }
 
 void AVibePlayerPawn::OnMove(const FInputActionValue& Value)
@@ -275,6 +291,48 @@ void AVibePlayerPawn::ResetCity()
 	Request->ProcessRequest();
 }
 
+void AVibePlayerPawn::ToggleAerial()
+{
+	if (!bJoined)
+	{
+		return;
+	}
+	const AController* PC = GetController();
+	if (!bAerial)
+	{
+		bAerial = true;
+		AerialEye = Camera->GetComponentLocation();
+		return;
+	}
+	bAerial = false;
+	// Drop the player where the camera is (the server places its capsule centre there; the eye is
+	// the eye height above it).
+	if (UVibeNetSubsystem* NetSubsystem = Net(); NetSubsystem && PC)
+	{
+		const FRotator View = PC->GetControlRotation();
+		NetSubsystem->CameraDrop(AerialEye - FVector(0.0, 0.0, 100.0 * VL_EYE_HEIGHT_M), View.Yaw, SignedPitch(View.Pitch));
+	}
+}
+
+void AVibePlayerPawn::FlyAerial(float DeltaSeconds)
+{
+	const AController* PC = GetController();
+	if (!PC)
+	{
+		return;
+	}
+	const FRotator View = PC->GetControlRotation();
+	const FVector Forward = View.Vector();
+	const FVector Right = FRotator(0.0, View.Yaw, 0.0).RotateVector(FVector::RightVector);
+	const double Vertical = ((Buttons & VL_BTN_JUMP) ? 1.0 : 0.0) - ((Buttons & VL_BTN_CROUCH) ? 1.0 : 0.0);
+	FVector Move = Forward * MoveAxes.Y + Right * MoveAxes.X + FVector::UpVector * Vertical;
+	const double Length = FMath::Max(1.0, Move.Size());
+	const double Step = FMath::Clamp(static_cast<double>(DeltaSeconds), 0.0, AerialMaxStepS)
+		* AerialSpeedCmS * ((Buttons & VL_BTN_SPRINT) ? AerialSprintMultiplier : 1.0) / Length;
+	AerialEye += Move * Step;
+	SetActorLocation(AerialEye - Camera->GetRelativeLocation());
+}
+
 void AVibePlayerPawn::UpdateFieldOfView(float DeltaSeconds)
 {
 	const float Target = bAiming ? ScopeVerticalFov : HipfireVerticalFov;
@@ -312,10 +370,17 @@ void AVibePlayerPawn::Tick(float DeltaSeconds)
 	}
 	const FRotator View = PC->GetControlRotation();
 	VlInput Input = {};
-	Input.move_x = static_cast<float>(MoveAxes.X);
-	Input.move_y = static_cast<float>(MoveAxes.Y);
 	Input.yaw = static_cast<float>(View.Yaw);
 	Input.pitch = SignedPitch(static_cast<float>(View.Pitch));
+	if (bAerial)
+	{
+		// The camera flies; the player gets neutral input (it stands where it was).
+		FlyAerial(DeltaSeconds);
+		NetSubsystem->SetInput(Input);
+		return;
+	}
+	Input.move_x = static_cast<float>(MoveAxes.X);
+	Input.move_y = static_cast<float>(MoveAxes.Y);
 	Input.buttons = Buttons;
 	NetSubsystem->SetInput(Input);
 	if (bFireHeld && bJoined)
@@ -332,7 +397,10 @@ void AVibePlayerPawn::OnFrame(const VlFrameView& Frame)
 	{
 		return;
 	}
-	SetActorLocation(FVector(Me.pos[0], Me.pos[1], Me.pos[2]));
+	if (!bAerial)
+	{
+		SetActorLocation(FVector(Me.pos[0], Me.pos[1], Me.pos[2]));
+	}
 	if (!bJoined)
 	{
 		bJoined = true;

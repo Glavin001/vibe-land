@@ -22,7 +22,9 @@ class UVibeNetSubsystem;
  * Controls match the web client (client/src/input/bindings.ts): WASD move, mouse look, Space jump,
  * Left Shift sprint, C crouch, left mouse fire (held: repeats at the server's fire interval),
  * right mouse aim (75 -> 45 degree field of view, look slowed to 0.45), 1 / 2 / 3 rifle / cannon /
- * meteor, mouse wheel cycles, R resets the city (POST /city-reset, at most once a second).
+ * meteor, mouse wheel cycles, R resets the city (POST /city-reset, at most once a second), V melee,
+ * N the aerial camera (the web's scene/aerialFlight.ts: free flight at 30 m/s, x3 sprinting, Space
+ * and C up and down, gameplay input neutral; leaving drops the player where the camera is).
  */
 UCLASS()
 class VIBECITY_API AVibePlayerPawn : public APawn
@@ -38,6 +40,9 @@ public:
 
 	/** Whether the server has placed this player yet. */
 	bool IsJoined() const { return bJoined; }
+
+	/** In the aerial camera (N). */
+	bool IsAerial() const { return bAerial; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -91,6 +96,15 @@ private:
 	TObjectPtr<UInputAction> ResetAction;
 
 	void ResetCity();
+	void ToggleAerial();
+	void FlyAerial(float DeltaSeconds);
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> MeleeAction;
+	UPROPERTY(Transient)
+	TObjectPtr<UInputAction> AerialAction;
+	bool bAerial = false;
+	FVector AerialEye = FVector::ZeroVector;
 	void UpdateFieldOfView(float DeltaSeconds);
 	bool bAiming = false;
 	float VerticalFov = 75.0f;

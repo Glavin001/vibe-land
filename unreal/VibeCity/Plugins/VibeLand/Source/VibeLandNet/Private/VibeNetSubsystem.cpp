@@ -94,6 +94,25 @@ void UVibeNetSubsystem::SetInput(const VlInput& Input)
 	}
 }
 
+uint32 UVibeNetSubsystem::Melee()
+{
+	uint32 SwingId = 0;
+	if (Client)
+	{
+		vl_client_melee(Client, &SwingId);
+	}
+	return SwingId;
+}
+
+void UVibeNetSubsystem::CameraDrop(const FVector& Position, float YawDeg, float PitchDeg)
+{
+	if (Client)
+	{
+		const float Pos[3] = { static_cast<float>(Position.X), static_cast<float>(Position.Y), static_cast<float>(Position.Z) };
+		vl_client_camera_drop(Client, Pos, YawDeg, PitchDeg);
+	}
+}
+
 uint32 UVibeNetSubsystem::Fire(uint32 Weapon)
 {
 	uint32 ShotId = 0;
