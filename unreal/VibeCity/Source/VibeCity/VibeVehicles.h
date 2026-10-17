@@ -14,8 +14,9 @@ class USceneComponent;
  * The cars the city stream carries (VlCar, on the car clock), drawn from the parts the physics
  * simulates: when a car's asset arrives (VL_EVENT_VEHICLE_ASSET) its metadata.json is fetched from
  * the server and turned into a mesh by the shared core (vl_vehicle_mesh_build, off the game
- * thread). Each car is a chassis and, per wheel, a pivot at its hub that rides the suspension
- * travel and steers, carrying the knuckle, and inside it the spinning wheel and hub.
+ * thread). Each car is its chassis and the parts the web's suspension rig moves (wheels, hubs,
+ * knuckles, wishbones, uprights, dampers, springs, tie rods, half-shafts, steering wheel), each its
+ * own component posed every frame from the car's wheel states by the core (vl_vehicle_mesh_pose).
  *
  * Parts that come off a car (VlCarPart, the stream's detached groups) are taken off its mesh and
  * drawn on their own at the pose the stream gives them, as the web's presentVehicleDebris does.
@@ -33,8 +34,10 @@ public:
 	/** Where a car is now (for tests and HUD hints). */
 	TOptional<FVector> CarPosition(uint32 Handle) const;
 	TOptional<FQuat> CarRotation(uint32 Handle) const;
-	/** A wheel's world position (its spinning parts' pivot), for tests. */
+	/** A wheel's hub in the world at rest height (tests). */
 	TOptional<FVector> WheelPosition(uint32 Handle, int32 Wheel) const;
+	/** How many of a car's posed parts are away from rest now (more than 1 mm or 0.5 deg), and how many it has (tests). */
+	TPair<int32, int32> PosedPartsMoved(uint32 Handle) const;
 	/** The last wheel states drawn for a car, for tests. */
 	TOptional<VlCar> LastCar(uint32 Handle) const;
 	int32 CarCount() const { return Cars.Num(); }
@@ -51,10 +54,12 @@ private:
 	{
 		TObjectPtr<USceneComponent> Root;
 		TObjectPtr<UProceduralMeshComponent> Chassis;
-		TObjectPtr<USceneComponent> Pivots[4];
-		TObjectPtr<UProceduralMeshComponent> Knuckles[4];
-		TObjectPtr<USceneComponent> Spinners[4];
-		TObjectPtr<UProceduralMeshComponent> Wheels[4];
+		/** The core's mesh, kept to pose the rig each frame (vl_vehicle_mesh_pose). */
+		VlVehicleMesh* Mesh = nullptr;
+		/** The posed parts' rest frames, and the component each is drawn with. */
+		TArray<VlPosedPart> Posed;
+		TArray<TObjectPtr<UProceduralMeshComponent>> PosedMeshes;
+		TArray<VlPartPose> Poses;
 		FVector Hubs[4];
 		bool bBuilt = false;
 		bool bRequested = false;
@@ -74,6 +79,7 @@ private:
 	FCar& CarFor(uint32 Handle);
 	void RequestMesh(uint32 Handle);
 	void ApplyMesh(uint32 Handle, VlVehicleMesh* Mesh);
+	void PoseRig(FCar& Car, const VlCar& C);
 	UMaterialInstanceDynamic* MaterialFor(uint32 Rgba);
 
 	TMap<uint32, FCar> Cars;

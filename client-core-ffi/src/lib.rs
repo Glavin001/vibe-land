@@ -96,17 +96,14 @@ const _: () = {
     use vibe_client_core::frame as f;
     assert!(VL_EVENT_FRACTURE == f::VL_EVENT_FRACTURE && VL_CONTACT_IMPACT == f::VL_CONTACT_IMPACT && VL_CONTACT_SCRAPE == f::VL_CONTACT_SCRAPE);
 };
-/// `VlVehicleVertex::section`: the chassis; 1..=4 stream wheel (section - 1)'s spinning parts;
-/// 5..=8 its steering parts that do not spin.
+/// `VlVehicleVertex::section`: the chassis (still), or a part the suspension rig poses
+/// (`VlVehicleMeshView::posed`, `vl_vehicle_mesh_pose`).
 pub const VL_VEHICLE_SECTION_CHASSIS: u32 = 0;
-pub const VL_VEHICLE_SECTION_WHEEL: u32 = 1;
-pub const VL_VEHICLE_SECTION_KNUCKLE: u32 = 5;
-pub const VL_VEHICLE_SECTIONS: u32 = 9;
+pub const VL_VEHICLE_SECTION_POSED: u32 = 1;
 const _: () = {
     use vibe_client_core::vehicles as v;
     assert!(VL_EVENT_VEHICLE_ASSET == vibe_client_core::frame::VL_EVENT_VEHICLE_ASSET);
-    assert!(VL_VEHICLE_SECTION_CHASSIS == v::VL_VEHICLE_SECTION_CHASSIS && VL_VEHICLE_SECTION_WHEEL == v::VL_VEHICLE_SECTION_WHEEL);
-    assert!(VL_VEHICLE_SECTION_KNUCKLE == v::VL_VEHICLE_SECTION_KNUCKLE && VL_VEHICLE_SECTIONS == v::VL_VEHICLE_SECTIONS);
+    assert!(VL_VEHICLE_SECTION_CHASSIS == v::VL_VEHICLE_SECTION_CHASSIS && VL_VEHICLE_SECTION_POSED == v::VL_VEHICLE_SECTION_POSED);
 };
 /// `VlMeshRange::flags`: the mesh is the chunk's convex hull (else its box).
 pub const VL_MESH_HULL: u32 = 1;
@@ -552,6 +549,10 @@ pub struct VlVehicleMeshView {
     /// The actor frame is the source frame less this height: a `VlCarPart` transform applies to a
     /// vertex at `pos + origin_height * up`.
     pub origin_height: f32,
+    /// The parts the suspension rig moves, with their rest frames; `vl_vehicle_mesh_pose` gives
+    /// their frames now, in this order.
+    pub posed: *const vibe_client_core::vehicles::VlPosedPart,
+    pub posed_count: usize,
 }
 
 /// Build a car's mesh from its `metadata.json` bytes and (optionally, NUL-terminated JSON) its
@@ -587,8 +588,35 @@ pub unsafe extern "C" fn vl_vehicle_mesh_view(mesh: *const VlVehicleMesh, out: *
         hubs: mesh.mesh.hubs,
         wheel_radius: mesh.mesh.wheel_radius,
         origin_height: mesh.mesh.origin_height,
+        posed: mesh.mesh.posed.as_ptr(),
+        posed_count: mesh.mesh.posed.len(),
     });
     VL_OK
+}
+
+/// The posed parts' frames for a car's four wheels as drawn (`VlCar::wheels`): the web's
+/// suspension rig (wishbones solved for travel and steer, wheels spun). Writes up to `cap` poses,
+/// in `VlVehicleMeshView::posed` order, and returns how many it wrote (negative on error).
+///
+/// # Safety
+/// `mesh` must come from `vl_vehicle_mesh_build`; `wheels` must point to four wheels; `out` to `cap`.
+#[no_mangle]
+pub unsafe extern "C" fn vl_vehicle_mesh_pose(
+    mesh: *const VlVehicleMesh,
+    wheels: *const vibe_client_core::frame::VlWheel,
+    out: *mut vibe_client_core::vehicles::VlPartPose,
+    cap: usize,
+) -> i32 {
+    let (Some(mesh), false, false) = (mesh.as_ref(), wheels.is_null(), out.is_null()) else { return VL_ERR_ARG };
+    let wheels: &[vibe_client_core::frame::VlWheel; 4] = &*(wheels as *const [vibe_client_core::frame::VlWheel; 4]);
+    match catch_unwind(AssertUnwindSafe(|| mesh.mesh.pose(wheels))) {
+        Ok(poses) => {
+            let n = poses.len().min(cap);
+            std::ptr::copy_nonoverlapping(poses.as_ptr(), out, n);
+            n as i32
+        }
+        Err(_) => VL_ERR_PANIC,
+    }
 }
 
 /// Free a car mesh.

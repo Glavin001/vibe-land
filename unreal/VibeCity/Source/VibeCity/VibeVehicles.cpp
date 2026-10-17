@@ -25,12 +25,18 @@ namespace
 		return FLinearColor(FColor((Rgba >> 24) & 0xFF, (Rgba >> 16) & 0xFF, (Rgba >> 8) & 0xFF, Rgba & 0xFF));
 	}
 
-	/** The triangles of one section, grouped by colour, relative to `Origin`. */
+	/** The triangles of one component, grouped by colour. */
 	struct FSectionMesh
 	{
 		TMap<uint32, TArray<FVector>> Positions;
 		TMap<uint32, TArray<FVector>> Normals;
 	};
+
+	/** A posed part's frame (renderer space, actor frame; scale per the part's own axes). */
+	FTransform PartTransform(const float Pos[3], const float Quat[4], const float Scale[3])
+	{
+		return FTransform(FQuat(Quat[0], Quat[1], Quat[2], Quat[3]), FVector(Pos[0], Pos[1], Pos[2]), FVector(Scale[0], Scale[1], Scale[2]));
+	}
 }
 
 AVibeVehicles::AVibeVehicles()
@@ -50,6 +56,14 @@ void AVibeVehicles::BeginPlay()
 
 void AVibeVehicles::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	for (TPair<uint32, FCar>& Pair : Cars)
+	{
+		if (Pair.Value.Mesh)
+		{
+			vl_vehicle_mesh_destroy(Pair.Value.Mesh);
+			Pair.Value.Mesh = nullptr;
+		}
+	}
 	if (UVibeNetSubsystem* Net = NetFor(this))
 	{
 		Net->OnFrame.Remove(FrameHandle);
@@ -98,10 +112,6 @@ AVibeVehicles::FCar& AVibeVehicles::CarFor(uint32 Handle)
 	Car.Chassis = Mesh(Car.Root, FString::Printf(TEXT("Car%uChassis"), Handle));
 	for (int32 W = 0; W < 4; ++W)
 	{
-		Car.Pivots[W] = Scene(Car.Root, FString::Printf(TEXT("Car%uPivot%d"), Handle, W));
-		Car.Knuckles[W] = Mesh(Car.Pivots[W], FString::Printf(TEXT("Car%uKnuckle%d"), Handle, W));
-		Car.Spinners[W] = Scene(Car.Pivots[W], FString::Printf(TEXT("Car%uSpin%d"), Handle, W));
-		Car.Wheels[W] = Mesh(Car.Spinners[W], FString::Printf(TEXT("Car%uWheel%d"), Handle, W));
 		Car.Hubs[W] = FVector::ZeroVector;
 	}
 	return Car;
@@ -131,18 +141,9 @@ void AVibeVehicles::OnFrame(const VlFrameView& Frame)
 		}
 		Car.Root->SetWorldLocationAndRotation(FVector(C.pos[0], C.pos[1], C.pos[2]), FQuat(C.quat[0], C.quat[1], C.quat[2], C.quat[3]));
 		Car.Root->SetVisibility(true, true);
-		if (C.flags & VL_CAR_HAS_WHEELS)
+		if ((C.flags & VL_CAR_HAS_WHEELS) && Car.bBuilt)
 		{
-			for (int32 W = 0; W < 4; ++W)
-			{
-				const VlWheel& Wheel = C.wheels[W];
-				// Travel lifts the hub along the car's up; steer turns it about up. Unreal yaw is the
-				// server's negated (coords.rs); spin is about the car's lateral axis (server X is
-				// Unreal -Y), negated as the web's rig does.
-				Car.Pivots[W]->SetRelativeLocationAndRotation(Car.Hubs[W] + FVector(0.0, 0.0, Wheel.travel),
-					FRotator(0.0, -FMath::RadiansToDegrees(Wheel.steer), 0.0));
-				Car.Spinners[W]->SetRelativeRotation(FRotator(FMath::RadiansToDegrees(Wheel.spin), 0.0, 0.0));
-			}
+			PoseRig(Car, C);
 		}
 	}
 	for (TPair<uint32, FCar>& Pair : Cars)
@@ -251,6 +252,42 @@ void AVibeVehicles::RequestMesh(uint32 Handle)
 	Request->ProcessRequest();
 }
 
+void AVibeVehicles::PoseRig(FCar& Car, const VlCar& C)
+{
+	if (!Car.Mesh || Car.Posed.Num() == 0)
+	{
+		return;
+	}
+	Car.Poses.SetNumUninitialized(Car.Posed.Num(), EAllowShrinking::No);
+	const int32 N = vl_vehicle_mesh_pose(Car.Mesh, C.wheels, Car.Poses.GetData(), Car.Poses.Num());
+	for (int32 i = 0; i < FMath::Min(N, Car.PosedMeshes.Num()); ++i)
+	{
+		const VlPartPose& P = Car.Poses[i];
+		Car.PosedMeshes[i]->SetRelativeTransform(PartTransform(P.pos, P.quat, P.scale));
+	}
+}
+
+TPair<int32, int32> AVibeVehicles::PosedPartsMoved(uint32 Handle) const
+{
+	const FCar* Car = Cars.Find(Handle);
+	if (!Car)
+	{
+		return {0, 0};
+	}
+	int32 Moved = 0;
+	for (int32 i = 0; i < FMath::Min(Car->Posed.Num(), Car->PosedMeshes.Num()); ++i)
+	{
+		const VlPosedPart& R = Car->Posed[i];
+		const FTransform Now = Car->PosedMeshes[i]->GetRelativeTransform();
+		const FTransform Rest = PartTransform(R.rest_pos, R.rest_quat, R.rest_scale);
+		if (FVector::Dist(Now.GetLocation(), Rest.GetLocation()) > 0.1 || Now.GetRotation().AngularDistance(Rest.GetRotation()) > FMath::DegreesToRadians(0.5))
+		{
+			++Moved;
+		}
+	}
+	return {Moved, Car->Posed.Num()};
+}
+
 void AVibeVehicles::ApplyMesh(uint32 Handle, VlVehicleMesh* Mesh)
 {
 	if (!Mesh)
@@ -264,36 +301,78 @@ void AVibeVehicles::ApplyMesh(uint32 Handle, VlVehicleMesh* Mesh)
 	for (int32 W = 0; W < 4; ++W)
 	{
 		Car.Hubs[W] = FVector(View.hubs[W][0], View.hubs[W][1], View.hubs[W][2]);
-		Car.Pivots[W]->SetRelativeLocation(Car.Hubs[W]);
 	}
 	Car.Vertices = TArray<VlVehicleVertex>(View.vertices, static_cast<int32>(View.vertex_count));
 	Car.OriginHeight = View.origin_height;
+	Car.Posed = TArray<VlPosedPart>(View.posed, static_cast<int32>(View.posed_count));
+	for (int32 i = Car.PosedMeshes.Num(); i < Car.Posed.Num(); ++i)
+	{
+		UProceduralMeshComponent* C = NewObject<UProceduralMeshComponent>(this, *FString::Printf(TEXT("Car%uRig%d"), Handle, i));
+		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		C->SetMobility(EComponentMobility::Movable);
+		C->SetupAttachment(Car.Root);
+		C->RegisterComponent();
+		Car.PosedMeshes.Add(C);
+	}
+	for (int32 i = 0; i < Car.PosedMeshes.Num(); ++i)
+	{
+		Car.PosedMeshes[i]->SetVisibility(i < Car.Posed.Num());
+		if (i < Car.Posed.Num())
+		{
+			const VlPosedPart& R = Car.Posed[i];
+			Car.PosedMeshes[i]->SetRelativeTransform(PartTransform(R.rest_pos, R.rest_quat, R.rest_scale));
+		}
+	}
+	if (Car.Mesh)
+	{
+		vl_vehicle_mesh_destroy(Car.Mesh);
+	}
+	Car.Mesh = Mesh;
 	Rebuild(Handle, Car);
 	Car.bBuilt = true;
-	UE_LOG(LogVibeLand, Display, TEXT("car %u: built %zu triangles"), Handle, View.vertex_count / 3);
-	vl_vehicle_mesh_destroy(Mesh);
+	UE_LOG(LogVibeLand, Display, TEXT("car %u: built %zu triangles, %zu rig parts"), Handle, View.vertex_count / 3, View.posed_count);
 }
 
 void AVibeVehicles::Rebuild(uint32 Handle, FCar& Car)
 {
-	// Sort triangles into the components: chassis (actor frame), knuckles and wheels (hub frame);
-	// parts off the car are left out (they are drawn by LoosePart).
-	FSectionMesh Sections[VL_VEHICLE_SECTIONS];
+	// Sort triangles into the components: the chassis (actor frame) and each posed part (in its own
+	// rest frame, which the rig moves); parts off the car are left out (LoosePart draws them).
+	TMap<uint32, int32> PosedIndex;
+	TArray<FTransform> Rest;
+	for (int32 i = 0; i < Car.Posed.Num(); ++i)
+	{
+		PosedIndex.Add(Car.Posed[i].part, i);
+		Rest.Add(PartTransform(Car.Posed[i].rest_pos, Car.Posed[i].rest_quat, Car.Posed[i].rest_scale));
+	}
+	FSectionMesh Chassis;
+	TArray<FSectionMesh> Parts;
+	Parts.SetNum(Car.Posed.Num());
 	for (int32 i = 0; i + 2 < Car.Vertices.Num(); i += 3)
 	{
 		if (Car.Detached.Contains(Car.Vertices[i].part))
 		{
 			continue;
 		}
-		const uint32 Section = FMath::Min(Car.Vertices[i].section, (uint32)VL_VEHICLE_SECTIONS - 1);
 		const uint32 Color = Car.Vertices[i].color_rgba;
-		const FVector Origin = Section == VL_VEHICLE_SECTION_CHASSIS ? FVector::ZeroVector
-			: Car.Hubs[(Section - (Section >= VL_VEHICLE_SECTION_KNUCKLE ? VL_VEHICLE_SECTION_KNUCKLE : VL_VEHICLE_SECTION_WHEEL)) % 4];
+		const int32* Posed = Car.Vertices[i].section == VL_VEHICLE_SECTION_POSED ? PosedIndex.Find(Car.Vertices[i].part) : nullptr;
+		FSectionMesh& S = Posed ? Parts[*Posed] : Chassis;
 		for (int32 k = 0; k < 3; ++k)
 		{
 			const VlVehicleVertex& V = Car.Vertices[i + k];
-			Sections[Section].Positions.FindOrAdd(Color).Add(FVector(V.pos[0], V.pos[1], V.pos[2]) - Origin);
-			Sections[Section].Normals.FindOrAdd(Color).Add(FVector(V.normal[0], V.normal[1], V.normal[2]));
+			const FVector P(V.pos[0], V.pos[1], V.pos[2]);
+			const FVector Nrm(V.normal[0], V.normal[1], V.normal[2]);
+			if (Posed)
+			{
+				// Local to the rest frame; the normal by the inverse transpose (the scale, not its inverse).
+				const FTransform& T = Rest[*Posed];
+				S.Positions.FindOrAdd(Color).Add(T.InverseTransformPosition(P));
+				S.Normals.FindOrAdd(Color).Add((T.GetRotation().UnrotateVector(Nrm) * T.GetScale3D()).GetSafeNormal());
+			}
+			else
+			{
+				S.Positions.FindOrAdd(Color).Add(P);
+				S.Normals.FindOrAdd(Color).Add(Nrm);
+			}
 		}
 	}
 	auto Fill = [this](UProceduralMeshComponent* Component, FSectionMesh& S)
@@ -313,11 +392,10 @@ void AVibeVehicles::Rebuild(uint32 Handle, FCar& Car)
 			++Index;
 		}
 	};
-	Fill(Car.Chassis, Sections[VL_VEHICLE_SECTION_CHASSIS]);
-	for (int32 W = 0; W < 4; ++W)
+	Fill(Car.Chassis, Chassis);
+	for (int32 i = 0; i < FMath::Min(Parts.Num(), Car.PosedMeshes.Num()); ++i)
 	{
-		Fill(Car.Wheels[W], Sections[VL_VEHICLE_SECTION_WHEEL + W]);
-		Fill(Car.Knuckles[W], Sections[VL_VEHICLE_SECTION_KNUCKLE + W]);
+		Fill(Car.PosedMeshes[i], Parts[i]);
 	}
 }
 
@@ -399,7 +477,7 @@ TOptional<FQuat> AVibeVehicles::CarRotation(uint32 Handle) const
 TOptional<FVector> AVibeVehicles::WheelPosition(uint32 Handle, int32 Wheel) const
 {
 	const FCar* Car = Cars.Find(Handle);
-	return Car && Wheel >= 0 && Wheel < 4 && Car->Spinners[Wheel] ? TOptional<FVector>(Car->Spinners[Wheel]->GetComponentLocation()) : TOptional<FVector>();
+	return Car && Wheel >= 0 && Wheel < 4 && Car->Root ? TOptional<FVector>(Car->Root->GetComponentTransform().TransformPosition(Car->Hubs[Wheel])) : TOptional<FVector>();
 }
 
 TOptional<VlCar> AVibeVehicles::LastCar(uint32 Handle) const

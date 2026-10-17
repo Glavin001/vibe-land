@@ -145,16 +145,12 @@
 #define VL_CONTACT_SCRAPE 1
 
 /**
- * `VlVehicleVertex::section`: the chassis; 1..=4 stream wheel (section - 1)'s spinning parts;
- * 5..=8 its steering parts that do not spin.
+ * `VlVehicleVertex::section`: the chassis (still), or a part the suspension rig poses
+ * (`VlVehicleMeshView::posed`, `vl_vehicle_mesh_pose`).
  */
 #define VL_VEHICLE_SECTION_CHASSIS 0
 
-#define VL_VEHICLE_SECTION_WHEEL 1
-
-#define VL_VEHICLE_SECTION_KNUCKLE 5
-
-#define VL_VEHICLE_SECTIONS 9
+#define VL_VEHICLE_SECTION_POSED 1
 
 /**
  * `VlMeshRange::flags`: the mesh is the chunk's convex hull (else its box).
@@ -665,6 +661,18 @@ typedef struct VlVehicleVertex {
 } VlVehicleVertex;
 
 /**
+ * A part the rig moves, and its frame at rest (the wheels neutral). Renderer space, actor frame: a
+ * vertex `v` of the part (as built, at rest) sits at `rest_pos + rest_quat * (rest_scale * l)` for
+ * its local coordinates `l`; drawn posed at `pose.pos + pose.quat * (pose.scale * l)`.
+ */
+typedef struct VlPosedPart {
+  uint32_t part;
+  float rest_pos[3];
+  float rest_quat[4];
+  float rest_scale[3];
+} VlPosedPart;
+
+/**
  * A car mesh's arrays, valid until `vl_vehicle_mesh_destroy`.
  */
 typedef struct VlVehicleMeshView {
@@ -683,7 +691,23 @@ typedef struct VlVehicleMeshView {
    * vertex at `pos + origin_height * up`.
    */
   float origin_height;
+  /**
+   * The parts the suspension rig moves, with their rest frames; `vl_vehicle_mesh_pose` gives
+   * their frames now, in this order.
+   */
+  const struct VlPosedPart *posed;
+  size_t posed_count;
 } VlVehicleMeshView;
+
+/**
+ * A posed part's frame now (see [`VlPosedPart`]).
+ */
+typedef struct VlPartPose {
+  uint32_t part;
+  float pos[3];
+  float quat[4];
+  float scale[3];
+} VlPartPose;
 
 /**
  * One chunk of the city, fixed for the life of the manifest. Index = position in the chunk table.
@@ -1005,6 +1029,19 @@ struct VlVehicleMesh *vl_vehicle_mesh_build(const uint8_t *metadata,
  * `mesh` must come from `vl_vehicle_mesh_build`; `out` must be writable.
  */
 int32_t vl_vehicle_mesh_view(const struct VlVehicleMesh *mesh, struct VlVehicleMeshView *out);
+
+/**
+ * The posed parts' frames for a car's four wheels as drawn (`VlCar::wheels`): the web's
+ * suspension rig (wishbones solved for travel and steer, wheels spun). Writes up to `cap` poses,
+ * in `VlVehicleMeshView::posed` order, and returns how many it wrote (negative on error).
+ *
+ * # Safety
+ * `mesh` must come from `vl_vehicle_mesh_build`; `wheels` must point to four wheels; `out` to `cap`.
+ */
+int32_t vl_vehicle_mesh_pose(const struct VlVehicleMesh *mesh,
+                             const struct VlWheel *wheels,
+                             struct VlPartPose *out,
+                             size_t cap);
 
 /**
  * Free a car mesh.
