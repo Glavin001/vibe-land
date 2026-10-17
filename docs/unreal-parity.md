@@ -79,7 +79,6 @@ the web's fog curve (Gaussian) is thinner under 40 m.
 - **Dust look.** The web's dust is volumetric (fluid parcels). Unreal draws clusters of lit
   sprites; local fog volumes did not render in this configuration, and a Niagara system is the
   native upgrade.
-- **Remote players.** No crouch clips (the web's `Crouch_Idle_Loop` and crouch locomotion).
 - **Moving debris.** Bonds broken between two moving bodies are placed at rest for dust and
   sound. There is no dust budget in the core (Unreal recycles the faintest of 64 live puffs).
 - **Debug and admin tools** stay web-only: the stats overlay (match stats from `PKT_MATCH_STATS`,
