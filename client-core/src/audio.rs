@@ -101,6 +101,8 @@ pub enum SoundKind {
     Fracture,
     Collapse,
     Shot,
+    /// Something heavy and fast passing close by (motion.ts flyby).
+    Flyby,
 }
 
 /// One sound-worthy event (model.ts `SoundEvent`). `id` groups duplicates; `atMs` is on the
@@ -128,6 +130,8 @@ pub struct Mix {
 }
 
 pub const DEFAULT_MIX: Mix = Mix { impact: 1.0, detail: 0.8, bass: 0.9 };
+/// The cinematic mix's fly-by level (settings.ts MIXES.cinematic.flyby).
+const FLYBY_MIX: f32 = 1.0;
 
 /// `eventMix` (destructionMix.ts), balanced dynamic range.
 pub fn event_mix(e: &SoundEvent, s: Mix) -> (f32, f32, f32, f32) {
@@ -229,6 +233,21 @@ pub fn voices(e: &SoundEvent, listener: Vec3, now_ms: f64, mix: Mix, out: &mut V
     };
     let m = e.material.name();
     match e.kind {
+        SoundKind::Flyby => {
+            // engine.ts: the original flyby clips, a little faster than the body's own rate.
+            let level = (0.15 + intensity * 0.85) * FLYBY_MIX;
+            if let Some(clip) = clips.index(&format!("flyby-{}", variant % 4)) {
+                out.push(VlSound {
+                    clip,
+                    position: e.position.to_array(),
+                    gain: level,
+                    rate: (rate * 1.2).clamp(0.8, 1.5),
+                    delay_s,
+                    flags: flags | VL_SOUND_PROTECTED,
+                });
+            }
+            return;
+        }
         SoundKind::Shot => {
             let gun = if e.size <= 0.2 { "rifle" } else { "cannon" };
             push(format!("shot-{gun}-{}", variant % 3), hit, rate, 0.0);
@@ -289,13 +308,14 @@ impl AudioDirector {
     fn score(&self, e: &SoundEvent) -> f32 {
         let d = e.position.distance(self.listener);
         (if e.protected { 12.0 } else { 0.0 })
+            + (if e.kind == SoundKind::Flyby { 8.0 } else { 0.0 })
             + (if e.kind == SoundKind::Collapse { 2.0 } else { 0.0 })
             + e.intensity * 4.0
             - d.ln_1p() * 1.4
     }
 
     fn cell(e: &SoundEvent) -> u64 {
-        if e.protected || e.kind == SoundKind::Shot {
+        if e.protected || e.kind == SoundKind::Shot || e.kind == SoundKind::Flyby {
             return e.id;
         }
         let f = |v: f32| ((v / 5.0).floor() as i64) as u64;
@@ -386,6 +406,60 @@ impl AudioDirector {
 
     pub fn queued(&self) -> usize {
         self.pending.len()
+    }
+}
+
+/// A continuous sound this poll (engine.ts `continuous`): a renderer keeps one looping voice per
+/// `id`, moves it, sets its gain and rate each poll, and fades it out when a poll no longer lists it
+/// (the web releases a loop not updated for 220 ms).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlLoop {
+    pub id: u32,
+    pub clip: u32,
+    pub position: [f32; 3],
+    pub gain: f32,
+    pub rate: f32,
+    pub flags: u32,
+}
+
+/// The most loops at once (engine.ts keeps ten continuous voices).
+pub const MAX_LOOPS: usize = 10;
+
+/// Continuous sounds (scrapes) kept for their loops, with when each was last fed.
+#[derive(Default)]
+pub struct Loops {
+    live: HashMap<u32, (VlLoop, f64)>,
+}
+
+impl Loops {
+    /// A scrape contact (GameAudioLayer.tsx -> engine.ts `continuous`): `<material>-scrape`,
+    /// rate with sliding speed, gain 0.32 × intensity × detail, attenuated like every voice.
+    pub fn scrape(&mut self, id: u32, position: Vec3, material: AcousticMaterial, speed: f32, intensity: f32, listener: Vec3, now_ms: f64, mix: Mix) {
+        let d = position.distance(listener);
+        if !(position.is_finite() && intensity.is_finite() && speed.is_finite()) || intensity < 0.015 || d > 180.0 {
+            return;
+        }
+        let Some(clip) = Clips::get().index(&format!("{}-scrape", material.name())) else { return };
+        let gain = clamp01(intensity) * 0.32 * mix.detail * source_attenuation(d, 1.0);
+        let rate = (0.62 + speed * 0.045).clamp(0.55, 1.65);
+        let record = VlLoop { id, clip, position: position.to_array(), gain, rate, flags: 0 };
+        if !self.live.contains_key(&id) && self.live.len() >= MAX_LOOPS {
+            // Replace the weakest only for a clearly stronger newcomer (engine.ts).
+            let score = |l: &VlLoop| l.gain;
+            let Some((&weakest, _)) = self.live.iter().min_by(|a, b| score(&a.1 .0).total_cmp(&score(&b.1 .0))) else { return };
+            if gain * 0.32 <= score(&self.live[&weakest].0) * 1.25 {
+                return;
+            }
+            self.live.remove(&weakest);
+        }
+        self.live.insert(id, (record, now_ms));
+    }
+
+    /// The loops still fed within 220 ms, for this poll.
+    pub fn current(&mut self, now_ms: f64, out: &mut Vec<VlLoop>) {
+        self.live.retain(|_, (_, at)| now_ms - *at <= 220.0);
+        out.extend(self.live.values().map(|(l, _)| *l));
     }
 }
 
@@ -623,5 +697,25 @@ mod tests {
         bad[8 + 12 + 8 * 4..8 + 12 + 9 * 4].copy_from_slice(&1.5f32.to_le_bytes()); // intensity > 1
         assert!(decode_audio_contacts(&bad).is_none());
         assert!(decode_audio_contacts(&b[..b.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn scrapes_become_loops_that_expire_and_flybys_play_flyby_clips() {
+        let mut loops = Loops::default();
+        loops.scrape(7, Vec3::new(3.0, 0.0, 0.0), AcousticMaterial::Concrete, 4.0, 0.6, Vec3::ZERO, 0.0, DEFAULT_MIX);
+        let mut out = Vec::new();
+        loops.current(100.0, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(Clips::get().ids[out[0].clip as usize], "concrete-scrape");
+        assert!((out[0].rate - (0.62 + 4.0 * 0.045)).abs() < 1e-6);
+        out.clear();
+        loops.current(400.0, &mut out);
+        assert!(out.is_empty(), "released 220 ms after its last contact");
+        let e = SoundEvent { id: 9, kind: SoundKind::Flyby, position: Vec3::new(2.0, 0.0, 0.0), material: AcousticMaterial::Concrete, intensity: 0.7, size: 1.0, seed: 3, at_ms: 0.0, protected: true };
+        let mut v = Vec::new();
+        voices(&e, Vec3::ZERO, 0.0, DEFAULT_MIX, &mut v);
+        assert_eq!(v.len(), 1);
+        assert!(Clips::get().ids[v[0].clip as usize].starts_with("flyby-"));
+        assert_eq!(v[0].flags & VL_SOUND_PROTECTED, VL_SOUND_PROTECTED);
     }
 }

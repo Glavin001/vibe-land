@@ -409,6 +409,24 @@ impl ClientCore {
             ..Default::default()
         };
         if let Some(city) = self.city.as_mut() {
+            // Shots this poll, remembered so the breaks they make are recognised as their entry
+            // (effects.rs; the web registers each tracer the same way, vfx/dustShots.ts).
+            let space = self.space;
+            for e in &self.frame.events {
+                match e.kind {
+                    crate::frame::VL_EVENT_LOCAL_SHOT => city.source_state.shots.register(
+                        space.pos_to_server(e.p0),
+                        space.pos_to_server(e.p1),
+                        None,
+                        now_ms,
+                    ),
+                    crate::frame::VL_EVENT_SHOT_FIRED => {
+                        let (o, end) = (space.pos_to_server(e.p0), space.pos_to_server(e.p1));
+                        city.source_state.shots.register(o, end - o, Some(end), now_ms);
+                    }
+                    _ => {}
+                }
+            }
             if let Some(r) = city.advance(now_ms, &mut self.frame) {
                 stats.city_render_tick = r;
             }

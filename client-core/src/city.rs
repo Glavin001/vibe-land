@@ -19,7 +19,7 @@ use vibe_land_perplayer::wire::{
 };
 
 use crate::coords::Space;
-use crate::effects::{classify_motion_impact, MotionSample, Source, SourceKind, SourceTable};
+use crate::effects::{classify_motion_impact, MotionSample, Source, SourceKind, SourceState, SourceTable};
 use crate::frame::*;
 
 /// Playout delay of the city stream, ticks (the browser's `delayTicks`).
@@ -81,6 +81,8 @@ pub struct CityStream {
     /// Destruction sources (fractures, crushed chunks, impacts) since the last drain, server space.
     pub(crate) sources: Vec<Source>,
     source_table: SourceTable,
+    /// Entry, shed and wave memory (quiet cells, recent shots, impact cells).
+    pub(crate) source_state: SourceState,
     physics: Physics,
     sim_hz: u32,
     /// Per moving body: its last motion sample and when it last raised an impact (ms).
@@ -144,6 +146,7 @@ impl CityStream {
             acks_sent: 0,
             sources: Vec::new(),
             source_table: SourceTable::new(manifest),
+            source_state: SourceState::default(),
             physics,
             sim_hz,
             motion: HashMap::new(),
@@ -181,12 +184,17 @@ impl CityStream {
                     // Where it broke and how much: bonds clustered by cell, crushed chunks. Parted =
                     // the bond's two chunks now ride different bodies (the fracture is applied).
                     let client = &self.client;
+                    let born: Vec<(Vec3, f32)> =
+                        changed.iter().map(|(_, members)| self.source_table.island(structure, members)).collect();
                     self.source_table.fracture_sources(
                         structure,
                         tick,
                         &broken_bonds,
                         &removed_chunks,
+                        &born,
                         |a, b| client.chunk_body(structure, a) != client.chunk_body(structure, b),
+                        &mut self.source_state,
+                        now_ms,
                         &mut self.sources,
                     );
                     let mut sum = [0.0f32; 3];
@@ -300,6 +308,9 @@ impl CityStream {
             let previous = MotionSample { mass, ..previous };
             if let Some((energy, intensity)) = classify_motion_impact(&previous, &weighed) {
                 impact_at = time_ms;
+                // Collapse fronts: impacts' impulse (mass × |Δv|) per 8 m cell (dustImpacts.ts).
+                let impulse = mass * (weighed.velocity - previous.velocity).length();
+                self.source_state.note_impact(key.structure, render_tick as u32, position, impulse, time_ms, &mut self.sources);
                 let material = members.first().map_or(0, |&n| self.source_table.material_of(key.structure, n));
                 self.sources.push(Source {
                     kind: SourceKind::Impact,

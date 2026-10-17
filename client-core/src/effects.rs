@@ -7,9 +7,12 @@
 //! web's dust units and the material of the largest bond; a chunk removed by a fracture (crushed to
 //! dust) is a source of its whole mass; a body whose velocity drops sharply hit something.
 //!
-//! Not yet ported: the entry (first break of a shot), shed (a moving island's birth) and collapse
-//! wave kinds, and bonds broken between two moving bodies are placed at their rest positions.
-//! Positions are in server space.
+//! Also as the web: the first break in a quiet cell along a recent shot is that shot's entry (spall
+//! toward the shooter, twice the dust), a heavy island born in a fracture sheds dust of its own, and
+//! many heavy impacts in one place within half a second raise a collapse wave. One approximation:
+//! the per-player stream carries no velocity at an island's birth, so shedding goes by mass alone
+//! (the web also sheds a light island moving faster than 1 m/s). Bonds broken between two moving
+//! bodies are placed at their rest positions. Positions are in server space.
 
 use std::collections::HashMap;
 
@@ -36,6 +39,151 @@ pub enum SourceKind {
     Fracture,
     Crush,
     Impact,
+    /// The first break of a shot (destructionEvents.ts KIND_ENTRY).
+    Entry,
+    /// A heavy island born in a fracture (KIND_SHED).
+    Shed,
+    /// Many impacts in one place at once: a collapse front (dustImpacts.ts noteWave).
+    Wave,
+}
+
+/// A cell with no fracture for this long is quiet; the next break there may be an entry.
+const ENTRY_QUIET_MS: f64 = 1000.0;
+/// An island at least this heavy sheds dust of its own (DEFAULT_DUST_EXTRACT_OPTIONS.minShedMassKg).
+const MIN_SHED_MASS_KG: f32 = 5000.0;
+/// Dust units per kilogram of shed island.
+const SHED_KG_PER_UNIT: f32 = 500.0;
+/// Collapse waves (dustImpacts.ts DEFAULT_DUST_IMPACT_OPTIONS).
+const WAVE_CELL_M: f32 = 8.0;
+const WAVE_WINDOW_MS: f64 = 500.0;
+const WAVE_IMPULSE: f32 = 100_000.0;
+const WAVE_COOLDOWN_MS: f64 = 2000.0;
+const IMPULSE_PER_UNIT: f32 = 4000.0;
+/// Shots remembered for entry matching (vfx/dustShots.ts).
+const SHOT_TTL_MS: f64 = 5000.0;
+const SHOT_MAX_USES: u32 = 3;
+const SHOT_CORRIDOR_M: f32 = 5.0;
+const SHOT_END_M: f32 = 6.0;
+const MAX_SHOTS: usize = 32;
+
+/// A shot remembered so the break it makes can be recognised (vfx/dustShots.ts `DustShot`).
+#[derive(Clone, Copy, Debug)]
+struct DustShot {
+    origin: Vec3,
+    dir: Vec3,
+    end: Option<Vec3>,
+    at_ms: f64,
+    uses: u32,
+}
+
+/// Recent shots, oldest first.
+#[derive(Default)]
+pub struct ShotMemory {
+    shots: Vec<DustShot>,
+}
+
+impl ShotMemory {
+    /// A shot from `origin` along `dir`, ending at `end` when the server resolved it (hitscan).
+    pub fn register(&mut self, origin: Vec3, dir: Vec3, end: Option<Vec3>, at_ms: f64) {
+        let dir = dir.normalize_or_zero();
+        if dir == Vec3::ZERO && end.is_none() {
+            return;
+        }
+        self.shots.push(DustShot { origin, dir, end, at_ms, uses: 0 });
+        if self.shots.len() > MAX_SHOTS {
+            self.shots.remove(0);
+        }
+    }
+
+    /// `matchDustShot`: the newest shot whose end or corridor (sagging for a thrown ball) passes
+    /// `p`, used at most three times.
+    fn match_shot(&mut self, p: Vec3, now_ms: f64) -> Option<Vec3> {
+        self.shots.retain(|s| now_ms - s.at_ms <= SHOT_TTL_MS);
+        for s in self.shots.iter_mut().rev() {
+            if s.uses >= SHOT_MAX_USES {
+                continue;
+            }
+            if let Some(end) = s.end {
+                if p.distance(end) <= SHOT_END_M {
+                    s.uses += 1;
+                    return Some(s.origin);
+                }
+            }
+            let t = (p - s.origin).dot(s.dir);
+            if t < 0.0 {
+                continue;
+            }
+            let sag = if s.end.is_none() { (0.5 * (t / 20.0) * (t / 20.0) * 9.81).min(12.0) } else { 0.0 };
+            let c = s.origin + s.dir * t - Vec3::Y * (sag * 0.5);
+            if p.distance(c) <= SHOT_CORRIDOR_M + sag * 0.5 {
+                s.uses += 1;
+                return Some(s.origin);
+            }
+        }
+        None
+    }
+}
+
+struct WaveCell {
+    impulse: f32,
+    since: f64,
+    lowest_y: f32,
+    x: f32,
+    z: f32,
+    count: u32,
+    last_wave_ms: f64,
+}
+
+/// The per-session memory source extraction keeps: quiet cells for entries, shots, wave cells.
+#[derive(Default)]
+pub struct SourceState {
+    quiet: HashMap<(u32, i32, i32, i32), f64>,
+    pub shots: ShotMemory,
+    waves: HashMap<(i32, i32), WaveCell>,
+    wave_ordinal: u32,
+}
+
+impl SourceState {
+    /// `noteWave`: an impact of `impulse` (N·s) at `p`; a collapse wave once a cell's impacts in
+    /// half a second sum past 100 000 N·s (at most every 2 s per cell).
+    pub fn note_impact(&mut self, structure: u32, tick: u32, p: Vec3, impulse: f32, at_ms: f64, out: &mut Vec<Source>) {
+        let key = ((p.x / WAVE_CELL_M).floor() as i32, (p.z / WAVE_CELL_M).floor() as i32);
+        let cell = self.waves.entry(key).or_insert(WaveCell { impulse: 0.0, since: at_ms, lowest_y: f32::INFINITY, x: 0.0, z: 0.0, count: 0, last_wave_ms: f64::NEG_INFINITY });
+        if at_ms - cell.since > WAVE_WINDOW_MS {
+            *cell = WaveCell { impulse: 0.0, since: at_ms, lowest_y: f32::INFINITY, x: 0.0, z: 0.0, count: 0, last_wave_ms: cell.last_wave_ms };
+        }
+        cell.impulse += impulse;
+        cell.count += 1;
+        cell.x += p.x;
+        cell.z += p.z;
+        cell.lowest_y = cell.lowest_y.min(p.y);
+        if cell.impulse < WAVE_IMPULSE || at_ms - cell.last_wave_ms < WAVE_COOLDOWN_MS {
+            return;
+        }
+        cell.last_wave_ms = at_ms;
+        self.wave_ordinal = (self.wave_ordinal + 1) & 0xffff;
+        let n = cell.count as f32;
+        out.push(Source {
+            kind: SourceKind::Wave,
+            structure,
+            tick,
+            ordinal: self.wave_ordinal,
+            position: Vec3::new(cell.x / n, cell.lowest_y.max(0.3), cell.z / n),
+            normal: Vec3::Y,
+            magnitude: cell.impulse / IMPULSE_PER_UNIT,
+            count: cell.count,
+            material: 0,
+            intensity: 0.0,
+        });
+        cell.impulse = 0.0;
+        cell.count = 0;
+        cell.x = 0.0;
+        cell.z = 0.0;
+        cell.lowest_y = f32::INFINITY;
+        if self.waves.len() > 512 {
+            self.waves.retain(|_, c| at_ms - c.since <= WAVE_WINDOW_MS * 4.0);
+        }
+    }
 }
 
 /// One clustered destruction event (destructionEvents.ts `DustSource`).
@@ -142,13 +290,17 @@ impl SourceTable {
     /// The sources of one fracture: broken bonds clustered per 4 m cell (weighted by area, a bond
     /// whose chunks did not part at 15%), and each removed chunk as a crush source of its mass.
     /// `parted(a, b)` says whether two chunks of `structure` now ride different bodies.
+    #[allow(clippy::too_many_arguments)]
     pub fn fracture_sources(
         &self,
         structure: u32,
         tick: u32,
         broken_bonds: &[u32],
         removed_chunks: &[u32],
+        born: &[(Vec3, f32)],
         parted: impl Fn(u32, u32) -> bool,
+        state: &mut SourceState,
+        now_ms: f64,
         out: &mut Vec<Source>,
     ) {
         let Some(s) = self.structures.get(&structure) else { return };
@@ -191,6 +343,23 @@ impl SourceTable {
             let material = s.chunk_material.get(chunk).copied().unwrap_or(0);
             add(1, pos, mass, Vec3::ZERO, mass / CRUSH_KG_PER_UNIT, material);
         }
+        // Islands born in this fracture: a heavy one sheds dust of its own; a light one adds a
+        // quarter of its units to the fracture around it (the web's static-fracture rule).
+        let mut folded: Vec<(Vec3, f32)> = Vec::new();
+        for &(pos, mass) in born {
+            let units = mass / SHED_KG_PER_UNIT;
+            if mass >= MIN_SHED_MASS_KG {
+                add(2, pos, mass, Vec3::ZERO, units, 0);
+            } else {
+                folded.push((pos, units * 0.25));
+            }
+        }
+        for (pos, units) in folded {
+            let key = (0u8, (pos.x / CELL_SIZE_M).floor() as i32, (pos.y / CELL_SIZE_M).floor() as i32, (pos.z / CELL_SIZE_M).floor() as i32);
+            if let Some(a) = cells.get_mut(&key) {
+                a.magnitude += units;
+            }
+        }
         // Ordinals by cell key (stable for a given fracture), then the largest kept.
         let mut keyed: Vec<_> = cells.into_iter().collect();
         keyed.sort_by_key(|(k, _)| *k);
@@ -199,7 +368,11 @@ impl SourceTable {
             .enumerate()
             .filter(|(_, (_, a))| a.w > 0.0)
             .map(|(ordinal, ((kind, ..), a))| Source {
-                kind: if kind == 0 { SourceKind::Fracture } else { SourceKind::Crush },
+                kind: match kind {
+                    0 => SourceKind::Fracture,
+                    1 => SourceKind::Crush,
+                    _ => SourceKind::Shed,
+                },
                 structure,
                 tick,
                 ordinal: ordinal as u32,
@@ -213,7 +386,38 @@ impl SourceTable {
             .collect();
         sources.sort_by(|a, b| b.magnitude.total_cmp(&a.magnitude));
         sources.truncate(MAX_SOURCES_PER_FRACTURE);
+        // The first break in a quiet cell along a shot's path is that shot landing: spall on the
+        // near face, thrown back toward the shooter, twice the dust.
+        for source in sources.iter_mut().filter(|s| s.kind == SourceKind::Fracture) {
+            let p = source.position;
+            let key = (structure, (p.x / CELL_SIZE_M).floor() as i32, (p.y / CELL_SIZE_M).floor() as i32, (p.z / CELL_SIZE_M).floor() as i32);
+            let last = state.quiet.insert(key, now_ms);
+            if last.is_none_or(|t| now_ms - t > ENTRY_QUIET_MS) {
+                if let Some(origin) = state.shots.match_shot(p, now_ms) {
+                    source.kind = SourceKind::Entry;
+                    source.magnitude *= 2.0;
+                    let toward = (origin - p).normalize_or_zero();
+                    source.normal = (toward + source.normal * 0.5).normalize_or_zero();
+                }
+            }
+        }
+        if state.quiet.len() > 4096 {
+            state.quiet.retain(|_, t| now_ms - *t <= ENTRY_QUIET_MS);
+        }
         out.extend(sources);
+    }
+
+    /// An island of chunks at rest: its centre of mass (world, server space) and mass.
+    pub fn island(&self, structure: u32, chunks: &[u32]) -> (Vec3, f32) {
+        let Some(s) = self.structures.get(&structure) else { return (Vec3::ZERO, 0.0) };
+        let (mut weighted, mut mass) = (Vec3::ZERO, 0.0f32);
+        for c in chunks {
+            if let (Some(&p), Some(&m)) = (s.chunk_pos.get(c), s.chunk_mass.get(c)) {
+                weighted += p * m;
+                mass += m;
+            }
+        }
+        (if mass > 0.0 { weighted / mass } else { Vec3::ZERO }, mass)
     }
 
     /// Mass of a set of chunks of `structure`, kg.
@@ -305,8 +509,11 @@ pub fn classify_motion_impact(previous: &MotionSample, current: &MotionSample) -
 /// `soundFromDestruction` (gameEvents.ts): a fracture or crush source as a sound.
 pub fn sound_from_source(source: &Source, material: AcousticMaterial, at_ms: f64) -> Option<SoundEvent> {
     let kind = match source.kind {
+        // Island release is not a collision (gameEvents.ts soundFromDestruction).
+        SourceKind::Shed => return None,
         SourceKind::Impact => SoundKind::Impact,
-        SourceKind::Fracture | SourceKind::Crush => SoundKind::Fracture,
+        SourceKind::Wave => SoundKind::Collapse,
+        SourceKind::Fracture | SourceKind::Crush | SourceKind::Entry => SoundKind::Fracture,
     };
     let magnitude = source.magnitude.max(0.0);
     let (intensity, size) = if source.kind == SourceKind::Impact {
@@ -354,14 +561,14 @@ mod tests {
         let mut broken = near.clone();
         broken.push(far);
         let mut out = Vec::new();
-        t.fracture_sources(structure, 10, &broken, &[], |_, _| true, &mut out);
+        t.fracture_sources(structure, 10, &broken, &[], &[], |_, _| true, &mut SourceState::default(), 0.0, &mut out);
         assert!(out.len() >= 2, "the far bond is its own source");
         let total: f32 = out.iter().map(|s| s.magnitude).sum();
         let area: f32 = broken.iter().map(|b| s.bonds[b].area).sum();
         assert!((total - 3.0 * area).abs() < 1e-3 * total.max(1.0), "magnitude = 3·Σarea");
         // Unparted bonds count 15%.
         let mut unparted = Vec::new();
-        t.fracture_sources(structure, 10, &broken, &[], |_, _| false, &mut unparted);
+        t.fracture_sources(structure, 10, &broken, &[], &[], |_, _| false, &mut SourceState::default(), 0.0, &mut unparted);
         let total_u: f32 = unparted.iter().map(|s| s.magnitude).sum();
         assert!((total_u - 0.15 * total).abs() < 1e-3 * total.max(1.0));
     }
@@ -372,7 +579,7 @@ mod tests {
         let (&structure, s) = t.structures.iter().next().unwrap();
         let (&chunk, &mass) = s.chunk_mass.iter().next().unwrap();
         let mut out = Vec::new();
-        t.fracture_sources(structure, 3, &[], &[chunk], |_, _| true, &mut out);
+        t.fracture_sources(structure, 3, &[], &[chunk], &[], |_, _| true, &mut SourceState::default(), 0.0, &mut out);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, SourceKind::Crush);
         assert!((out[0].magnitude - mass / 100.0).abs() < 1e-3);
@@ -388,5 +595,57 @@ mod tests {
         assert!(classify_motion_impact(&at(0.0, Vec3::new(0.0, -8.0, 0.0)), &at(16.7, Vec3::new(0.0, -8.164, 0.0))).is_none());
         // Slow drift slowing down: not a hit.
         assert!(classify_motion_impact(&at(0.0, Vec3::new(1.0, 0.0, 0.0)), &at(16.7, Vec3::ZERO)).is_none());
+    }
+
+    #[test]
+    fn a_shots_first_break_is_its_entry_and_later_breaks_are_not() {
+        let t = table();
+        let (&structure, s) = t.structures.iter().next().unwrap();
+        let (&bond, b) = s.bonds.iter().next().unwrap();
+        let mut state = SourceState::default();
+        // A rifle shot from 20 m away straight at the bond.
+        let origin = b.centroid + Vec3::new(20.0, 0.0, 0.0);
+        state.shots.register(origin, b.centroid - origin, Some(b.centroid), 0.0);
+        let mut out = Vec::new();
+        t.fracture_sources(structure, 5, &[bond], &[], &[], |_, _| true, &mut state, 100.0, &mut out);
+        assert_eq!(out[0].kind, SourceKind::Entry);
+        assert!(out[0].normal.x > 0.5, "faces the shooter");
+        // The same cell breaking again 200 ms later is no longer quiet: a plain fracture.
+        let mut again = Vec::new();
+        t.fracture_sources(structure, 6, &[bond], &[], &[], |_, _| true, &mut state, 300.0, &mut again);
+        assert_eq!(again[0].kind, SourceKind::Fracture);
+        assert!((out[0].magnitude - 2.0 * again[0].magnitude).abs() < 1e-4);
+    }
+
+    #[test]
+    fn heavy_islands_shed_and_light_ones_fold_into_their_fracture() {
+        let t = table();
+        let (&structure, s) = t.structures.iter().next().unwrap();
+        let (&bond, b) = s.bonds.iter().next().unwrap();
+        let mut out = Vec::new();
+        t.fracture_sources(structure, 5, &[bond], &[], &[(b.centroid + Vec3::Y * 20.0, 8000.0)], |_, _| true, &mut SourceState::default(), 0.0, &mut out);
+        assert!(out.iter().any(|s| s.kind == SourceKind::Shed && (s.magnitude - 16.0).abs() < 1e-3));
+        let mut light = Vec::new();
+        t.fracture_sources(structure, 5, &[bond], &[], &[(b.centroid, 1000.0)], |_, _| true, &mut SourceState::default(), 0.0, &mut light);
+        let plain = 3.0 * b.area;
+        assert!(light.iter().all(|s| s.kind != SourceKind::Shed));
+        assert!((light[0].magnitude - (plain + 0.5)).abs() < 1e-3, "a quarter of 2 units folded in");
+    }
+
+    #[test]
+    fn many_heavy_impacts_in_one_place_raise_a_collapse_wave() {
+        let mut state = SourceState::default();
+        let mut out = Vec::new();
+        for i in 0..4 {
+            state.note_impact(1, 10, Vec3::new(1.0 + i as f32, 2.0, 1.0), 30_000.0, 100.0 + f64::from(i) * 50.0, &mut out);
+        }
+        assert_eq!(out.len(), 1, "120 000 N·s within 500 ms in one 8 m cell");
+        assert_eq!(out[0].kind, SourceKind::Wave);
+        assert!((out[0].magnitude - 120_000.0 / 4000.0).abs() < 1e-3);
+        // Cooling down: more impacts right after raise nothing.
+        for i in 0..4 {
+            state.note_impact(1, 11, Vec3::new(1.0, 2.0, 1.0), 30_000.0, 400.0 + f64::from(i) * 10.0, &mut out);
+        }
+        assert_eq!(out.len(), 1);
     }
 }
