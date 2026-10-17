@@ -320,7 +320,7 @@ bool FVibeCityRenderCompare::RunTest(const FString& Parameters)
 			return false;
 		}
 		FString Text = TEXT("0,14,140,0,6,0");
-		FParse::Value(FCommandLine::Get(), TEXT("VibeCapture="), Text);
+		FParse::Value(FCommandLine::Get(), TEXT("VibeCapture="), Text, /*bShouldStopOnSeparator=*/false);
 		FVector3f P, T;
 		float Fov = 0.0f;
 		TestTrue(TEXT("capture pose parses"), VibeCityCapture::Parse(Text, P, T, Fov));

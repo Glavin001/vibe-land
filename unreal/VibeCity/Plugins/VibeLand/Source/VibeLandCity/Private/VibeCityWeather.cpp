@@ -49,8 +49,9 @@ AVibeCityWeather::AVibeCityWeather()
 	RootComponent = Particles;
 	Particles->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	Particles->SetCastShadow(false);
-	// The material moves every particle into a box around the camera: never cull the mesh.
-	Particles->SetBoundsScale(10000.0f);
+	// The material moves every particle into a box around the camera: never cull the mesh. Build()
+	// sizes its bounds to the whole play area (a fixed 10 000 scale put them hundreds of kilometres
+	// out, past what the renderer's shadow views can place: DoubleFloat's OriginMax ensure).
 }
 
 AVibeCityWeather::FUnrealFog AVibeCityWeather::UnrealFog(float Intensity)
@@ -130,6 +131,8 @@ void AVibeCityWeather::SetWeather(int32 InPreset, float Intensity)
 
 void AVibeCityWeather::Build(int32 Count, float BoxCm)
 {
+	// Bounds 10 km across around the world origin hold the camera's box anywhere in the city.
+	Particles->SetBoundsScale(FMath::Max(1.0f, 1000000.0f / FMath::Max(BoxCm, 1.0f)));
 	Particles->ClearAllMeshSections();
 	Drawn = Count;
 	if (Count <= 0)

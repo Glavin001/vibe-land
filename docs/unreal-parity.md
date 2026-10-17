@@ -85,6 +85,11 @@ the web's fog curve (Gaussian) is thinner under 40 m.
 
 ## Deliberate differences
 
+Side by side at the same poses on the same city (`compare-web.mjs` and `VibeCity.Render.Compare
+-VibeCapture=...`, 2026-10-17): from (-18, 5, -16) toward (-42, 4, -42), Unreal draws the catalog's
+brick, concrete and timber from its 2K sets with the sun's shadows; the web draws its 1K array
+textures under its environment light.
+
 The owner's direction (2026-10-17): Unreal need not match the web's look; it should use what Unreal
 does better and match /city's function.
 
