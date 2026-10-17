@@ -213,6 +213,41 @@ impl SourceTable {
     }
 }
 
+/// A dust puff for a renderer: where, which way it billows, how big it grows and for how long.
+/// Presentation, sized from the source's dust units: a renderer draws it as soft particles.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlDust {
+    pub position: [f32; 3],
+    /// Outward face direction (unit, or zero): the puff drifts this way.
+    pub normal: [f32; 3],
+    /// Final radius of the cloud.
+    pub radius: f32,
+    /// Seconds from appearing to gone.
+    pub lifetime_s: f32,
+    /// 0xRRGGBBAA.
+    pub color_rgba: u32,
+    pub flags: u32,
+}
+
+impl Source {
+    /// The puff this source raises: radius growing with the cube root of its dust units (a volume
+    /// of dust), lifetime with its square root, tinted toward pale grey from `material_rgba`.
+    pub fn dust(&self, material_rgba: u32) -> VlDust {
+        let m = self.magnitude.max(0.0);
+        let mix = |c: u32| ((c as f32) * 0.35 + 190.0 * 0.65) as u32;
+        let (r, g, b) = ((material_rgba >> 24) & 0xff, (material_rgba >> 16) & 0xff, (material_rgba >> 8) & 0xff);
+        VlDust {
+            position: self.position.to_array(),
+            normal: self.normal.to_array(),
+            radius: (0.6 + 1.4 * m.cbrt()).min(12.0),
+            lifetime_s: (2.0 + 1.2 * m.sqrt()).min(9.0),
+            color_rgba: (mix(r) << 24) | (mix(g) << 16) | (mix(b) << 8) | 0xff,
+            flags: 0,
+        }
+    }
+}
+
 /// One body sample for the impact classifier.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotionSample {
