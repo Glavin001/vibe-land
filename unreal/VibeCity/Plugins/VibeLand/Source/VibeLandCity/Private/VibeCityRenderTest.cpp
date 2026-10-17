@@ -14,6 +14,8 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "HAL/IConsoleManager.h"
+#include "Camera/PlayerCameraManager.h"
+#include "GameFramework/PlayerController.h"
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Misc/AutomationTest.h"
@@ -563,6 +565,132 @@ bool FVibeCityRenderImportedCity::RunTest(const FString& Parameters)
 		return true;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
+	return true;
+}
+
+// VibeCity.Render.Dust: dust parcels as the core's policy makes them (dust.rs, the web's
+// dustPolicy.ts), drawn without a server: one of each shape put 6 m ahead of the camera. Each is
+// drawn at once, grows and rises as the web's curves say (dustParcelStore.ts evalParcel: radius
+// (r0 + growth·sqrt(t))·radius0, rise·(1 - e^-0.35t)), and is gone after its shape's life (an
+// entry puff's 5 s). -VibeShotDir saves dust.png.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityRenderDust, "VibeCity.Render.Dust",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityRenderDust::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		double Started = 0.0;
+		int32 First = INDEX_NONE;
+		TArray<FBox> AtBirth;
+		/** Game time at the injection: dust ages in game time, which a slow frame clamps. */
+		double BornGameS = 0.0;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	// The web's shapes: (r0, growth, rise, life), dustParcelStore.ts DUST_SHAPES.
+	static const double Curves[5][4] = { {1.0, 0.9, 2.0, 10}, {1.2, 1.3, 1.2, 14}, {0.8, 0.9, 2.0, 12}, {0.6, 1.1, 0.4, 5}, {1.5, 1.6, 0.8, 24} };
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		UWorld* World = GameWorld();
+		APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+		if (S->Started == 0.0)
+		{
+			S->Started = FPlatformTime::Seconds();
+		}
+		if (!D || !PC || !PC->PlayerCameraManager)
+		{
+			if (FPlatformTime::Seconds() - S->Started > 120.0)
+			{
+				AddError(TEXT("no director or camera"));
+				return true;
+			}
+			return false;
+		}
+		const FVector Eye = PC->PlayerCameraManager->GetCameraLocation();
+		const FVector Ahead = PC->PlayerCameraManager->GetCameraRotation().Vector().GetSafeNormal2D();
+		const FVector Side = FVector::CrossProduct(FVector::UpVector, Ahead);
+		TArray<VlDustParcel> Parcels;
+		for (uint32 Shape = 0; Shape < 5; ++Shape)
+		{
+			VlDustParcel P = {};
+			const FVector At = Eye + Ahead * 600.0 + Side * (static_cast<double>(Shape) - 2.0) * 250.0;
+			P.position[0] = At.X; P.position[1] = At.Y; P.position[2] = At.Z;
+			P.radius0 = 50.0f; // cm (0.5 m)
+			P.intensity = 0.9f;
+			P.shape = Shape;
+			P.palette = 0;
+			P.color_rgba = 0xb3afa8ff;
+			Parcels.Add(P);
+		}
+		S->First = D->InjectDustForTest(Parcels);
+		S->BornGameS = World->GetTimeSeconds();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.2f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		if (!D || S->First == INDEX_NONE)
+		{
+			return true;
+		}
+		for (int32 k = 0; k < 5; ++k)
+		{
+			const TOptional<FBox> B = D->DustBox(S->First + k);
+			TestTrue(*FString::Printf(TEXT("shape %d is drawn"), k), B.IsSet());
+			S->AtBirth.Add(B.IsSet() ? B.GetValue() : FBox(ForceInit));
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		if (!D || S->AtBirth.Num() != 5)
+		{
+			return true;
+		}
+		for (int32 k = 0; k < 5; ++k)
+		{
+			const TOptional<FBox> B = D->DustBox(S->First + k);
+			if (!TestTrue(*FString::Printf(TEXT("shape %d still drawn at 2 s"), k), B.IsSet()))
+			{
+				continue;
+			}
+			const double W0 = S->AtBirth[k].GetSize().X, W1 = B->GetSize().X;
+			const double Rise = B->GetCenter().Z - S->AtBirth[k].GetCenter().Z;
+			// Expected from the curves at the two ages (radius0 0.5 m, no push): width 2r, rise.
+			AddInfo(FString::Printf(TEXT("shape %d: width %.0f -> %.0f cm, rose %.0f cm"), k, W0, W1, Rise));
+			TestTrue(*FString::Printf(TEXT("shape %d grows (sqrt of age)"), k), W1 > W0 * 1.2);
+			TestTrue(*FString::Printf(TEXT("shape %d rises toward its curve's height"), k), Rise > 0.0 && Rise < Curves[k][2] * 100.0);
+		}
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("dust.png"), false, false);
+		}
+		return true;
+	}));
+	// An entry puff lives 5 s (of game time).
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		UWorld* World = GameWorld();
+		if (!D || !World || S->First == INDEX_NONE)
+		{
+			return true;
+		}
+		const double Age = World->GetTimeSeconds() - S->BornGameS;
+		if (Age < 5.3 && FPlatformTime::Seconds() - S->Started < 200.0)
+		{
+			return false;
+		}
+		AddInfo(FString::Printf(TEXT("checked at a game age of %.1f s"), Age));
+		TestFalse(TEXT("the entry puff is gone after its 5 s"), D->DustBox(S->First + 3).IsSet());
+		TestTrue(TEXT("the wave cloud lingers (24 s)"), D->DustBox(S->First + 4).IsSet());
+		return true;
+	}));
 	return true;
 }
 

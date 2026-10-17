@@ -53,6 +53,11 @@ public:
 	/** The vertices that should be drawn: every chunk's core mesh but the removed ones'. */
 	int64 ExpectedVertices() const;
 	int32 LiveDust() const { return LiveDustCount; }
+	/** Tests: draw `Parcels` as if a frame had brought them (no server needed); returns the ring
+	 * slot of the first. */
+	int32 InjectDustForTest(TArrayView<const VlDustParcel> Parcels);
+	/** Tests: the drawn box of ring slot `Slot` (centre and size, cm), unset while it is not live. */
+	TOptional<FBox> DustBox(int32 Slot) const;
 	/** Cells drawn from the imported city now, and cells in all. */
 	int32 ImportedCellsDrawn() const;
 	int32 CellCount() const { return CellChunks.Num(); }

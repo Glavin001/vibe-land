@@ -98,3 +98,25 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 	}
 	DustInstances->MarkRenderStateDirty();
 }
+
+int32 AVibeCityDirector::InjectDustForTest(TArrayView<const VlDustParcel> Parcels)
+{
+	const int32 First = DustHead;
+	VlFrameView Frame = {};
+	Frame.dust = Parcels.GetData();
+	Frame.dust_count = static_cast<size_t>(Parcels.Num());
+	SpawnDust(Frame);
+	return First;
+}
+
+TOptional<FBox> AVibeCityDirector::DustBox(int32 Slot) const
+{
+	if (!DustInstances || !DustParcels.IsValidIndex(Slot) || !DustParcels[Slot].bAlive || Slot >= DustInstances->GetInstanceCount())
+	{
+		return {};
+	}
+	FTransform T;
+	DustInstances->GetInstanceTransform(Slot, T, /*bWorldSpace=*/true);
+	const FVector Half = T.GetScale3D() * 50.0; // the 100 cm sphere
+	return FBox(T.GetLocation() - Half, T.GetLocation() + Half);
+}

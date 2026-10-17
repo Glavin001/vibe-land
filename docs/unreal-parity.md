@@ -93,12 +93,13 @@ the web's fog curve (Gaussian) is thinner under 40 m.
   native upgrade.
 - **Moving debris.** Bonds broken between two moving bodies are placed at rest for dust and
   sound, and their dust starts with no velocity of its own.
-- **Dust in Unreal, not yet seen live.** The core now makes the web's dust (`dust.rs`, a port of
-  `dustPolicy.ts` held to it by `tests/dust_parity.rs`: 1200 sources, 4220 parcels, worst relative
-  difference 2e-15), and Unreal draws its parcels in a ring of the web's 4096 with the web's curves
-  (`vl_dust_eval`), as instanced volumes. `CityAndEffects` has not run to a fracture since: this
-  Mac's GPU was contended (an idle server at a fifth of real time), so its meteor never landed in
-  the test's time.
+- **Dust from a live fracture in Unreal, not yet re-run.** The core makes the web's dust
+  (`dust.rs`, a port of `dustPolicy.ts` held to it by `tests/dust_parity.rs`: 1200 sources, 4220
+  parcels, worst relative difference 2e-15), and Unreal draws its parcels in a ring of the web's
+  4096 with the web's curves (`vl_dust_eval`), as instanced volumes. `VibeCity.Render.Dust` checks
+  the drawing with no server (every shape drawn, growing and rising on its curve, an entry puff gone
+  after its 5 s; dust.png). `CityAndEffects` has not run to a fracture since: this Mac's GPU was
+  contended (an idle server at a fifth of real time), so its meteor did not land in the test's time.
 - **Debug and admin tools** stay web-only: the stats overlay (match stats from `PKT_MATCH_STATS`,
   the player count, RECORD TAPE), `/server-stats`, the world builder.
 - **Server walk speed.** The server's on-foot input policy repeats a held input when a frame is
