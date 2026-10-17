@@ -117,5 +117,11 @@ void AVibeCityGameMode::FrameCity(const FBox& Bounds)
 	const FRotator Look = (Center - Eye).Rotation();
 	Pawn->SetActorLocation(Eye);
 	Controller->SetControlRotation(Look);
+	// An offscreen window (scripted captures) still feeds stray mouse deltas; hold the frame still.
+	if (FParse::Param(FCommandLine::Get(), TEXT("RenderOffscreen")))
+	{
+		Controller->SetIgnoreLookInput(true);
+		Controller->SetIgnoreMoveInput(true);
+	}
 	UE_LOG(LogVibeLand, Display, TEXT("camera framed on the city at %s"), *Eye.ToString());
 }

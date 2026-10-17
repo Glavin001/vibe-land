@@ -6,7 +6,10 @@
 //! Prints a status line a second and the final stats. `--meteor-after S` drops a meteor (POST
 //! /city-meteor/<match>) on the first building's highest chunk S seconds after joining; needs a
 //! PhysX server (the synthetic city ignores meteors). `--gate` exits non-zero unless:
-//!   * snapshots arrived at ≥ 95% of the session's snapshot rate since joining;
+//!   * the client received ≥ 95% of the snapshots the server produced since joining (server
+//!     ticks elapsed × snapshot_hz / sim_hz). That measures delivery, not the server's speed: a
+//!     server sharing the GPU with a renderer can tick slower than real time, and the summary
+//!     reports that separately as `server_sim_rate`;
 //!   * no packet failed to decode and the client's structure hashes never disagreed;
 //!   * with a meteor: at least one fracture, and some freed body's first 0.3 s of fall fits an
 //!     acceleration within 0.5 m/s² of the city's gravity (9.81 m/s²).
@@ -37,6 +40,9 @@ fn main() {
     let mut core = ClientCore::new(Space::Server);
     let started = Instant::now();
     let mut joined_at: Option<Instant> = None;
+    // (server tick, snapshots received) at the first snapshot after joining: the core reaches
+    // Playing at Welcome, before any snapshot has carried a tick.
+    let mut at_join: Option<(u32, u64)> = None;
     let mut meteor_sent = false;
     let mut last_print = Instant::now();
     let mut tracks: HashMap<(u32, u32), Vec<(f32, f32)>> = HashMap::new();
@@ -87,6 +93,9 @@ fn main() {
         if joined_at.is_none() && core.state() == VlCoreState::Playing {
             joined_at = Some(Instant::now());
         }
+        if at_join.is_none() && joined_at.is_some() && frame.stats.snapshots > 0 {
+            at_join = Some((frame.stats.newest_server_tick, frame.stats.snapshots));
+        }
         let outgoing: Vec<_> = core.drain_outgoing().collect();
         for packet in outgoing {
             if packet.datagram {
@@ -135,8 +144,13 @@ fn main() {
     let snapshot_hz = config.as_ref().map_or(0.0, |c| f64::from(c.snapshot_hz));
     let sim_hz = config.as_ref().map_or(60.0, |c| f32::from(c.sim_hz));
     let fall = best_free_fall(&tracks, sim_hz);
+    let at_join = at_join.unwrap_or((stats.newest_server_tick, stats.snapshots));
+    let server_ticks = f64::from(stats.newest_server_tick.wrapping_sub(at_join.0));
+    let expected_snapshots = server_ticks * snapshot_hz / f64::from(sim_hz);
+    let received_snapshots = (stats.snapshots - at_join.1) as f64;
+    let server_sim_rate = server_ticks / (f64::from(sim_hz) * joined_s.max(1e-9));
     println!(
-        "{{\"joined_s\":{joined_s:.2},\"snapshots\":{},\"snapshot_rate\":{:.2},\"snapshot_hz\":{snapshot_hz},\"chunks\":{},\"fractures\":{},\"keyframes\":{},\"late_keyframes\":{},\"hash_checks\":{},\"hash_mismatches\":{},\"decode_errors\":{},\"unknown_packets\":{},\"acks\":{},\"bodies_tracked\":{},\"free_fall_accel\":{},\"closed\":{:?}}}",
+        "{{\"joined_s\":{joined_s:.2},\"snapshots\":{},\"snapshot_rate\":{:.2},\"snapshot_hz\":{snapshot_hz},\"server_sim_rate\":{server_sim_rate:.3},\"snapshots_expected\":{expected_snapshots:.0},\"chunks\":{},\"fractures\":{},\"keyframes\":{},\"late_keyframes\":{},\"hash_checks\":{},\"hash_mismatches\":{},\"decode_errors\":{},\"unknown_packets\":{},\"acks\":{},\"bodies_tracked\":{},\"free_fall_accel\":{},\"closed\":{:?}}}",
         stats.snapshots, stats.snapshots as f64 / joined_s.max(1e-9), stats.chunks, stats.fractures, stats.keyframes,
         stats.late_keyframes, stats.hash_checks, stats.hash_mismatches, stats.decode_errors, stats.unknown_packets,
         stats.acks_sent, tracks.len(), fall.map_or("null".to_string(), |a| format!("{a:.3}")), closed,
@@ -147,9 +161,12 @@ fn main() {
         if joined_at.is_none() {
             failures.push("never joined".to_string());
         }
-        // Allow one snapshot interval of slack for the join itself.
-        if (stats.snapshots as f64) < 0.95 * snapshot_hz * joined_s - 1.0 {
-            failures.push(format!("{} snapshots in {joined_s:.1} s at {snapshot_hz} Hz", stats.snapshots));
+        if expected_snapshots < 1.0 {
+            failures.push("the server produced no ticks after the join".into());
+        } else if received_snapshots < 0.95 * expected_snapshots {
+            failures.push(format!(
+                "received {received_snapshots} of {expected_snapshots:.0} snapshots the server produced ({server_ticks} ticks at {snapshot_hz}/{sim_hz} Hz)"
+            ));
         }
         if stats.decode_errors != 0 {
             failures.push(format!("{} decode errors", stats.decode_errors));
