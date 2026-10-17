@@ -62,8 +62,9 @@ pub struct ChunkMeshes {
     /// Per vertex: the catalog material its face wears (the chunk's floor material on faces that
     /// mostly face up or down, its wall material otherwise). Empty without surfaces.
     pub materials: Vec<u32>,
-    /// Per vertex: `uvs` in tiles of that material (metres / its `metres_per_tile`), so a renderer
-    /// samples its texture at these directly. Empty without surfaces.
+    /// Per vertex: `uvs` in tiles of that material as the web draws it (metres / its
+    /// `drawn_metres_per_tile`), so a renderer samples its texture at these directly. Empty without
+    /// surfaces.
     pub tile_uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
 }
@@ -132,7 +133,7 @@ impl ChunkMeshes {
             let material = surface.map(|(s, catalog)| {
                 let a = normal.abs();
                 let id = if a.y >= a.x && a.y >= a.z { s.floor } else { s.wall };
-                let tile = catalog.materials.get(id as usize).map_or(1.0, |m| m.metres_per_tile).max(1e-3);
+                let tile = catalog.materials.get(id as usize).map_or(1.0, |m| m.drawn_metres_per_tile()).max(1e-3);
                 (u32::from(id), tile)
             });
             let tangent = face_tangent(normal, space);

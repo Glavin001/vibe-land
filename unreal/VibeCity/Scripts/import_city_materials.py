@@ -14,6 +14,7 @@ Creates under /Game/VibeCity:
   Materials/M_VibeCityGrass                           meadow blades
   Materials/M_VibeCityWeather, ...WeatherAdditive     dust- and snow-storm particles
   Materials/M_VibeCityChunkHD                         2K Poly Haven sources (with --hd)
+  Materials/M_VibeCityGroundHD                        the ground: grass and mud layers, dirt patches (with --hd)
 
 M_VibeCityChunk reads what the client core puts on every chunk vertex:
   UV0 = texture coordinates in tiles of the face's material (core geometry.rs `tile_uvs`)
@@ -205,6 +206,168 @@ def hd_chunk_material(albedo_array, normal_array, arm_array):
     mel.connect_material_property(arm, "R", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION)
     mel.connect_material_property(arm, "G", unreal.MaterialProperty.MP_ROUGHNESS)
     mel.connect_material_property(arm, "B", unreal.MaterialProperty.MP_METALLIC)
+    mel.recompile_material(m)
+    return m
+
+
+# groundNodes.ts (hero) and cityHeroNodes.ts macroField, per pixel: the macro noise (client-core
+# ground.rs, a texture the renderer creates) read in three rotated bands; dirt where it is high,
+# or where the meadow is thin (vertex colour A); and the field's own albedo variation.
+GROUND_FIELD = """
+float2 m0 = P / Size;
+float a = Texture2DSample(Noise, NoiseSampler, m0).r;
+float2 m1 = P / (Size * 0.37);
+float c1 = cos(0.71), s1 = sin(0.71);
+float b = Texture2DSample(Noise, NoiseSampler, float2(m1.x * c1 - m1.y * s1, m1.x * s1 + m1.y * c1) + float2(0.17, 0.61)).r;
+float2 m2 = P / (Size * 0.145);
+float c2 = cos(-0.43), s2 = sin(-0.43);
+float c = Texture2DSample(Noise, NoiseSampler, float2(m2.x * c2 - m2.y * s2, m2.x * s2 + m2.y * c2) + float2(0.73, 0.29)).r;
+return (a + b * Mid + c * Small) / max(Mid + Small + 1.0, 1e-4);
+"""
+
+
+def hd_ground_material(albedo_array, normal_array, arm_array):
+    """The ground (client/src/scene/groundNodes.ts on 2K sources): the grass and mud layers
+    (LayerA/LayerB, tiled at MetresA/MetresB by world position), blended by dirt = the web's macro
+    field patches (DirtStart..DirtEnd at 0.31 x position) or the meadow's thin cover (vertex colour
+    A); grass tinted by the canopy colour (vertex colour RGB); the field's albedo and warmth
+    variation (MacroAlbedo, MacroTemp). Texture parameter MacroNoise: client-core's macro noise."""
+    m = fresh_material("M_VibeCityGroundHD")
+
+    def scalar(n, v, x, y):
+        s = expr(m, unreal.MaterialExpressionScalarParameter, x, y)
+        s.set_editor_property("parameter_name", n)
+        s.set_editor_property("default_value", v)
+        return s
+    world = expr(m, unreal.MaterialExpressionWorldPosition, -2400, 0)
+    # Server metres on the ground: x = -Y / 100, z = X / 100.
+    xy = mask(m, "rg", -2250, 0)
+    mel.connect_material_expressions(world, "", xy, "")
+    swizzle = expr(m, unreal.MaterialExpressionMultiply, -2100, 0)
+    to_server = expr(m, unreal.MaterialExpressionConstant2Vector, -2250, 100)
+    to_server.set_editor_property("r", -0.01)
+    to_server.set_editor_property("g", 0.01)
+    # (X, Y) * (-0.01, 0.01) = (-X/100, Y/100); swap to (x, z) = (-Y/100, X/100) with a mask pair.
+    mel.connect_material_expressions(xy, "", swizzle, "A")
+    mel.connect_material_expressions(to_server, "", swizzle, "B")
+    gx = mask(m, "g", -1950, -50)
+    gz = mask(m, "r", -1950, 50)
+    mel.connect_material_expressions(swizzle, "", gx, "")
+    mel.connect_material_expressions(swizzle, "", gz, "")
+    neg = expr(m, unreal.MaterialExpressionMultiply, -1800, -50)
+    neg.set_editor_property("const_b", -1.0)
+    mel.connect_material_expressions(gx, "", neg, "A")
+    negz = expr(m, unreal.MaterialExpressionMultiply, -1800, 50)
+    negz.set_editor_property("const_b", -1.0)
+    mel.connect_material_expressions(gz, "", negz, "A")
+    pos = expr(m, unreal.MaterialExpressionAppendVector, -1650, 0)
+    mel.connect_material_expressions(neg, "", pos, "A")   # x = -Y/100 (gx = Y/100)
+    mel.connect_material_expressions(negz, "", pos, "B")  # z = X/100 (gz = -X/100)
+
+    def layer_uvw(metres_name, metres_default, layer_name, layer_default, y):
+        metres = scalar(metres_name, metres_default, -1650, y)
+        uv = expr(m, unreal.MaterialExpressionDivide, -1450, y)
+        mel.connect_material_expressions(pos, "", uv, "A")
+        mel.connect_material_expressions(metres, "", uv, "B")
+        layer = scalar(layer_name, layer_default, -1450, y + 80)
+        uvw = expr(m, unreal.MaterialExpressionAppendVector, -1250, y)
+        mel.connect_material_expressions(uv, "", uvw, "A")
+        mel.connect_material_expressions(layer, "", uvw, "B")
+        return uvw
+    uvw_a = layer_uvw("MetresA", 4.0, "LayerA", 10.0, -400)
+    uvw_b = layer_uvw("MetresB", 2.6, "LayerB", 11.0, -200)
+
+    def sample(array, kind, uvw, x, y):
+        s = expr(m, unreal.MaterialExpressionTextureSample, x, y)
+        s.set_editor_property("texture", array)
+        s.set_editor_property("sampler_type", kind)
+        mel.connect_material_expressions(uvw, "", s, "UVs")
+        return s
+    color = unreal.MaterialSamplerType.SAMPLERTYPE_COLOR
+    normal = unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL
+    masks = unreal.MaterialSamplerType.SAMPLERTYPE_MASKS
+    alb_a, alb_b = sample(albedo_array, color, uvw_a, -1000, -700), sample(albedo_array, color, uvw_b, -1000, -500)
+    nrm_a, nrm_b = sample(normal_array, normal, uvw_a, -1000, -300), sample(normal_array, normal, uvw_b, -1000, -100)
+    arm_a, arm_b = sample(arm_array, masks, uvw_a, -1000, 100), sample(arm_array, masks, uvw_b, -1000, 300)
+
+    noise = expr(m, unreal.MaterialExpressionTextureObjectParameter, -1650, 500)
+    noise.set_editor_property("parameter_name", "MacroNoise")
+    noise.set_editor_property("texture", unreal.load_asset("/Engine/EngineResources/DefaultTexture.DefaultTexture"))
+    size = scalar("MacroSize", 9.0, -1650, 650)
+    mid = scalar("MacroMid", 0.42, -1650, 720)
+    small = scalar("MacroSmall", 0.2, -1650, 790)
+
+    def field(p, y):
+        f = custom(m, GROUND_FIELD, ["P", "Size", "Mid", "Small", "Noise"], unreal.CustomMaterialOutputType.CMOT_FLOAT1, -1200, y)
+        for src, pin in [(p, "P"), (size, "Size"), (mid, "Mid"), (small, "Small"), (noise, "Noise")]:
+            mel.connect_material_expressions(src, "", f, pin)
+        return f
+    scaled = expr(m, unreal.MaterialExpressionMultiply, -1450, 550)
+    scaled.set_editor_property("const_b", 0.31)
+    mel.connect_material_expressions(pos, "", scaled, "A")
+    patch = field(scaled, 550)
+    macro = field(pos, 750)
+
+    start = scalar("DirtStart", 0.56, -1000, 500)
+    end = scalar("DirtEnd", 0.72, -1000, 570)
+    smooth = expr(m, unreal.MaterialExpressionSmoothStep, -850, 520)
+    mel.connect_material_expressions(start, "", smooth, "Min")
+    mel.connect_material_expressions(end, "", smooth, "Max")
+    mel.connect_material_expressions(patch, "", smooth, "Value")
+    vc = expr(m, unreal.MaterialExpressionVertexColor, -1000, 650)
+    dirt = expr(m, unreal.MaterialExpressionMax, -700, 560)
+    mel.connect_material_expressions(smooth, "", dirt, "A")
+    mel.connect_material_expressions(vc, "A", dirt, "B")
+
+    def lerp(a, a_pin, b, b_pin, x, y):
+        e = expr(m, unreal.MaterialExpressionLinearInterpolate, x, y)
+        mel.connect_material_expressions(a, a_pin, e, "A")
+        mel.connect_material_expressions(b, b_pin, e, "B")
+        mel.connect_material_expressions(dirt, "", e, "Alpha")
+        return e
+    albedo = lerp(alb_a, "RGB", alb_b, "RGB", -550, -600)
+    # Canopy tint, fading to none where the ground is dirt: mix(canopy, 1, dirt).
+    one = expr(m, unreal.MaterialExpressionConstant3Vector, -700, -800)
+    one.set_editor_property("constant", unreal.LinearColor(1, 1, 1, 1))
+    tint = lerp(vc, "", one, "", -550, -800)
+    tinted = expr(m, unreal.MaterialExpressionMultiply, -400, -700)
+    mel.connect_material_expressions(albedo, "", tinted, "A")
+    mel.connect_material_expressions(tint, "", tinted, "B")
+    # The field's variation: exp2((2·macro − 1)·MacroAlbedo) × mix(cool, warm, macro).
+    signed = expr(m, unreal.MaterialExpressionMultiply, -1000, 850)
+    signed.set_editor_property("const_b", 2.0)
+    mel.connect_material_expressions(macro, "", signed, "A")
+    signed1 = expr(m, unreal.MaterialExpressionSubtract, -880, 850)
+    signed1.set_editor_property("const_b", 1.0)
+    mel.connect_material_expressions(signed, "", signed1, "A")
+    amount = scalar("MacroAlbedo", 0.16, -880, 950)
+    power = expr(m, unreal.MaterialExpressionMultiply, -750, 880)
+    mel.connect_material_expressions(signed1, "", power, "A")
+    mel.connect_material_expressions(amount, "", power, "B")
+    gain = custom(m, "return exp2(X);", ["X"], unreal.CustomMaterialOutputType.CMOT_FLOAT1, -620, 880)
+    mel.connect_material_expressions(power, "", gain, "X")
+    temp = scalar("MacroTemp", 0.03, -880, 1050)
+    warmth = custom(m, "return lerp(float3(1.0 - T * 0.65, 1.0, T + 1.0), float3(T + 1.0, 1.0, 1.0 - T * 0.72), M);",
+                    ["T", "M"], unreal.CustomMaterialOutputType.CMOT_FLOAT3, -620, 1000)
+    mel.connect_material_expressions(temp, "", warmth, "T")
+    mel.connect_material_expressions(macro, "", warmth, "M")
+    varied = expr(m, unreal.MaterialExpressionMultiply, -450, 900)
+    mel.connect_material_expressions(gain, "", varied, "A")
+    mel.connect_material_expressions(warmth, "", varied, "B")
+    # cityTone 0.88 (cityMaterialShader.ts) scales the photograph.
+    tone = expr(m, unreal.MaterialExpressionMultiply, -300, -500)
+    tone.set_editor_property("const_b", 0.88)
+    mel.connect_material_expressions(tinted, "", tone, "A")
+    base = expr(m, unreal.MaterialExpressionMultiply, -150, -400)
+    mel.connect_material_expressions(tone, "", base, "A")
+    mel.connect_material_expressions(varied, "", base, "B")
+    mel.connect_material_property(base, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    mel.connect_material_property(lerp(nrm_a, "RGB", nrm_b, "RGB", -550, -200), "", unreal.MaterialProperty.MP_NORMAL)
+    arm = lerp(arm_a, "RGB", arm_b, "RGB", -550, 150)
+    for ch, prop in (("r", unreal.MaterialProperty.MP_AMBIENT_OCCLUSION), ("g", unreal.MaterialProperty.MP_ROUGHNESS)):
+        c = mask(m, ch, -350, 150 if ch == "r" else 250)
+        mel.connect_material_expressions(arm, "", c, "")
+        mel.connect_material_property(c, "", prop)
     mel.recompile_material(m)
     return m
 
@@ -446,10 +609,12 @@ if hd_dir:
                               compression=unreal.TextureCompressionSettings.TC_NORMALMAP)
     hd_arm = import_layers("arm", srgb=False, directory=hd_dir, ext="jpg", suffix="HD",
                            compression=unreal.TextureCompressionSettings.TC_MASKS)
-    hd_chunk_material(
+    hd_arrays = (
         texture_array("T_CityAlbedoHDArray", hd_albedo, srgb=True),
         texture_array("T_CityNormalHDArray", hd_normal, srgb=False, compression=unreal.TextureCompressionSettings.TC_NORMALMAP),
         texture_array("T_CityARMHDArray", hd_arm, srgb=False, compression=unreal.TextureCompressionSettings.TC_MASKS),
     )
+    hd_chunk_material(*hd_arrays)
+    hd_ground_material(*hd_arrays)
 saved = assets.save_directory(ROOT, only_if_is_dirty=False, recursive=True)
 unreal.log(f"VIBE_IMPORT_OK layers={len(layered)} saved={saved} chunk={chunk.get_path_name()} glass={glass.get_path_name()}")

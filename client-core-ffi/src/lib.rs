@@ -112,11 +112,15 @@ pub const VL_MATERIAL_DIRECTIONAL: u32 = 1;
 pub const VL_MATERIAL_GLASS: u32 = 2;
 pub const VL_MATERIAL_WALL: u32 = 4;
 pub const VL_MATERIAL_FLOOR: u32 = 8;
+/// The web draws city textures at `VlMaterial::metres_per_tile` × this (client-core materials.rs
+/// `CITY_TEX_SCALE`); the core's tile UVs already include it.
+pub const VL_CITY_TEX_SCALE: f32 = 2.0;
 const _: () = {
     use vibe_client_core::{geometry as g, materials as m};
     assert!(VL_MESH_HULL == g::VL_MESH_HULL);
     assert!(VL_MATERIAL_DIRECTIONAL == m::VL_MATERIAL_DIRECTIONAL && VL_MATERIAL_GLASS == m::VL_MATERIAL_GLASS);
     assert!(VL_MATERIAL_WALL == m::VL_MATERIAL_WALL && VL_MATERIAL_FLOOR == m::VL_MATERIAL_FLOOR);
+    assert!(VL_CITY_TEX_SCALE == m::CITY_TEX_SCALE);
 };
 const _: () = {
     use vibe_client_core::frame as f;
@@ -847,6 +851,40 @@ pub unsafe extern "C" fn vl_grass_paint_parse(bytes: *const u8, len: usize, revi
 #[no_mangle]
 pub unsafe extern "C" fn vl_grass_paint_tiles(paint: *const VlGrassPaint) -> usize {
     paint.as_ref().map_or(0, |p| p.0.tile_count())
+}
+
+/// The ground's cover at server (x, z) under `paint` (null: the default meadow), into `out[4]`: the
+/// canopy colour that tints the grass photograph (linear RGB) and the dirt a thin meadow lays bare
+/// (client-core grass.rs `ground_cover`; groundNodes.ts).
+///
+/// # Safety
+/// `paint` null or live; `out` writable for four floats.
+#[no_mangle]
+pub unsafe extern "C" fn vl_grass_ground_cover(paint: *const VlGrassPaint, x: f32, z: f32, out: *mut f32) {
+    if out.is_null() {
+        return;
+    }
+    let unpainted = vibe_client_core::grass::GrassPaint::default();
+    let (canopy, dirt) = paint.as_ref().map_or(&unpainted, |p| &p.0).ground_cover(x, z);
+    std::ptr::copy_nonoverlapping([canopy[0], canopy[1], canopy[2], dirt].as_ptr(), out, 4);
+}
+
+/// The web ground's macro noise (client-core ground.rs, cityTextures.ts `cityMacroNoise`): a
+/// repeating 256 × 256 single-channel texture, row-major, into `out` (65536 bytes). Returns the
+/// edge length, or 0 when `capacity` is too small.
+///
+/// # Safety
+/// `out` writable for `capacity` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn vl_ground_macro_noise(out: *mut u8, capacity: usize) -> u32 {
+    let n = vibe_client_core::ground::MACRO_NOISE_SIZE;
+    if out.is_null() || capacity < n * n {
+        return 0;
+    }
+    static NOISE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let noise = NOISE.get_or_init(vibe_client_core::ground::macro_noise);
+    std::ptr::copy_nonoverlapping(noise.as_ptr(), out, noise.len());
+    n as u32
 }
 
 /// The ground's tint at server (x, z) under `paint` (null: the default meadow): the web's canopy

@@ -169,6 +169,12 @@
 #define VL_MATERIAL_FLOOR 8
 
 /**
+ * The web draws city textures at `VlMaterial::metres_per_tile` × this (client-core materials.rs
+ * `CITY_TEX_SCALE`); the core's tile UVs already include it.
+ */
+#define VL_CITY_TEX_SCALE 2.0
+
+/**
  * `VlFrameView::transport_state`.
  */
 #define VL_TRANSPORT_IDLE 0
@@ -1172,6 +1178,26 @@ struct VlGrassPaint *vl_grass_paint_parse(const uint8_t *bytes,
  * `paint` null or from `vl_grass_paint_parse`.
  */
 size_t vl_grass_paint_tiles(const struct VlGrassPaint *paint);
+
+/**
+ * The ground's cover at server (x, z) under `paint` (null: the default meadow), into `out[4]`: the
+ * canopy colour that tints the grass photograph (linear RGB) and the dirt a thin meadow lays bare
+ * (client-core grass.rs `ground_cover`; groundNodes.ts).
+ *
+ * # Safety
+ * `paint` null or live; `out` writable for four floats.
+ */
+void vl_grass_ground_cover(const struct VlGrassPaint *paint, float x, float z, float *out);
+
+/**
+ * The web ground's macro noise (client-core ground.rs, cityTextures.ts `cityMacroNoise`): a
+ * repeating 256 × 256 single-channel texture, row-major, into `out` (65536 bytes). Returns the
+ * edge length, or 0 when `capacity` is too small.
+ *
+ * # Safety
+ * `out` writable for `capacity` bytes.
+ */
+uint32_t vl_ground_macro_noise(uint8_t *out, size_t capacity);
 
 /**
  * The ground's tint at server (x, z) under `paint` (null: the default meadow): the web's canopy

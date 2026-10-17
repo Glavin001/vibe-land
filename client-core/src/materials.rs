@@ -41,6 +41,17 @@ pub struct VlMaterial {
     pub hd_metres_per_tile: f32,
 }
 
+/// The web draws every city texture at its catalog tile size × this (cityMaterialShader.ts
+/// `cityTexScale`, applied to walls, floors and the ground alike).
+pub const CITY_TEX_SCALE: f32 = 2.0;
+
+impl VlMaterial {
+    /// The tile size the web draws this material at, metres: `metres_per_tile × CITY_TEX_SCALE`.
+    pub fn drawn_metres_per_tile(&self) -> f32 {
+        self.metres_per_tile * CITY_TEX_SCALE
+    }
+}
+
 pub const VL_MATERIAL_DIRECTIONAL: u32 = 1;
 pub const VL_MATERIAL_GLASS: u32 = 2;
 pub const VL_MATERIAL_WALL: u32 = 4;

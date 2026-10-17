@@ -155,10 +155,11 @@ impl GrassPaint {
         Ok((s.revision, Self::from_layout(s.layout)?))
     }
 
-    /// The ground's canopy tint at a world point (groundNodes.ts): the paint's cover texture (one
-    /// 2 m texel, `GrassPaint.updateCover`) as `mix(cover.rgb · 0.7 / (0.3199, 0.236, 0.1062), 1,
-    /// 1 − cover.density)`, a multiplier on the ochre grass photograph (linear RGB).
-    pub fn ground_tint(&self, x: f32, z: f32) -> [f32; 3] {
+    /// The ground's cover at a world point (groundNodes.ts): the paint's cover texture (one 2 m
+    /// texel, `GrassPaint.updateCover`) as the canopy colour that tints the ochre grass photograph,
+    /// `cover.rgb · 0.7 / (0.3199, 0.236, 0.1062)` (linear RGB), and the dirt a thin meadow lays
+    /// bare, `1 − cover.density`.
+    pub fn ground_cover(&self, x: f32, z: f32) -> ([f32; 3], f32) {
         // updateCover: texel (tx, tz) over ±256 m reads the cell at (2t − 256 + 1) m.
         let texel = |v: f32| (((v + 256.0) / 2.0).floor().clamp(0.0, 255.0)) * 2.0 - 256.0 + 1.0;
         let (cx, cz) = (texel(x), texel(z));
@@ -166,8 +167,13 @@ impl GrassPaint {
         self.cell((cx / CELL).floor() as i32, (cz / CELL).floor() as i32, &mut cell);
         // The cover texture holds bytes; three samples it as unorm.
         let unorm = |b: f32| b / 255.0;
-        let dirt = 1.0 - unorm(cell[0]);
         let canopy = [unorm(cell[2]) * 0.7 / 0.3199, unorm(cell[3]) * 0.7 / 0.236, unorm(cell[4]) * 0.7 / 0.1062];
+        (canopy, 1.0 - unorm(cell[0]))
+    }
+
+    /// The tint where only the cover's dirt counts: `mix(canopy, 1, dirt)`.
+    pub fn ground_tint(&self, x: f32, z: f32) -> [f32; 3] {
+        let (canopy, dirt) = self.ground_cover(x, z);
         canopy.map(|c| c + (1.0 - c) * dirt)
     }
 

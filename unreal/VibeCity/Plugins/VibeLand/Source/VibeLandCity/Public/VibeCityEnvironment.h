@@ -7,6 +7,9 @@
 
 class UDirectionalLightComponent;
 class UExponentialHeightFogComponent;
+class UMaterialInstanceDynamic;
+class UMaterialInterface;
+class UTexture2D;
 class UPostProcessComponent;
 class UProceduralMeshComponent;
 class USkyAtmosphereComponent;
@@ -66,4 +69,12 @@ private:
 	TObjectPtr<AVibeCityWeather> Weather;
 
 	bool bHdGround = false;
+
+	/** The ground's own material (M_VibeCityGroundHD) and its instance and macro-noise texture. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> GroundMaterial;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> GroundInstance;
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> MacroNoise;
 };

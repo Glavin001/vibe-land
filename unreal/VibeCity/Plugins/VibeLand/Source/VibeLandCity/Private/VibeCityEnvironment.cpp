@@ -6,6 +6,9 @@
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Engine/World.h"
+#include "Engine/Texture2D.h"
+#include "TextureResource.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -73,7 +76,11 @@ AVibeCityEnvironment::AVibeCityEnvironment()
 	// The same chunk material the city wears (2K sources when built, as the director chooses).
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Chunk(TEXT("/Game/VibeCity/Materials/M_VibeCityChunk.M_VibeCityChunk"));
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Hd(TEXT("/Game/VibeCity/Materials/M_VibeCityChunkHD.M_VibeCityChunkHD"));
-	bHdGround = Hd.Get() && !FParse::Param(FCommandLine::Get(), TEXT("VibeWebTextures"));
+	// The ground's own material (groundNodes.ts: grass and mud, dirt patches), on the 2K sources.
+	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> GroundHd(TEXT("/Game/VibeCity/Materials/M_VibeCityGroundHD.M_VibeCityGroundHD"));
+	const bool bWebTextures = FParse::Param(FCommandLine::Get(), TEXT("VibeWebTextures"));
+	bHdGround = Hd.Get() && !bWebTextures;
+	GroundMaterial = !bWebTextures ? GroundHd.Get() : nullptr;
 	if (UMaterialInterface* Material = bHdGround ? Hd.Get() : Chunk.Get())
 	{
 		Ground->SetMaterial(0, Material);
@@ -126,9 +133,50 @@ void AVibeCityEnvironment::BuildGround(const VlGrassPaint* Paint)
 			Grass = static_cast<int32>(i);
 		}
 	}
-	const float TileM = Grass == INDEX_NONE ? 2.0f
-		: (bHdGround && Catalog[Grass].hd_metres_per_tile > 0.0f ? Catalog[Grass].hd_metres_per_tile : Catalog[Grass].metres_per_tile);
+	int32 Mud = INDEX_NONE;
+	for (size_t i = 0; i < Count; ++i)
+	{
+		if (const char* Id = vl_catalog_id(static_cast<uint32>(i)); Id && FCStringAnsi::Strcmp(Id, "mud-leaves") == 0)
+		{
+			Mud = static_cast<int32>(i);
+		}
+	}
+	// Tiles as the web draws them: the catalog's size × cityTexScale.
+	auto DrawnTile = [&](int32 Index) {
+		const VlMaterial& M = Catalog[Index];
+		return (bHdGround && M.hd_metres_per_tile > 0.0f ? M.hd_metres_per_tile : M.metres_per_tile) * VL_CITY_TEX_SCALE;
+	};
+	const float TileM = Grass == INDEX_NONE ? 2.0f * VL_CITY_TEX_SCALE : DrawnTile(Grass);
 	const FVector2D LayerMetal(Grass != INDEX_NONE ? Catalog[Grass].layer : 0, 0.0);
+	// With the ground material: grass and mud by world position, the macro noise from the core.
+	const bool bGroundMaterial = GroundMaterial && Grass != INDEX_NONE && Mud != INDEX_NONE;
+	if (bGroundMaterial && !GroundInstance)
+	{
+		GroundInstance = UMaterialInstanceDynamic::Create(GroundMaterial, this);
+		TArray<uint8> Noise;
+		Noise.SetNumUninitialized(256 * 256);
+		const uint32 Size = vl_ground_macro_noise(Noise.GetData(), Noise.Num());
+		if (Size == 256)
+		{
+			UTexture2D* Texture = UTexture2D::CreateTransient(Size, Size, PF_G8);
+			Texture->SRGB = false;
+			Texture->AddressX = TA_Wrap;
+			Texture->AddressY = TA_Wrap;
+			Texture->Filter = TF_Bilinear;
+			void* Mip = Texture->GetPlatformData()->Mips[0].BulkData.Lock(LOCK_READ_WRITE);
+			FMemory::Memcpy(Mip, Noise.GetData(), Noise.Num());
+			Texture->GetPlatformData()->Mips[0].BulkData.Unlock();
+			Texture->UpdateResource();
+			MacroNoise = Texture;
+			GroundInstance->SetTextureParameterValue(TEXT("MacroNoise"), Texture);
+		}
+		GroundInstance->SetScalarParameterValue(TEXT("LayerA"), Catalog[Grass].layer);
+		GroundInstance->SetScalarParameterValue(TEXT("LayerB"), Catalog[Mud].layer);
+		GroundInstance->SetScalarParameterValue(TEXT("MetresA"), DrawnTile(Grass));
+		GroundInstance->SetScalarParameterValue(TEXT("MetresB"), DrawnTile(Mud));
+		Ground->SetMaterial(0, GroundInstance);
+		Ground->SetMaterial(1, GroundInstance);
+	}
 
 	// A grid on the grass paint's cover texels (2 m, groundNodes.ts samples GrassPaint.cover over
 	// ±256 m), each vertex carrying the canopy tint the material multiplies the photograph by.
@@ -155,10 +203,17 @@ void AVibeCityEnvironment::BuildGround(const VlGrassPaint* Paint)
 			UV1.Add(LayerMetal);
 			Normals.Add(FVector::UpVector);
 			Tangents.Add(Tangent);
-			float Tint[3];
-			vl_grass_ground_tint(Paint, X, Z, Tint);
-			// Linear, as the material reads it (the core's colours are linear).
-			Colors.Add(FLinearColor(FMath::Clamp(Tint[0], 0.0f, 1.0f), FMath::Clamp(Tint[1], 0.0f, 1.0f), FMath::Clamp(Tint[2], 0.0f, 1.0f)).ToFColor(false));
+			// Linear, as the material reads it (the core's colours are linear). The ground material
+			// takes the canopy colour and the thin meadow's dirt (A) and blends itself; the chunk
+			// material just multiplies by the tint.
+			float Cover[4];
+			vl_grass_ground_cover(Paint, X, Z, Cover);
+			if (!bGroundMaterial)
+			{
+				vl_grass_ground_tint(Paint, X, Z, Cover);
+				Cover[3] = 0.0f;
+			}
+			Colors.Add(FLinearColor(FMath::Clamp(Cover[0], 0.0f, 1.0f), FMath::Clamp(Cover[1], 0.0f, 1.0f), FMath::Clamp(Cover[2], 0.0f, 1.0f), FMath::Clamp(Cover[3], 0.0f, 1.0f)).ToFColor(false));
 		}
 	}
 	// The order Unreal draws as front faces seen from above (the core keeps the server's order,
@@ -197,7 +252,10 @@ void AVibeCityEnvironment::BuildGround(const VlGrassPaint* Paint)
 		FVector::UpVector, FVector::UpVector, FVector::UpVector, FVector::UpVector };
 	TArray<FProcMeshTangent> RingTangents;
 	RingTangents.Init(Tangent, Ring.Num());
-	Ground->CreateMeshSection(1, Ring, RingTriangles, RingNormals, RingUV0, RingUV1, NoUV, NoUV, TArray<FColor>(), RingTangents, false);
+	// Beyond the paint: no canopy tint, no cover dirt (vertex colour A).
+	TArray<FColor> RingColors;
+	RingColors.Init(FColor(255, 255, 255, 0), Ring.Num());
+	Ground->CreateMeshSection(1, Ring, RingTriangles, RingNormals, RingUV0, RingUV1, NoUV, NoUV, RingColors, RingTangents, false);
 	if (UMaterialInterface* Material = Ground->GetMaterial(0))
 	{
 		Ground->SetMaterial(1, Material);

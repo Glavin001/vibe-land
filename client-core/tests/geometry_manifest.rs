@@ -102,6 +102,10 @@ fn check_surfaces(manifest: &DestructionManifest) -> std::collections::BTreeSet<
             let up = n[1].abs() >= n[0].abs() && n[1].abs() >= n[2].abs();
             assert_eq!(m, u32::from(if up { s.floor } else { s.wall }), "chunk {i} vertex {v}");
             assert!((m as usize) < catalog.ids.len());
+            // Tiles as the web draws them: metres / (catalog tile × cityTexScale 2).
+            let (uv, tile) = (meshes.uvs[v as usize], meshes.tile_uvs[v as usize]);
+            let drawn = catalog.materials[m as usize].metres_per_tile * 2.0;
+            assert!((tile[0] * drawn - uv[0]).abs() < 1e-3 && (tile[1] * drawn - uv[1]).abs() < 1e-3, "chunk {i} vertex {v}");
             used.insert(catalog.ids[m as usize].clone());
         }
     }
