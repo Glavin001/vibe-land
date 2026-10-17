@@ -893,6 +893,20 @@ typedef struct VlGrassExclusion {
 } VlGrassExclusion;
 
 /**
+ * One clump of the distant foliage canopy (FoliageCanopy.ts): position (world x, z), height,
+ * yaw, the leaf tint (linear RGB, dryness and health applied), species and dryness.
+ */
+typedef struct VlCanopyClump {
+  float x;
+  float z;
+  float height;
+  float yaw;
+  float tint[3];
+  uint32_t species;
+  float dryness;
+} VlCanopyClump;
+
+/**
  * One blade. `x`, `z` are world metres; colour is linear RGB.
  */
 typedef struct VlGrassBlade {
@@ -1231,6 +1245,32 @@ uint32_t vl_ground_macro_noise(uint8_t *out, size_t capacity);
  * `paint` null or live; `out` writable for three floats.
  */
 void vl_grass_ground_tint(const struct VlGrassPaint *paint, float x, float z, float *out);
+
+/**
+ * The 32 m canopy chunks a layout paints (FoliageCanopy.ts enqueues every chunk a painted tile
+ * touches, with a 1 m border), as (cx, cz) pairs into `out` (two ints each). Returns how many there
+ * are; writes at most `capacity` pairs.
+ *
+ * # Safety
+ * `paint` null or live; `out` writable for `2 * capacity` ints.
+ */
+size_t vl_grass_canopy_chunks(const struct VlGrassPaint *paint, int32_t *out, size_t capacity);
+
+/**
+ * The canopy clumps of 32 m chunk (cx, cz) under `paint` (client-core grass.rs `canopy_clumps`,
+ * FoliageCanopy.ts `build`), server space. Writes at most `capacity`; returns how many there are.
+ * Touches no client: safe from any thread.
+ *
+ * # Safety
+ * `paint` null or live; `exclusions` readable for `exclusion_count`; `out` writable for `capacity`.
+ */
+size_t vl_grass_canopy(const struct VlGrassPaint *paint,
+                       const struct VlGrassExclusion *exclusions,
+                       size_t exclusion_count,
+                       int32_t cx,
+                       int32_t cz,
+                       struct VlCanopyClump *out,
+                       size_t capacity);
 
 /**
  * # Safety

@@ -13,6 +13,7 @@ Creates under /Game/VibeCity:
   Materials/M_VibeCityDust                            dust puffs
   Materials/M_VibeCityGrass                           meadow blades
   Materials/M_VibeCityWeather, ...WeatherAdditive     dust- and snow-storm particles
+  Materials/M_VibeCityCanopy                          distant foliage canopy cards
   Materials/M_VibeCityChunkHD                         2K Poly Haven sources (with --hd)
   Materials/M_VibeCityGroundHD                        the ground: grass and mud layers, dirt patches (with --hd)
 
@@ -555,6 +556,32 @@ def weather_material(name, additive):
     return m
 
 
+def canopy_material():
+    """The distant foliage canopy (FoliageCanopy.ts): cards coloured by vertex colour (linear), two
+    sided, dithered in between 22 and 36 m from the camera as the web hands off from the blades
+    (foliageLod.ts FOLIAGE_HANDOFF pretty)."""
+    m = fresh_material("M_VibeCityCanopy")
+    m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_MASKED)
+    m.set_editor_property("two_sided", True)
+    vc = expr(m, unreal.MaterialExpressionVertexColor, -800, -100)
+    mel.connect_material_property(vc, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    rough = expr(m, unreal.MaterialExpressionConstant, -800, 100)
+    rough.set_editor_property("r", 0.85)
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    # FoliageCanopy.ts: the same handoff and the same interleaved-gradient dither per pixel.
+    handoff = custom(m, """
+float handoff = smoothstep(2200.0, 3600.0, distance(Cam, P));
+float2 px = Parameters.SvPosition.xy;
+float dither = frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715))));
+return dither < handoff ? 1.0 : 0.0;
+""", ["Cam", "P"], unreal.CustomMaterialOutputType.CMOT_FLOAT1, -800, 250)
+    mel.connect_material_expressions(expr(m, unreal.MaterialExpressionCameraPositionWS, -1100, 250), "", handoff, "Cam")
+    mel.connect_material_expressions(expr(m, unreal.MaterialExpressionWorldPosition, -1100, 350), "", handoff, "P")
+    mel.connect_material_property(handoff, "", unreal.MaterialProperty.MP_OPACITY_MASK)
+    mel.recompile_material(m)
+    return m
+
+
 def glass_material():
     m = fresh_material("M_VibeCityGlass")
     m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
@@ -582,6 +609,11 @@ def glass_material():
 
 
 only = os.environ.get("VIBE_MATERIALS_ONLY", "")
+if only == "canopy":
+    canopy_material()
+    saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
+    unreal.log(f"VIBE_IMPORT_OK canopy saved={saved}")
+    raise SystemExit(0)
 if only == "weather":
     # Just the weather materials (no textures needed).
     weather_material("M_VibeCityWeather", additive=False)
@@ -602,6 +634,7 @@ dust_material()
 grass_material()
 weather_material("M_VibeCityWeather", additive=False)
 weather_material("M_VibeCityWeatherAdditive", additive=True)
+canopy_material()
 hd_dir = os.environ.get("VIBE_CITY_HD_TEXTURES", "")
 if hd_dir:
     hd_albedo = import_layers("albedo", srgb=True, directory=hd_dir, ext="jpg", suffix="HD")

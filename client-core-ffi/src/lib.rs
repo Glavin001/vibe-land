@@ -902,6 +902,62 @@ pub unsafe extern "C" fn vl_grass_ground_tint(paint: *const VlGrassPaint, x: f32
     std::ptr::copy_nonoverlapping(tint.as_ptr(), out, 3);
 }
 
+/// The 32 m canopy chunks a layout paints (FoliageCanopy.ts enqueues every chunk a painted tile
+/// touches, with a 1 m border), as (cx, cz) pairs into `out` (two ints each). Returns how many there
+/// are; writes at most `capacity` pairs.
+///
+/// # Safety
+/// `paint` null or live; `out` writable for `2 * capacity` ints.
+#[no_mangle]
+pub unsafe extern "C" fn vl_grass_canopy_chunks(paint: *const VlGrassPaint, out: *mut i32, capacity: usize) -> usize {
+    let Some(paint) = paint.as_ref() else { return 0 };
+    let mut chunks = std::collections::BTreeSet::new();
+    for (x, z) in paint.0.tiles() {
+        let (min_x, min_z, max_x, max_z) = (x * 8 - 1, z * 8 - 1, x * 8 + 9, z * 8 + 9);
+        for cz in (min_z.div_euclid(32)).max(-8)..=(max_z.div_euclid(32)).min(7) {
+            for cx in (min_x.div_euclid(32)).max(-8)..=(max_x.div_euclid(32)).min(7) {
+                chunks.insert((cx, cz));
+            }
+        }
+    }
+    if !out.is_null() {
+        for (i, (cx, cz)) in chunks.iter().take(capacity).enumerate() {
+            *out.add(2 * i) = *cx;
+            *out.add(2 * i + 1) = *cz;
+        }
+    }
+    chunks.len()
+}
+
+/// The canopy clumps of 32 m chunk (cx, cz) under `paint` (client-core grass.rs `canopy_clumps`,
+/// FoliageCanopy.ts `build`), server space. Writes at most `capacity`; returns how many there are.
+/// Touches no client: safe from any thread.
+///
+/// # Safety
+/// `paint` null or live; `exclusions` readable for `exclusion_count`; `out` writable for `capacity`.
+#[no_mangle]
+pub unsafe extern "C" fn vl_grass_canopy(
+    paint: *const VlGrassPaint,
+    exclusions: *const VlGrassExclusion,
+    exclusion_count: usize,
+    cx: i32,
+    cz: i32,
+    out: *mut vibe_client_core::grass::VlCanopyClump,
+    capacity: usize,
+) -> usize {
+    let Some(paint) = paint.as_ref() else { return 0 };
+    let ex = if exclusions.is_null() { &[][..] } else { std::slice::from_raw_parts(exclusions, exclusion_count) };
+    catch_unwind(|| {
+        let mut clumps = Vec::new();
+        vibe_client_core::grass::canopy_clumps(&paint.0, cx, cz, ex, &mut clumps);
+        if !out.is_null() {
+            std::ptr::copy_nonoverlapping(clumps.as_ptr(), out, clumps.len().min(capacity));
+        }
+        clumps.len()
+    })
+    .unwrap_or(0)
+}
+
 /// # Safety
 /// `paint` null or from `vl_grass_paint_parse`, not used after this (by any thread).
 #[no_mangle]

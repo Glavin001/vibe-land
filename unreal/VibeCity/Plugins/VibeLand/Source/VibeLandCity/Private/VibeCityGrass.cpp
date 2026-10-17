@@ -76,6 +76,8 @@ AVibeCityGrass::AVibeCityGrass()
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Grass(TEXT("/Game/VibeCity/Materials/M_VibeCityGrass.M_VibeCityGrass"));
 	GrassMaterial = Grass.Get();
+	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> Canopy(TEXT("/Game/VibeCity/Materials/M_VibeCityCanopy.M_VibeCityCanopy"));
+	CanopyMaterial = Canopy.Get();
 }
 
 void AVibeCityGrass::SetExclusions(TArrayView<const VlGrassExclusion> InExclusions)
@@ -125,6 +127,7 @@ bool AVibeCityGrass::ApplyLayout(TConstArrayView<uint8> Body)
 		It->SetGroundCover(Parsed);
 	}
 	GeneratedOnPaint = 0;
+	RebuildCanopy();
 	// Regenerate every patch over the new layout; each keeps its blades until the new land.
 	for (TPair<FIntPoint, FPatch>& Pair : Patches)
 	{
@@ -389,6 +392,87 @@ void AVibeCityGrass::Rebuild(FPatch& Patch, int32 Band)
 	{
 		Patch.Mesh->CreateMeshSection(0, Vertices, Triangles, Normals, NoUV, Colors, NoTangents, false);
 		Patch.Mesh->SetMaterial(0, GrassMaterial);
+	}
+}
+
+void AVibeCityGrass::RebuildCanopy()
+{
+	for (UProceduralMeshComponent* Mesh : CanopyMeshes)
+	{
+		if (Mesh)
+		{
+			Mesh->DestroyComponent();
+		}
+	}
+	CanopyMeshes.Reset();
+	CanopyClumpCount = 0;
+	VlGrassPaint* Handle = Paint ? Paint->Handle : nullptr;
+	if (!Handle || !CanopyMaterial)
+	{
+		return;
+	}
+	TArray<int32> Chunks;
+	Chunks.SetNumUninitialized(2 * 256);
+	const int32 ChunkCount = FMath::Min<int32>(static_cast<int32>(vl_grass_canopy_chunks(Handle, Chunks.GetData(), 256)), 256);
+	TArray<VlCanopyClump> Clumps;
+	for (int32 c = 0; c < ChunkCount; ++c)
+	{
+		// At most one clump per square metre of the 32 m chunk.
+		Clumps.SetNumUninitialized(32 * 32);
+		const int32 Count = FMath::Min<int32>(static_cast<int32>(vl_grass_canopy(Handle, Exclusions.GetData(), Exclusions.Num(), Chunks[2 * c], Chunks[2 * c + 1], Clumps.GetData(), Clumps.Num())), Clumps.Num());
+		if (Count == 0)
+		{
+			continue;
+		}
+		TArray<FVector> Vertices;
+		TArray<int32> Triangles;
+		TArray<FVector> Normals;
+		TArray<FColor> Colors;
+		// FoliageCanopy.ts cards: three vertical 1.4 m cards at 60° steps around the clump's yaw,
+		// and an overhead 1.4 m card at 0.76 of its height; tinted darker toward the root
+		// (mix(0.30, 1.05, h^0.75)) and drier toward dry tips.
+		auto Tint = [](const VlCanopyClump& K, float H) {
+			const float Shade = FMath::Lerp(0.30f, 1.05f, FMath::Pow(H, 0.75f));
+			const float Dry = K.dryness * FMath::SmoothStep(0.6f, 1.0f, H) * 0.55f;
+			auto Ch = [&](float C, float D) { return FMath::Clamp(FMath::Lerp(C * Shade, D, Dry), 0.0f, 1.0f); };
+			return FLinearColor(Ch(K.tint[0], 0.34f), Ch(K.tint[1], 0.22f), Ch(K.tint[2], 0.08f)).ToFColor(false);
+		};
+		for (int32 i = 0; i < Count; ++i)
+		{
+			const VlCanopyClump& K = Clumps[i];
+			const FVector Root = Ground(K.x, K.z);
+			const float H = K.height * 100.0f, Half = 70.0f;
+			const FVector Up = FVector::UpVector * H;
+			const FColor Low = Tint(K, 0.0f), High = Tint(K, 1.0f), Top = Tint(K, 0.8f);
+			for (int32 Card = 0; Card < 3; ++Card)
+			{
+				const float A = K.yaw + Card * 1.04719755f;
+				// Server (cos a, sin a) on the ground, in Unreal axes.
+				const FVector Side = FVector(FMath::Sin(A), -FMath::Cos(A), 0.0) * Half;
+				const FVector Normal = FVector::CrossProduct(Side, FVector::UpVector).GetSafeNormal();
+				const int32 First = Vertices.Num();
+				Vertices.Append({ Root - Side, Root + Side, Root - Side + Up, Root + Side + Up });
+				Normals.Append({ Normal, Normal, Normal, Normal });
+				Colors.Append({ Low, Low, High, High });
+				Triangles.Append({ First, First + 2, First + 1, First + 1, First + 2, First + 3 });
+			}
+			const int32 First = Vertices.Num();
+			const FVector Centre = Root + FVector::UpVector * (H * 0.76f);
+			Vertices.Append({ Centre + FVector(-Half, -Half, 0), Centre + FVector(Half, -Half, 0), Centre + FVector(-Half, Half, 0), Centre + FVector(Half, Half, 0) });
+			Normals.Append({ FVector::UpVector, FVector::UpVector, FVector::UpVector, FVector::UpVector });
+			Colors.Append({ Top, Top, Top, Top });
+			Triangles.Append({ First, First + 2, First + 1, First + 1, First + 2, First + 3 });
+		}
+		UProceduralMeshComponent* Mesh = NewObject<UProceduralMeshComponent>(this);
+		Mesh->SetupAttachment(RootComponent);
+		Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Mesh->SetCastShadow(false);
+		Mesh->RegisterComponent();
+		static const TArray<FVector2D> NoUV;
+		Mesh->CreateMeshSection(0, Vertices, Triangles, Normals, NoUV, Colors, TArray<FProcMeshTangent>(), false);
+		Mesh->SetMaterial(0, CanopyMaterial);
+		CanopyMeshes.Add(Mesh);
+		CanopyClumpCount += Count;
 	}
 }
 

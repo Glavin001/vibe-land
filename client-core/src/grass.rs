@@ -180,6 +180,11 @@ impl GrassPaint {
         canopy.map(|c| c + (1.0 - c) * dirt)
     }
 
+    /// The painted tiles' coordinates (8 m tiles), in no particular order.
+    pub fn tiles(&self) -> Vec<(i32, i32)> {
+        self.tiles.keys().copied().collect()
+    }
+
     pub fn tile_count(&self) -> usize {
         self.tiles.len()
     }
@@ -250,24 +255,29 @@ fn default_cell(x: f32, z: f32, out: &mut [f32]) {
     out[11] = 128.0;
 }
 
-/// One patch's blades at `density` blades per m² of grass (≤ the pretty density), as the web
-/// generates them (grassPlacement.ts `generateGrassPatch`), over `paint` (none: the default meadow).
-pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[VlGrassExclusion], paint: Option<&GrassPaint>, out: &mut Vec<VlGrassBlade>) {
-    out.clear();
-    let unpainted = GrassPaint::default();
-    let paint = paint.unwrap_or(&unpainted);
-    // The paint grid for the patch, with a one-cell border, as GrassPaint.sampler builds it.
-    let stride = (CELLS + 2) as usize;
-    let mut grid = vec![0.0f32; stride * stride * CHANNELS];
-    for z in -1..=CELLS {
-        for x in -1..=CELLS {
-            let (ix, iz) = (px * CELLS + x, pz * CELLS + z);
-            let at = (((z + 1) as usize) * stride + (x + 1) as usize) * CHANNELS;
-            paint.cell(ix, iz, &mut grid[at..at + CHANNELS]);
+/// GrassPaint.ts `sampler`: a patch's paint grid with a one-cell border, sampled bilinearly
+/// (species, row spacing and row angle nearest) at patch-local metres.
+struct PatchSampler {
+    grid: Vec<f32>,
+}
+
+impl PatchSampler {
+    const STRIDE: usize = (CELLS + 2) as usize;
+
+    fn new(paint: &GrassPaint, px: i32, pz: i32) -> Self {
+        let mut grid = vec![0.0f32; Self::STRIDE * Self::STRIDE * CHANNELS];
+        for z in -1..=CELLS {
+            for x in -1..=CELLS {
+                let at = (((z + 1) as usize) * Self::STRIDE + (x + 1) as usize) * CHANNELS;
+                paint.cell(px * CELLS + x, pz * CELLS + z, &mut grid[at..at + CHANNELS]);
+            }
         }
+        Self { grid }
     }
-    let mut style = [0.0f32; CHANNELS];
-    let mut sample = |x: f32, z: f32, out: &mut [f32; CHANNELS]| {
+
+    fn sample(&self, x: f32, z: f32, out: &mut [f32; CHANNELS]) {
+        let grid = &self.grid;
+        let stride = Self::STRIDE;
         let (gx, gz) = (x / CELL + 0.5, z / CELL + 0.5);
         let (ix, iz) = (gx.floor(), gz.floor());
         let (fx, fz) = (gx - ix, gz - iz);
@@ -281,7 +291,85 @@ pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[VlGrassExclu
                 ((grid[a + k] * (1.0 - fx) + grid[b + k] * fx) * (1.0 - fz) + (grid[c + k] * (1.0 - fx) + grid[d + k] * fx) * fz) / 255.0
             };
         }
-    };
+    }
+}
+
+/// One clump of the distant foliage canopy (FoliageCanopy.ts): position (world x, z), height,
+/// yaw, the leaf tint (linear RGB, dryness and health applied), species and dryness.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VlCanopyClump {
+    pub x: f32,
+    pub z: f32,
+    pub height: f32,
+    pub yaw: f32,
+    pub tint: [f32; 3],
+    pub species: u32,
+    pub dryness: f32,
+}
+
+/// foliageLod.ts `hasFoliageCanopy`: tall stands and every crop keep a canopy far away.
+fn has_foliage_canopy(species: u32, height: f32) -> bool {
+    species > 0 || height >= 0.75
+}
+
+/// FoliageCanopy.ts `build`: the canopy clumps of 32 m chunk (cx, cz), one per square metre where
+/// the paint grows a tall stand, thinned by density.
+pub fn canopy_clumps(paint: &GrassPaint, cx: i32, cz: i32, exclusions: &[VlGrassExclusion], out: &mut Vec<VlCanopyClump>) {
+    out.clear();
+    let mut sample = [0.0f32; CHANNELS];
+    for tz in 0..4 {
+        for tx in 0..4 {
+            let (px, pz) = (cx * 4 + tx, cz * 4 + tz);
+            let sampler = PatchSampler::new(paint, px, pz);
+            let (ox, oz) = (px as f32 * GRASS_PATCH_SIZE, pz as f32 * GRASS_PATCH_SIZE);
+            let nearby: Vec<&VlGrassExclusion> = exclusions.iter().filter(|e| e.max_x >= ox && e.min_x <= ox + 8.0 && e.max_z >= oz && e.min_z <= oz + 8.0).collect();
+            for z in 0..8 {
+                for x in 0..8 {
+                    sampler.sample(x as f32 + 0.5, z as f32 + 0.5, &mut sample);
+                    let species = (sample[5] * 255.0 + 0.5).floor() as u32;
+                    let height = sample[1] * GRASS_MAX_HEIGHT * (0.45 + sample[8] * 0.55);
+                    if !has_foliage_canopy(species, height) || sample[0] <= 0.0 {
+                        continue;
+                    }
+                    let (wx, wz) = (ox + x as f32 + 0.5, oz + z as f32 + 0.5);
+                    if nearby.iter().any(|e| wx >= e.min_x - 0.3 && wx <= e.max_x + 0.3 && wz >= e.min_z - 0.3 && wz <= e.max_z + 0.3) {
+                        continue;
+                    }
+                    let mut hash = ((wx * 2.0).floor() as i32).wrapping_mul(73856093) ^ ((wz * 2.0).floor() as i32).wrapping_mul(19349663);
+                    hash = (hash ^ ((hash as u32) >> 16) as i32).wrapping_mul(0x45d9f3b);
+                    hash = (hash ^ ((hash as u32) >> 16) as i32).wrapping_mul(0x45d9f3b);
+                    let random = ((hash ^ ((hash as u32) >> 16) as i32) as u32) as f32 / 4294967296.0;
+                    if random > sample[0] {
+                        continue;
+                    }
+                    let canopy_height = height * if species == 4 { 0.42 } else if species == 2 { 0.85 } else { 0.94 };
+                    let (dry, health) = (sample[7], 0.72 + sample[6] * 0.36);
+                    let tint = |c: f32, d: f32| (c * (1.0 - dry * 0.28) + d * dry * 0.28) * health;
+                    out.push(VlCanopyClump {
+                        x: wx + (random - 0.5) * 0.3,
+                        z: wz + ((((hash as u32) >> 8) & 255) as f32 / 255.0 - 0.5) * 0.3,
+                        height: canopy_height * (0.96 + random * 0.08),
+                        yaw: random * std::f32::consts::TAU,
+                        tint: [tint(sample[2], 0.46), tint(sample[3], 0.33), tint(sample[4], 0.12)],
+                        species,
+                        dryness: dry,
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// One patch's blades at `density` blades per m² of grass (≤ the pretty density), as the web
+/// generates them (grassPlacement.ts `generateGrassPatch`), over `paint` (none: the default meadow).
+pub fn generate_patch(px: i32, pz: i32, density: f32, exclusions: &[VlGrassExclusion], paint: Option<&GrassPaint>, out: &mut Vec<VlGrassBlade>) {
+    out.clear();
+    let unpainted = GrassPaint::default();
+    let paint = paint.unwrap_or(&unpainted);
+    let sampler = PatchSampler::new(paint, px, pz);
+    let mut style = [0.0f32; CHANNELS];
+    let sample = |x: f32, z: f32, out: &mut [f32; CHANNELS]| sampler.sample(x, z, out);
 
     let count = (GRASS_DENSITY_PRETTY * GRASS_PATCH_SIZE * GRASS_PATCH_SIZE).round() as usize;
     let grass_limit = (density.min(GRASS_DENSITY_PRETTY) * GRASS_PATCH_SIZE * GRASS_PATCH_SIZE) as usize;
@@ -452,6 +540,54 @@ mod tests {
         assert!((tint[1] - want).abs() < 1e-6, "{tint:?} {want}");
         // Green canopy: the ochre photo's green channel is lifted the most.
         assert!(tint[1] > tint[0] && tint[1] > tint[2]);
+    }
+
+    #[test]
+    fn canopy_clumps_match_the_web() {
+        // client-core/tests/fixtures/grass_canopy_web.json: FoliageCanopy.build's placement over the
+        // species layout fixture with one footprint, run with tsx (chunk counts, first and last
+        // clump: local x, z, height, yaw, tint, species + dryness·0.49).
+        #[derive(serde::Deserialize)]
+        struct Chunk {
+            cx: i32,
+            cz: i32,
+            count: usize,
+            first: Vec<f32>,
+            last: Vec<f32>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Ex {
+            #[serde(rename = "minX")]
+            min_x: f32,
+            #[serde(rename = "minZ")]
+            min_z: f32,
+            #[serde(rename = "maxX")]
+            max_x: f32,
+            #[serde(rename = "maxZ")]
+            max_z: f32,
+        }
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            exclusions: Vec<Ex>,
+            chunks: Vec<Chunk>,
+        }
+        let f: Fixture = serde_json::from_str(include_str!("../tests/fixtures/grass_canopy_web.json")).unwrap();
+        let (_, paint) = GrassPaint::from_snapshot_json(include_bytes!("../tests/fixtures/grass_species_layout.json")).unwrap();
+        let ex: Vec<VlGrassExclusion> = f.exclusions.iter().map(|e| VlGrassExclusion { min_x: e.min_x, min_z: e.min_z, max_x: e.max_x, max_z: e.max_z }).collect();
+        let mut out = Vec::new();
+        for c in &f.chunks {
+            canopy_clumps(&paint, c.cx, c.cz, &ex, &mut out);
+            assert_eq!(out.len(), c.count, "chunk {},{}", c.cx, c.cz);
+            if c.count == 0 {
+                continue;
+            }
+            let packed = |k: &VlCanopyClump| [k.x - c.cx as f32 * 32.0, k.z - c.cz as f32 * 32.0, k.height, k.yaw, k.tint[0], k.tint[1], k.tint[2], k.species as f32 + k.dryness * 0.49];
+            for (got, want) in [(packed(&out[0]), &c.first), (packed(&out[out.len() - 1]), &c.last)] {
+                for (g, w) in got.iter().zip(want) {
+                    assert!((g - w).abs() < 1e-4, "{got:?} vs {want:?}");
+                }
+            }
+        }
     }
 
     #[test]

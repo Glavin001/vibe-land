@@ -344,7 +344,8 @@ bool FVibeCityRenderCompare::RunTest(const FString& Parameters)
 // VibeCity.Render.Species: painted reeds, wheat, corn and ferns drawn with their own shapes. Loads
 // client-core/tests/fixtures/grass_species_layout.json (four plots painted with the web's brushes
 // in front of the comparison pose), requires plants of each species drawn, and saves species.png
-// to -VibeShotDir= from beside the plots.
+// to -VibeShotDir= from beside the plots; the distant canopy is built over them (species-far.png
+// from 63 m).
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityRenderSpecies, "VibeCity.Render.Species",
 	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
 
@@ -387,6 +388,23 @@ bool FVibeCityRenderSpecies::RunTest(const FString& Parameters)
 		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
 		{
 			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("species.png"), false, false);
+		}
+		// The distant canopy (FoliageCanopy.ts) over the painted stands.
+		TestTrue(FString::Printf(TEXT("canopy clumps built over the painted stands (%d)"), Grass ? Grass->CanopyClumps() : 0), Grass && Grass->CanopyClumps() > 0);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.0f));
+	// From 63 m, where the blades have handed off to the canopy.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([]() {
+		VibeCityCapture::Park(GameWorld(), FVector3f(0.0f, 12.0f, 184.0f), FVector3f(0.0f, 1.0f, 122.0f), 0.0f);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(3.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([]() {
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("species-far.png"), false, false);
 		}
 		return true;
 	}));

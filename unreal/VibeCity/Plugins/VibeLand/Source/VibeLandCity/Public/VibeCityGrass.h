@@ -36,6 +36,8 @@ public:
 	int64 DrawnBlades() const;
 	/** For tests: plants of a species (foliageProfiles.ts order) drawn now. */
 	int64 DrawnOfSpecies(uint32 Species) const;
+	/** For tests: distant canopy clumps built for the current layout. */
+	int32 CanopyClumps() const { return CanopyClumpCount; }
 
 	/** The bare footprints (server space), from the client core once the manifest arrived. */
 	void SetExclusions(TArrayView<const VlGrassExclusion> InExclusions);
@@ -66,11 +68,18 @@ private:
 	};
 
 	void Rebuild(FPatch& Patch, int32 Band);
+	void RebuildCanopy();
 	void Generate(FPatch& Patch, FIntPoint Key);
 	void PollLayout();
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> GrassMaterial;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> CanopyMaterial;
+	/** One mesh per painted 32 m canopy chunk (FoliageCanopy.ts). */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UProceduralMeshComponent>> CanopyMeshes;
+	int32 CanopyClumpCount = 0;
 
 	/** Components owned by patches (kept here so the GC sees them). */
 	UPROPERTY(Transient)
