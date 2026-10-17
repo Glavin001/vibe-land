@@ -12,6 +12,7 @@
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Styling/AppStyle.h"
 
 namespace
 {
@@ -118,6 +119,11 @@ void FVibeSettings::Load()
 	GConfig->GetBool(Section, TEXT("GamepadInvertY"), bGamepadInvertY, GGameUserSettingsIni);
 	GConfig->GetBool(Section, TEXT("SoundEnabled"), bSoundEnabled, GGameUserSettingsIni);
 	Float(TEXT("MasterVolume"), MasterVolume);
+	int32 Preset = static_cast<int32>(MixPreset), Range = static_cast<int32>(DynamicRange);
+	GConfig->GetInt(Section, TEXT("MixPreset"), Preset, GGameUserSettingsIni);
+	GConfig->GetInt(Section, TEXT("DynamicRange"), Range, GGameUserSettingsIni);
+	MixPreset = static_cast<uint32>(FMath::Clamp(Preset, 0, 2));
+	DynamicRange = static_cast<uint32>(FMath::Clamp(Range, 0, 2));
 	for (int32 i = 0; i < static_cast<int32>(EAction::Count); ++i)
 	{
 		FString Name;
@@ -148,6 +154,8 @@ void FVibeSettings::Save() const
 	GConfig->SetBool(Section, TEXT("GamepadInvertY"), bGamepadInvertY, GGameUserSettingsIni);
 	GConfig->SetBool(Section, TEXT("SoundEnabled"), bSoundEnabled, GGameUserSettingsIni);
 	GConfig->SetFloat(Section, TEXT("MasterVolume"), MasterVolume, GGameUserSettingsIni);
+	GConfig->SetInt(Section, TEXT("MixPreset"), static_cast<int32>(MixPreset), GGameUserSettingsIni);
+	GConfig->SetInt(Section, TEXT("DynamicRange"), static_cast<int32>(DynamicRange), GGameUserSettingsIni);
 	for (int32 i = 0; i < static_cast<int32>(EAction::Count); ++i)
 	{
 		GConfig->SetString(Section, *FString::Printf(TEXT("Key.%s"), ActionNames[i]), *Keys[i].ToString(), GGameUserSettingsIni);
@@ -165,6 +173,8 @@ void FVibeSettings::Changed()
 	GamepadCurveExponent = FMath::Clamp(GamepadCurveExponent, 1.0f, 3.0f);
 	GamepadAimDeadzone = FMath::Clamp(GamepadAimDeadzone, 0.03f, 0.25f);
 	MasterVolume = FMath::Clamp(MasterVolume, 0.0f, 1.0f);
+	MixPreset = FMath::Min(MixPreset, 2u);
+	DynamicRange = FMath::Min(DynamicRange, 2u);
 	Save();
 	ApplySound();
 	OnChanged().Broadcast();
@@ -332,6 +342,26 @@ namespace
 				[ SNew(STextBlock).Text(FText::FromString(Label)) ];
 		}
 
+		/** A row of choices (the web's preset buttons and dynamic-range select). */
+		static TSharedRef<SWidget> Choice(const TCHAR* Label, TArray<FString> Names, TFunction<uint32&()> Value)
+		{
+			TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+			for (int32 i = 0; i < Names.Num(); ++i)
+			{
+				Row->AddSlot().AutoWidth().Padding(0.0f, 0.0f, 4.0f, 0.0f)
+				[
+					SNew(SCheckBox)
+					.Style(&FAppStyle::Get().GetWidgetStyle<FCheckBoxStyle>("ToggleButtonCheckbox"))
+					.IsChecked_Lambda([Value, i]() { return Value() == static_cast<uint32>(i) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+					.OnCheckStateChanged_Lambda([Value, i](ECheckBoxState) { Value() = static_cast<uint32>(i); FVibeSettings::Get().Changed(); })
+					[ SNew(STextBlock).Margin(FMargin(6.0f, 2.0f)).Text(FText::FromString(Names[i])) ]
+				];
+			}
+			return SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight()[ SNew(STextBlock).Text(FText::FromString(Label)) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 2.0f, 0.0f, 8.0f)[ Row ];
+		}
+
 		TSharedRef<SWidget> SoundPanel()
 		{
 			return Card(SNew(SVerticalBox)
@@ -339,7 +369,12 @@ namespace
 				+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 8.0f)[ Toggle(TEXT("Game sound"), []() -> bool& { return FVibeSettings::Get().bSoundEnabled; }) ]
 				+ SVerticalBox::Slot().AutoHeight()[ Slider(TEXT("Master volume"), 0.0f, 1.0f,
 					[]() -> float& { return FVibeSettings::Get().MasterVolume; },
-					[](float V) { return FString::Printf(TEXT("%d%%"), FMath::RoundToInt(V * 100.0f)); }) ]);
+					[](float V) { return FString::Printf(TEXT("%d%%"), FMath::RoundToInt(V * 100.0f)); }) ]
+				// settings.ts MIX_LABELS and the dynamic-range select.
+				+ SVerticalBox::Slot().AutoHeight()[ Choice(TEXT("Mix character"), { TEXT("Cinematic"), TEXT("Natural"), TEXT("Clarity") },
+					[]() -> uint32& { return FVibeSettings::Get().MixPreset; }) ]
+				+ SVerticalBox::Slot().AutoHeight()[ Choice(TEXT("Dynamic range"), { TEXT("Balanced"), TEXT("Night"), TEXT("Cinematic") },
+					[]() -> uint32& { return FVibeSettings::Get().DynamicRange; }) ]);
 		}
 
 		TSharedRef<SWidget> ControlsPanel()

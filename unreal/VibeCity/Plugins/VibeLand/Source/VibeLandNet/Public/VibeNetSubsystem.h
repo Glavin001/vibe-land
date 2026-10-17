@@ -43,6 +43,9 @@ public:
 	void SetInput(const VlInput& Input);
 	/** Where sounds are heard from (Unreal space): the camera, as the web hears from its camera. */
 	void SetListener(const FVector& Position);
+	/** The sound mix (the web's sound settings): VL_MIX_* preset at a VL_RANGE_* dynamic range. Kept
+	 * across reconnects. */
+	void SetMix(uint32 Preset, uint32 Range);
 
 	/** Fire a weapon (VL_WEAPON_*) along the view last given to SetInput. Returns the shot id, or 0
 	 * when nothing was fired (not playing yet, or inside the fire interval). */
@@ -99,4 +102,6 @@ private:
 	VlFrameView Frame = {};
 	FString ApiBaseUrl;
 	FString MatchId;
+	uint32 MixPreset = VL_MIX_CINEMATIC;
+	uint32 MixRange = VL_RANGE_BALANCED;
 };

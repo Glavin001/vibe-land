@@ -148,6 +148,33 @@ pub enum DynamicRange {
 /// settings.ts `DEFAULT_AUDIO`: the cinematic mix at the balanced range.
 pub const DEFAULT_MIX: Mix = Mix { impact: 1.0, detail: 0.8, bass: 0.9, flyby: 1.0, range: DynamicRange::Balanced };
 
+/// settings.ts `MixPreset`, in `MIXES` order.
+pub const VL_MIX_CINEMATIC: u32 = 0;
+pub const VL_MIX_NATURAL: u32 = 1;
+pub const VL_MIX_CLARITY: u32 = 2;
+/// settings.ts `DynamicRange`.
+pub const VL_RANGE_BALANCED: u32 = 0;
+pub const VL_RANGE_NIGHT: u32 = 1;
+pub const VL_RANGE_CINEMATIC: u32 = 2;
+
+impl Mix {
+    /// settings.ts `MIXES[preset]` at a dynamic range (`setMixPreset`); unknown values are the
+    /// defaults (cinematic, balanced), as `sanitizeSettings` makes them.
+    pub fn preset(preset: u32, range: u32) -> Mix {
+        let (impact, detail, bass, flyby) = match preset {
+            VL_MIX_NATURAL => (0.88, 1.0, 0.48, 0.78),
+            VL_MIX_CLARITY => (0.86, 0.58, 0.5, 1.1),
+            _ => (1.0, 0.8, 0.9, 1.0),
+        };
+        let range = match range {
+            VL_RANGE_NIGHT => DynamicRange::Night,
+            VL_RANGE_CINEMATIC => DynamicRange::Cinematic,
+            _ => DynamicRange::Balanced,
+        };
+        Mix { impact, detail, bass, flyby, range }
+    }
+}
+
 /// `eventMix` (destructionMix.ts), balanced dynamic range.
 pub fn event_mix(e: &SoundEvent, s: Mix) -> (f32, f32, f32, f32) {
     let i = clamp01(e.intensity);
@@ -1003,6 +1030,28 @@ mod tests {
         for ((d, s), web) in [((10.0, 1.0), 0.5855752286723703f32), ((80.0, 4.0), 0.15798061053718054), ((300.0, 8.0), 0.05064991105283304)] {
             assert!((source_attenuation(d, s) - web).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn mix_presets_are_the_webs() {
+        let same = |a: Mix, b: Mix| (a.impact, a.detail, a.bass, a.flyby, a.range) == (b.impact, b.detail, b.bass, b.flyby, b.range);
+        // settings.ts DEFAULT_AUDIO: MIXES.cinematic at the balanced range.
+        assert!(same(Mix::preset(VL_MIX_CINEMATIC, VL_RANGE_BALANCED), DEFAULT_MIX));
+        let n = Mix::preset(VL_MIX_NATURAL, VL_RANGE_NIGHT);
+        assert_eq!((n.impact, n.detail, n.bass, n.flyby, n.range), (0.88, 1.0, 0.48, 0.78, DynamicRange::Night));
+        let c = Mix::preset(VL_MIX_CLARITY, VL_RANGE_CINEMATIC);
+        assert_eq!((c.impact, c.detail, c.bass, c.flyby, c.range), (0.86, 0.58, 0.5, 1.1, DynamicRange::Cinematic));
+        // sanitizeSettings: anything else is cinematic, balanced.
+        assert!(same(Mix::preset(99, 99), DEFAULT_MIX));
+        // A preset changes what is heard: an impact through the clarity mix is quieter than cinematic.
+        let e = SoundEvent { id: 1, kind: SoundKind::Impact, position: Vec3::new(3.0, 0.0, 0.0), material: AcousticMaterial::Concrete,
+            intensity: 0.7, size: 2.0, seed: 3, at_ms: 0.0, protected: false };
+        let gain = |mix: Mix| {
+            let mut out = Vec::new();
+            voices(&e, Vec3::ZERO, 0.0, mix, &mut out);
+            out.iter().map(|v| v.gain).sum::<f32>()
+        };
+        assert!(gain(Mix::preset(VL_MIX_CLARITY, VL_RANGE_BALANCED)) < gain(DEFAULT_MIX));
     }
 
     #[test]

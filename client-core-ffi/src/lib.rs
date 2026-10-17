@@ -740,6 +740,32 @@ pub unsafe extern "C" fn vl_client_set_listener(client: *mut VlClient, x: f32, y
     })
 }
 
+/// The sound mix: one of the web's presets (`VL_MIX_*`: cinematic, natural, clarity) at a dynamic
+/// range (`VL_RANGE_*`: balanced, night, cinematic), as its sound settings set them.
+///
+/// # Safety
+/// `client` must come from `vl_client_create`.
+#[no_mangle]
+pub unsafe extern "C" fn vl_client_set_mix(client: *mut VlClient, preset: u32, range: u32) -> i32 {
+    guard(client, |c| {
+        c.core.set_mix(vibe_client_core::audio::Mix::preset(preset, range));
+        VL_OK
+    })
+}
+
+/// `VlClient::set_mix`'s presets and ranges (client-core audio.rs).
+pub const VL_MIX_CINEMATIC: u32 = 0;
+pub const VL_MIX_NATURAL: u32 = 1;
+pub const VL_MIX_CLARITY: u32 = 2;
+pub const VL_RANGE_BALANCED: u32 = 0;
+pub const VL_RANGE_NIGHT: u32 = 1;
+pub const VL_RANGE_CINEMATIC: u32 = 2;
+const _: () = {
+    use vibe_client_core::audio as a;
+    assert!(VL_MIX_CINEMATIC == a::VL_MIX_CINEMATIC && VL_MIX_NATURAL == a::VL_MIX_NATURAL && VL_MIX_CLARITY == a::VL_MIX_CLARITY);
+    assert!(VL_RANGE_BALANCED == a::VL_RANGE_BALANCED && VL_RANGE_NIGHT == a::VL_RANGE_NIGHT && VL_RANGE_CINEMATIC == a::VL_RANGE_CINEMATIC);
+};
+
 /// An audio clip's id (the web's catalog name, e.g. "concrete-impact-2"), NUL-terminated; null
 /// past the end. Static. `VlSound::clip` indexes these.
 #[no_mangle]

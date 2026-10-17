@@ -62,6 +62,8 @@ bool FVibeCitySettings::RunTest(const FString& Parameters)
 	TestEqual(TEXT("gamepad deadzone 0.12"), Defaults.GamepadAimDeadzone, 0.12f);
 	TestEqual(TEXT("master volume 0.65"), Defaults.MasterVolume, 0.65f);
 	TestTrue(TEXT("sound on"), Defaults.bSoundEnabled);
+	TestEqual(TEXT("mix: cinematic (settings.ts DEFAULT_AUDIO.preset)"), Defaults.MixPreset, static_cast<uint32>(VL_MIX_CINEMATIC));
+	TestEqual(TEXT("dynamic range: balanced"), Defaults.DynamicRange, static_cast<uint32>(VL_RANGE_BALANCED));
 	const TPair<EAction, FKey> Keyboard[] = {
 		{ EAction::MoveForward, EKeys::W }, { EAction::MoveBackward, EKeys::S }, { EAction::MoveLeft, EKeys::A },
 		{ EAction::MoveRight, EKeys::D }, { EAction::Jump, EKeys::SpaceBar }, { EAction::Sprint, EKeys::LeftShift },
@@ -79,11 +81,13 @@ bool FVibeCitySettings::RunTest(const FString& Parameters)
 		Clamped.MouseYOverX = 0.0f;
 		Clamped.GamepadAimDeadzone = 1.0f;
 		Clamped.MasterVolume = 2.0f;
+		Clamped.MixPreset = 7;
 		Clamped.Changed(); // a copy: clamps and saves nothing under -VibeFreshSettings
 		TestEqual(TEXT("sensitivity clamps to 0.01"), Clamped.MouseSensitivity, 0.01f);
 		TestEqual(TEXT("ratio clamps to 0.4"), Clamped.MouseYOverX, 0.4f);
 		TestEqual(TEXT("deadzone clamps to 0.25"), Clamped.GamepadAimDeadzone, 0.25f);
 		TestEqual(TEXT("volume clamps to 1"), Clamped.MasterVolume, 1.0f);
+		TestEqual(TEXT("an unknown preset clamps to the last"), Clamped.MixPreset, static_cast<uint32>(VL_MIX_CLARITY));
 	}
 
 	// Live rebinding, in the game.

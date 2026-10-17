@@ -192,6 +192,21 @@
 #define VL_TRANSPORT_FAILED 6
 
 /**
+ * `VlClient::set_mix`'s presets and ranges (client-core audio.rs).
+ */
+#define VL_MIX_CINEMATIC 0
+
+#define VL_MIX_NATURAL 1
+
+#define VL_MIX_CLARITY 2
+
+#define VL_RANGE_BALANCED 0
+
+#define VL_RANGE_NIGHT 1
+
+#define VL_RANGE_CINEMATIC 2
+
+/**
  * `VlSound::flags`: a sound the player must hear (a near threat).
  */
 #define VL_SOUND_PROTECTED 1
@@ -1148,6 +1163,15 @@ int32_t vl_catalog(const struct VlMaterial **out_materials, size_t *out_count);
  * `client` must be a live client.
  */
 int32_t vl_client_set_listener(struct VlClient *client, float x, float y, float z);
+
+/**
+ * The sound mix: one of the web's presets (`VL_MIX_*`: cinematic, natural, clarity) at a dynamic
+ * range (`VL_RANGE_*`: balanced, night, cinematic), as its sound settings set them.
+ *
+ * # Safety
+ * `client` must come from `vl_client_create`.
+ */
+int32_t vl_client_set_mix(struct VlClient *client, uint32_t preset, uint32_t range);
 
 /**
  * An audio clip's id (the web's catalog name, e.g. "concrete-impact-2"), NUL-terminated; null

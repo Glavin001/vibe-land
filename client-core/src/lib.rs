@@ -124,6 +124,8 @@ pub struct ClientCore {
     /// The driven car's presentation: its unacknowledged inputs replayed from the newest
     /// authoritative state (vehicle_predictor.rs, the web's vehiclePresentation.ts).
     car_predictor: vehicle_predictor::VehiclePredictor,
+    /// The sound mix in use (`set_mix`; the web's default until a renderer sets one).
+    mix: audio::Mix,
     /// The snapshot tick of the newest car state the predictor has seen.
     car_observed_tick: Option<u32>,
     /// Each garage car's wheel centres (actor frame, stream wheel order), from its metadata.
@@ -178,6 +180,7 @@ impl ClientCore {
             in_vehicle: false,
             recent_inputs: std::collections::VecDeque::new(),
             car_predictor: Default::default(),
+            mix: audio::DEFAULT_MIX,
             car_observed_tick: None,
             wheel_centres: std::collections::HashMap::new(),
         }
@@ -593,6 +596,11 @@ impl ClientCore {
 
     /// Where sounds are heard from, in the renderer's space (a spectator's camera). Without it the
     /// local player's eye is the listener.
+    /// The sound mix (the web's audio settings: preset and dynamic range; audio.rs `Mix::preset`).
+    pub fn set_mix(&mut self, mix: audio::Mix) {
+        self.mix = mix;
+    }
+
     pub fn set_listener(&mut self, position: [f32; 3]) {
         self.listener = Some(self.space.pos_to_server(position));
     }
@@ -668,9 +676,9 @@ impl ClientCore {
             let speed = velocity.length();
             let loop_id = 0x8000_0000 | b.body_id;
             if meteor && speed > 8.0 {
-                self.loops.air(loop_id, position, velocity, (speed / 90.0).min(1.0), listener, now_ms, audio::DEFAULT_MIX);
+                self.loops.air(loop_id, position, velocity, (speed / 90.0).min(1.0), listener, now_ms, self.mix);
             } else if !meteor && speed > 20.0 {
-                self.loops.air(loop_id, position, velocity, (speed / 120.0).min(1.0), listener, now_ms, audio::DEFAULT_MIX);
+                self.loops.air(loop_id, position, velocity, (speed / 120.0).min(1.0), listener, now_ms, self.mix);
             }
         }
         self.dynamic_previous.retain(|id, _| seen.contains(id));
@@ -696,7 +704,7 @@ impl ClientCore {
             if contact.scrape {
                 let (lo, hi) = (c.entity_a.min(c.entity_b), c.entity_a.max(c.entity_b));
                 let id = (lo.wrapping_mul(0x9E37_79B1) ^ hi) & 0x7FFF_FFFF;
-                self.loops.scrape(id, contact.position, audio::AcousticMaterial::Concrete, contact.tangent_speed, contact.intensity, listener, now_ms, audio::DEFAULT_MIX);
+                self.loops.scrape(id, contact.position, audio::AcousticMaterial::Concrete, contact.tangent_speed, contact.intensity, listener, now_ms, self.mix);
             } else if let Some(s) = audio::sound_from_contact(&contact, audio::AcousticMaterial::Concrete, false, now_ms) {
                 emit_sound(&mut self.audio, &mut self.activity, s, listener, now_ms);
             }
@@ -711,14 +719,14 @@ impl ClientCore {
             }
             engines += 1;
             if let Some(intensity) = audio::engine_intensity(speed) {
-                self.loops.engine(0x2000_0000 | (car.handle & 0x1FFF_FFFF), position, speed, intensity, listener, now_ms, audio::DEFAULT_MIX);
+                self.loops.engine(0x2000_0000 | (car.handle & 0x1FFF_FFFF), position, speed, intensity, listener, now_ms, self.mix);
             }
         }
         let mut loops = Vec::new();
         self.loops.current(now_ms, &mut loops);
         // Debris beds (engine.ts update): the strongest four regions of breaking debris.
         for bed in self.activity.sample(now_ms, listener) {
-            if let Some(l) = audio::bed_loop(&bed, listener, audio::DEFAULT_MIX) {
+            if let Some(l) = audio::bed_loop(&bed, listener, self.mix) {
                 loops.push(l);
             }
         }
@@ -731,7 +739,7 @@ impl ClientCore {
             self.frame.loops.push(l);
         }
         let mut voices = Vec::new();
-        self.audio.drain(now_ms, |e| audio::voices(e, listener, now_ms, audio::DEFAULT_MIX, &mut voices));
+        self.audio.drain(now_ms, |e| audio::voices(e, listener, now_ms, self.mix, &mut voices));
         let city = self.city.as_ref();
         for mut v in voices {
             let p = Vec3::from_array(v.position);

@@ -166,6 +166,10 @@ void AVibePlayerPawn::CreateInput()
 	SettingsHandle = FVibeSettings::OnChanged().AddWeakLambda(this, [this]()
 	{
 		MapKeys();
+		if (UVibeNetSubsystem* NetSubsystem = Net())
+		{
+			NetSubsystem->SetMix(FVibeSettings::Get().MixPreset, FVibeSettings::Get().DynamicRange);
+		}
 		const APlayerController* PC = Cast<APlayerController>(GetController());
 		const ULocalPlayer* LocalPlayer = PC ? PC->GetLocalPlayer() : nullptr;
 		if (UEnhancedInputLocalPlayerSubsystem* Input = LocalPlayer ? LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>() : nullptr)
@@ -174,6 +178,10 @@ void AVibePlayerPawn::CreateInput()
 		}
 	});
 	FVibeSettings::Get().ApplySound();
+	if (UVibeNetSubsystem* NetSubsystem = Net())
+	{
+		NetSubsystem->SetMix(FVibeSettings::Get().MixPreset, FVibeSettings::Get().DynamicRange);
+	}
 }
 
 void AVibePlayerPawn::MapKeys()

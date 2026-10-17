@@ -36,6 +36,10 @@ struct VIBECITY_API FVibeSettings
 	// Sound (audio/settings.ts DEFAULT_AUDIO: on, master 0.65; the core applies no master gain).
 	bool bSoundEnabled = true;
 	float MasterVolume = 0.65f;
+	/** The mix: settings.ts preset (VL_MIX_*: cinematic by default) and dynamic range (VL_RANGE_*:
+	 * balanced by default), applied by the core (vl_client_set_mix). */
+	uint32 MixPreset = 0;
+	uint32 DynamicRange = 0;
 
 	FKey Keys[static_cast<int32>(EAction::Count)];
 

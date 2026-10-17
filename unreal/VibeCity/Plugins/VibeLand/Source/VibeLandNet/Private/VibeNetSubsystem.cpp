@@ -42,6 +42,10 @@ bool UVibeNetSubsystem::Connect(const FString& InApiBaseUrl, const FString& InMa
 	Config.match_id = Match.Get();
 	Config.space = 1; // Unreal: centimetres, Z up
 	Client = vl_client_create(&Config);
+	if (Client)
+	{
+		vl_client_set_mix(Client, MixPreset, MixRange);
+	}
 	if (!Client)
 	{
 		UE_LOG(LogVibeLand, Error, TEXT("could not create a client for %s match %s"), *ApiBaseUrl, *MatchId);
@@ -126,6 +130,16 @@ void UVibeNetSubsystem::SetInput(const VlInput& Input)
 	if (Client)
 	{
 		vl_client_set_input(Client, &Input);
+	}
+}
+
+void UVibeNetSubsystem::SetMix(uint32 Preset, uint32 Range)
+{
+	MixPreset = Preset;
+	MixRange = Range;
+	if (Client)
+	{
+		vl_client_set_mix(Client, MixPreset, MixRange);
 	}
 }
 
