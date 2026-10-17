@@ -172,7 +172,7 @@ void AVibeRemotePlayers::OnFrame(const VlFrameView& Frame)
 		const bool bInVehicle = (P.state_flags & VL_STATE_IN_VEHICLE) != 0;
 		A.Root->SetVisibility(!bInVehicle, true);
 		A.Root->SetWorldLocationAndRotation(FVector(P.pos[0], P.pos[1], P.pos[2]),
-			FRotator(0.0, P.yaw, bDead ? 90.0 : 0.0));
+			FRotator(0.0, P.yaw, (bDead && !A.Skeletal) ? 90.0 : 0.0));
 		A.Shield->SetVisibility(!bInVehicle && (P.state_flags & VL_STATE_SPAWN_PROTECTED) != 0);
 		const float Hp = FMath::Clamp(P.hp / 100.0f, 0.0f, 1.0f);
 		A.HpFill->SetRelativeScale3D(FVector(0.02, FMath::Max(0.001f, 0.76f * Hp), 0.06));
@@ -180,21 +180,58 @@ void AVibeRemotePlayers::OnFrame(const VlFrameView& Frame)
 		A.HpFill->SetVisibility(!bInVehicle && !bDead);
 		if (A.Skeletal)
 		{
-			const double Speed = FVector2D(P.vel[0], P.vel[1]).Size();
-			const TCHAR* Clip = (P.state_flags & VL_STATE_MELEEING) ? TEXT("Melee_Hook")
-				: Speed < IdleCmS ? TEXT("Idle_Loop")
-				: Speed < JogCmS ? TEXT("Walk_Loop")
-				: Speed < SprintCmS ? TEXT("Jog_Fwd_Loop") : TEXT("Sprint_Loop");
-			if (A.Clip != Clip)
+			const FVector Velocity(P.vel[0], P.vel[1], P.vel[2]);
+			if (bDead != A.bRagdoll)
 			{
-				if (UAnimSequence* Seq = Anim(Clip))
+				SetRagdoll(A, bDead, Velocity);
+			}
+			if (!bDead)
+			{
+				// The web's jump phases over the locomotion (characterAnim/CharacterFactory.ts).
+				const bool bGround = (P.state_flags & VL_STATE_ON_GROUND) != 0;
+				const bool bClipDone = Now >= A.ClipEndsAt;
+				using EJump = FAvatar::EJump;
+				switch (A.Jump)
 				{
-					A.Skeletal->PlayAnimation(Seq, FCString::Strcmp(Clip, TEXT("Melee_Hook")) != 0);
+				case EJump::Grounded:
+					if (!bGround) { PlayClip(A, TEXT("Jump_Start"), false); A.Jump = EJump::Jumping; }
+					break;
+				case EJump::Jumping:
+					if (bGround) { PlayClip(A, TEXT("Jump_Land"), false); A.Jump = EJump::Landing; }
+					else if (bClipDone) { PlayClip(A, TEXT("Jump_Loop"), true); A.Jump = EJump::Airborne; }
+					break;
+				case EJump::Airborne:
+					if (bGround) { PlayClip(A, TEXT("Jump_Land"), false); A.Jump = EJump::Landing; }
+					break;
+				case EJump::Landing:
+					if (!bGround) { PlayClip(A, TEXT("Jump_Start"), false); A.Jump = EJump::Jumping; }
+					else if (bClipDone) { A.Jump = EJump::Grounded; }
+					break;
 				}
-				A.Clip = Clip;
+				if (A.Jump == EJump::Grounded)
+				{
+					const double Speed = FVector2D(Velocity.X, Velocity.Y).Size();
+					const bool bMelee = (P.state_flags & VL_STATE_MELEEING) != 0;
+					const TCHAR* Clip = bMelee ? TEXT("Melee_Hook")
+						: Speed < IdleCmS ? TEXT("Idle_Loop")
+						: Speed < JogCmS ? TEXT("Walk_Loop")
+						: Speed < SprintCmS ? TEXT("Jog_Fwd_Loop") : TEXT("Sprint_Loop");
+					if (A.Clip != Clip)
+					{
+						PlayClip(A, Clip, !bMelee);
+					}
+				}
 			}
 		}
 	}
+	bool bJumping = false, bRagdoll = false;
+	for (const TPair<uint32, FAvatar>& Pair : Avatars)
+	{
+		bJumping |= Pair.Value.bSeen && Pair.Value.Jump != FAvatar::EJump::Grounded;
+		bRagdoll |= Pair.Value.bSeen && Pair.Value.bRagdoll;
+	}
+	JumpFrames += bJumping ? 1 : 0;
+	RagdollFrames += bRagdoll ? 1 : 0;
 	for (TPair<uint32, FAvatar>& Pair : Avatars)
 	{
 		if (!Pair.Value.bSeen && Pair.Value.Root)
@@ -202,6 +239,33 @@ void AVibeRemotePlayers::OnFrame(const VlFrameView& Frame)
 			Pair.Value.Root->SetVisibility(false, true);
 		}
 	}
+}
+
+void AVibeRemotePlayers::PlayClip(FAvatar& A, const TCHAR* Clip, bool bLoop)
+{
+	A.Clip = Clip;
+	UAnimSequence* Seq = Anim(Clip);
+	if (!Seq)
+	{
+		A.ClipEndsAt = 0.0; // not imported: treat as finished
+		return;
+	}
+	A.Skeletal->PlayAnimation(Seq, bLoop);
+	A.ClipEndsAt = FPlatformTime::Seconds() + Seq->GetPlayLength();
+}
+
+void AVibeRemotePlayers::SetRagdoll(FAvatar& A, bool bOn, const FVector& Velocity)
+{
+	// The web's death: its authored death clip (characterAnim profile `deathClip`, what the web plays
+	// when cosmetic ragdolls are off), held on its last frame until the player respawns.
+	A.bRagdoll = bOn;
+	if (bOn)
+	{
+		PlayClip(A, TEXT("Death01"), false);
+		return;
+	}
+	A.Jump = FAvatar::EJump::Grounded;
+	A.Clip.Reset();
 }
 
 void AVibeRemotePlayers::Tick(float DeltaSeconds)

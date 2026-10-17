@@ -19,8 +19,9 @@ class UTextRenderComponent;
  * (/Game/VibeCity/Characters/UAL1_Standard, with its Idle_Loop / Walk_Loop / Jog_Fwd_Loop /
  * Sprint_Loop clips chosen at the web's 2 and 4 m/s, and Melee_Hook on the meleeing flag) tinted per
  * player, an HP bar, a yellow flash for 180 ms when its HP drops, a shield while spawn-protected,
- * hidden while in a car, and lying down when dead. Until the mannequin is imported a figure of
- * primitives stands in.
+ * hidden while in a car. Like the web's CharacterFactory: a jump / air / land state machine on the
+ * player's on-ground flag (Jump_Start, Jump_Loop, Jump_Land) over the locomotion, and its death
+ * clip (Death01, the web's fallback to its cosmetic ragdoll) held until respawn. Until the mannequin is imported a figure of primitives stands in (lying down when dead).
  */
 UCLASS()
 class VIBECITY_API AVibeRemotePlayers : public AActor
@@ -33,6 +34,9 @@ public:
 	int32 VisiblePlayers() const;
 	/** Whether the imported mannequin is in use (else the stand-in figure). */
 	bool UsesMannequin() const { return Mannequin != nullptr; }
+	/** Frames on which some player was drawn in a jump phase, and in a ragdoll (tests). */
+	int32 JumpingSeen() const { return JumpFrames; }
+	int32 RagdollSeen() const { return RagdollFrames; }
 
 protected:
 	virtual void BeginPlay() override;
@@ -57,7 +61,14 @@ private:
 		double FlashUntil = 0.0;
 		FString Clip;
 		bool bSeen = false;
+		/** The web's jump phases. */
+		enum class EJump : uint8 { Grounded, Jumping, Airborne, Landing } Jump = EJump::Grounded;
+		double ClipEndsAt = 0.0;
+		bool bRagdoll = false;
 	};
+
+	void PlayClip(FAvatar& A, const TCHAR* Clip, bool bLoop);
+	void SetRagdoll(FAvatar& A, bool bOn, const FVector& Velocity);
 
 	void OnFrame(const VlFrameView& Frame);
 	FAvatar& AvatarFor(uint32 PlayerId);
@@ -75,5 +86,7 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> HpFillMaterial;
 
 	TMap<uint32, FAvatar> Avatars;
+	int32 JumpFrames = 0;
+	int32 RagdollFrames = 0;
 	FDelegateHandle FrameHandle;
 };

@@ -1014,6 +1014,11 @@ bool FVibeCityPlayLookAtRemote::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("%.1f m from player %u; %d drawn, mannequin %d"), FVector::Dist(Eye, S->Target) / 100.0,
 			S->Remote[0].player_id, Players ? Players->VisiblePlayers() : -1, Players && Players->UsesMannequin() ? 1 : 0));
 		TestTrue(TEXT("the other player is drawn"), Players && Players->VisiblePlayers() > 0);
+		if (FParse::Param(FCommandLine::Get(), TEXT("VibeExpectJumping")))
+		{
+			AddInfo(FString::Printf(TEXT("jump phases drawn on %d frames"), Players ? Players->JumpingSeen() : 0));
+			TestTrue(TEXT("the jumping player was drawn jumping"), Players && Players->JumpingSeen() > 0);
+		}
 		return true;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
@@ -1154,6 +1159,133 @@ bool FVibeCityPlayWreckCar::RunTest(const FString& Parameters)
 		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
 		{
 			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("wreck.png"), false, false);
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+// VibeCity.Play.KillRemote: fire the rifle at the nearest other player until the server marks them
+// dead; they are drawn dying (AVibeRemotePlayers: the web's death clip). -VibeShotDir
+// saves dead.png.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayKillRemote, "VibeCity.Play.KillRemote",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		VlLocal Local = {};
+		TArray<VlPlayer> Remote;
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+		uint32 Target = 0;
+		bool bDead = false;
+		int32 Shots = 0;
+		double NextShot = 0.0;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 90.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
+			{
+				S->Local = Frame.local;
+				S->Remote = TArray<VlPlayer>(Frame.remote_players, static_cast<int32>(Frame.remote_player_count));
+				for (const VlPlayer& P : S->Remote)
+				{
+					S->bDead |= P.player_id == S->Target && (P.state_flags & VL_STATE_DEAD);
+				}
+			});
+		}
+		if ((S->Local.player.flags & VL_PLAYER_VALID) && S->Remote.Num() > 0)
+		{
+			S->Target = S->Remote[0].player_id;
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("no other player in interest"));
+			return true;
+		}
+		return false;
+	}));
+	// 6 m from them.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		const VlPlayer& P = S->Remote[0];
+		const FVector Target(P.pos[0], P.pos[1], P.pos[2]);
+		const FVector Me(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		const FVector Toward = (Target - Me).GetSafeNormal2D();
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->CameraDrop(Target - Toward * 600.0 + FVector(0.0, 0.0, 50.0), static_cast<float>(Toward.Rotation().Yaw), 0.0f);
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Click();
+		S->Deadline = Now() + 30.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		if (S->bDead)
+		{
+			AddInfo(FString::Printf(TEXT("player %u dead after %d shots"), S->Target, S->Shots));
+			return true;
+		}
+		const VlPlayer* P = S->Remote.FindByPredicate([S](const VlPlayer& R) { return R.player_id == S->Target; });
+		if (P && Now() >= S->NextShot)
+		{
+			const FVector Eye(S->Local.eye[0], S->Local.eye[1], S->Local.eye[2]);
+			if (APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0))
+			{
+				PC->SetControlRotation((FVector(P->pos[0], P->pos[1], P->pos[2]) - Eye).Rotation());
+			}
+			Click();
+			S->Shots += 1;
+			S->NextShot = Now() + 0.15;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(FString::Printf(TEXT("player %u not dead after %d shots"), S->Target, S->Shots));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		TActorIterator<AVibeRemotePlayers> Players(GameWorld());
+		AddInfo(FString::Printf(TEXT("death drawn on %d frames"), Players ? Players->RagdollSeen() : 0));
+		TestTrue(TEXT("the dead player is drawn dying"), Players && Players->RagdollSeen() > 0);
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("dead.png"), false, false);
 		}
 		return true;
 	}));

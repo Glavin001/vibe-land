@@ -6,6 +6,7 @@
 //! Prints a status line a second and the final stats. `--meteor-after S` drops a meteor (POST
 //! /city-meteor/<match>) on the first building's highest chunk S seconds after joining; needs a
 //! PhysX server (the synthetic city ignores meteors). `--gate` exits non-zero unless:
+//! `--jump` holds jump and `--drop x,y,z` places the player (a stand-in other player for tests).
 //!   * the client received ≥ 95% of the snapshots the server produced since joining (server
 //!     ticks elapsed × snapshot_hz / sim_hz). That measures delivery, not the server's speed: a
 //!     server sharing the GPU with a renderer can tick slower than real time, and the summary
@@ -34,6 +35,14 @@ fn main() {
     let seconds: f64 = flag("--seconds").map_or(30.0, |v| v.parse().expect("--seconds"));
     let meteor_after: Option<f64> = flag("--meteor-after").map(|v| v.parse().expect("--meteor-after"));
     let gate = std::env::args().any(|a| a == "--gate");
+    // A stand-in player for other clients' tests: --jump holds jump (it hops whenever grounded),
+    // --drop x,y,z (server metres) places it once joined.
+    let jump = std::env::args().any(|a| a == "--jump");
+    let drop: Option<[f32; 3]> = flag("--drop").map(|v| {
+        let p: Vec<f32> = v.split(',').map(|x| x.trim().parse().expect("--drop x,y,z")).collect();
+        [p[0], p[1], p[2]]
+    });
+    let mut dropped = false;
     let poll_ms: u64 = flag("--poll-ms").map_or(4, |v| v.parse().expect("--poll-ms"));
 
     let transport = Transport::start(TransportConfig::new(&api, &match_id)).expect("start transport");
@@ -96,6 +105,15 @@ fn main() {
         }
         if joined_at.is_none() && core.state() == VlCoreState::Playing {
             joined_at = Some(Instant::now());
+            if jump {
+                core.set_input(&vibe_client_core::frame::VlInput { buttons: vibe_client_core::frame::VL_BTN_JUMP, ..Default::default() });
+            }
+        }
+        if let (Some(p), false, Some(j)) = (drop, dropped, joined_at) {
+            if j.elapsed().as_secs_f64() > 1.0 {
+                core.camera_drop(p, 0.0, 0.0);
+                dropped = true;
+            }
         }
         if at_join.is_none() && joined_at.is_some() && frame.stats.snapshots > 0 {
             at_join = Some((frame.stats.newest_server_tick, frame.stats.snapshots));
