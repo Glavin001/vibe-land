@@ -1,0 +1,239 @@
+// VibeCity.Play.WalkAndShoot: M2's gate in the real game against a live vibe-land server. Input goes
+// in through Slate's platform-input entry points (as real keys and clicks do), so the whole route is
+// exercised: Enhanced Input -> AVibePlayerPawn -> the shared core's 60 Hz input frames -> the server's
+// PhysX character controller -> snapshots -> the presented pose.
+//
+// Gates, from the server's own numbers:
+//   * holding W walks the player at the server's walk speed (MoveConfig::walk_speed, 6 m/s) +-5%
+//     toward the view's yaw (+-2 degrees): the server's reported velocity, and the distance covered
+//     per input frame the server applied (ack seq). The server applies input frames in real time
+//     (several per tick when its ticks run slow, server/src/main.rs), so neither wall time nor
+//     server ticks measure movement: applied 60 Hz frames do. The walk heads away from the city,
+//     over open ground, so nothing it bumps into slows it;
+//   * a click fires: the core reports the local shot, and the server answers it (ShotResult).
+//
+// Needs a server with a citypp match (scripts/perf/garage-vehicle-server.sh, or the synthetic one):
+//   UnrealEditor VibeCity.uproject -game -windowed -VibeMatch=citypp-m2 \
+//     -ExecCmds="Automation RunTests VibeCity.Play; Quit"
+
+#include "Engine/Engine.h"
+#include "Engine/GameInstance.h"
+#include "Engine/GameViewportClient.h"
+#include "Engine/World.h"
+#include "Framework/Application/SlateApplication.h"
+#include "GameFramework/PlayerController.h"
+#include "InputCoreTypes.h"
+#include "Kismet/GameplayStatics.h"
+#include "Misc/AutomationTest.h"
+#include "Tests/AutomationCommon.h"
+#include "VibeNetSubsystem.h"
+#include "VibePlayerPawn.h"
+#include "VibeShotEffects.h"
+#include "EngineUtils.h"
+#include "Widgets/SViewport.h"
+#include "Widgets/SWindow.h"
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+namespace
+{
+	UWorld* GameWorld()
+	{
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if ((Context.WorldType == EWorldType::Game || Context.WorldType == EWorldType::PIE) && Context.World())
+			{
+				return Context.World();
+			}
+		}
+		return nullptr;
+	}
+
+	UVibeNetSubsystem* NetOf(UWorld* World)
+	{
+		UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr;
+		return GameInstance ? GameInstance->GetSubsystem<UVibeNetSubsystem>() : nullptr;
+	}
+
+	void Key(const FKey& Key, bool bDown)
+	{
+		FSlateApplication& Slate = FSlateApplication::Get();
+		const FKeyEvent Event(Key, FModifierKeysState(), Slate.GetUserIndexForKeyboard(), false, 0, 0);
+		if (bDown)
+		{
+			Slate.ProcessKeyDownEvent(Event);
+		}
+		else
+		{
+			Slate.ProcessKeyUpEvent(Event);
+		}
+	}
+
+	void Click()
+	{
+		UGameViewportClient* Viewport = GEngine->GameViewport;
+		TSharedPtr<SViewport> Widget = Viewport ? Viewport->GetGameViewportWidget() : nullptr;
+		TSharedPtr<SWindow> Window = Viewport ? Viewport->GetWindow() : nullptr;
+		if (!Widget || !Window)
+		{
+			return;
+		}
+		const FVector2D Centre = Widget->GetTickSpaceGeometry().GetAbsolutePositionAtCoordinates(FVector2D(0.5, 0.5));
+		FSlateApplication& Slate = FSlateApplication::Get();
+		Slate.ProcessMouseButtonDownEvent(Window->GetNativeWindow(), FPointerEvent(Slate.GetUserIndexForMouse(), FSlateApplication::CursorPointerIndex,
+			Centre, Centre, TSet<FKey>({ EKeys::LeftMouseButton }), EKeys::LeftMouseButton, 0.0f, FModifierKeysState()));
+		Slate.ProcessMouseButtonUpEvent(FPointerEvent(Slate.GetUserIndexForMouse(), FSlateApplication::CursorPointerIndex,
+			Centre, Centre, TSet<FKey>(), EKeys::LeftMouseButton, 0.0f, FModifierKeysState()));
+	}
+
+	/** What the test needs from the frames, collected as they arrive. */
+	struct FPlayState
+	{
+		VlLocal Local = {};
+		float RenderTick = 0.0f;
+		uint32 PlayerId = 0;
+		TArray<VlEvent> Events;
+		FDelegateHandle Handle;
+		FVector WalkStart = FVector::ZeroVector;
+		uint32 WalkStartAck = 0;
+		float Yaw = 0.0f;
+		float MaxVelocityError = 0.0f;
+		int32 VelocitySamples = 0;
+		double Deadline = 0.0;
+		uint32 ShotId = 0;
+		int32 MaxTracers = 0;
+	};
+
+	double Now()
+	{
+		return FPlatformTime::Seconds();
+	}
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityPlayWalkAndShoot, "VibeCity.Play.WalkAndShoot",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityPlayWalkAndShoot::RunTest(const FString& Parameters)
+{
+	TSharedRef<FPlayState> S = MakeShared<FPlayState>();
+	const float WalkSpeedMps = 6.0f; // vibe_netcode::movement::MoveConfig::default().walk_speed
+
+	// Join: the server has placed this player.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		UWorld* World = GameWorld();
+		UVibeNetSubsystem* Net = NetOf(World);
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 90.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame)
+			{
+				S->Local = Frame.local;
+				S->RenderTick = Frame.stats.player_render_tick;
+				S->PlayerId = Frame.stats.player_id;
+				for (size_t i = 0; i < Frame.event_count; ++i)
+				{
+					S->Events.Add(Frame.events[i]);
+				}
+			});
+		}
+		const AVibePlayerPawn* Pawn = Cast<AVibePlayerPawn>(UGameplayStatics::GetPlayerPawn(World, 0));
+		if (Pawn && Pawn->IsJoined())
+		{
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("never joined (is a server running with a citypp match?)"));
+			return true;
+		}
+		return false;
+	}));
+	// Settle on the ground, face a known way, capture the mouse.
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Click();
+		// Away from the city's centre (the origin): open ground.
+		S->Yaw = FMath::RadiansToDegrees(FMath::Atan2(S->Local.player.pos[1], S->Local.player.pos[0]));
+		if (APlayerController* PC = UGameplayStatics::GetPlayerController(GameWorld(), 0))
+		{
+			PC->SetControlRotation(FRotator(0.0f, S->Yaw, 0.0f));
+		}
+		Key(EKeys::W, true);
+		return true;
+	}));
+	// Up to speed (ground acceleration 80 m/s^2) and the presentation lead steady.
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		S->WalkStart = FVector(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		S->WalkStartAck = S->Local.ack_input_seq;
+		S->Deadline = Now() + 3.0;
+		return true;
+	}));
+	// While walking: the server's own velocity for the player, every frame.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S, WalkSpeedMps]()
+	{
+		const FVector V(S->Local.player.vel[0], S->Local.player.vel[1], 0.0);
+		S->MaxVelocityError = FMath::Max(S->MaxVelocityError, FMath::Abs(static_cast<float>(V.Size()) / 100.0f - WalkSpeedMps));
+		S->VelocitySamples += 1;
+		return Now() > S->Deadline;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, WalkSpeedMps]()
+	{
+		Key(EKeys::W, false);
+		const FVector End(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		const uint32 Frames = (S->Local.ack_input_seq - S->WalkStartAck) & 0xFFFF;
+		const FVector Horizontal(End.X - S->WalkStart.X, End.Y - S->WalkStart.Y, 0.0);
+		const float Speed = Frames > 0 ? static_cast<float>(Horizontal.Size()) / 100.0f / (Frames / 60.0f) : 0.0f;
+		AddInfo(FString::Printf(TEXT("walked %.1f cm over %u applied input frames: %.3f m/s; server velocity off by at most %.3f m/s over %d frames"),
+			Horizontal.Size(), Frames, Speed, S->MaxVelocityError, S->VelocitySamples));
+		TestTrue(TEXT("enough input frames to measure (>= 60)"), Frames >= 60);
+		TestTrue(FString::Printf(TEXT("distance per input frame: %.3f m/s within 5%% of %.1f"), Speed, WalkSpeedMps), FMath::Abs(Speed - WalkSpeedMps) <= 0.05f * WalkSpeedMps);
+		TestTrue(FString::Printf(TEXT("server velocity within 5%% of %.1f m/s (worst %.3f off)"), WalkSpeedMps, S->MaxVelocityError), S->MaxVelocityError <= 0.05f * WalkSpeedMps);
+		const float Heading = FMath::RadiansToDegrees(FMath::Atan2(Horizontal.Y, Horizontal.X));
+		TestTrue(FString::Printf(TEXT("walked toward %.1f deg, faced %.1f"), Heading, S->Yaw), FMath::Abs(FRotator::NormalizeAxis(Heading - S->Yaw)) <= 2.0f);
+		S->Events.Reset();
+		Click(); // fire the rifle
+		S->Deadline = Now() + 5.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		for (TActorIterator<AVibeShotEffects> It(GameWorld()); It; ++It)
+		{
+			S->MaxTracers = FMath::Max(S->MaxTracers, It->ActiveTracers());
+		}
+		const VlEvent* Local = S->Events.FindByPredicate([](const VlEvent& E) { return E.kind == VL_EVENT_LOCAL_SHOT; });
+		const VlEvent* Result = Local ? S->Events.FindByPredicate([Local](const VlEvent& E) { return E.kind == VL_EVENT_SHOT_RESULT && E.id == Local->id; }) : nullptr;
+		if (Local && Result)
+		{
+			TestEqual(TEXT("shot weapon"), Local->weapon, (uint32)VL_WEAPON_RIFLE);
+			TestTrue(TEXT("a tracer showed"), S->MaxTracers > 0);
+			AddInfo(FString::Printf(TEXT("shot %u answered: confirmed %u"), Local->id, Result->a));
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(FString::Printf(TEXT("no %s within 5 s"), Local ? TEXT("ShotResult for the shot") : TEXT("local shot")));
+			return true;
+		}
+		return false;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif

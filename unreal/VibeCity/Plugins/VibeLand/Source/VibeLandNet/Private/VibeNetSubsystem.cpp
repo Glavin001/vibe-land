@@ -82,7 +82,26 @@ const VlFrameView* UVibeNetSubsystem::Poll()
 		Disconnect();
 		return nullptr;
 	}
+	OnFrame.Broadcast(Frame);
 	return &Frame;
+}
+
+void UVibeNetSubsystem::SetInput(const VlInput& Input)
+{
+	if (Client)
+	{
+		vl_client_set_input(Client, &Input);
+	}
+}
+
+uint32 UVibeNetSubsystem::Fire(uint32 Weapon)
+{
+	uint32 ShotId = 0;
+	if (Client)
+	{
+		vl_client_fire(Client, Weapon, &ShotId);
+	}
+	return ShotId;
 }
 
 TArrayView<const VlChunk> UVibeNetSubsystem::Chunks() const

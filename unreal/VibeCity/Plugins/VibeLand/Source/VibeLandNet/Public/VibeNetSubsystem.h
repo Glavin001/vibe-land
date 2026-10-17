@@ -7,6 +7,9 @@
 
 #include "VibeNetSubsystem.generated.h"
 
+/** Broadcast right after each successful poll, with that frame (valid until the next poll). */
+DECLARE_MULTICAST_DELEGATE_OneParam(FOnVibeFrame, const VlFrameView& /*Frame*/);
+
 /**
  * Owns the connection to a vibe-land server: the shared Rust client core (decoding, the wire 4
  * city stream, interpolation) and its native WebTransport adapter, behind the C ABI in
@@ -30,6 +33,18 @@ public:
 
 	/** Advance the client to now. Null when not connected or when the client failed. */
 	const VlFrameView* Poll();
+
+	/** Fired after each successful Poll: the local player places its camera, the HUD and effects read
+	 * the frame's events. */
+	FOnVibeFrame OnFrame;
+
+	/** What the local player is doing (Unreal space: degrees, axes in [-1, 1]); held until changed and
+	 * sent as 60 Hz input frames by the next polls. */
+	void SetInput(const VlInput& Input);
+
+	/** Fire a weapon (VL_WEAPON_*) along the view last given to SetInput. Returns the shot id, or 0
+	 * when nothing was fired (not playing yet, or inside the fire interval). */
+	uint32 Fire(uint32 Weapon);
 
 	/** The city's chunks (empty until the manifest arrived). */
 	TArrayView<const VlChunk> Chunks() const;

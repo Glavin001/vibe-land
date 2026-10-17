@@ -18,7 +18,10 @@
 #include "Engine/EngineTypes.h"
 #include "Kismet/GameplayStatics.h"
 #include "VibeCityDirector.h"
+#include "VibeCityHUD.h"
 #include "VibeCityPlayerController.h"
+#include "VibePlayerPawn.h"
+#include "VibeShotEffects.h"
 #include "VibeLandNet.h"
 #include "VibeNetSettings.h"
 #include "VibeNetSubsystem.h"
@@ -34,8 +37,21 @@ namespace
 
 AVibeCityGameMode::AVibeCityGameMode()
 {
-	DefaultPawnClass = ASpectatorPawn::StaticClass();
+	DefaultPawnClass = AVibePlayerPawn::StaticClass();
 	PlayerControllerClass = AVibeCityPlayerController::StaticClass();
+	HUDClass = AVibeCityHUD::StaticClass();
+}
+
+bool AVibeCityGameMode::IsSpectating()
+{
+	// -VibeSpectate, or a scripted view (-VibeView=…): fly over the city instead of playing.
+	FString View;
+	return FParse::Param(FCommandLine::Get(), TEXT("VibeSpectate")) || FParse::Value(FCommandLine::Get(), TEXT("VibeView="), View);
+}
+
+UClass* AVibeCityGameMode::GetDefaultPawnClassForController_Implementation(AController* InController)
+{
+	return IsSpectating() ? ASpectatorPawn::StaticClass() : Super::GetDefaultPawnClassForController_Implementation(InController);
 }
 
 void AVibeCityGameMode::StartPlay()
@@ -46,6 +62,7 @@ void AVibeCityGameMode::StartPlay()
 	UWorld* World = GetWorld();
 	Director = World->SpawnActor<AVibeCityDirector>();
 	Director->OnCityBuilt.AddUObject(this, &AVibeCityGameMode::FrameCity);
+	World->SpawnActor<AVibeShotEffects>();
 
 	if (GetDefault<UVibeNetSettings>()->bAutoConnect)
 	{
@@ -109,7 +126,8 @@ void AVibeCityGameMode::FrameCity(const FBox& Bounds)
 {
 	APlayerController* Controller = UGameplayStatics::GetPlayerController(this, 0);
 	APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
-	if (!Pawn || !Bounds.IsValid)
+	// A playing pawn stands where the server puts it; only a spectator is framed on the city.
+	if (!Pawn || !Bounds.IsValid || !Pawn->IsA<ASpectatorPawn>())
 	{
 		return;
 	}
