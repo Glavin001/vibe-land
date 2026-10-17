@@ -55,7 +55,7 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 | Weather presets (clear, dust storm, snow storm): fog colour and thickness, camera-wrapped particles drifting with the wind | done | `client-core/src/weather.rs` (port of `weatherPresets.ts`, `fogSettings.ts`); the particle shader is `WeatherParticles.tsx`'s, as HLSL | `VibeCity.Render.WeatherAndGrass`: 5000 snow particles and the preset fog, then clear |
 | Meadow and shared painted grass (`/match-stats/<id>/grass`, polled every 2 s with If-None-Match) | done: blades per patch, species placed and shaped as the web's (seed heads on reeds and wheat, leaves on corn, fronds on ferns), crop rows, distance LOD, wind, the distant canopy over tall painted stands | `client-core/src/grass.rs` (ports of `grassPlacement.ts`, `GrassPaint.ts`, `foliageProfiles.ts`); shapes from `grassMaterial.ts` | default patches and a painted patch (count, species split, first and last blades) equal to the TypeScript; `WeatherAndGrass`: the stored 84-tile layout loads and every patch regenerates; `VibeCity.Render.Species`: every species drawn (species.png) |
 | Destruction audio (fractures, entry, sheds, collapse waves, impacts, shots, server contacts, scrape loops, air, fly-bys, debris beds, car engines), heard from the camera, occluded by standing buildings, low-passed with distance | done | `client-core/src/audio.rs`, `effects.rs` (ports of `model.ts`, `director.ts`, `destructionMix.ts`, `engine.ts`, `motion.ts`, `destructionSources.ts`, `destructionActivity.ts`, `occlusion.ts`) | mix, intensity, attenuation, random, closest pass, Doppler, debris beds equal to the TypeScript; occlusion through a building and not over it; `CityAndEffects`: sounds and loops heard 35 m from a meteor |
-| Dust where things break | done, as clusters of soft lit sprites | `client-core/src/effects.rs` | `CityAndEffects`: puffs after a meteor |
+| Dust where things break | done: the web's dust policy (parcels per source, the per-tick cap, smouldering cells, palettes), drawn on the web's curves as instanced volumes | `client-core/src/dust.rs` (port of `dustPolicy.ts` and `dustParcelStore.ts`'s curves), `vl_dust_eval` | `dust_parity` (every parcel the same as the TypeScript); `VibeCity.Render.Dust`; `CityAndEffects`: 336 live parcels after a meteor |
 | Cursor (Esc frees, click captures, focus loss frees) | done | (Unreal only) | `VibeCity.Cursor` |
 | Session drops | rejoin | `client-core` | (fork commit dd5c0765) |
 
@@ -67,7 +67,7 @@ texture sheets and audio clips, `shared/assets/materials/catalog.json`, and the 
 | M4: 5 minutes, ≥ 20 fractures | `--seconds 300 --meteor-after 10 --meteor-every 12 --gate --min-fractures 20` | 261 fractures, 0 hash mismatches, 0 decode errors, 17857 of 17856 snapshots, server at 0.993 of real time |
 | Web on the shared core: 5 minutes, every core flag on | `node scripts/web-core-soak.mjs` (headless Chromium, a meteor every 12 s) | 25 meteors, up to 1634 live bodies presented, 496 hash checks, 0 mismatches, 0 decode errors, no render stalls, no page errors |
 | Walk displacement | `VibeCity.Play.WalkAndShoot` | server velocity exact; 1.03 input frames applied per server tick |
-| Unreal suite | `scripts/unreal/play-tests.sh` | 15 of 15, and `KillRemote` with a stand-in |
+| Unreal suite | `scripts/unreal/play-tests.sh` (one match on the server) | 17 of 17, and `KillRemote` with a stand-in; `CityAndEffects`: a meteor makes 10 fractures, 291 sounds and 336 live dust parcels from the web's policy |
 
 ## Side by side
 
@@ -95,13 +95,6 @@ the web's fog curve (Gaussian) is thinner under 40 m.
   sound. Their dust starts with no velocity of its own, as on the web's /city: wire 4 carries no
   body velocities into its sources (`perPlayerCityClient.ts` builds each promotion with
   `linearVelocity: [0, 0, 0]`).
-- **Dust from a live fracture in Unreal, not yet re-run.** The core makes the web's dust
-  (`dust.rs`, a port of `dustPolicy.ts` held to it by `tests/dust_parity.rs`: 1200 sources, 4220
-  parcels, worst relative difference 2e-15), and Unreal draws its parcels in a ring of the web's
-  4096 with the web's curves (`vl_dust_eval`), as instanced volumes. `VibeCity.Render.Dust` checks
-  the drawing with no server (every shape drawn, growing and rising on its curve, an entry puff gone
-  after its 5 s; dust.png). `CityAndEffects` has not run to a fracture since: this Mac's GPU was
-  contended (an idle server at a fifth of real time), so its meteor did not land in the test's time.
 - **Debug and admin tools** stay web-only: the stats overlay (match stats from `PKT_MATCH_STATS`,
   the player count, RECORD TAPE), `/server-stats`, the world builder.
 - **Server walk speed.** The server's on-foot input policy repeats a held input when a frame is

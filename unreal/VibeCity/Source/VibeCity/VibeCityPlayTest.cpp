@@ -1316,13 +1316,21 @@ bool FVibeCityPlayKillRemote::RunTest(const FString& Parameters)
 				}
 			});
 		}
-		if ((S->Local.player.flags & VL_PLAYER_VALID) && S->Remote.Num() > 0)
+		// The stand-in (vl-headless --jump --drop 20,1,60) waits at a fixed point, Unreal
+		// (6000, -2000, 100): target the player within 10 m of it, not whoever else is in the match.
+		if (S->Local.player.flags & VL_PLAYER_VALID)
 		{
-			S->Target = S->Remote[0].player_id;
-			return true;
+			for (const VlPlayer& R : S->Remote)
+			{
+				if (FVector::Dist2D(FVector(R.pos[0], R.pos[1], R.pos[2]), FVector(6000.0, -2000.0, 100.0)) < 1000.0
+					&& !(R.state_flags & VL_STATE_DEAD))
+				{
+					S->Target = R.player_id;
+					return true;
+				}
+			}
 		}
-		// The stand-in (vl-headless --jump --drop 20,1,60) waits at a fixed point; meet it there,
-		// 4 m short of it and facing it (server (20, 1, 56), Unreal (5600, -2000, 100)).
+		// Meet it there, 4 m short of it and facing it (server (20, 1, 56), Unreal (5600, -2000, 100)).
 		if ((S->Local.player.flags & VL_PLAYER_VALID) && !S->bMet)
 		{
 			Net->CameraDrop(FVector(5600.0, -2000.0, 100.0), 0.0f, 0.0f);
