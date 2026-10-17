@@ -88,6 +88,7 @@ void AVibeCityWeather::SetWeather(int32 InPreset, float Intensity)
 	}
 	Intensity = FMath::Clamp(FMath::IsFinite(Intensity) ? Intensity : 1.0f, MinIntensity, MaxIntensity);
 	CurrentPreset = InPreset < 0 ? 0 : InPreset;
+	CurrentFogExp2 = vl_weather_fog_exp2_density() * Intensity;
 	// CityEnvironment.tsx: the preset's fog colour, density × intensity.
 	if (Fog)
 	{

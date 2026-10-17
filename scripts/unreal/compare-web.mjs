@@ -4,6 +4,13 @@
 //
 //   node scripts/unreal/compare-web.mjs [--url http://localhost:3003/city?match=citypp-parent]
 //     [--cam 0,14,140,0,6,0[,fov]] [--out target/unreal-tests/compare/compare-web.png] [--wait 20]
+//     [--frames N --every 0.5]
+//
+// --desktop sets the desktop defaults (PRETTY tier, volumetric dust, balanced fluid), which a
+// headless browser may not pick for itself (--dust sprites|volumetric overrides the dust mode).
+// --meteor x,y,z --api http://127.0.0.1:4001 drops a meteor there (server metres) as filming
+// starts. --frames N saves N frames, one every --every seconds (web_NN.png beside --out), so an event
+// another client triggers in the same match (VibeCity.Render.Showcase's meteor) is filmed by both.
 //
 // Runs Chromium headed-off with the GPU (Metal through ANGLE), from client/'s Playwright.
 import { createRequire } from 'node:module';
@@ -35,6 +42,10 @@ if (transport !== 'webtransport') {
   await browser.close();
   process.exit(1);
 }
+if ('desktop' in args) {
+  const dust = args.dust ?? 'volumetric';
+  await page.evaluate((mode) => window.__VIBE_E2E__.setRenderQuality({ tier: 'pretty', dust: mode, dustFluid: 'balanced' }), dust);
+}
 await page.waitForTimeout(waitS * 1000);
 await page.evaluate(([px, py, pz, tx, ty, tz, fov]) => {
   window.__VIBE_E2E__.setCapturePose({ position: [px, py, pz], lookAt: [tx, ty, tz], fov: fov || 75 });
@@ -44,6 +55,25 @@ await page.evaluate(([px, py, pz, tx, ty, tz, fov]) => {
 }, cam);
 await page.waitForTimeout(3000);
 mkdirSync(dirname(out), { recursive: true });
+const frames = Number(args.frames ?? 0);
+if (frames > 0) {
+  console.log('compare-web: filming');
+  if (args.meteor) {
+    const match = new URL(url).searchParams.get('match');
+    const target = args.meteor.split(',').map(Number);
+    const res = await fetch(`${args.api ?? 'http://127.0.0.1:4001'}/city-meteor/${match}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ targets: [target] }) });
+    console.log(`compare-web: meteor at ${target.join(', ')}: ${res.status}`);
+  }
+  const every = Number(args.every ?? 0.5) * 1000;
+  const t0 = Date.now();
+  for (let n = 0; n < frames; n++) {
+    await page.screenshot({ path: resolve(dirname(out), `web_${String(n).padStart(2, '0')}.png`) });
+    const dust = await page.evaluate(() => { const s = window.__VIBE_E2E__.snapshot(); const d = s.dust ?? s.city?.dust; return d ? `live ${d.parcelsLive} drawn ${d.parcelsDrawn}` : 'no dust stats'; });
+    console.log(`frame ${n}: ${dust}`);
+    const wait = t0 + (n + 1) * every - Date.now();
+    if (wait > 0) await page.waitForTimeout(wait);
+  }
+}
 await page.screenshot({ path: out });
 const grass = await page.evaluate(() => document.body.innerText.match(/Shared grass[^\n]*/)?.[0] ?? '');
 console.log(`compare-web: ${out}${grass ? ` (${grass})` : ''}`);

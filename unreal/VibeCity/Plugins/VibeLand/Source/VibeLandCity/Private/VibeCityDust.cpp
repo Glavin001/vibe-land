@@ -10,7 +10,9 @@
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/StaticMesh.h"
+#include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
+#include "VibeCityWeather.h"
 #include "Materials/MaterialInterface.h"
 #include "VibeLandNet.h"
 #include "vibe_client_core.h"
@@ -31,7 +33,8 @@ namespace
 	constexpr float SpriteDensity = 0.6f;
 
 	// Which parcels are drawn, as the web's volumetric dust picks them (DustVolumeRenderer.ts
-	// select, dustLod.ts): not under 3 px across, distant ones thinned by spawn serial (one in two
+	// select, dustLod.ts): not past the fog's cull distance (where FogExp2 has swallowed 97% of the
+	// cloud and of what is behind it: sqrt(-ln 0.03) / density), not under 3 px across, distant ones thinned by spawn serial (one in two
 	// beyond 60 m, one in six beyond 140 m, unless the cloud is big for its distance) with the
 	// drawn ones carrying the stride's density, and at most the nearest 1024.
 	constexpr int32 MaxDrawn = 1024;
@@ -110,6 +113,13 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 		HalfDiagRad = FMath::Atan(FMath::Sqrt(TanH * TanH + TanV * TanV));
 	}
 
+	// dustLod.ts fogCullDistance, from the weather's fog (none without it).
+	double CullM = TNumericLimits<double>::Max();
+	if (TActorIterator<AVibeCityWeather> It(GetWorld()); It && It->FogExp2Density() > 0.0f)
+	{
+		CullM = FMath::Sqrt(-FMath::Loge(0.03)) / It->FogExp2Density();
+	}
+
 	struct FPick
 	{
 		int32 Slot;
@@ -146,7 +156,7 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 			|| FMath::Acos(FMath::Clamp(FVector::DotProduct(To.GetSafeNormal(), Forward), -1.0, 1.0)) <= HalfDiagRad + FMath::Asin(FMath::Min(1.0, RadiusM * 0.87 / DistanceM));
 		const double ProjectedPx = (E.size[0] / 100.0) * PxPerM / FMath::Max(DistanceM, 1.0);
 		const int32 Stride = TierStride(DistanceM, RadiusM);
-		if (!bInView || ProjectedPx < MinProjectedPx || D.Serial % Stride != 0)
+		if (DistanceM - RadiusM > CullM || !bInView || ProjectedPx < MinProjectedPx || D.Serial % Stride != 0)
 		{
 			DustInstances->UpdateInstanceTransform(i, Hidden, true, false, true);
 			continue;

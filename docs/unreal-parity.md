@@ -112,16 +112,37 @@ does better and match /city's function.
 - **Lighting.** The web lights with its sky gradient's environment map and ACES tone mapping;
   Unreal uses its physical sky, sky light, Lumen global illumination and reflections, and virtual
   shadow maps, over 2K PBR materials (above), so it renders brighter and more physically.
-- **Dust.** Both clients make the same parcels (the web's policy, in the shared core). The web
-  draws them as raymarched fluid volumes; Unreal draws each as a translucent, volume-lit ellipsoid
-  on the same curves.
+- **Dust.** Both clients make the same parcels (the web's policy, in the shared core) and draw the
+  same ones (in view, within the fog's cull distance, at least 3 px, distant ones thinned by serial,
+  the nearest 1024). The web raymarches them as fluid volumes under a per-frame sample budget;
+  Unreal draws each as a translucent, volume-lit ellipsoid with the web sprite's opacity, so its
+  clouds read thicker. Filmed together in one match (`compare-web.mjs --frames` beside
+  `VibeCity.Render.Showcase`, 2026-10-17), the headless web showed no dust at all in either mode
+  (sprites: 410 live, 0 drawn; volumetric: 72 drawn, none visible), so a headless capture is not a
+  reference for the web's dust; the shared parcels and the selection are what the tests compare.
+
+## The plan, milestone by milestone
+
+| Milestone | Status | Evidence |
+|---|---|---|
+| M0 link spike: the Rust core in Unreal, wtransport on this Mac | done | the editor logs the core's ABI and build; `city_bots` streams a `citypp` match |
+| M1 the bike: both clients in one match, the city in Unreal, browser shots breaking it | done | M1 gate above; cross-client |
+| M2 playable: walk, look, shoot, destruction from Unreal | done | `WalkAndShoot` (6.000 m/s), `CannonAndMeteor`, `ShootRemote`, `KillRemote` |
+| M3 real geometry; the web on the core's decoders and geometry | done | `geometry_manifest`; the web's core flags (on by default), web soak |
+| M4 the shared wire 4 presentation, destruction at scale | done | M4 gate (261 fractures, 0 mismatches); web soak with every core flag on |
+| M5 high fidelity: catalog, import, Nanite, Lumen, mapped materials, fracture faces | done | `ImportedCity`, `Materials`; broken faces (catalog `fracture`); weathering |
+| M6 players and input in the core; vehicles, VFX, HUD | done | `Drive`, `WreckCar`, `Dust`, `Hud` (with the stats panel), `Settings`, `Gamepad`, `Ragdoll` |
+| Web and Unreal together | done | `cross-client.mjs`: Unreal 4/4; the web saw it walk, was shot dead by it, applied 1052 destruction events, saw the car it drove move; 0 mismatches |
+
+What follows are differences from the web that come from the platform or from wire 4 itself,
+shared by the web's /city, not features Unreal lacks.
 
 ## Known gaps
 
 - **Moving debris.** Bonds broken between two moving bodies are placed at rest for dust and
   sound. Their dust starts with no velocity of its own, as on the web's /city: wire 4 carries no
   body velocities into its sources (`perPlayerCityClient.ts` builds each promotion with
-  `linearVelocity: [0, 0, 0]`).
+  `linearVelocity: [0, 0, 0]`). Both clients behave the same.
 - **Debug and admin tools** stay web-only: the stats overlay's renderer tools (cost sweeps, quality
   toggles) and RECORD TAPE (a capture of the web client's stream for `/cityreplay`), `/server-stats`,
   the world builder. Unreal has the overlay's readout (F9, above).

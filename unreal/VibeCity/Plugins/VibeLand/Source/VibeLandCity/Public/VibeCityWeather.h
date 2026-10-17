@@ -29,6 +29,8 @@ public:
 
 	/** The preset (VL_WEATHER_*) at a thickness (the web's intensity, 0.25 to 5). */
 	void SetWeather(int32 Preset, float Intensity);
+	/** The web's FogExp2 density now (per metre): the default density times the intensity. */
+	float FogExp2Density() const { return CurrentFogExp2; }
 	/** The fog this weather recolours and thickens (the environment's). */
 	void SetFog(UExponentialHeightFogComponent* InFog) { Fog = InFog; }
 
@@ -40,6 +42,7 @@ public:
 		float StartCm;
 	};
 	static FUnrealFog UnrealFog(float Intensity);
+	float CurrentFogExp2 = 0.0f;
 
 	int32 Preset() const { return CurrentPreset; }
 	/** For tests: particles drawn now. */
