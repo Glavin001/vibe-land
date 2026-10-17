@@ -100,7 +100,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> DustMaterial;
 
-	/** Live dust puffs (client-core effects.rs VlDust), drawn as soft billboards. */
+	/** Live dust puffs (client-core effects.rs VlDust), each a cluster of soft lit sprites. */
 	struct FDustPuff
 	{
 		FVector Origin = FVector::ZeroVector;
@@ -109,14 +109,20 @@ private:
 		float Lifetime = 1.0f;
 		float Age = 0.0f;
 		int32 Slot = INDEX_NONE;
+		/** Per sprite of the cluster: offset (unit, scaled by the radius) and size factor. */
+		FVector Offsets[4];
+		float Sizes[4] = { 1, 1, 1, 1 };
 	};
 	TArray<FDustPuff> DustPuffs;
 
+	/** Sprites, four per slot (slot * 4 + k). */
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMaterialBillboardComponent>> DustSlots;
+	TArray<TObjectPtr<UMaterialBillboardComponent>> DustSprites;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> DustMaterials;
+
+	int32 DustSlotCount = 0;
 
 	TArray<int32> FreeDustSlots;
 
