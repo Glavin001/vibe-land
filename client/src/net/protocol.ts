@@ -98,6 +98,11 @@ export function provideSharedEncoders(encoders: SharedEncoders | null): void {
   sharedEncoders = encoders;
 }
 
+/** Which of this file's codecs the shared Rust ones replace now (the `?sharedDecode=1` flag). */
+export function sharedNetStatus(): { snapshotV2: boolean; reliable: boolean; encoders: boolean } {
+  return { snapshotV2: snapshotV2Decoder !== null, reliable: reliablePacketDecoder !== null, encoders: sharedEncoders !== null };
+}
+
 export function encodeCityCameraDrop(cmd: CityCameraDropCmd): Uint8Array {
   if (sharedEncoders) return sharedEncoders.cityCameraDrop(cmd);
   const bytes = new Uint8Array(21);

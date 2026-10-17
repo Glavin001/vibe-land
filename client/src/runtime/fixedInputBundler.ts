@@ -55,6 +55,11 @@ export class FixedInputBundler {
     return Math.max(0,Math.min(this.fixedDtSec,this.accumulatorSec));
   }
 
+  /** Whether this bundler's frames come from the shared core (`?coreInput=1`). */
+  usesCore(): boolean {
+    return this.core !== null;
+  }
+
   peekNextSeq(): number {
     if (this.core) return this.core.next_seq();
     return this.nextSeq & 0xffff;

@@ -123,6 +123,11 @@ export function provideCoreHullTriangles(fn: ((points: Float32Array) => Float32A
   coreHullTriangles = fn;
 }
 
+/** Whether hulls come from the shared core now (`?coreGeometry=1`). */
+export function usesCoreHulls(): boolean {
+  return coreHullTriangles !== null;
+}
+
 /**
  * Triangulated hull for a point set.
  *
