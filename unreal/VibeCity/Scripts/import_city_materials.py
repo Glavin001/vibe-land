@@ -10,6 +10,7 @@ Creates under /Game/VibeCity:
   Materials/M_VibeCityChunk                           opaque PBR, samples both arrays
   Materials/M_VibeCityChunkFlat                       the same without the normal map
   Materials/M_VibeCityGlass                           translucent glass
+  Materials/M_VibeCityDust                            dust puffs
   Materials/M_VibeCityChunkHD                         2K Poly Haven sources (with --hd)
 
 M_VibeCityChunk reads what the client core puts on every chunk vertex:
@@ -193,6 +194,52 @@ def hd_chunk_material(albedo_array, normal_array, arm_array):
     return m
 
 
+def dust_material():
+    """Dust puffs (client-core effects.rs VlDust): a soft round sprite, lit as a volume, in the
+    puff's Color at the puff's Opacity (both set per puff by the renderer as it grows and fades)."""
+    m = fresh_material("M_VibeCityDust")
+    m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
+    m.set_editor_property("translucency_lighting_mode", unreal.TranslucencyLightingMode.TLM_VOLUMETRIC_NON_DIRECTIONAL)
+    m.set_editor_property("two_sided", True)
+    color = expr(m, unreal.MaterialExpressionVectorParameter, -700, -100)
+    color.set_editor_property("parameter_name", "Color")
+    color.set_editor_property("default_value", unreal.LinearColor(0.55, 0.53, 0.5, 1.0))
+    mel.connect_material_property(color, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    # Soft disc: 1 at the centre, 0 at the edge of the sprite.
+    uv = expr(m, unreal.MaterialExpressionTextureCoordinate, -1300, 150)
+    centre = expr(m, unreal.MaterialExpressionConstant2Vector, -1300, 250)
+    centre.set_editor_property("r", 0.5)
+    centre.set_editor_property("g", 0.5)
+    dist = expr(m, unreal.MaterialExpressionDistance, -1150, 180)
+    mel.connect_material_expressions(uv, "", dist, "A")
+    mel.connect_material_expressions(centre, "", dist, "B")
+    twice = expr(m, unreal.MaterialExpressionMultiply, -1000, 180)
+    twice.set_editor_property("const_b", 2.0)
+    mel.connect_material_expressions(dist, "", twice, "A")
+    inv = expr(m, unreal.MaterialExpressionOneMinus, -880, 180)
+    mel.connect_material_expressions(twice, "", inv, "")
+    sat = expr(m, unreal.MaterialExpressionSaturate, -780, 180)
+    mel.connect_material_expressions(inv, "", sat, "")
+    radial = expr(m, unreal.MaterialExpressionPower, -680, 150)
+    radial.set_editor_property("const_exponent", 1.6)
+    mel.connect_material_expressions(sat, "", radial, "Base")
+    opacity = expr(m, unreal.MaterialExpressionScalarParameter, -700, 300)
+    opacity.set_editor_property("parameter_name", "Opacity")
+    opacity.set_editor_property("default_value", 0.6)
+    mul = expr(m, unreal.MaterialExpressionMultiply, -450, 200)
+    mel.connect_material_expressions(radial, "", mul, "A")
+    mel.connect_material_expressions(opacity, "", mul, "B")
+    fade = expr(m, unreal.MaterialExpressionDepthFade, -250, 200)
+    fade.set_editor_property("fade_distance_default", 150.0)
+    mel.connect_material_expressions(mul, "", fade, "Opacity")
+    mel.connect_material_property(fade, "", unreal.MaterialProperty.MP_OPACITY)
+    rough = expr(m, unreal.MaterialExpressionConstant, -700, 450)
+    rough.set_editor_property("r", 1.0)
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.recompile_material(m)
+    return m
+
+
 def glass_material():
     m = fresh_material("M_VibeCityGlass")
     m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
@@ -227,6 +274,7 @@ chunk = chunk_material(albedo_array, surface_array)
 # The same without the normal map: a cheaper fallback, and a diagnostic for the tangent basis.
 chunk_material(albedo_array, surface_array, "M_VibeCityChunkFlat", normal_map=False)
 glass = glass_material()
+dust_material()
 hd_dir = os.environ.get("VIBE_CITY_HD_TEXTURES", "")
 if hd_dir:
     hd_albedo = import_layers("albedo", srgb=True, directory=hd_dir, ext="jpg", suffix="HD")
