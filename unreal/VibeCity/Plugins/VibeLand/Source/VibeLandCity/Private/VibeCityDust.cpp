@@ -18,11 +18,13 @@ namespace
 	// /Engine/BasicShapes/Sphere is 100 cm across.
 	constexpr double SphereCm = 100.0;
 
-	float Fade(float LifeFraction)
+	// dustParcelStore.ts evalParcel: in over the first 1/6 s, then thinning out to nothing.
+	float Fade(float AgeS, float LifeFraction)
 	{
-		// In over the first 5% of its life, then thinning out to nothing.
-		return LifeFraction < 0.05f ? LifeFraction / 0.05f : FMath::Pow(1.0f - LifeFraction, 1.5f);
+		return FMath::Min(1.0f, 6.0f * AgeS) * FMath::Pow(FMath::Max(0.0f, 1.0f - LifeFraction), 1.8f);
 	}
+	// DustSprites.tsx: a near parcel's sprite density is its density x 0.6.
+	constexpr float SpriteDensity = 0.6f;
 }
 
 void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
@@ -43,7 +45,7 @@ void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
 		DustInstances->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		DustInstances->SetCastShadow(false);
 		DustInstances->SetMobility(EComponentMobility::Movable);
-		DustInstances->NumCustomDataFloats = 6;
+		DustInstances->NumCustomDataFloats = 7;
 		DustInstances->SetupAttachment(RootComponent);
 		DustInstances->RegisterComponent();
 		DustParcels.SetNum(DustCapacity);
@@ -93,9 +95,10 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 		DustInstances->UpdateInstanceTransform(i, FTransform(FQuat::Identity, FVector(E.centre[0], E.centre[1], E.centre[2]), Size / SphereCm),
 			/*bWorldSpace=*/true, /*bMarkRenderStateDirty=*/false, /*bTeleport=*/true);
 		const FLinearColor Color(FColor((D.P.color_rgba >> 24) & 0xFF, (D.P.color_rgba >> 16) & 0xFF, (D.P.color_rgba >> 8) & 0xFF, 0xFF));
-		const float Opacity = FMath::Clamp(D.P.intensity * E.density * 0.35f * Fade(E.life_fraction), 0.0f, 1.0f);
-		// The material's noise eats E.erosion of the cloud; the seed varies it per parcel.
-		DustInstances->SetCustomData(i, { Color.R, Color.G, Color.B, Opacity, E.erosion, static_cast<float>(D.P.seed % 9973) / 9973.0f },
+		// The material turns density into opacity as the web's sprite does; its noise eats E.erosion of
+		// the cloud; the seed varies it per parcel.
+		const float Density = D.P.intensity * E.density * SpriteDensity;
+		DustInstances->SetCustomData(i, { Color.R, Color.G, Color.B, Density, E.erosion, static_cast<float>(D.P.seed % 9973) / 9973.0f, Fade(E.age_s, E.life_fraction) },
 			/*bMarkRenderStateDirty=*/false);
 	}
 	DustInstances->MarkRenderStateDirty();

@@ -20,6 +20,10 @@ namespace
 	const FLinearColor CannonballColor(0.12f, 0.12f, 0.13f);
 	// The trail is the path the meteor covers in this long: a camera's motion streak at 1/8 s.
 	constexpr double TrailExposureS = 0.125;
+	// The incandescence of entry ends at impact; what glows after is the rock's skin cooling, drawn
+	// fading with this time constant.
+	constexpr double CoolingS = 0.75;
+	constexpr float MeteorLightIntensity = 400000.0f;
 	// A flight is kept this long past its flight time if its body never appears (out of interest).
 	constexpr double FlightGraceS = 4.0;
 }
@@ -95,11 +99,13 @@ void AVibeDynamicBodies::OnFrame(const VlFrameView& Frame)
 		F.LaunchedAt = Now - M.age_s;
 		if (!F.Mesh)
 		{
-			F.Mesh = NewMesh(SphereMesh, MeteorMaterial, FString::Printf(TEXT("Meteor%u"), M.body_id));
+			F.Material = UMaterialInstanceDynamic::Create(MeteorMaterial->Parent, this);
+			F.Material->SetVectorParameterValue(TEXT("Color"), BasaltColor);
+			F.Mesh = NewMesh(SphereMesh, F.Material, FString::Printf(TEXT("Meteor%u"), M.body_id));
 			F.Light = NewObject<UPointLightComponent>(this);
 			F.Light->SetupAttachment(F.Mesh);
 			F.Light->SetLightColor(EmberColor);
-			F.Light->SetIntensity(400000.0f);
+			F.Light->SetIntensity(MeteorLightIntensity);
 			F.Light->SetAttenuationRadius(6000.0f);
 			F.Light->RegisterComponent();
 			if (TrailBase)
@@ -172,6 +178,14 @@ void AVibeDynamicBodies::Tick(float DeltaSeconds)
 	for (TPair<uint32, FFlight>& Pair : Flights)
 	{
 		FFlight& F = Pair.Value;
+		const double SinceImpact = Now - F.LaunchedAt - F.Meteor.flight_time_s;
+		const float Heat = SinceImpact <= 0.0 ? 1.0f : static_cast<float>(FMath::Exp(-SinceImpact / CoolingS));
+		F.Light->SetIntensity(MeteorLightIntensity * Heat);
+		F.Material->SetScalarParameterValue(TEXT("Glow"), Heat);
+		if (F.Trail && SinceImpact > 0.0)
+		{
+			F.Trail->SetVisibility(false); // no more entry plasma
+		}
 		if (BodiesSeen.Contains(Pair.Key))
 		{
 			continue; // its body is being drawn
@@ -191,7 +205,7 @@ void AVibeDynamicBodies::PlaceMeteor(FFlight& F, const FVector& Pos, const FVect
 	F.Mesh->SetVisibility(true);
 	F.LastPos = Pos;
 	F.LastPosAt = FPlatformTime::Seconds();
-	if (!F.Trail)
+	if (!F.Trail || FPlatformTime::Seconds() > F.LaunchedAt + F.Meteor.flight_time_s)
 	{
 		return;
 	}

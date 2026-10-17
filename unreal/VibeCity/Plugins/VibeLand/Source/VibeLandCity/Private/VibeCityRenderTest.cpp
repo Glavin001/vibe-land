@@ -875,7 +875,8 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 		const FVector From(100.0 * -20.0, -100.0 * -22.0, 100.0);
 		const FVector To(100.0 * -42.0, -100.0 * -42.0, 400.0);
 		N->CameraDrop(From, static_cast<float>((To - From).Rotation().Yaw), 0.0f);
-		VibeCityCapture::Park(GameWorld(), FVector3f(-18.0f, 5.0f, -16.0f), FVector3f(-42.0f, 4.0f, -42.0f), 60.0f);
+		// Far enough back (about 55 m) that a meteor's blast does not bury the camera in debris.
+		VibeCityCapture::Park(GameWorld(), FVector3f(-4.0f, 9.0f, -2.0f), FVector3f(-42.0f, 4.0f, -42.0f), 60.0f);
 		if (APlayerController* PC = GameWorld()->GetFirstPlayerController(); PC && PC->GetHUD())
 		{
 			PC->GetHUD()->bShowHUD = false;

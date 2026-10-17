@@ -44,6 +44,8 @@ private:
 		/** A sphere stretched behind the meteor along its direction of travel: its fire trail. */
 		TObjectPtr<UStaticMeshComponent> Trail;
 		TObjectPtr<UMaterialInstanceDynamic> TrailMaterial;
+		/** Its own basalt, so its glow can cool on its own. */
+		TObjectPtr<UMaterialInstanceDynamic> Material;
 		FVector LastPos = FVector::ZeroVector;
 		double LastPosAt = 0.0;
 	};
