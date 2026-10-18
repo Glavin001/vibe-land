@@ -5,6 +5,7 @@
 #include "Components/PostProcessComponent.h"
 #include "Components/SkyAtmosphereComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "Components/VolumetricCloudComponent.h"
 #include "Engine/World.h"
 #include "Engine/Texture2D.h"
 #include "TextureResource.h"
@@ -70,6 +71,28 @@ AVibeCityEnvironment::AVibeCityEnvironment()
 	// The web fogs geometry, not its sky dome: no fog past the ground's skirt.
 	Fog->SetFogCutoffDistance(2.0 * SkirtHalfExtentCm * UE_SQRT_2);
 
+	// Unreal upgrades over the web's sky (off with -VibeNoVolumetrics, e.g. on a GPU the server
+	// shares): a layer of volumetric cumulus at 2-6 km, lit by the sun and the atmosphere, and
+	// volumetric fog, so the sun's light scatters in the air and shows shafts past buildings and
+	// through dust.
+	Clouds = CreateDefaultSubobject<UVolumetricCloudComponent>(TEXT("Clouds"));
+	Clouds->SetupAttachment(RootComponent);
+	Clouds->SetLayerBottomAltitude(2.0f);
+	Clouds->SetLayerHeight(4.0f);
+	static ConstructorHelpers::FObjectFinderOptional<UMaterialInterface> CloudMaterial(TEXT("/Engine/EngineSky/VolumetricClouds/m_SimpleVolumetricCloud_Inst.m_SimpleVolumetricCloud_Inst"));
+	if (CloudMaterial.Get())
+	{
+		Clouds->SetMaterial(CloudMaterial.Get());
+	}
+	Fog->SetVolumetricFog(true);
+	Fog->SetVolumetricFogScatteringDistribution(0.6f);
+	// The web-matched density is for the height fog's look; as participating media it would grey the
+	// whole view, so the volume carries a tenth of it: enough to show the sun's shafts.
+	Fog->SetVolumetricFogExtinctionScale(0.1f);
+	Fog->SetVolumetricFogDistance(12000.0f);
+	Sun->SetVolumetricScatteringIntensity(1.0f);
+	Sun->bCastCloudShadows = true;
+
 	PostProcess = CreateDefaultSubobject<UPostProcessComponent>(TEXT("PostProcess"));
 	PostProcess->SetupAttachment(RootComponent);
 	PostProcess->bUnbound = true;
@@ -104,6 +127,11 @@ AVibeCityEnvironment::AVibeCityEnvironment()
 void AVibeCityEnvironment::BeginPlay()
 {
 	Super::BeginPlay();
+	if (FParse::Param(FCommandLine::Get(), TEXT("VibeNoVolumetrics")))
+	{
+		Clouds->SetVisibility(false);
+		Fog->SetVolumetricFog(false);
+	}
 
 	// The light shines from the sun toward the ground. Toward-sun in server space (sunSky.ts
 	// sunDirection), mapped to Unreal axes with the client core's own conversion.

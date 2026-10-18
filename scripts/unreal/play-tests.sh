@@ -55,7 +55,7 @@ for test in "${TESTS[@]}"; do
   # server's PhysX shares the GPU with the game, and Lumen with virtual shadows slows its tick (141
   # instead of 174 ticks over the same 180 input frames), which they would read as the server's.
   case "$name" in
-    WalkAndShoot|AerialAndMelee) args+=("-dpcvars=r.DynamicGlobalIlluminationMethod=0,r.ReflectionMethod=2,r.Shadow.Virtual.Enable=0") ;;
+    WalkAndShoot|AerialAndMelee) args+=("-dpcvars=r.DynamicGlobalIlluminationMethod=0,r.ReflectionMethod=2,r.Shadow.Virtual.Enable=0" -VibeNoVolumetrics) ;;
   esac
   for attempt in 1 2 3; do
     rm -f "$log" # read only this launch's log

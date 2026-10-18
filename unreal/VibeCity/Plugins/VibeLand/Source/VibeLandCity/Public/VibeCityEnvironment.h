@@ -14,6 +14,7 @@ class UPostProcessComponent;
 class UProceduralMeshComponent;
 class USkyAtmosphereComponent;
 class USkyLightComponent;
+class UVolumetricCloudComponent;
 class AVibeCityWeather;
 struct VlGrassPaint;
 
@@ -57,6 +58,9 @@ private:
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UExponentialHeightFogComponent> Fog;
+	/** Volumetric clouds over the physical sky (an Unreal upgrade; off with -VibeNoVolumetrics). */
+	UPROPERTY(VisibleAnywhere, Category = "Vibe")
+	TObjectPtr<UVolumetricCloudComponent> Clouds;
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UPostProcessComponent> PostProcess;
