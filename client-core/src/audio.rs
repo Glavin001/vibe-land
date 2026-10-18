@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use glam::Vec3;
 
 /// The clip catalog the web plays from (client/public/audio/destruction/catalog.json), by id.
-pub const CLIP_CATALOG_JSON: &str = include_str!("../../client/public/audio/destruction/catalog.json");
+pub const CLIP_CATALOG_JSON: &str =
+    include_str!("../../client/public/audio/destruction/catalog.json");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AcousticMaterial {
@@ -40,7 +41,17 @@ impl AcousticMaterial {
     }
     /// The material of a `name()`.
     pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Concrete, Self::Stone, Self::Metal, Self::Sheet, Self::Wood, Self::Glass, Self::Earth].into_iter().find(|m| m.name() == name)
+        [
+            Self::Concrete,
+            Self::Stone,
+            Self::Metal,
+            Self::Sheet,
+            Self::Wood,
+            Self::Glass,
+            Self::Earth,
+        ]
+        .into_iter()
+        .find(|m| m.name() == name)
     }
 }
 
@@ -146,7 +157,13 @@ pub enum DynamicRange {
 }
 
 /// settings.ts `DEFAULT_AUDIO`: the cinematic mix at the balanced range.
-pub const DEFAULT_MIX: Mix = Mix { impact: 1.0, detail: 0.8, bass: 0.9, flyby: 1.0, range: DynamicRange::Balanced };
+pub const DEFAULT_MIX: Mix = Mix {
+    impact: 1.0,
+    detail: 0.8,
+    bass: 0.9,
+    flyby: 1.0,
+    range: DynamicRange::Balanced,
+};
 
 /// settings.ts `MixPreset`, in `MIXES` order.
 pub const VL_MIX_CINEMATIC: u32 = 0;
@@ -171,7 +188,13 @@ impl Mix {
             VL_RANGE_CINEMATIC => DynamicRange::Cinematic,
             _ => DynamicRange::Balanced,
         };
-        Mix { impact, detail, bass, flyby, range }
+        Mix {
+            impact,
+            detail,
+            bass,
+            flyby,
+            range,
+        }
     }
 }
 
@@ -240,10 +263,18 @@ impl Clips {
     pub fn get() -> &'static Clips {
         static CLIPS: std::sync::OnceLock<Clips> = std::sync::OnceLock::new();
         CLIPS.get_or_init(|| {
-            let v: serde_json::Value = serde_json::from_str(CLIP_CATALOG_JSON).expect("audio clip catalog");
-            let mut ids: Vec<String> = v["clips"].as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+            let v: serde_json::Value =
+                serde_json::from_str(CLIP_CATALOG_JSON).expect("audio clip catalog");
+            let mut ids: Vec<String> = v["clips"]
+                .as_object()
+                .map(|o| o.keys().cloned().collect())
+                .unwrap_or_default();
             ids.sort();
-            let by_id = ids.iter().enumerate().map(|(i, id)| (id.clone(), i as u32)).collect();
+            let by_id = ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (id.clone(), i as u32))
+                .collect();
             Clips { ids, by_id }
         })
     }
@@ -281,33 +312,91 @@ pub fn voice_plan(e: &SoundEvent, mix: Mix) -> Vec<PlannedVoice> {
     let mut r = SeedRandom::new(e.seed);
     let intensity = clamp01(e.intensity);
     let (hit, body, detail, _) = event_mix(e, mix);
-    let rate = (1.04 - (e.size.max(0.0)).ln_1p() * 0.065 + (r.next() - 0.5) * 0.13).clamp(0.57, 1.2);
+    let rate =
+        (1.04 - (e.size.max(0.0)).ln_1p() * 0.065 + (r.next() - 0.5) * 0.13).clamp(0.57, 1.2);
     let variant = (r.next() * 5.0).floor() as u32;
     let protected = e.protected || e.kind == SoundKind::Flyby;
     let mut plan = Vec::new();
-    let mut push = |clip: String, level: f32, rate: f32, delay_s: f32, role: VoiceRole, protected: bool| {
-        plan.push(PlannedVoice { clip, level, rate, delay_s, role, protected });
-    };
+    let mut push =
+        |clip: String, level: f32, rate: f32, delay_s: f32, role: VoiceRole, protected: bool| {
+            plan.push(PlannedVoice {
+                clip,
+                level,
+                rate,
+                delay_s,
+                role,
+                protected,
+            });
+        };
     let m = e.material.name();
     match e.kind {
         SoundKind::Flyby => {
-            push(format!("flyby-{}", variant % 4), (0.15 + intensity * 0.85) * mix.flyby, (rate * 1.2).clamp(0.8, 1.5), 0.0, VoiceRole::Threat, true);
+            push(
+                format!("flyby-{}", variant % 4),
+                (0.15 + intensity * 0.85) * mix.flyby,
+                (rate * 1.2).clamp(0.8, 1.5),
+                0.0,
+                VoiceRole::Threat,
+                true,
+            );
             return plan;
         }
         SoundKind::Shot => {
             let gun = if e.size <= 0.2 { "rifle" } else { "cannon" };
-            push(format!("shot-{gun}-{}", variant % 3), hit, rate, 0.0, VoiceRole::Hit, protected);
+            push(
+                format!("shot-{gun}-{}", variant % 3),
+                hit,
+                rate,
+                0.0,
+                VoiceRole::Hit,
+                protected,
+            );
             return plan;
         }
-        SoundKind::Collapse => push(format!("collapse-{}", variant % 4), hit, rate, 0.0, VoiceRole::Hit, protected),
-        SoundKind::Fracture => push(format!("{m}-fracture-{}", variant % 3), hit, rate, 0.0, VoiceRole::Hit, protected),
-        SoundKind::Impact => push(format!("{m}-impact-{variant}"), hit, rate, 0.0, VoiceRole::Hit, protected),
+        SoundKind::Collapse => push(
+            format!("collapse-{}", variant % 4),
+            hit,
+            rate,
+            0.0,
+            VoiceRole::Hit,
+            protected,
+        ),
+        SoundKind::Fracture => push(
+            format!("{m}-fracture-{}", variant % 3),
+            hit,
+            rate,
+            0.0,
+            VoiceRole::Hit,
+            protected,
+        ),
+        SoundKind::Impact => push(
+            format!("{m}-impact-{variant}"),
+            hit,
+            rate,
+            0.0,
+            VoiceRole::Hit,
+            protected,
+        ),
     }
     if body > 0.01 {
-        push(format!("heavy-{m}"), body, rate.clamp(0.68, 1.1), 0.009, VoiceRole::Body, protected);
+        push(
+            format!("heavy-{m}"),
+            body,
+            rate.clamp(0.68, 1.1),
+            0.009,
+            VoiceRole::Body,
+            protected,
+        );
     }
     if intensity > 0.4 {
-        push(format!("{m}-fracture-{}", (variant + 1) % 3), detail, rate * 1.11, 0.025, VoiceRole::Detail, false);
+        push(
+            format!("{m}-fracture-{}", (variant + 1) % 3),
+            detail,
+            rate * 1.11,
+            0.025,
+            VoiceRole::Detail,
+            false,
+        );
     }
     plan
 }
@@ -317,13 +406,16 @@ pub fn voice_plan(e: &SoundEvent, mix: Mix) -> Vec<PlannedVoice> {
 pub fn voices(e: &SoundEvent, listener: Vec3, now_ms: f64, mix: Mix, out: &mut Vec<VlSound>) {
     let clips = Clips::get();
     let d = e.position.distance(listener);
-    let delay_s = (((e.at_ms + f64::from(propagation_delay_ms(d))) - now_ms) / 1000.0).max(0.0) as f32;
+    let delay_s =
+        (((e.at_ms + f64::from(propagation_delay_ms(d))) - now_ms) / 1000.0).max(0.0) as f32;
     let attenuation = source_attenuation(d, e.size);
     for v in voice_plan(e, mix) {
         if v.level < 0.005 {
             continue;
         }
-        let Some(clip) = clips.index(&v.clip) else { continue };
+        let Some(clip) = clips.index(&v.clip) else {
+            continue;
+        };
         out.push(VlSound {
             clip,
             position: e.position.to_array(),
@@ -380,7 +472,11 @@ impl AudioDirector {
         let d = e.position.distance(self.listener);
         (if e.protected { 12.0 } else { 0.0 })
             + (if e.kind == SoundKind::Flyby { 8.0 } else { 0.0 })
-            + (if e.kind == SoundKind::Collapse { 2.0 } else { 0.0 })
+            + (if e.kind == SoundKind::Collapse {
+                2.0
+            } else {
+                0.0
+            })
             + e.intensity * 4.0
             - d.ln_1p() * 1.4
     }
@@ -418,7 +514,10 @@ impl AudioDirector {
         if let Some((old, _)) = self.pending.get_mut(&cell) {
             self.grouped += 1;
             if e.intensity > old.intensity {
-                *old = SoundEvent { intensity: clamp01(e.intensity + 0.035), ..e };
+                *old = SoundEvent {
+                    intensity: clamp01(e.intensity + 0.035),
+                    ..e
+                };
             }
             return;
         }
@@ -428,7 +527,11 @@ impl AudioDirector {
             let weakest = self
                 .pending
                 .iter()
-                .min_by(|a, b| self.score(&a.1 .0).total_cmp(&self.score(&b.1 .0)).then(a.1 .1.cmp(&b.1 .1)))
+                .min_by(|a, b| {
+                    self.score(&a.1 .0)
+                        .total_cmp(&self.score(&b.1 .0))
+                        .then(a.1 .1.cmp(&b.1 .1))
+                })
                 .map(|(k, (ev, _))| (*k, self.score(ev)));
             match weakest {
                 Some((key, weakest_score)) if score > weakest_score => {
@@ -462,7 +565,11 @@ impl AudioDirector {
             let score = self.score(&e);
             due.push((e, order, score));
         }
-        due.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.seed.cmp(&b.0.seed)).then(a.1.cmp(&b.1)));
+        due.sort_by(|a, b| {
+            b.2.total_cmp(&a.2)
+                .then(a.0.seed.cmp(&b.0.seed))
+                .then(a.1.cmp(&b.1))
+        });
         for (i, (e, _, _)) in due.iter().enumerate() {
             if i >= self.per_frame {
                 self.dropped += 1;
@@ -517,46 +624,144 @@ struct Live {
 impl Loops {
     /// A scrape contact (GameAudioLayer.tsx -> engine.ts `continuous`): `<material>-scrape`, rate
     /// with sliding speed.
-    pub fn scrape(&mut self, id: u32, position: Vec3, material: AcousticMaterial, speed: f32, intensity: f32, listener: Vec3, now_ms: f64, mix: Mix) {
+    pub fn scrape(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        material: AcousticMaterial,
+        speed: f32,
+        intensity: f32,
+        listener: Vec3,
+        now_ms: f64,
+        mix: Mix,
+    ) {
         let rate = (0.62 + speed * 0.045).clamp(0.55, 1.65);
-        self.feed(id, &format!("{}-scrape", material.name()), false, position, speed, intensity, rate, listener, now_ms, mix);
+        self.feed(
+            id,
+            &format!("{}-scrape", material.name()),
+            false,
+            position,
+            speed,
+            intensity,
+            rate,
+            listener,
+            now_ms,
+            mix,
+        );
     }
 
     /// A car's engine: the `rumble` clip, rate with speed as every continuous voice.
-    pub fn engine(&mut self, id: u32, position: Vec3, speed: f32, intensity: f32, listener: Vec3, now_ms: f64, mix: Mix) {
+    pub fn engine(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        speed: f32,
+        intensity: f32,
+        listener: Vec3,
+        now_ms: f64,
+        mix: Mix,
+    ) {
         let rate = (0.62 + speed * 0.045).clamp(0.55, 1.65);
-        self.feed(id, "rumble", false, position, speed, intensity, rate, listener, now_ms, mix);
+        self.feed(
+            id, "rumble", false, position, speed, intensity, rate, listener, now_ms, mix,
+        );
     }
 
     /// Air rushing past a fast body (meteors over 8 m/s, other bodies over 20 m/s): the `air` clip,
     /// Doppler-shifted by the radial speed, 343 / (343 + v_r).
-    pub fn air(&mut self, id: u32, position: Vec3, velocity: Vec3, intensity: f32, listener: Vec3, now_ms: f64, mix: Mix) {
+    pub fn air(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        velocity: Vec3,
+        intensity: f32,
+        listener: Vec3,
+        now_ms: f64,
+        mix: Mix,
+    ) {
         let d = position.distance(listener).max(0.1);
         let radial = velocity.dot((position - listener) / d);
         let rate = (343.0 / (343.0 + radial.clamp(-170.0, 170.0))).clamp(0.65, 1.8);
-        self.feed(id, "air", true, position, velocity.length(), intensity, rate, listener, now_ms, mix);
+        self.feed(
+            id,
+            "air",
+            true,
+            position,
+            velocity.length(),
+            intensity,
+            rate,
+            listener,
+            now_ms,
+            mix,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn feed(&mut self, id: u32, clip: &str, air: bool, position: Vec3, speed: f32, intensity: f32, rate: f32, listener: Vec3, now_ms: f64, mix: Mix) {
+    fn feed(
+        &mut self,
+        id: u32,
+        clip: &str,
+        air: bool,
+        position: Vec3,
+        speed: f32,
+        intensity: f32,
+        rate: f32,
+        listener: Vec3,
+        now_ms: f64,
+        mix: Mix,
+    ) {
         let d = position.distance(listener);
-        if !(position.is_finite() && intensity.is_finite() && speed.is_finite()) || intensity < 0.015 || d > 180.0 {
+        if !(position.is_finite() && intensity.is_finite() && speed.is_finite())
+            || intensity < 0.015
+            || d > 180.0
+        {
             return;
         }
-        let Some(clip) = Clips::get().index(clip) else { return };
+        let Some(clip) = Clips::get().index(clip) else {
+            return;
+        };
         if !self.live.contains_key(&id) && self.live.len() >= MAX_LOOPS {
             // Replace the weakest only for a clearly stronger newcomer (engine.ts).
-            let score = |air: bool, intensity: f32, p: Vec3| (if air { 2.0 } else { 0.0 }) + intensity / (1.0 + p.distance(listener));
-            let Some((&weakest, victim)) = self.live.iter().min_by(|a, b| score(a.1.air, a.1.intensity, a.1.position).total_cmp(&score(b.1.air, b.1.intensity, b.1.position))) else { return };
-            if score(air, intensity * 0.32, position) <= score(victim.air, victim.intensity, victim.position) * 1.25 {
+            let score = |air: bool, intensity: f32, p: Vec3| {
+                (if air { 2.0 } else { 0.0 }) + intensity / (1.0 + p.distance(listener))
+            };
+            let Some((&weakest, victim)) = self.live.iter().min_by(|a, b| {
+                score(a.1.air, a.1.intensity, a.1.position).total_cmp(&score(
+                    b.1.air,
+                    b.1.intensity,
+                    b.1.position,
+                ))
+            }) else {
+                return;
+            };
+            if score(air, intensity * 0.32, position)
+                <= score(victim.air, victim.intensity, victim.position) * 1.25
+            {
                 return;
             }
             self.live.remove(&weakest);
         }
         let level = clamp01(intensity) * 0.32 * mix.detail;
         let gain = level * source_attenuation(d, 1.0);
-        let record = VlLoop { id, clip, position: position.to_array(), gain, rate, flags: 0, lowpass_hz: 20000.0 };
-        self.live.insert(id, Live { record, position, intensity: level, air, at_ms: now_ms });
+        let record = VlLoop {
+            id,
+            clip,
+            position: position.to_array(),
+            gain,
+            rate,
+            flags: 0,
+            lowpass_hz: 20000.0,
+        };
+        self.live.insert(
+            id,
+            Live {
+                record,
+                position,
+                intensity: level,
+                air,
+                at_ms: now_ms,
+            },
+        );
     }
 
     /// The loops still fed within 220 ms, for this poll.
@@ -628,14 +833,26 @@ impl Activity {
             self.regions = vec![None; ACTIVITY_SLOTS];
             self.history = vec![None; 2048];
         }
-        if !matches!(e.kind, SoundKind::Impact | SoundKind::Fracture | SoundKind::Collapse) {
+        if !matches!(
+            e.kind,
+            SoundKind::Impact | SoundKind::Fracture | SoundKind::Collapse
+        ) {
             return;
         }
-        if !(e.at_ms.is_finite() && e.size.is_finite() && e.intensity.is_finite() && e.position.is_finite()) {
+        if !(e.at_ms.is_finite()
+            && e.size.is_finite()
+            && e.intensity.is_finite()
+            && e.position.is_finite())
+        {
             return;
         }
         let previous = self.recent.get(&e.id).copied();
-        if e.at_ms < now_ms - 300.0 || e.at_ms > now_ms + 750.0 || e.position.distance(listener) > 120.0 || e.intensity < 0.2 || previous.is_some_and(|p| now_ms - p < 3000.0) {
+        if e.at_ms < now_ms - 300.0
+            || e.at_ms > now_ms + 750.0
+            || e.position.distance(listener) > 120.0
+            || e.intensity < 0.2
+            || previous.is_some_and(|p| now_ms - p < 3000.0)
+        {
             return;
         }
         if let Some((id, time)) = self.history[self.history_index] {
@@ -651,21 +868,38 @@ impl Activity {
             SoundKind::Fracture => 1.25,
             _ => 1.0,
         };
-        let contribution = f64::from(clamp01(e.intensity)).powi(2) * (0.2 + f64::from(e.size.max(0.0)).sqrt() * 0.7).min(2.5) * kind_weight;
+        let contribution = f64::from(clamp01(e.intensity)).powi(2)
+            * (0.2 + f64::from(e.size.max(0.0)).sqrt() * 0.7).min(2.5)
+            * kind_weight;
         let cell = |v: f32| (v / 10.0).floor() as i64;
-        let key = format!("{}:{}:{}:{}", e.material.name(), cell(e.position.x), cell(e.position.y), cell(e.position.z));
+        let key = format!(
+            "{}:{}:{}:{}",
+            e.material.name(),
+            cell(e.position.x),
+            cell(e.position.y),
+            cell(e.position.z)
+        );
         let h = fnv(&key) as usize;
         let a = h % ACTIVITY_SLOTS;
         let b = (a + 1 + ((h >> 8) % (ACTIVITY_SLOTS - 1))) % ACTIVITY_SLOTS;
-        let strength = contribution * f64::from(source_attenuation(e.position.distance(listener), 4.0));
+        let strength =
+            contribution * f64::from(source_attenuation(e.position.distance(listener), 4.0));
         let at = |i: usize| self.regions[i].as_ref().is_some_and(|r| r.key == key);
         let index = if at(a) {
             a
         } else if at(b) {
             b
         } else {
-            let rank = |r: &Option<Region>| r.as_ref().map_or(0.0, |r| r.strength * (-(now_ms - r.last_event).max(0.0) / ACTIVITY_DECAY_MS).exp());
-            let index = if rank(&self.regions[a]) <= rank(&self.regions[b]) { a } else { b };
+            let rank = |r: &Option<Region>| {
+                r.as_ref().map_or(0.0, |r| {
+                    r.strength * (-(now_ms - r.last_event).max(0.0) / ACTIVITY_DECAY_MS).exp()
+                })
+            };
+            let index = if rank(&self.regions[a]) <= rank(&self.regions[b]) {
+                a
+            } else {
+                b
+            };
             if rank(&self.regions[index]) > strength {
                 return;
             }
@@ -688,10 +922,13 @@ impl Activity {
         let blend = (contribution / (region.energy + contribution + 1.0)).min(0.25) as f32;
         region.position += (e.position - region.position) * blend;
         region.occlusion += (clamp01(occlusion) - region.occlusion) * blend;
-        region.strength = (region.strength * (-(e.at_ms - region.last_event).max(0.0) / ACTIVITY_DECAY_MS).exp()).max(strength);
+        region.strength = (region.strength
+            * (-(e.at_ms - region.last_event).max(0.0) / ACTIVITY_DECAY_MS).exp())
+        .max(strength);
         region.last_event = region.last_event.max(e.at_ms);
         let due = e.at_ms;
-        let slot = (((due / ACTIVITY_BIN_MS).floor() as i64).rem_euclid(ACTIVITY_BINS as i64)) as usize;
+        let slot =
+            (((due / ACTIVITY_BIN_MS).floor() as i64).rem_euclid(ACTIVITY_BINS as i64)) as usize;
         if region.due[slot] != 0.0 && (region.due[slot] - due).abs() > ACTIVITY_BIN_MS {
             region.pending[slot] = 0.0;
         }
@@ -708,7 +945,10 @@ impl Activity {
             r.time = now_ms;
             for i in 0..ACTIVITY_BINS {
                 if r.pending[i] > 0.0 && r.due[i] <= now_ms {
-                    r.energy = (r.energy + f64::from(r.pending[i]) * (-(now_ms - r.due[i]).max(0.0) / ACTIVITY_DECAY_MS).exp()).min(20.0);
+                    r.energy = (r.energy
+                        + f64::from(r.pending[i])
+                            * (-(now_ms - r.due[i]).max(0.0) / ACTIVITY_DECAY_MS).exp())
+                    .min(20.0);
                     r.pending[i] = 0.0;
                     r.due[i] = 0.0;
                 }
@@ -722,8 +962,21 @@ impl Activity {
             if intensity < 0.035 || d > 150.0 {
                 continue;
             }
-            let bonus = if self.selected.contains(&r.key) { 1.2 } else { 1.0 };
-            candidates.push((Bed { key: r.key.clone(), position: r.position, material: r.material, intensity, occlusion: r.occlusion }, intensity * source_attenuation(d, 5.0) * bonus));
+            let bonus = if self.selected.contains(&r.key) {
+                1.2
+            } else {
+                1.0
+            };
+            candidates.push((
+                Bed {
+                    key: r.key.clone(),
+                    position: r.position,
+                    material: r.material,
+                    intensity,
+                    occlusion: r.occlusion,
+                },
+                intensity * source_attenuation(d, 5.0) * bonus,
+            ));
         }
         candidates.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.key.cmp(&b.0.key)));
         candidates.truncate(4);
@@ -745,7 +998,15 @@ pub fn bed_loop(bed: &Bed, listener: Vec3, mix: Mix) -> Option<VlLoop> {
     }
     let clip = Clips::get().index(&format!("debris-{}", bed.material.name()))?;
     let gain = amount * source_attenuation(bed.position.distance(listener), 5.0);
-    Some(VlLoop { id: 0x4000_0000 | (fnv(&bed.key) & 0x3FFF_FFFF), clip, position: bed.position.to_array(), gain, rate: 0.88, flags: VL_LOOP_BED, lowpass_hz: 20000.0 })
+    Some(VlLoop {
+        id: 0x4000_0000 | (fnv(&bed.key) & 0x3FFF_FFFF),
+        clip,
+        position: bed.position.to_array(),
+        gain,
+        rate: 0.88,
+        flags: VL_LOOP_BED,
+        lowpass_hz: 20000.0,
+    })
 }
 
 /// `VlLoop::flags`: a debris bed (not counted against the ten continuous loops).
@@ -768,13 +1029,26 @@ pub struct Occlusion {
 }
 
 impl Occlusion {
-    pub fn sample(&mut self, listener: Vec3, source: Vec3, now_ms: f64, blocked: impl FnOnce(Vec3, Vec3, f32) -> bool) -> f32 {
+    pub fn sample(
+        &mut self,
+        listener: Vec3,
+        source: Vec3,
+        now_ms: f64,
+        blocked: impl FnOnce(Vec3, Vec3, f32) -> bool,
+    ) -> f32 {
         if now_ms - self.window > 100.0 {
             self.window = now_ms;
             self.queries = 0;
         }
         let cell = |v: f32| (v / 3.0).floor() as i32;
-        let key = [cell(listener.x), cell(listener.y), cell(listener.z), cell(source.x), cell(source.y), cell(source.z)];
+        let key = [
+            cell(listener.x),
+            cell(listener.y),
+            cell(listener.z),
+            cell(source.x),
+            cell(source.y),
+            cell(source.z),
+        ];
         let old = self.cache.get(&key).copied();
         if let Some((at, value)) = old {
             if now_ms - at < 250.0 {
@@ -788,7 +1062,11 @@ impl Occlusion {
             return 0.0;
         }
         self.queries += 1;
-        let value = if blocked(listener, source, 0.7) { 0.7 } else { 0.0 };
+        let value = if blocked(listener, source, 0.7) {
+            0.7
+        } else {
+            0.0
+        };
         if self.cache.insert(key, (now_ms, value)).is_none() {
             self.order.push_back(key);
         }
@@ -809,7 +1087,8 @@ impl Occlusion {
 /// (`body`) lose less level and keep more highs.
 pub fn occluded(gain: f32, distance: f32, occlusion: f32, body: bool) -> (f32, f32) {
     let level = gain * (1.0 - occlusion * if body { 0.4 } else { 0.68 });
-    let cutoff = (if body { 1000.0f32 } else { 650.0 }).max(19000.0 / (1.0 + distance * 0.009) * (1.0 - occlusion * 0.89));
+    let cutoff = (if body { 1000.0f32 } else { 650.0 })
+        .max(19000.0 / (1.0 + distance * 0.009) * (1.0 - occlusion * 0.89));
     (level, cutoff)
 }
 
@@ -819,7 +1098,11 @@ pub fn closest_pass(a: Vec3, b: Vec3, listener_a: Vec3, listener_b: Vec3) -> (f3
     let x = a - listener_a;
     let dx = b - listener_b - x;
     let q = dx.length_squared();
-    let t = if q > 1e-9 { clamp01(-x.dot(dx) / q) } else { 0.0 };
+    let t = if q > 1e-9 {
+        clamp01(-x.dot(dx) / q)
+    } else {
+        0.0
+    };
     ((x + dx * t).length(), t, a + (b - a) * t)
 }
 
@@ -859,7 +1142,9 @@ impl FlybyTracker {
                 self.tracks.remove(&k);
             }
         }
-        let Some((old, old_listener, _)) = old else { return };
+        let Some((old, old_listener, _)) = old else {
+            return;
+        };
         let dt = ((sample.time_ms - old.time_ms) / 1000.0) as f32;
         if dt <= 0.0 || dt > 0.25 {
             return;
@@ -868,10 +1153,17 @@ impl FlybyTracker {
         if sample.position.distance(old.position) > speed.max(previous_speed) * dt * 1.8 + 2.0 {
             return;
         }
-        let (distance, fraction, position) = closest_pass(old.position, sample.position, old_listener, listener);
+        let (distance, fraction, position) =
+            closest_pass(old.position, sample.position, old_listener, listener);
         let velocity = (sample.position - old.position) / dt;
         let relative_speed = (velocity - (listener - old_listener) / dt).length();
-        if previous_speed > 14.0 && relative_speed > 14.0 && distance < 8.0f32.min(2.5 + sample.size) && fraction > 0.0 && fraction < 1.0 && now_ms - flyby_at > 1200.0 {
+        if previous_speed > 14.0
+            && relative_speed > 14.0
+            && distance < 8.0f32.min(2.5 + sample.size)
+            && fraction > 0.0
+            && fraction < 1.0
+            && now_ms - flyby_at > 1200.0
+        {
             self.tracks.get_mut(&sample.id).expect("inserted").2 = now_ms;
             self.serial += 1;
             out.push(SoundEvent {
@@ -890,7 +1182,8 @@ impl FlybyTracker {
 
     /// Drop bodies not sampled for 500 ms.
     pub fn prune(&mut self, now_ms: f64) {
-        self.tracks.retain(|_, (m, _, _)| now_ms - m.time_ms <= 500.0);
+        self.tracks
+            .retain(|_, (m, _, _)| now_ms - m.time_ms <= 500.0);
     }
 
     pub fn clear(&mut self) {
@@ -899,7 +1192,13 @@ impl FlybyTracker {
 }
 
 /// `soundFromShot` (gameEvents.ts): rifle and cannon shots (meteors are silent until impact).
-pub fn sound_from_shot(shooter: u32, shot_id: u32, weapon: u8, origin: Vec3, at_ms: f64) -> Option<SoundEvent> {
+pub fn sound_from_shot(
+    shooter: u32,
+    shot_id: u32,
+    weapon: u8,
+    origin: Vec3,
+    at_ms: f64,
+) -> Option<SoundEvent> {
     use vibe_land_shared::constants::{WEAPON_CANNONBALL, WEAPON_METEOR};
     if weapon == WEAPON_METEOR {
         return None;
@@ -952,12 +1251,22 @@ pub fn decode_audio_contacts(bytes: &[u8]) -> Option<Vec<AudioContact>> {
     let mut out = Vec::with_capacity(count);
     for i in 0..count {
         let o = 8 + i * AUDIO_CONTACT_RECORD_BYTES;
-        if bytes[o + 8] > 1 || bytes[o + 9] != 0 || u16::from_le_bytes([bytes[o + 10], bytes[o + 11]]) != 0 {
+        if bytes[o + 8] > 1
+            || bytes[o + 9] != 0
+            || u16::from_le_bytes([bytes[o + 10], bytes[o + 11]]) != 0
+        {
             return None;
         }
         let f: Vec<f32> = (0..10).map(|n| f32_at(o + 12 + n * 4)).collect();
         let normal = Vec3::new(f[3], f[4], f[5]);
-        if !f.iter().all(|x| x.is_finite()) || f[6..].iter().any(|x| *x < 0.0) || f[8] > 1.0 || f[9] > 100.0 || f[6] > 10000.0 || f[7] > 10000.0 || normal.length() > 1.01 {
+        if !f.iter().all(|x| x.is_finite())
+            || f[6..].iter().any(|x| *x < 0.0)
+            || f[8] > 1.0
+            || f[9] > 100.0
+            || f[6] > 10000.0
+            || f[7] > 10000.0
+            || normal.length() > 1.01
+        {
             return None;
         }
         out.push(AudioContact {
@@ -978,15 +1287,26 @@ pub fn decode_audio_contacts(bytes: &[u8]) -> Option<Vec<AudioContact>> {
 
 /// An impact contact as a sound (GameAudioLayer.tsx): concrete unless the caller knows better, a
 /// meteor's hard hit (> 12 m/s) as a protected collapse.
-pub fn sound_from_contact(c: &AudioContact, material: AcousticMaterial, meteor: bool, at_ms: f64) -> Option<SoundEvent> {
+pub fn sound_from_contact(
+    c: &AudioContact,
+    material: AcousticMaterial,
+    meteor: bool,
+    at_ms: f64,
+) -> Option<SoundEvent> {
     if c.scrape {
         return None; // continuous scrapes are not one-shots (not ported yet)
     }
     let hard = meteor && c.normal_speed > 12.0;
     let (lo, hi) = (c.entity_a.min(c.entity_b), c.entity_a.max(c.entity_b));
     Some(SoundEvent {
-        id: (u64::from(lo) << 32 | u64::from(hi)) ^ (u64::from(c.sim_tick) << 17) ^ 0xC047_0000_0000_0000,
-        kind: if hard { SoundKind::Collapse } else { SoundKind::Impact },
+        id: (u64::from(lo) << 32 | u64::from(hi))
+            ^ (u64::from(c.sim_tick) << 17)
+            ^ 0xC047_0000_0000_0000,
+        kind: if hard {
+            SoundKind::Collapse
+        } else {
+            SoundKind::Impact
+        },
         position: c.position,
         material,
         intensity: c.intensity,
@@ -1006,46 +1326,111 @@ mod tests {
     #[test]
     fn seed_random_matches_the_web() {
         let mut r = SeedRandom::new(42);
-        for web in [0.002643892541527748f32, 0.660311977379024, 0.11095708678476512] {
+        for web in [
+            0.002643892541527748f32,
+            0.660311977379024,
+            0.11095708678476512,
+        ] {
             assert!((r.next() - web).abs() < 1e-6);
         }
     }
 
     #[test]
     fn intensity_mix_and_attenuation_match_the_web() {
-        for ((impulse, mass), web) in [((100.0, 20.0), 0.3602537029958145f32), ((6000.0, 1000.0), 0.8640634813191876), ((0.5, 2.0), 0.02420852781712335)] {
-            assert!((physical_intensity(impulse, mass) - web).abs() < 1e-5, "{impulse} {mass}");
+        for ((impulse, mass), web) in [
+            ((100.0, 20.0), 0.3602537029958145f32),
+            ((6000.0, 1000.0), 0.8640634813191876),
+            ((0.5, 2.0), 0.02420852781712335),
+        ] {
+            assert!(
+                (physical_intensity(impulse, mass) - web).abs() < 1e-5,
+                "{impulse} {mass}"
+            );
         }
-        let e = |intensity: f32, size: f32, material| SoundEvent { id: 0, kind: SoundKind::Impact, position: Vec3::ZERO, material, intensity, size, seed: 1, at_ms: 0.0, protected: false };
+        let e = |intensity: f32, size: f32, material| SoundEvent {
+            id: 0,
+            kind: SoundKind::Impact,
+            position: Vec3::ZERO,
+            material,
+            intensity,
+            size,
+            seed: 1,
+            at_ms: 0.0,
+            protected: false,
+        };
         for (ev, web) in [
-            (e(0.5, 2.0, AcousticMaterial::Concrete), [0.7336904908668845f32, 0.3052538925934075, 0.1700877465851643, 0.42826034512599565]),
-            (e(0.9, 6.0, AcousticMaterial::Metal), [1.1800029979520743, 1.4012535600680884, 0.25566731622294947, 1.0]),
-            (e(0.7, 3.0, AcousticMaterial::Glass), [1.2275366695007313, 0.0, 0.2946088006801755, 0.0]),
+            (
+                e(0.5, 2.0, AcousticMaterial::Concrete),
+                [
+                    0.7336904908668845f32,
+                    0.3052538925934075,
+                    0.1700877465851643,
+                    0.42826034512599565,
+                ],
+            ),
+            (
+                e(0.9, 6.0, AcousticMaterial::Metal),
+                [
+                    1.1800029979520743,
+                    1.4012535600680884,
+                    0.25566731622294947,
+                    1.0,
+                ],
+            ),
+            (
+                e(0.7, 3.0, AcousticMaterial::Glass),
+                [1.2275366695007313, 0.0, 0.2946088006801755, 0.0],
+            ),
         ] {
             let (h, b, d, w) = event_mix(&ev, DEFAULT_MIX);
             for (got, want) in [h, b, d, w].iter().zip(web) {
                 assert!((got - want).abs() < 1e-5, "{got} vs {want}");
             }
         }
-        for ((d, s), web) in [((10.0, 1.0), 0.5855752286723703f32), ((80.0, 4.0), 0.15798061053718054), ((300.0, 8.0), 0.05064991105283304)] {
+        for ((d, s), web) in [
+            ((10.0, 1.0), 0.5855752286723703f32),
+            ((80.0, 4.0), 0.15798061053718054),
+            ((300.0, 8.0), 0.05064991105283304),
+        ] {
             assert!((source_attenuation(d, s) - web).abs() < 1e-6);
         }
     }
 
     #[test]
     fn mix_presets_are_the_webs() {
-        let same = |a: Mix, b: Mix| (a.impact, a.detail, a.bass, a.flyby, a.range) == (b.impact, b.detail, b.bass, b.flyby, b.range);
+        let same = |a: Mix, b: Mix| {
+            (a.impact, a.detail, a.bass, a.flyby, a.range)
+                == (b.impact, b.detail, b.bass, b.flyby, b.range)
+        };
         // settings.ts DEFAULT_AUDIO: MIXES.cinematic at the balanced range.
-        assert!(same(Mix::preset(VL_MIX_CINEMATIC, VL_RANGE_BALANCED), DEFAULT_MIX));
+        assert!(same(
+            Mix::preset(VL_MIX_CINEMATIC, VL_RANGE_BALANCED),
+            DEFAULT_MIX
+        ));
         let n = Mix::preset(VL_MIX_NATURAL, VL_RANGE_NIGHT);
-        assert_eq!((n.impact, n.detail, n.bass, n.flyby, n.range), (0.88, 1.0, 0.48, 0.78, DynamicRange::Night));
+        assert_eq!(
+            (n.impact, n.detail, n.bass, n.flyby, n.range),
+            (0.88, 1.0, 0.48, 0.78, DynamicRange::Night)
+        );
         let c = Mix::preset(VL_MIX_CLARITY, VL_RANGE_CINEMATIC);
-        assert_eq!((c.impact, c.detail, c.bass, c.flyby, c.range), (0.86, 0.58, 0.5, 1.1, DynamicRange::Cinematic));
+        assert_eq!(
+            (c.impact, c.detail, c.bass, c.flyby, c.range),
+            (0.86, 0.58, 0.5, 1.1, DynamicRange::Cinematic)
+        );
         // sanitizeSettings: anything else is cinematic, balanced.
         assert!(same(Mix::preset(99, 99), DEFAULT_MIX));
         // A preset changes what is heard: an impact through the clarity mix is quieter than cinematic.
-        let e = SoundEvent { id: 1, kind: SoundKind::Impact, position: Vec3::new(3.0, 0.0, 0.0), material: AcousticMaterial::Concrete,
-            intensity: 0.7, size: 2.0, seed: 3, at_ms: 0.0, protected: false };
+        let e = SoundEvent {
+            id: 1,
+            kind: SoundKind::Impact,
+            position: Vec3::new(3.0, 0.0, 0.0),
+            material: AcousticMaterial::Concrete,
+            intensity: 0.7,
+            size: 2.0,
+            seed: 3,
+            at_ms: 0.0,
+            protected: false,
+        };
         let gain = |mix: Mix| {
             let mut out = Vec::new();
             voices(&e, Vec3::ZERO, 0.0, mix, &mut out);
@@ -1059,7 +1444,10 @@ mod tests {
         assert_eq!(acoustic_material("glass", 0.0), AcousticMaterial::Glass);
         assert_eq!(acoustic_material("wood-frame", 0.0), AcousticMaterial::Wood);
         assert_eq!(acoustic_material("steel", 0.0), AcousticMaterial::Metal);
-        assert_eq!(acoustic_material("reinforced-concrete", 0.0), AcousticMaterial::Concrete);
+        assert_eq!(
+            acoustic_material("reinforced-concrete", 0.0),
+            AcousticMaterial::Concrete
+        );
         assert_eq!(acoustic_material("anything", 0.9), AcousticMaterial::Metal);
         assert_eq!(acoustic_material("stone", 0.0), AcousticMaterial::Stone);
     }
@@ -1067,7 +1455,12 @@ mod tests {
     #[test]
     fn every_voice_names_a_clip_in_the_catalog() {
         let clips = Clips::get();
-        for kind in [SoundKind::Impact, SoundKind::Fracture, SoundKind::Collapse, SoundKind::Shot] {
+        for kind in [
+            SoundKind::Impact,
+            SoundKind::Fracture,
+            SoundKind::Collapse,
+            SoundKind::Shot,
+        ] {
             for material in [
                 AcousticMaterial::Concrete,
                 AcousticMaterial::Stone,
@@ -1079,10 +1472,23 @@ mod tests {
             ] {
                 for seed in 1..40u32 {
                     for (intensity, size) in [(0.1, 0.2), (0.9, 5.0)] {
-                        let e = SoundEvent { id: 1, kind, position: Vec3::ZERO, material, intensity, size, seed, at_ms: 0.0, protected: false };
+                        let e = SoundEvent {
+                            id: 1,
+                            kind,
+                            position: Vec3::ZERO,
+                            material,
+                            intensity,
+                            size,
+                            seed,
+                            at_ms: 0.0,
+                            protected: false,
+                        };
                         let mut out = Vec::new();
                         voices(&e, Vec3::new(3.0, 0.0, 0.0), 0.0, DEFAULT_MIX, &mut out);
-                        assert!(!out.is_empty(), "{kind:?} {material:?} seed {seed}: no voice");
+                        assert!(
+                            !out.is_empty(),
+                            "{kind:?} {material:?} seed {seed}: no voice"
+                        );
                         for v in &out {
                             assert!((v.clip as usize) < clips.ids.len());
                             assert!(v.gain > 0.0 && v.gain <= 3.0 && v.rate > 0.5 && v.rate < 1.5);
@@ -1159,7 +1565,16 @@ mod tests {
     #[test]
     fn scrapes_become_loops_that_expire_and_flybys_play_flyby_clips() {
         let mut loops = Loops::default();
-        loops.scrape(7, Vec3::new(3.0, 0.0, 0.0), AcousticMaterial::Concrete, 4.0, 0.6, Vec3::ZERO, 0.0, DEFAULT_MIX);
+        loops.scrape(
+            7,
+            Vec3::new(3.0, 0.0, 0.0),
+            AcousticMaterial::Concrete,
+            4.0,
+            0.6,
+            Vec3::ZERO,
+            0.0,
+            DEFAULT_MIX,
+        );
         let mut out = Vec::new();
         loops.current(100.0, &mut out);
         assert_eq!(out.len(), 1);
@@ -1168,7 +1583,17 @@ mod tests {
         out.clear();
         loops.current(400.0, &mut out);
         assert!(out.is_empty(), "released 220 ms after its last contact");
-        let e = SoundEvent { id: 9, kind: SoundKind::Flyby, position: Vec3::new(2.0, 0.0, 0.0), material: AcousticMaterial::Concrete, intensity: 0.7, size: 1.0, seed: 3, at_ms: 0.0, protected: true };
+        let e = SoundEvent {
+            id: 9,
+            kind: SoundKind::Flyby,
+            position: Vec3::new(2.0, 0.0, 0.0),
+            material: AcousticMaterial::Concrete,
+            intensity: 0.7,
+            size: 1.0,
+            seed: 3,
+            at_ms: 0.0,
+            protected: true,
+        };
         let mut v = Vec::new();
         voices(&e, Vec3::ZERO, 0.0, DEFAULT_MIX, &mut v);
         assert_eq!(v.len(), 1);
@@ -1179,15 +1604,31 @@ mod tests {
     #[test]
     fn closest_pass_matches_the_web() {
         // model.ts closestPass([-10,0,1],[10,0,1],[0,0,0],[0,0,0]) = {distance 1, fraction .5, position [0,0,1]}
-        let (d, t, p) = closest_pass(Vec3::new(-10.0, 0.0, 1.0), Vec3::new(10.0, 0.0, 1.0), Vec3::ZERO, Vec3::ZERO);
-        assert!((d - 1.0).abs() < 1e-6 && (t - 0.5).abs() < 1e-6 && p.distance(Vec3::new(0.0, 0.0, 1.0)) < 1e-6);
+        let (d, t, p) = closest_pass(
+            Vec3::new(-10.0, 0.0, 1.0),
+            Vec3::new(10.0, 0.0, 1.0),
+            Vec3::ZERO,
+            Vec3::ZERO,
+        );
+        assert!(
+            (d - 1.0).abs() < 1e-6
+                && (t - 0.5).abs() < 1e-6
+                && p.distance(Vec3::new(0.0, 0.0, 1.0)) < 1e-6
+        );
     }
 
     #[test]
     fn a_fast_body_passing_close_is_a_flyby_once_and_a_slow_or_far_one_is_not() {
         let mut f = FlybyTracker::default();
         let mut out = Vec::new();
-        let at = |x: f32, z: f32, t: f64| Motion { id: 1, position: Vec3::new(x, 0.0, z), velocity: Vec3::new(40.0, 0.0, 0.0), time_ms: t, material: AcousticMaterial::Stone, size: 1.0 };
+        let at = |x: f32, z: f32, t: f64| Motion {
+            id: 1,
+            position: Vec3::new(x, 0.0, z),
+            velocity: Vec3::new(40.0, 0.0, 0.0),
+            time_ms: t,
+            material: AcousticMaterial::Stone,
+            size: 1.0,
+        };
         f.note(at(-2.0, 1.0, 0.0), Vec3::ZERO, 0.0, &mut out);
         f.note(at(2.0, 1.0, 100.0), Vec3::ZERO, 100.0, &mut out);
         assert_eq!(out.len(), 1, "40 m/s past at 1 m");
@@ -1208,7 +1649,15 @@ mod tests {
     fn air_rises_in_pitch_toward_the_listener() {
         let mut loops = Loops::default();
         let mut out = Vec::new();
-        loops.air(1, Vec3::new(50.0, 0.0, 0.0), Vec3::new(-60.0, 0.0, 0.0), 0.5, Vec3::ZERO, 0.0, DEFAULT_MIX);
+        loops.air(
+            1,
+            Vec3::new(50.0, 0.0, 0.0),
+            Vec3::new(-60.0, 0.0, 0.0),
+            0.5,
+            Vec3::ZERO,
+            0.0,
+            DEFAULT_MIX,
+        );
         loops.current(0.0, &mut out);
         assert_eq!(Clips::get().ids[out[0].clip as usize], "air");
         assert!((out[0].rate - 343.0 / (343.0 - 60.0)).abs() < 1e-5);
@@ -1221,18 +1670,102 @@ mod tests {
         // repeated id add nothing; the far wood hit stays under the threshold.
         let mut a = Activity::default();
         let l = Vec3::new(0.0, 1.6, 0.0);
-        let ev = |id: u64, kind, material, p: [f32; 3], intensity, size, at_ms| SoundEvent { id, kind, position: Vec3::from_array(p), material, intensity, size, seed: 1, at_ms, protected: false };
+        let ev = |id: u64, kind, material, p: [f32; 3], intensity, size, at_ms| SoundEvent {
+            id,
+            kind,
+            position: Vec3::from_array(p),
+            material,
+            intensity,
+            size,
+            seed: 1,
+            at_ms,
+            protected: false,
+        };
         use AcousticMaterial::*;
-        a.add(&ev(1, SoundKind::Fracture, Concrete, [12.0, 3.0, 4.0], 0.9, 2.0, 1000.0), l, 1000.0, 0.0);
-        a.add(&ev(2, SoundKind::Collapse, Concrete, [14.0, 2.0, 6.0], 1.0, 6.0, 1040.0), l, 1000.0, 0.0);
-        a.add(&ev(3, SoundKind::Impact, Wood, [-20.0, 1.0, 30.0], 0.7, 1.0, 1100.0), l, 1000.0, 0.0);
-        a.add(&ev(4, SoundKind::Impact, Metal, [5.0, 1.0, 5.0], 0.1, 1.0, 1000.0), l, 1000.0, 0.0);
-        a.add(&ev(1, SoundKind::Fracture, Concrete, [12.0, 3.0, 4.0], 0.9, 2.0, 1200.0), l, 1100.0, 0.0);
-        for (t, want) in [(1050.0, 0.755366f32), (1200.0, 0.700083), (1600.0, 0.543401), (3000.0, 0.109914)] {
+        a.add(
+            &ev(
+                1,
+                SoundKind::Fracture,
+                Concrete,
+                [12.0, 3.0, 4.0],
+                0.9,
+                2.0,
+                1000.0,
+            ),
+            l,
+            1000.0,
+            0.0,
+        );
+        a.add(
+            &ev(
+                2,
+                SoundKind::Collapse,
+                Concrete,
+                [14.0, 2.0, 6.0],
+                1.0,
+                6.0,
+                1040.0,
+            ),
+            l,
+            1000.0,
+            0.0,
+        );
+        a.add(
+            &ev(
+                3,
+                SoundKind::Impact,
+                Wood,
+                [-20.0, 1.0, 30.0],
+                0.7,
+                1.0,
+                1100.0,
+            ),
+            l,
+            1000.0,
+            0.0,
+        );
+        a.add(
+            &ev(
+                4,
+                SoundKind::Impact,
+                Metal,
+                [5.0, 1.0, 5.0],
+                0.1,
+                1.0,
+                1000.0,
+            ),
+            l,
+            1000.0,
+            0.0,
+        );
+        a.add(
+            &ev(
+                1,
+                SoundKind::Fracture,
+                Concrete,
+                [12.0, 3.0, 4.0],
+                0.9,
+                2.0,
+                1200.0,
+            ),
+            l,
+            1100.0,
+            0.0,
+        );
+        for (t, want) in [
+            (1050.0, 0.755366f32),
+            (1200.0, 0.700083),
+            (1600.0, 0.543401),
+            (3000.0, 0.109914),
+        ] {
             let beds = a.sample(t, l);
             assert_eq!(beds.len(), 1, "at {t}");
             assert_eq!(beds[0].key, "concrete:1:0:0");
-            assert!((beds[0].intensity - want).abs() < 2e-5, "at {t}: {} vs {want}", beds[0].intensity);
+            assert!(
+                (beds[0].intensity - want).abs() < 2e-5,
+                "at {t}: {} vs {want}",
+                beds[0].intensity
+            );
             assert!(beds[0].position.distance(Vec3::new(12.5, 2.75, 4.5)) < 1e-3);
         }
         let bed = &a.sample(3000.0, l)[0];
@@ -1254,12 +1787,23 @@ mod tests {
             });
         }
         assert_eq!(rays, 6, "six new rays per 100 ms");
-        assert_eq!(o.sample(l, Vec3::new(10.0, 0.0, 0.0), 50.0, |_, _, _| false), 0.7, "cached for 250 ms");
-        assert_eq!(o.sample(l, Vec3::new(10.0, 0.0, 0.0), 400.0, |_, _, _| false), 0.0, "re-cast after 250 ms");
+        assert_eq!(
+            o.sample(l, Vec3::new(10.0, 0.0, 0.0), 50.0, |_, _, _| false),
+            0.7,
+            "cached for 250 ms"
+        );
+        assert_eq!(
+            o.sample(l, Vec3::new(10.0, 0.0, 0.0), 400.0, |_, _, _| false),
+            0.0,
+            "re-cast after 250 ms"
+        );
         // engine.ts placeVoice at 100 m, fully clear and occluded.
         let (g, c) = occluded(1.0, 100.0, 0.0, false);
         assert!((g - 1.0).abs() < 1e-6 && (c - 19000.0 / 1.9).abs() < 1e-2);
         let (g, c) = occluded(1.0, 100.0, 0.7, false);
-        assert!((g - (1.0 - 0.7 * 0.68)).abs() < 1e-6 && (c - (19000.0f32 / 1.9 * (1.0 - 0.7 * 0.89)).max(650.0)).abs() < 1e-2);
+        assert!(
+            (g - (1.0 - 0.7 * 0.68)).abs() < 1e-6
+                && (c - (19000.0f32 / 1.9 * (1.0 - 0.7 * 0.89)).max(650.0)).abs() < 1e-2
+        );
     }
 }

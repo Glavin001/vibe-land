@@ -36,12 +36,26 @@ pub fn axis_i8(value: f64) -> i8 {
 
 /// One input frame as the server will read it.
 pub fn quantise(seq: u16, input: &InputState) -> InputFrame {
-    quantise_web(seq, f64::from(input.move_x), f64::from(input.move_y), f64::from(input.yaw), f64::from(input.pitch), input.buttons)
+    quantise_web(
+        seq,
+        f64::from(input.move_x),
+        f64::from(input.move_y),
+        f64::from(input.yaw),
+        f64::from(input.pitch),
+        input.buttons,
+    )
 }
 
 /// One input frame from the web's numbers (`buildInputFromState`): the axes and their direction
 /// bits; the view angles are carried as given (the encoder quantises them).
-pub fn quantise_web(seq: u16, move_x: f64, move_y: f64, yaw: f64, pitch: f64, buttons: u16) -> InputFrame {
+pub fn quantise_web(
+    seq: u16,
+    move_x: f64,
+    move_y: f64,
+    yaw: f64,
+    pitch: f64,
+    buttons: u16,
+) -> InputFrame {
     let (move_x, move_y) = (axis_i8(move_x), axis_i8(move_y));
     let mut buttons = buttons & !BTN_SECONDARY_FIRE;
     if move_x > 0 {
@@ -55,7 +69,14 @@ pub fn quantise_web(seq: u16, move_x: f64, move_y: f64, yaw: f64, pitch: f64, bu
         buttons |= BTN_BACK;
     }
     let finite = |v: f64| if v.is_finite() { v as f32 } else { 0.0 };
-    InputFrame { seq, buttons, move_x, move_y, yaw: finite(yaw), pitch: finite(pitch) }
+    InputFrame {
+        seq,
+        buttons,
+        move_x,
+        move_y,
+        yaw: finite(yaw),
+        pitch: finite(pitch),
+    }
 }
 
 pub struct InputBundler {
@@ -72,7 +93,12 @@ impl InputBundler {
 
     /// A bundler with the web's `FixedInputBundler(fixedDtSec, maxCatchupSteps)` parameters.
     pub fn with_step(step_s: f64, max_catchup: u32) -> Self {
-        Self { step_s, accumulator_s: 0.0, next_seq: 1, max_catchup }
+        Self {
+            step_s,
+            accumulator_s: 0.0,
+            next_seq: 1,
+            max_catchup,
+        }
     }
 
     /// Start again from `next_seq` with nothing accumulated (`reset`).
@@ -97,7 +123,11 @@ impl InputBundler {
     }
 
     /// [`produce`](Self::produce) with the frame built by `frame` from its sequence number.
-    pub fn produce_with(&mut self, dt_s: f64, mut frame: impl FnMut(u16) -> InputFrame) -> Vec<InputFrame> {
+    pub fn produce_with(
+        &mut self,
+        dt_s: f64,
+        mut frame: impl FnMut(u16) -> InputFrame,
+    ) -> Vec<InputFrame> {
         if dt_s.is_finite() && dt_s > 0.0 {
             self.accumulator_s += dt_s;
         }
@@ -134,17 +164,34 @@ mod tests {
     fn sixty_frames_a_second_at_any_frame_rate() {
         for fps in [30.0f64, 59.94, 60.0, 144.0, 240.0] {
             let mut b = InputBundler::new(60);
-            let n: usize = (0..(fps * 10.0) as usize).map(|_| b.produce(1.0 / fps, &InputState::default()).len()).sum();
+            let n: usize = (0..(fps * 10.0) as usize)
+                .map(|_| b.produce(1.0 / fps, &InputState::default()).len())
+                .sum();
             assert!((n as i64 - 600).abs() <= 1, "{fps} fps: {n} frames in 10 s");
         }
     }
 
     #[test]
     fn axes_quantise_and_set_direction_bits() {
-        let f = quantise(5, &InputState { move_x: -1.0, move_y: 0.5, buttons: BTN_SECONDARY_FIRE, ..Default::default() });
+        let f = quantise(
+            5,
+            &InputState {
+                move_x: -1.0,
+                move_y: 0.5,
+                buttons: BTN_SECONDARY_FIRE,
+                ..Default::default()
+            },
+        );
         assert_eq!((f.move_x, f.move_y), (-127, 64));
         assert_eq!(f.buttons, BTN_LEFT | BTN_FORWARD);
-        let f = quantise(5, &InputState { move_x: 3.0, move_y: f32::NAN, ..Default::default() });
+        let f = quantise(
+            5,
+            &InputState {
+                move_x: 3.0,
+                move_y: f32::NAN,
+                ..Default::default()
+            },
+        );
         assert_eq!((f.move_x, f.move_y, f.buttons), (127, 0, BTN_RIGHT));
     }
 
@@ -153,6 +200,9 @@ mod tests {
         let mut b = InputBundler::new(60);
         b.next_seq = u16::MAX;
         let frames = b.produce(2.0 / 60.0 + 1e-9, &InputState::default());
-        assert_eq!(frames.iter().map(|f| f.seq).collect::<Vec<_>>(), vec![u16::MAX, 0]);
+        assert_eq!(
+            frames.iter().map(|f| f.seq).collect::<Vec<_>>(),
+            vec![u16::MAX, 0]
+        );
     }
 }

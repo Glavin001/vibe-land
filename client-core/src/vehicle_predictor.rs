@@ -70,10 +70,19 @@ impl VehicleProxy {
     /// A garage-built car: its configuration's dimensions, its prepared driving (the server's
     /// `PreparedDriving`, which the web resolves the same way) and its wheel centres (actor frame,
     /// from its metadata).
-    pub fn custom(configuration: &serde_json::Value, driving: &serde_json::Value, wheel_centres: &[[f32; 3]; 4]) -> Option<Self> {
-        let num = |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_f64).map(|x| x as f32);
+    pub fn custom(
+        configuration: &serde_json::Value,
+        driving: &serde_json::Value,
+        wheel_centres: &[[f32; 3]; 4],
+    ) -> Option<Self> {
+        let num =
+            |v: Option<&serde_json::Value>| v.and_then(serde_json::Value::as_f64).map(|x| x as f32);
         let dims = configuration.get("dimensions")?;
-        let (track, wheelbase, tyre) = (num(dims.get("track"))?, num(dims.get("wheelbase"))?, num(dims.get("tireRadius"))?);
+        let (track, wheelbase, tyre) = (
+            num(dims.get("track"))?,
+            num(dims.get("wheelbase"))?,
+            num(dims.get("tireRadius"))?,
+        );
         Some(Self {
             half: Vec3::new(track * 0.35, 0.2, wheelbase * 0.5),
             wheels: wheel_centres.iter().map(|w| Vec3::from_array(*w)).collect(),
@@ -82,7 +91,8 @@ impl VehicleProxy {
             acceleration: num(driving.get("acceleration"))?,
             speed: num(driving.get("topSpeed"))?,
             grip: num(driving.get("tyreFriction"))?,
-            braking: num(configuration.get("driving").and_then(|d| d.get("braking"))).unwrap_or(1.0),
+            braking: num(configuration.get("driving").and_then(|d| d.get("braking")))
+                .unwrap_or(1.0),
             lock: num(driving.get("maxSteerRadians"))?,
             response: num(driving.get("steeringResponse"))?,
         })
@@ -99,7 +109,13 @@ pub struct Hit {
 /// The city's flat terrain at y = 0: an oriented box (`radius` 0) or a sphere (`radius` > 0) at
 /// `position` moving by `delta`. Like parry's shape cast with stop-at-penetration: a shape already
 /// touching and moving in is stopped at once.
-pub fn sweep_ground(position: Vec3, rotation: Quat, delta: Vec3, half: Vec3, radius: f32) -> Option<Hit> {
+pub fn sweep_ground(
+    position: Vec3,
+    rotation: Quat,
+    delta: Vec3,
+    half: Vec3,
+    radius: f32,
+) -> Option<Hit> {
     let lowest = if radius > 0.0 {
         position.y - radius
     } else {
@@ -107,7 +123,9 @@ pub fn sweep_ground(position: Vec3, rotation: Quat, delta: Vec3, half: Vec3, rad
         for sx in [-1.0, 1.0] {
             for sy in [-1.0, 1.0] {
                 for sz in [-1.0, 1.0] {
-                    low = low.min((position + rotation * Vec3::new(sx * half.x, sy * half.y, sz * half.z)).y);
+                    low = low.min(
+                        (position + rotation * Vec3::new(sx * half.x, sy * half.y, sz * half.z)).y,
+                    );
                 }
             }
         }
@@ -116,28 +134,51 @@ pub fn sweep_ground(position: Vec3, rotation: Quat, delta: Vec3, half: Vec3, rad
     if delta.y >= 0.0 {
         return None;
     }
-    let fraction = if lowest <= 0.0 { 0.0 } else { lowest / -delta.y };
-    (fraction <= 1.0).then_some(Hit { fraction, normal: Vec3::Y })
+    let fraction = if lowest <= 0.0 {
+        0.0
+    } else {
+        lowest / -delta.y
+    };
+    (fraction <= 1.0).then_some(Hit {
+        fraction,
+        normal: Vec3::Y,
+    })
 }
 
 /// Sweeps the chassis and four coarse wheel spheres; up to three contact planes (`moveVehicle`).
-pub fn move_vehicle(position: Vec3, rotation: Quat, delta: Vec3, proxy: &VehicleProxy) -> (Vec3, Vec<Vec3>) {
+pub fn move_vehicle(
+    position: Vec3,
+    rotation: Quat,
+    delta: Vec3,
+    proxy: &VehicleProxy,
+) -> (Vec3, Vec<Vec3>) {
     let mut at = position;
     let mut remaining = delta;
     let mut normals: Vec<Vec3> = Vec::new();
-    let offsets: Vec<Vec3> = std::iter::once(Vec3::ZERO).chain(proxy.wheels.iter().map(|w| rotation * *w)).collect();
+    let offsets: Vec<Vec3> = std::iter::once(Vec3::ZERO)
+        .chain(proxy.wheels.iter().map(|w| rotation * *w))
+        .collect();
     for _ in 0..3 {
         if remaining.length_squared() <= 1e-12 {
             break;
         }
         let mut first: Option<Hit> = None;
         for (i, offset) in offsets.iter().enumerate() {
-            let mut hit = sweep_ground(at + *offset, rotation, remaining, proxy.half, if i == 0 { 0.0 } else { proxy.radius });
+            let mut hit = sweep_ground(
+                at + *offset,
+                rotation,
+                remaining,
+                proxy.half,
+                if i == 0 { 0.0 } else { proxy.radius },
+            );
             if let Some(h) = hit {
                 if h.normal.y > 0.45 {
                     // Wheels roll over road features through the suspension: guard descending
                     // contact vertically, keep travel up a ramp.
-                    hit = (remaining.y < 0.0).then_some(Hit { fraction: h.fraction, normal: Vec3::Y });
+                    hit = (remaining.y < 0.0).then_some(Hit {
+                        fraction: h.fraction,
+                        normal: Vec3::Y,
+                    });
                 } else if i > 0 {
                     // Nor does a wheel stop the car sideways: only the chassis collides.
                     hit = None;
@@ -198,15 +239,24 @@ fn step(m: Motion, dt: f32, proxy: &VehicleProxy, input: Option<&InputFrame>) ->
         let t = ((speed.abs() - 6.0) / 22.0).clamp(0.0, 1.0);
         let lock = 1.0 - 0.65 * t * t * (3.0 - 2.0 * t);
         let target = -(f32::from(input.move_x) / 127.0) * lock;
-        let slew = (if target.abs() > steering.abs() { 5.0 } else { 8.0 }) * proxy.response * dt;
+        let slew = (if target.abs() > steering.abs() {
+            5.0
+        } else {
+            8.0
+        }) * proxy.response
+            * dt;
         steering += (target - steering).clamp(-slew, slew);
         let pedal = f32::from(input.move_y) / 127.0;
         let handbrake = input.buttons & BTN_JUMP != 0;
         let braking = handbrake || (pedal * speed < 0.0 && speed.abs() > 1.0);
         let acceleration = if braking {
-            -speed.signum() * (speed.abs() / dt).min(proxy.grip * 9.81 * if handbrake { 0.5 } else { proxy.braking })
+            -speed.signum()
+                * (speed.abs() / dt)
+                    .min(proxy.grip * 9.81 * if handbrake { 0.5 } else { proxy.braking })
         } else {
-            pedal * proxy.acceleration * (1.0 - speed.abs() / if pedal < 0.0 { 8.0 } else { proxy.speed }).max(0.0)
+            pedal
+                * proxy.acceleration
+                * (1.0 - speed.abs() / if pedal < 0.0 { 8.0 } else { proxy.speed }).max(0.0)
         };
         velocity += forward * (acceleration * dt);
         // Keep the authoritative slip, roll and pitch; only ease yaw toward the steering model.
@@ -227,9 +277,19 @@ fn step(m: Motion, dt: f32, proxy: &VehicleProxy, input: Option<&InputFrame>) ->
         velocity -= n * velocity.dot(n).min(0.0);
     }
     let angle = angular.length() * dt;
-    let rotation = if angle > 0.0 { (Quat::from_axis_angle(angular.normalize(), angle) * rotation).normalize() } else { rotation };
+    let rotation = if angle > 0.0 {
+        (Quat::from_axis_angle(angular.normalize(), angle) * rotation).normalize()
+    } else {
+        rotation
+    };
     Motion {
-        sample: CarSample { server_time_us: s.server_time_us + f64::from(dt) * 1e6, position, rotation, linear_velocity: velocity, angular_velocity: angular },
+        sample: CarSample {
+            server_time_us: s.server_time_us + f64::from(dt) * 1e6,
+            position,
+            rotation,
+            linear_velocity: velocity,
+            angular_velocity: angular,
+        },
         steering,
     }
 }
@@ -252,7 +312,10 @@ pub struct VehiclePredictor {
 
 impl VehiclePredictor {
     pub fn reset(&mut self) {
-        *self = Self { rotation_offset: Quat::IDENTITY, ..Default::default() };
+        *self = Self {
+            rotation_offset: Quat::IDENTITY,
+            ..Default::default()
+        };
     }
 
     fn select(&mut self, handle: u32) {
@@ -277,9 +340,19 @@ impl VehiclePredictor {
     }
 
     /// A new authoritative state of the driven car, with the newest input the server applied.
-    pub fn observe(&mut self, handle: u32, sample: CarSample, ack: u16, proxy: VehicleProxy, now_ms: f64) {
+    pub fn observe(
+        &mut self,
+        handle: u32,
+        sample: CarSample,
+        ack: u16,
+        proxy: VehicleProxy,
+        now_ms: f64,
+    ) {
         self.select(handle);
-        if self.base.is_some_and(|b| sample.server_time_us <= b.server_time_us) {
+        if self
+            .base
+            .is_some_and(|b| sample.server_time_us <= b.server_time_us)
+        {
             return;
         }
         if self.ack.is_some_and(|a| ack != a && !newer(ack, a)) {
@@ -293,7 +366,11 @@ impl VehiclePredictor {
         self.observed_ms = now_ms;
         self.stalled = false;
         let speed = sample.linear_velocity.length();
-        self.steering = if speed > 1.0 { (sample.angular_velocity.y * proxy.wheelbase / speed).atan() / proxy.lock } else { 0.0 };
+        self.steering = if speed > 1.0 {
+            (sample.angular_velocity.y * proxy.wheelbase / speed).atan() / proxy.lock
+        } else {
+            0.0
+        };
         self.proxy = Some(proxy);
         self.raw = self.replay();
         if let (Some((pp, pq)), Some(raw)) = (previous, self.raw) {
@@ -322,7 +399,10 @@ impl VehiclePredictor {
     fn replay(&self) -> Option<CarSample> {
         let (base, proxy) = (self.base?, self.proxy.as_ref()?);
         let count = ((MAX_DRIVER_LEAD_S / DT).round() as usize).min(self.pending.len());
-        let mut motion = Motion { sample: base, steering: self.steering };
+        let mut motion = Motion {
+            sample: base,
+            steering: self.steering,
+        };
         for input in &self.pending[..count] {
             motion = step(motion, DT, proxy, Some(input));
         }
@@ -356,7 +436,11 @@ mod tests {
 
     fn resting(proxy: &VehicleProxy) -> CarSample {
         // Wheels just touching the ground.
-        let lowest_wheel = proxy.wheels.iter().map(|w| w.y).fold(f32::INFINITY, f32::min);
+        let lowest_wheel = proxy
+            .wheels
+            .iter()
+            .map(|w| w.y)
+            .fold(f32::INFINITY, f32::min);
         CarSample {
             server_time_us: 0.0,
             position: Vec3::new(0.0, proxy.radius - lowest_wheel, 0.0),
@@ -367,18 +451,30 @@ mod tests {
     }
 
     fn throttle(seq: u16) -> InputFrame {
-        InputFrame { seq, move_y: 127, ..Default::default() }
+        InputFrame {
+            seq,
+            move_y: 127,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn the_ground_stops_a_falling_car_and_lets_it_drive_along() {
         let p = proxy();
         let s = resting(&p);
-        let (at, normals) = move_vehicle(s.position + Vec3::Y, s.rotation, Vec3::new(0.0, -5.0, 0.0), &p);
+        let (at, normals) = move_vehicle(
+            s.position + Vec3::Y,
+            s.rotation,
+            Vec3::new(0.0, -5.0, 0.0),
+            &p,
+        );
         assert!((at.y - s.position.y).abs() < 1e-4, "{at} vs {}", s.position);
         assert_eq!(normals, vec![Vec3::Y]);
         let (at, _) = move_vehicle(s.position, s.rotation, Vec3::new(0.0, -0.01, 2.0), &p);
-        assert!((at.z - 2.0).abs() < 1e-4 && (at.y - s.position.y).abs() < 1e-4, "{at}");
+        assert!(
+            (at.z - 2.0).abs() < 1e-4 && (at.y - s.position.y).abs() < 1e-4,
+            "{at}"
+        );
     }
 
     #[test]
@@ -395,7 +491,10 @@ mod tests {
         assert!(at.x.abs() < 1e-3);
         // The server acks 12 of them and reports the car where the replay had it then: no jump.
         let mut acked = resting(&p);
-        let mut m = Motion { sample: acked, steering: 0.0 };
+        let mut m = Motion {
+            sample: acked,
+            steering: 0.0,
+        };
         for input in &inputs[..12] {
             m = step(m, DT, &p, Some(input));
         }
@@ -417,15 +516,24 @@ mod tests {
         moved.position.x += 0.2;
         predictor.observe(1, moved, 0, p.clone(), 16.0);
         let (drawn, _) = predictor.pose().unwrap();
-        assert!((drawn.x - 0.0).abs() < 1e-4, "small errors are kept, then decay");
+        assert!(
+            (drawn.x - 0.0).abs() < 1e-4,
+            "small errors are kept, then decay"
+        );
         predictor.update(0.08, 32.0);
         let (decayed, _) = predictor.pose().unwrap();
-        assert!((decayed.x - (0.2 - 0.2 / std::f32::consts::E)).abs() < 1e-3, "{decayed}");
+        assert!(
+            (decayed.x - (0.2 - 0.2 / std::f32::consts::E)).abs() < 1e-3,
+            "{decayed}"
+        );
         let mut far = moved;
         far.server_time_us = 2.0;
         far.position.x += 3.0;
         predictor.observe(1, far, 0, p.clone(), 48.0);
-        assert!((predictor.pose().unwrap().0.x - far.position.x).abs() < 1e-4, "an impact snaps");
+        assert!(
+            (predictor.pose().unwrap().0.x - far.position.x).abs() < 1e-4,
+            "an impact snaps"
+        );
     }
 
     #[test]
@@ -435,7 +543,14 @@ mod tests {
         predictor.reset();
         let mut s = resting(&p);
         s.linear_velocity = Vec3::new(0.0, 0.0, 10.0);
-        let inputs: Vec<InputFrame> = (1..=24).map(|q| InputFrame { seq: q, move_x: -127, move_y: 60, ..Default::default() }).collect();
+        let inputs: Vec<InputFrame> = (1..=24)
+            .map(|q| InputFrame {
+                seq: q,
+                move_x: -127,
+                move_y: 60,
+                ..Default::default()
+            })
+            .collect();
         predictor.record(2, &inputs);
         predictor.observe(2, s, 0, p.clone(), 0.0);
         let (_, rotation) = predictor.pose().unwrap();
@@ -445,9 +560,20 @@ mod tests {
         assert!(heading > 0.01, "turned {heading}");
         predictor.update(0.016, 600.0);
         let frozen = predictor.pose().unwrap();
-        predictor.record(2, &[InputFrame { seq: 25, move_y: 127, ..Default::default() }]);
+        predictor.record(
+            2,
+            &[InputFrame {
+                seq: 25,
+                move_y: 127,
+                ..Default::default()
+            }],
+        );
         predictor.update(0.016, 700.0);
-        assert_eq!(predictor.pose().unwrap().0, frozen.0, "no new inputs drawn while the server is quiet");
+        assert_eq!(
+            predictor.pose().unwrap().0,
+            frozen.0,
+            "no new inputs drawn while the server is quiet"
+        );
     }
     /// The web's predictor (physics/vehiclePresentation.ts) on the same scenario, computed with tsx
     /// by client/scripts/vehicle-predictor-fixture.mts: a stock car at 8 m/s, 30 inputs (left then
@@ -480,7 +606,13 @@ mod tests {
         let (position, rotation) = predictor.pose().unwrap();
         let web_position = Vec3::new(0.3322918747996268, 0.6533333361148834, 3.4476914461825596);
         let web_rotation = Quat::from_xyzw(0.0, 0.09733803773055195, 0.0, 0.9952513785023187);
-        assert!((position - web_position).length() < 1e-5, "{position} vs the web's {web_position}");
-        assert!(rotation.angle_between(web_rotation) < 1e-4, "{rotation} vs the web's {web_rotation}");
+        assert!(
+            (position - web_position).length() < 1e-5,
+            "{position} vs the web's {web_position}"
+        );
+        assert!(
+            rotation.angle_between(web_rotation) < 1e-4,
+            "{rotation} vs the web's {web_rotation}"
+        );
     }
 }

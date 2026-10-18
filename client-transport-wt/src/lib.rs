@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc as tokio_mpsc;
 use vibe_land_shared::constants::{CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE, PKT_PING};
-use vibe_land_shared::net_client::{encode_client_hello, encode_ping, frame_reliable, SessionConfig};
+use vibe_land_shared::net_client::{
+    encode_client_hello, encode_ping, frame_reliable, SessionConfig,
+};
 
 /// Which lane a packet arrived on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +55,11 @@ pub enum Inbound {
     /// The uncompressed city manifest (VLCM), when the match has one. The client core checks it
     /// against `SessionConfig::city_manifest_hash`.
     Manifest(Vec<u8>),
-    Packet { lane: Lane, bytes: Vec<u8>, arrival_us: u64 },
+    Packet {
+        lane: Lane,
+        bytes: Vec<u8>,
+        arrival_us: u64,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -126,7 +132,14 @@ impl Transport {
         };
         runtime.spawn(task.run(reliable_rx));
 
-        Ok(Self { runtime: Some(runtime), origin, inbound, connection, reliable_out, stats })
+        Ok(Self {
+            runtime: Some(runtime),
+            origin,
+            inbound,
+            connection,
+            reliable_out,
+            stats,
+        })
     }
 
     /// Microseconds since the transport started: the clock inbound arrival times are on. Pass it
@@ -143,8 +156,13 @@ impl Transport {
     /// Send one datagram now. Returns false when the session is not open or the datagram was
     /// refused (too large for the path, or the session closed).
     pub fn send_datagram(&self, bytes: &[u8]) -> bool {
-        let guard = self.connection.lock().expect("transport connection lock poisoned");
-        let Some(connection) = guard.as_ref() else { return false };
+        let guard = self
+            .connection
+            .lock()
+            .expect("transport connection lock poisoned");
+        let Some(connection) = guard.as_ref() else {
+            return false;
+        };
         match connection.send_datagram(bytes) {
             Ok(()) => {
                 self.stats.datagrams_out.fetch_add(1, Ordering::Relaxed);
@@ -192,7 +210,10 @@ impl Session {
             Ok(reason) => TransportState::Closed(reason),
             Err(error) => TransportState::Failed(error),
         };
-        *self.connection.lock().expect("transport connection lock poisoned") = None;
+        *self
+            .connection
+            .lock()
+            .expect("transport connection lock poisoned") = None;
         let _ = self.inbound.send(Inbound::State(state));
     }
 
@@ -201,7 +222,10 @@ impl Session {
     }
 
     /// Runs until the session ends; Ok(reason) for a close after the session opened.
-    async fn connect(&self, reliable_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>) -> Result<String, String> {
+    async fn connect(
+        &self,
+        reliable_rx: tokio_mpsc::UnboundedReceiver<Vec<u8>>,
+    ) -> Result<String, String> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -214,10 +238,15 @@ impl Session {
             percent_encode(&self.config.match_id)
         );
         let body = http_get(&http, &config_url).await?;
-        let session = SessionConfig::from_json(&body).map_err(|e| format!("session-config: {e}"))?;
+        let session =
+            SessionConfig::from_json(&body).map_err(|e| format!("session-config: {e}"))?;
         self.emit(Inbound::SessionConfig(session.clone()));
 
-        if let Some(hash) = session.city_manifest_hash.as_deref().filter(|h| !h.is_empty()) {
+        if let Some(hash) = session
+            .city_manifest_hash
+            .as_deref()
+            .filter(|h| !h.is_empty())
+        {
             self.emit(Inbound::State(TransportState::FetchingManifest));
             let url = format!("{}/city-manifest/{hash}", self.config.api_base_url);
             self.emit(Inbound::Manifest(http_get(&http, &url).await?));
@@ -231,16 +260,20 @@ impl Session {
             let digest: [u8; 32] = hex::decode(&session.server_certificate_hash_hex)
                 .ok()
                 .and_then(|bytes| bytes.try_into().ok())
-                .ok_or_else(|| "session-config certificate hash is not 32 bytes of hex".to_string())?;
+                .ok_or_else(|| {
+                    "session-config certificate hash is not 32 bytes of hex".to_string()
+                })?;
             builder
                 .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
                 .build()
         };
-        let endpoint = wtransport::Endpoint::client(client_config).map_err(|e| format!("endpoint: {e}"))?;
-        let connection = tokio::time::timeout(Duration::from_secs(15), endpoint.connect(&session.url))
-            .await
-            .map_err(|_| format!("connecting to {} timed out", session.url))?
-            .map_err(|e| format!("connecting to {}: {e}", session.url))?;
+        let endpoint =
+            wtransport::Endpoint::client(client_config).map_err(|e| format!("endpoint: {e}"))?;
+        let connection =
+            tokio::time::timeout(Duration::from_secs(15), endpoint.connect(&session.url))
+                .await
+                .map_err(|_| format!("connecting to {} timed out", session.url))?
+                .map_err(|e| format!("connecting to {}: {e}", session.url))?;
 
         let (mut send, recv) = connection
             .open_bi()
@@ -248,15 +281,26 @@ impl Session {
             .map_err(|e| format!("open stream: {e}"))?
             .await
             .map_err(|e| format!("open stream: {e}"))?;
-        let hello = frame_reliable(&encode_client_hello(&self.config.match_id, self.config.movement_caps));
-        send.write_all(&hello).await.map_err(|e| format!("send hello: {e}"))?;
+        let hello = frame_reliable(&encode_client_hello(
+            &self.config.match_id,
+            self.config.movement_caps,
+        ));
+        send.write_all(&hello)
+            .await
+            .map_err(|e| format!("send hello: {e}"))?;
 
-        *self.connection.lock().expect("transport connection lock poisoned") = Some(connection.clone());
+        *self
+            .connection
+            .lock()
+            .expect("transport connection lock poisoned") = Some(connection.clone());
         self.emit(Inbound::State(TransportState::Connected));
 
         let writer = tokio::spawn(write_reliable(send, reliable_rx, self.stats.clone()));
         let reliable = tokio::spawn(read_reliable(recv, self.reader_context(&connection)));
-        let datagrams = tokio::spawn(read_datagrams(connection.clone(), self.reader_context(&connection)));
+        let datagrams = tokio::spawn(read_datagrams(
+            connection.clone(),
+            self.reader_context(&connection),
+        ));
         let rtt = tokio::spawn(sample_rtt(connection.clone(), self.stats.clone()));
 
         let reason = connection.closed().await.to_string();
@@ -294,7 +338,13 @@ impl ReaderContext {
             }
         }
         let arrival_us = self.origin.elapsed().as_micros() as u64;
-        self.inbound.send(Inbound::Packet { lane, bytes, arrival_us }).is_ok()
+        self.inbound
+            .send(Inbound::Packet {
+                lane,
+                bytes,
+                arrival_us,
+            })
+            .is_ok()
     }
 }
 
@@ -313,7 +363,9 @@ async fn read_reliable(mut recv: wtransport::RecvStream, ctx: ReaderContext) {
             break;
         }
         ctx.stats.reliable_in.fetch_add(1, Ordering::Relaxed);
-        ctx.stats.reliable_bytes_in.fetch_add(len as u64, Ordering::Relaxed);
+        ctx.stats
+            .reliable_bytes_in
+            .fetch_add(len as u64, Ordering::Relaxed);
         if !ctx.deliver(Lane::Reliable, frame) {
             break;
         }
@@ -327,7 +379,9 @@ async fn read_datagrams(connection: wtransport::Connection, ctx: ReaderContext) 
             continue;
         }
         ctx.stats.datagrams_in.fetch_add(1, Ordering::Relaxed);
-        ctx.stats.datagram_bytes_in.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        ctx.stats
+            .datagram_bytes_in
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
         if !ctx.deliver(Lane::Datagram, bytes) {
             break;
         }
@@ -351,17 +405,27 @@ async fn sample_rtt(connection: wtransport::Connection, stats: Arc<TransportStat
     let mut every = tokio::time::interval(Duration::from_millis(250));
     loop {
         every.tick().await;
-        stats.rtt_us.store(connection.rtt().as_micros() as u64, Ordering::Relaxed);
+        stats
+            .rtt_us
+            .store(connection.rtt().as_micros() as u64, Ordering::Relaxed);
     }
 }
 
 async fn http_get(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
-    let response = http.get(url).send().await.map_err(|e| format!("GET {url}: {e}"))?;
+    let response = http
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("GET {url}: HTTP {status}"));
     }
-    Ok(response.bytes().await.map_err(|e| format!("GET {url}: {e}"))?.to_vec())
+    Ok(response
+        .bytes()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?
+        .to_vec())
 }
 
 /// Match ids are `[A-Za-z0-9-_.]` in practice; escape anything else for the query string.
@@ -369,7 +433,9 @@ fn percent_encode(value: &str) -> String {
     value
         .bytes()
         .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
             _ => format!("%{b:02X}"),
         })
         .collect()

@@ -74,7 +74,8 @@ fn rgba(hex: &str) -> u32 {
 fn table() -> &'static Presets {
     static TABLE: std::sync::OnceLock<Presets> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {
-        let t: Table = serde_json::from_str(PRESETS_JSON).expect("shared/assets/weather/presets.json");
+        let t: Table =
+            serde_json::from_str(PRESETS_JSON).expect("shared/assets/weather/presets.json");
         let presets = t
             .order
             .iter()
@@ -94,7 +95,10 @@ fn table() -> &'static Presets {
                 }
             })
             .collect();
-        Presets { names: t.order, presets }
+        Presets {
+            names: t.order,
+            presets,
+        }
     })
 }
 
@@ -105,7 +109,11 @@ pub fn presets() -> &'static [VlWeather] {
 
 /// A preset's index from its name (`clear`, `dust_storm`, `snow_storm`).
 pub fn by_name(name: &str) -> Option<u32> {
-    table().names.iter().position(|n| n == name).map(|i| i as u32)
+    table()
+        .names
+        .iter()
+        .position(|n| n == name)
+        .map(|i| i as u32)
 }
 
 /// fogSettings.ts `fogDensityForAoi`: the FogExp2 density (per metre) whose opacity,
@@ -133,7 +141,11 @@ mod tests {
     // reads import.meta.env, so tsx evaluates its expression) and windVectorFromSettings(8, 45).
     #[test]
     fn fog_and_wind_match_the_web() {
-        assert!((default_fog_exp2_density() - 0.011169907_f32).abs() < 1e-7, "{}", default_fog_exp2_density());
+        assert!(
+            (default_fog_exp2_density() - 0.011169907_f32).abs() < 1e-7,
+            "{}",
+            default_fog_exp2_density()
+        );
         let w = wind_vector(8.0, 45.0);
         assert!((w[0] - 5.656854).abs() < 1e-5 && w[1] == 0.0 && (w[2] - 5.656854).abs() < 1e-5);
         let d = default_fog_exp2_density();
@@ -143,9 +155,15 @@ mod tests {
     #[test]
     fn presets_in_the_web_order() {
         assert_eq!(by_name("dust_storm"), Some(VL_WEATHER_DUST_STORM));
-        assert_eq!(presets()[VL_WEATHER_SNOW_STORM as usize].particle_count, 5000);
+        assert_eq!(
+            presets()[VL_WEATHER_SNOW_STORM as usize].particle_count,
+            5000
+        );
         assert_eq!(presets()[VL_WEATHER_CLEAR as usize].particle_count, 0);
-        assert_eq!(presets()[VL_WEATHER_DUST_STORM as usize].fog_rgba, 0xB899_68FF);
+        assert_eq!(
+            presets()[VL_WEATHER_DUST_STORM as usize].fog_rgba,
+            0xB899_68FF
+        );
         assert_eq!(presets()[VL_WEATHER_SNOW_STORM as usize].additive, 1);
     }
 }

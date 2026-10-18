@@ -15,15 +15,20 @@
 use std::ffi::{c_char, CStr};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use vibe_client_core::coords::Space;
 use vibe_client_core::audio::{VlLoop, VlSound};
+use vibe_client_core::coords::Space;
 use vibe_client_core::dust::{VlDustEval, VlDustParcel};
+use vibe_client_core::frame::{
+    VlAudioContact, VlBodyPose, VlCar, VlCarPart, VlChunk, VlChunkAssignment, VlDynamicBody,
+    VlEvent, VlInput, VlLocal, VlMeteor, VlPlayer, VlStats,
+};
 use vibe_client_core::geometry::VlMeshRange;
 use vibe_client_core::grass::{VlGrassBlade, VlGrassExclusion};
 use vibe_client_core::materials::{Catalog, VlChunkSurface, VlMaterial};
-use vibe_client_core::frame::{VlAudioContact, VlBodyPose, VlCar, VlCarPart, VlChunk, VlChunkAssignment, VlDynamicBody, VlEvent, VlInput, VlLocal, VlMeteor, VlPlayer, VlStats};
 use vibe_client_core::{ClientCore, Lane};
-use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportConfig, TransportState};
+use vibe_client_transport_wt::{
+    Inbound, Lane as WireLane, Transport, TransportConfig, TransportState,
+};
 
 /// Bumped whenever an exported signature or `#[repr(C)]` layout changes. The Unreal module
 /// compares it with the header's `VL_ABI_VERSION` at startup and refuses to run on a mismatch.
@@ -79,8 +84,15 @@ pub const VL_SHAPE_BOX: u32 = 0;
 pub const VL_SHAPE_SPHERE: u32 = 1;
 const _: () = {
     use vibe_client_core::frame as f;
-    assert!(VL_CAR_HAS_WHEELS == f::VL_CAR_HAS_WHEELS && VL_SHAPE_BOX == f::VL_SHAPE_BOX && VL_SHAPE_SPHERE == f::VL_SHAPE_SPHERE);
-    assert!(VL_SHAPE_BOX == vibe_land_shared::constants::SHAPE_BOX as u32 && VL_SHAPE_SPHERE == vibe_land_shared::constants::SHAPE_SPHERE as u32);
+    assert!(
+        VL_CAR_HAS_WHEELS == f::VL_CAR_HAS_WHEELS
+            && VL_SHAPE_BOX == f::VL_SHAPE_BOX
+            && VL_SHAPE_SPHERE == f::VL_SHAPE_SPHERE
+    );
+    assert!(
+        VL_SHAPE_BOX == vibe_land_shared::constants::SHAPE_BOX as u32
+            && VL_SHAPE_SPHERE == vibe_land_shared::constants::SHAPE_SPHERE as u32
+    );
 };
 /// `VlEvent::kind` (see client-core `frame.rs` for each kind's fields).
 pub const VL_EVENT_SHOT_FIRED: u32 = 1;
@@ -94,7 +106,11 @@ pub const VL_CONTACT_IMPACT: u32 = 0;
 pub const VL_CONTACT_SCRAPE: u32 = 1;
 const _: () = {
     use vibe_client_core::frame as f;
-    assert!(VL_EVENT_FRACTURE == f::VL_EVENT_FRACTURE && VL_CONTACT_IMPACT == f::VL_CONTACT_IMPACT && VL_CONTACT_SCRAPE == f::VL_CONTACT_SCRAPE);
+    assert!(
+        VL_EVENT_FRACTURE == f::VL_EVENT_FRACTURE
+            && VL_CONTACT_IMPACT == f::VL_CONTACT_IMPACT
+            && VL_CONTACT_SCRAPE == f::VL_CONTACT_SCRAPE
+    );
 };
 /// `VlVehicleVertex::section`: the chassis (still), or a part the suspension rig poses
 /// (`VlVehicleMeshView::posed`, `vl_vehicle_mesh_pose`).
@@ -103,7 +119,10 @@ pub const VL_VEHICLE_SECTION_POSED: u32 = 1;
 const _: () = {
     use vibe_client_core::vehicles as v;
     assert!(VL_EVENT_VEHICLE_ASSET == vibe_client_core::frame::VL_EVENT_VEHICLE_ASSET);
-    assert!(VL_VEHICLE_SECTION_CHASSIS == v::VL_VEHICLE_SECTION_CHASSIS && VL_VEHICLE_SECTION_POSED == v::VL_VEHICLE_SECTION_POSED);
+    assert!(
+        VL_VEHICLE_SECTION_CHASSIS == v::VL_VEHICLE_SECTION_CHASSIS
+            && VL_VEHICLE_SECTION_POSED == v::VL_VEHICLE_SECTION_POSED
+    );
 };
 /// `VlMeshRange::flags`: the mesh is the chunk's convex hull (else its box).
 pub const VL_MESH_HULL: u32 = 1;
@@ -118,25 +137,53 @@ pub const VL_CITY_TEX_SCALE: f32 = 2.0;
 const _: () = {
     use vibe_client_core::{geometry as g, materials as m};
     assert!(VL_MESH_HULL == g::VL_MESH_HULL);
-    assert!(VL_MATERIAL_DIRECTIONAL == m::VL_MATERIAL_DIRECTIONAL && VL_MATERIAL_GLASS == m::VL_MATERIAL_GLASS);
+    assert!(
+        VL_MATERIAL_DIRECTIONAL == m::VL_MATERIAL_DIRECTIONAL
+            && VL_MATERIAL_GLASS == m::VL_MATERIAL_GLASS
+    );
     assert!(VL_MATERIAL_WALL == m::VL_MATERIAL_WALL && VL_MATERIAL_FLOOR == m::VL_MATERIAL_FLOOR);
     assert!(VL_CITY_TEX_SCALE == m::CITY_TEX_SCALE);
 };
 const _: () = {
     use vibe_client_core::frame as f;
-    assert!(VL_STATE_ON_GROUND == f::VL_STATE_ON_GROUND && VL_STATE_IN_VEHICLE == f::VL_STATE_IN_VEHICLE);
+    assert!(
+        VL_STATE_ON_GROUND == f::VL_STATE_ON_GROUND
+            && VL_STATE_IN_VEHICLE == f::VL_STATE_IN_VEHICLE
+    );
     assert!(VL_STATE_DEAD == f::VL_STATE_DEAD && VL_STATE_MELEEING == f::VL_STATE_MELEEING);
-    assert!(VL_STATE_SPAWN_PROTECTED == f::VL_STATE_SPAWN_PROTECTED && VL_EYE_HEIGHT_M == f::VL_EYE_HEIGHT_M);
+    assert!(
+        VL_STATE_SPAWN_PROTECTED == f::VL_STATE_SPAWN_PROTECTED
+            && VL_EYE_HEIGHT_M == f::VL_EYE_HEIGHT_M
+    );
     assert!(VL_BTN_JUMP == f::VL_BTN_JUMP && VL_BTN_CROUCH == f::VL_BTN_CROUCH);
     assert!(VL_BTN_SPRINT == f::VL_BTN_SPRINT && VL_BTN_RELOAD == f::VL_BTN_RELOAD);
-    assert!(VL_WEAPON_RIFLE == f::VL_WEAPON_RIFLE && VL_WEAPON_CANNON == f::VL_WEAPON_CANNON && VL_WEAPON_METEOR == f::VL_WEAPON_METEOR);
-    assert!(VL_EVENT_SHOT_FIRED == f::VL_EVENT_SHOT_FIRED && VL_EVENT_SHOT_RESULT == f::VL_EVENT_SHOT_RESULT);
+    assert!(
+        VL_WEAPON_RIFLE == f::VL_WEAPON_RIFLE
+            && VL_WEAPON_CANNON == f::VL_WEAPON_CANNON
+            && VL_WEAPON_METEOR == f::VL_WEAPON_METEOR
+    );
+    assert!(
+        VL_EVENT_SHOT_FIRED == f::VL_EVENT_SHOT_FIRED
+            && VL_EVENT_SHOT_RESULT == f::VL_EVENT_SHOT_RESULT
+    );
     assert!(VL_EVENT_DAMAGE == f::VL_EVENT_DAMAGE && VL_EVENT_LOCAL_SHOT == f::VL_EVENT_LOCAL_SHOT);
     // The buttons and flags are the server's own bits.
     use vibe_land_shared::constants as c;
-    assert!(VL_BTN_JUMP == c::BTN_JUMP as u32 && VL_BTN_SPRINT == c::BTN_SPRINT as u32 && VL_BTN_CROUCH == c::BTN_CROUCH as u32);
-    assert!(VL_BTN_RELOAD == c::BTN_RELOAD as u32 && VL_STATE_DEAD == c::FLAG_DEAD as u32 && VL_STATE_ON_GROUND == c::FLAG_ON_GROUND as u32);
-    assert!(VL_WEAPON_RIFLE == c::WEAPON_HITSCAN as u32 && VL_WEAPON_CANNON == c::WEAPON_CANNONBALL as u32 && VL_WEAPON_METEOR == c::WEAPON_METEOR as u32);
+    assert!(
+        VL_BTN_JUMP == c::BTN_JUMP as u32
+            && VL_BTN_SPRINT == c::BTN_SPRINT as u32
+            && VL_BTN_CROUCH == c::BTN_CROUCH as u32
+    );
+    assert!(
+        VL_BTN_RELOAD == c::BTN_RELOAD as u32
+            && VL_STATE_DEAD == c::FLAG_DEAD as u32
+            && VL_STATE_ON_GROUND == c::FLAG_ON_GROUND as u32
+    );
+    assert!(
+        VL_WEAPON_RIFLE == c::WEAPON_HITSCAN as u32
+            && VL_WEAPON_CANNON == c::WEAPON_CANNONBALL as u32
+            && VL_WEAPON_METEOR == c::WEAPON_METEOR as u32
+    );
     assert!(VL_EYE_HEIGHT_M == c::PLAYER_EYE_HEIGHT_M);
 };
 const _: () = {
@@ -349,8 +396,16 @@ pub unsafe extern "C" fn vl_client_poll(client: *mut VlClient, out: *mut VlFrame
                         }
                         Inbound::SessionConfig(config) => c.core.on_session_config(config),
                         Inbound::Manifest(bytes) => c.core.on_manifest(&bytes),
-                        Inbound::Packet { lane, bytes, arrival_us } => {
-                            let lane = if lane == WireLane::Reliable { Lane::Reliable } else { Lane::Datagram };
+                        Inbound::Packet {
+                            lane,
+                            bytes,
+                            arrival_us,
+                        } => {
+                            let lane = if lane == WireLane::Reliable {
+                                Lane::Reliable
+                            } else {
+                                Lane::Datagram
+                            };
                             c.core.on_packet(lane, &bytes, arrival_us);
                         }
                     }
@@ -420,7 +475,9 @@ pub unsafe extern "C" fn vl_client_poll(client: *mut VlClient, out: *mut VlFrame
 /// `client` must be a live client; `input` must point to a `VlInput`.
 #[no_mangle]
 pub unsafe extern "C" fn vl_client_set_input(client: *mut VlClient, input: *const VlInput) -> i32 {
-    let Some(input) = input.as_ref() else { return VL_ERR_ARG };
+    let Some(input) = input.as_ref() else {
+        return VL_ERR_ARG;
+    };
     guard(client, |c| {
         c.core.set_input(input);
         VL_OK
@@ -434,7 +491,11 @@ pub unsafe extern "C" fn vl_client_set_input(client: *mut VlClient, input: *cons
 /// # Safety
 /// `client` must be a live client; `out_shot_id` must be writable (or null).
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_fire(client: *mut VlClient, weapon: u32, out_shot_id: *mut u32) -> i32 {
+pub unsafe extern "C" fn vl_client_fire(
+    client: *mut VlClient,
+    weapon: u32,
+    out_shot_id: *mut u32,
+) -> i32 {
     guard(client, |c| {
         let now_us = c.transport.as_ref().map_or(0, |t| t.now_us());
         let shot = c.core.fire(weapon, now_us);
@@ -467,7 +528,12 @@ pub unsafe extern "C" fn vl_client_melee(client: *mut VlClient, out_swing_id: *m
 /// # Safety
 /// `client` must be a live client; `pos` must point to three floats.
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_camera_drop(client: *mut VlClient, pos: *const f32, yaw: f32, pitch: f32) -> i32 {
+pub unsafe extern "C" fn vl_client_camera_drop(
+    client: *mut VlClient,
+    pos: *const f32,
+    yaw: f32,
+    pitch: f32,
+) -> i32 {
     if pos.is_null() {
         return VL_ERR_ARG;
     }
@@ -484,14 +550,21 @@ pub unsafe extern "C" fn vl_client_camera_drop(client: *mut VlClient, pos: *cons
 /// # Safety
 /// `client` must be a live client; `metadata` must hold `len` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_set_vehicle_metadata(client: *mut VlClient, handle: u32, metadata: *const u8, len: usize) -> i32 {
+pub unsafe extern "C" fn vl_client_set_vehicle_metadata(
+    client: *mut VlClient,
+    handle: u32,
+    metadata: *const u8,
+    len: usize,
+) -> i32 {
     if metadata.is_null() {
         return VL_ERR_ARG;
     }
     let bytes = std::slice::from_raw_parts(metadata, len);
-    guard(client, |c| match c.core.set_vehicle_metadata(handle, bytes) {
-        Ok(()) => VL_OK,
-        Err(_) => VL_ERR_ARG,
+    guard(client, |c| {
+        match c.core.set_vehicle_metadata(handle, bytes) {
+            Ok(()) => VL_OK,
+            Err(_) => VL_ERR_ARG,
+        }
     })
 }
 
@@ -526,7 +599,13 @@ pub unsafe extern "C" fn vl_client_exit_vehicle(client: *mut VlClient) -> i32 {
 /// # Safety
 /// `client` must be a live client; `buf` must hold `cap` bytes (or be null with `cap` 0).
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_vehicle_asset(client: *mut VlClient, handle: u32, what: u32, buf: *mut c_char, cap: usize) -> usize {
+pub unsafe extern "C" fn vl_client_vehicle_asset(
+    client: *mut VlClient,
+    handle: u32,
+    what: u32,
+    buf: *mut c_char,
+    cap: usize,
+) -> usize {
     let mut len = 0usize;
     guard(client, |c| {
         let text = match c.core.vehicle_asset(handle) {
@@ -575,14 +654,24 @@ pub struct VlVehicleMeshView {
 /// # Safety
 /// `metadata` must hold `len` bytes; `configuration` must be null or a NUL-terminated string.
 #[no_mangle]
-pub unsafe extern "C" fn vl_vehicle_mesh_build(metadata: *const u8, len: usize, configuration: *const c_char, space: u32) -> *mut VlVehicleMesh {
+pub unsafe extern "C" fn vl_vehicle_mesh_build(
+    metadata: *const u8,
+    len: usize,
+    configuration: *const c_char,
+    space: u32,
+) -> *mut VlVehicleMesh {
     if metadata.is_null() {
         return std::ptr::null_mut();
     }
-    let Some(space) = Space::from_u32(space) else { return std::ptr::null_mut() };
+    let Some(space) = Space::from_u32(space) else {
+        return std::ptr::null_mut();
+    };
     let bytes = std::slice::from_raw_parts(metadata, len);
-    let config = cstr(configuration).and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-    match catch_unwind(AssertUnwindSafe(|| vibe_client_core::vehicles::build_vehicle_mesh(bytes, config.as_ref(), space))) {
+    let config =
+        cstr(configuration).and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    match catch_unwind(AssertUnwindSafe(|| {
+        vibe_client_core::vehicles::build_vehicle_mesh(bytes, config.as_ref(), space)
+    })) {
         Ok(Ok(mesh)) => Box::into_raw(Box::new(VlVehicleMesh { mesh })),
         _ => std::ptr::null_mut(),
     }
@@ -593,8 +682,13 @@ pub unsafe extern "C" fn vl_vehicle_mesh_build(metadata: *const u8, len: usize, 
 /// # Safety
 /// `mesh` must come from `vl_vehicle_mesh_build`; `out` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn vl_vehicle_mesh_view(mesh: *const VlVehicleMesh, out: *mut VlVehicleMeshView) -> i32 {
-    let (Some(mesh), false) = (mesh.as_ref(), out.is_null()) else { return VL_ERR_ARG };
+pub unsafe extern "C" fn vl_vehicle_mesh_view(
+    mesh: *const VlVehicleMesh,
+    out: *mut VlVehicleMeshView,
+) -> i32 {
+    let (Some(mesh), false) = (mesh.as_ref(), out.is_null()) else {
+        return VL_ERR_ARG;
+    };
     out.write(VlVehicleMeshView {
         vertices: mesh.mesh.vertices.as_ptr(),
         vertex_count: mesh.mesh.vertices.len(),
@@ -620,8 +714,11 @@ pub unsafe extern "C" fn vl_vehicle_mesh_pose(
     out: *mut vibe_client_core::vehicles::VlPartPose,
     cap: usize,
 ) -> i32 {
-    let (Some(mesh), false, false) = (mesh.as_ref(), wheels.is_null(), out.is_null()) else { return VL_ERR_ARG };
-    let wheels: &[vibe_client_core::frame::VlWheel; 4] = &*(wheels as *const [vibe_client_core::frame::VlWheel; 4]);
+    let (Some(mesh), false, false) = (mesh.as_ref(), wheels.is_null(), out.is_null()) else {
+        return VL_ERR_ARG;
+    };
+    let wheels: &[vibe_client_core::frame::VlWheel; 4] =
+        &*(wheels as *const [vibe_client_core::frame::VlWheel; 4]);
     match catch_unwind(AssertUnwindSafe(|| mesh.mesh.pose(wheels))) {
         Ok(poses) => {
             let n = poses.len().min(cap);
@@ -649,7 +746,11 @@ pub unsafe extern "C" fn vl_vehicle_mesh_destroy(mesh: *mut VlVehicleMesh) {
 /// # Safety
 /// `client` must be a live client; `out_chunks` and `out_count` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_chunks(client: *mut VlClient, out_chunks: *mut *const VlChunk, out_count: *mut usize) -> i32 {
+pub unsafe extern "C" fn vl_client_chunks(
+    client: *mut VlClient,
+    out_chunks: *mut *const VlChunk,
+    out_count: *mut usize,
+) -> i32 {
     if out_chunks.is_null() || out_count.is_null() {
         return VL_ERR_ARG;
     }
@@ -672,12 +773,17 @@ pub unsafe extern "C" fn vl_client_chunks(client: *mut VlClient, out_chunks: *mu
 /// # Safety
 /// `client` must be a live client; `out` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_chunk_meshes(client: *mut VlClient, out: *mut VlMeshView) -> i32 {
+pub unsafe extern "C" fn vl_client_chunk_meshes(
+    client: *mut VlClient,
+    out: *mut VlMeshView,
+) -> i32 {
     if out.is_null() {
         return VL_ERR_ARG;
     }
     guard(client, |c| {
-        let Some(m) = c.core.chunk_meshes() else { return VL_ERR_STATE };
+        let Some(m) = c.core.chunk_meshes() else {
+            return VL_ERR_STATE;
+        };
         out.write(mesh_view(m));
         VL_OK
     })
@@ -714,9 +820,21 @@ pub unsafe extern "C" fn vl_client_chunk_surfaces(
 /// # Safety
 /// `parcel` must point to a parcel; `out` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn vl_dust_eval(parcel: *const VlDustParcel, age_s: f32, wind_x: f32, wind_y: f32, wind_z: f32, space: u32, out: *mut VlDustEval) -> i32 {
-    let (Some(p), false) = (parcel.as_ref(), out.is_null()) else { return VL_ERR_ARG };
-    let Some(space) = Space::from_u32(space) else { return VL_ERR_ARG };
+pub unsafe extern "C" fn vl_dust_eval(
+    parcel: *const VlDustParcel,
+    age_s: f32,
+    wind_x: f32,
+    wind_y: f32,
+    wind_z: f32,
+    space: u32,
+    out: *mut VlDustEval,
+) -> i32 {
+    let (Some(p), false) = (parcel.as_ref(), out.is_null()) else {
+        return VL_ERR_ARG;
+    };
+    let Some(space) = Space::from_u32(space) else {
+        return VL_ERR_ARG;
+    };
     match vibe_client_core::dust::eval_vl(p, age_s, [wind_x, wind_y, wind_z], space) {
         Some(e) => {
             out.write(e);
@@ -759,9 +877,13 @@ pub unsafe extern "C" fn vl_city_build(bytes: *const u8, len: usize, space: u32)
     if bytes.is_null() {
         return std::ptr::null_mut();
     }
-    let Some(space) = Space::from_u32(space) else { return std::ptr::null_mut() };
+    let Some(space) = Space::from_u32(space) else {
+        return std::ptr::null_mut();
+    };
     let bytes = std::slice::from_raw_parts(bytes, len);
-    match catch_unwind(AssertUnwindSafe(|| vibe_client_core::city::CityModel::from_manifest(bytes, space))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        vibe_client_core::city::CityModel::from_manifest(bytes, space)
+    })) {
         Ok(Ok(model)) => Box::into_raw(Box::new(VlCity { model })),
         _ => std::ptr::null_mut(),
     }
@@ -772,8 +894,15 @@ pub unsafe extern "C" fn vl_city_build(bytes: *const u8, len: usize, space: u32)
 /// # Safety
 /// `city` must come from `vl_city_build`; the outputs must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn vl_city_chunks(city: *const VlCity, out_chunks: *mut *const VlChunk, out_count: *mut usize) -> i32 {
-    let (Some(city), false, false) = (city.as_ref(), out_chunks.is_null(), out_count.is_null()) else { return VL_ERR_ARG };
+pub unsafe extern "C" fn vl_city_chunks(
+    city: *const VlCity,
+    out_chunks: *mut *const VlChunk,
+    out_count: *mut usize,
+) -> i32 {
+    let (Some(city), false, false) = (city.as_ref(), out_chunks.is_null(), out_count.is_null())
+    else {
+        return VL_ERR_ARG;
+    };
     out_chunks.write(city.model.chunks.as_ptr());
     out_count.write(city.model.chunks.len());
     VL_OK
@@ -785,7 +914,9 @@ pub unsafe extern "C" fn vl_city_chunks(city: *const VlCity, out_chunks: *mut *c
 /// `city` must come from `vl_city_build`; `out` must be writable.
 #[no_mangle]
 pub unsafe extern "C" fn vl_city_meshes(city: *const VlCity, out: *mut VlMeshView) -> i32 {
-    let (Some(city), false) = (city.as_ref(), out.is_null()) else { return VL_ERR_ARG };
+    let (Some(city), false) = (city.as_ref(), out.is_null()) else {
+        return VL_ERR_ARG;
+    };
     out.write(mesh_view(&city.model.meshes));
     VL_OK
 }
@@ -796,7 +927,11 @@ pub unsafe extern "C" fn vl_city_meshes(city: *const VlCity, out: *mut VlMeshVie
 /// # Safety
 /// `city` must come from `vl_city_build`; `buffer` must hold `capacity` bytes (or be null).
 #[no_mangle]
-pub unsafe extern "C" fn vl_city_hash(city: *const VlCity, buffer: *mut c_char, capacity: usize) -> usize {
+pub unsafe extern "C" fn vl_city_hash(
+    city: *const VlCity,
+    buffer: *mut c_char,
+    capacity: usize,
+) -> usize {
     let Some(city) = city.as_ref() else { return 0 };
     copy_str(&city.model.hash, buffer, capacity)
 }
@@ -819,7 +954,11 @@ pub unsafe extern "C" fn vl_city_destroy(city: *mut VlCity) {
 /// # Safety
 /// `client` must be a live client; `buffer` must hold `capacity` bytes (or be null).
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_manifest_hash(client: *mut VlClient, buffer: *mut c_char, capacity: usize) -> usize {
+pub unsafe extern "C" fn vl_client_manifest_hash(
+    client: *mut VlClient,
+    buffer: *mut c_char,
+    capacity: usize,
+) -> usize {
     let Some(c) = client.as_ref() else { return 0 };
     copy_str(c.core.manifest_hash(), buffer, capacity)
 }
@@ -839,7 +978,10 @@ unsafe fn copy_str(text: &str, buffer: *mut c_char, capacity: usize) -> usize {
 /// # Safety
 /// `out_materials` and `out_count` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn vl_catalog(out_materials: *mut *const VlMaterial, out_count: *mut usize) -> i32 {
+pub unsafe extern "C" fn vl_catalog(
+    out_materials: *mut *const VlMaterial,
+    out_count: *mut usize,
+) -> i32 {
     if out_materials.is_null() || out_count.is_null() {
         return VL_ERR_ARG;
     }
@@ -874,8 +1016,13 @@ pub struct VlNetStats {
 /// `client` must be live; `out` writable.
 #[no_mangle]
 pub unsafe extern "C" fn vl_client_net_stats(client: *const VlClient, out: *mut VlNetStats) -> i32 {
-    let (Some(c), false) = (client.as_ref(), out.is_null()) else { return VL_ERR_ARG };
-    let mut s = VlNetStats { transport_state: c.transport_state, ..Default::default() };
+    let (Some(c), false) = (client.as_ref(), out.is_null()) else {
+        return VL_ERR_ARG;
+    };
+    let mut s = VlNetStats {
+        transport_state: c.transport_state,
+        ..Default::default()
+    };
     if let Some(t) = c.transport.as_ref() {
         use std::sync::atomic::Ordering::Relaxed;
         let st = t.stats();
@@ -896,8 +1043,15 @@ pub unsafe extern "C" fn vl_client_net_stats(client: *const VlClient, out: *mut 
 /// # Safety
 /// `client` must be live; `origin` and `dir` point to three floats; `player` null or writable.
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_aim_target(client: *const VlClient, origin: *const f32, dir: *const f32, player: *mut u32) -> u32 {
-    let (Some(c), false, false) = (client.as_ref(), origin.is_null(), dir.is_null()) else { return 0 };
+pub unsafe extern "C" fn vl_client_aim_target(
+    client: *const VlClient,
+    origin: *const f32,
+    dir: *const f32,
+    player: *mut u32,
+) -> u32 {
+    let (Some(c), false, false) = (client.as_ref(), origin.is_null(), dir.is_null()) else {
+        return 0;
+    };
     let o = [*origin, *origin.add(1), *origin.add(2)];
     let d = [*dir, *dir.add(1), *dir.add(2)];
     let (zone, id) = catch_unwind(AssertUnwindSafe(|| c.core.aim_target(o, d))).unwrap_or((0, 0));
@@ -913,7 +1067,12 @@ pub unsafe extern "C" fn vl_client_aim_target(client: *const VlClient, origin: *
 /// # Safety
 /// `client` must be a live client.
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_set_listener(client: *mut VlClient, x: f32, y: f32, z: f32) -> i32 {
+pub unsafe extern "C" fn vl_client_set_listener(
+    client: *mut VlClient,
+    x: f32,
+    y: f32,
+    z: f32,
+) -> i32 {
     guard(client, |c| {
         c.core.set_listener([x, y, z]);
         VL_OK
@@ -928,7 +1087,8 @@ pub unsafe extern "C" fn vl_client_set_listener(client: *mut VlClient, x: f32, y
 #[no_mangle]
 pub unsafe extern "C" fn vl_client_set_mix(client: *mut VlClient, preset: u32, range: u32) -> i32 {
     guard(client, |c| {
-        c.core.set_mix(vibe_client_core::audio::Mix::preset(preset, range));
+        c.core
+            .set_mix(vibe_client_core::audio::Mix::preset(preset, range));
         VL_OK
     })
 }
@@ -942,8 +1102,16 @@ pub const VL_RANGE_NIGHT: u32 = 1;
 pub const VL_RANGE_CINEMATIC: u32 = 2;
 const _: () = {
     use vibe_client_core::audio as a;
-    assert!(VL_MIX_CINEMATIC == a::VL_MIX_CINEMATIC && VL_MIX_NATURAL == a::VL_MIX_NATURAL && VL_MIX_CLARITY == a::VL_MIX_CLARITY);
-    assert!(VL_RANGE_BALANCED == a::VL_RANGE_BALANCED && VL_RANGE_NIGHT == a::VL_RANGE_NIGHT && VL_RANGE_CINEMATIC == a::VL_RANGE_CINEMATIC);
+    assert!(
+        VL_MIX_CINEMATIC == a::VL_MIX_CINEMATIC
+            && VL_MIX_NATURAL == a::VL_MIX_NATURAL
+            && VL_MIX_CLARITY == a::VL_MIX_CLARITY
+    );
+    assert!(
+        VL_RANGE_BALANCED == a::VL_RANGE_BALANCED
+            && VL_RANGE_NIGHT == a::VL_RANGE_NIGHT
+            && VL_RANGE_CINEMATIC == a::VL_RANGE_CINEMATIC
+    );
 };
 
 /// An audio clip's id (the web's catalog name, e.g. "concrete-impact-2"), NUL-terminated; null
@@ -952,16 +1120,23 @@ const _: () = {
 pub extern "C" fn vl_audio_clip_id(index: u32) -> *const c_char {
     static IDS: std::sync::OnceLock<Vec<std::ffi::CString>> = std::sync::OnceLock::new();
     let ids = IDS.get_or_init(|| {
-        vibe_client_core::audio::Clips::get().ids.iter().map(|id| std::ffi::CString::new(id.as_str()).unwrap_or_default()).collect()
+        vibe_client_core::audio::Clips::get()
+            .ids
+            .iter()
+            .map(|id| std::ffi::CString::new(id.as_str()).unwrap_or_default())
+            .collect()
     });
-    ids.get(index as usize).map_or(std::ptr::null(), |id| id.as_ptr())
+    ids.get(index as usize)
+        .map_or(std::ptr::null(), |id| id.as_ptr())
 }
 
 /// A weather preset (client-core weather.rs, the web's weatherPresets.ts table): `VL_WEATHER_*`,
 /// null past the end. Static.
 #[no_mangle]
 pub extern "C" fn vl_weather(index: u32) -> *const vibe_client_core::weather::VlWeather {
-    vibe_client_core::weather::presets().get(index as usize).map_or(std::ptr::null(), |w| w as *const _)
+    vibe_client_core::weather::presets()
+        .get(index as usize)
+        .map_or(std::ptr::null(), |w| w as *const _)
 }
 
 /// A preset's index from the web's name (`clear`, `dust_storm`, `snow_storm`), or -1.
@@ -974,7 +1149,10 @@ pub unsafe extern "C" fn vl_weather_index(name: *const c_char) -> i32 {
         return -1;
     }
     let name = unsafe { std::ffi::CStr::from_ptr(name) };
-    name.to_str().ok().and_then(vibe_client_core::weather::by_name).map_or(-1, |i| i as i32)
+    name.to_str()
+        .ok()
+        .and_then(vibe_client_core::weather::by_name)
+        .map_or(-1, |i| i as i32)
 }
 
 /// The web's fog density (FogExp2, per metre): opacity 0.55 at the server's area of interest.
@@ -1032,21 +1210,32 @@ pub struct VlGrassPaint(vibe_client_core::grass::GrassPaint);
 /// # Safety
 /// `bytes` readable for `len`; `revision` null or writable for `revision_capacity` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn vl_grass_paint_parse(bytes: *const u8, len: usize, revision: *mut c_char, revision_capacity: usize) -> *mut VlGrassPaint {
+pub unsafe extern "C" fn vl_grass_paint_parse(
+    bytes: *const u8,
+    len: usize,
+    revision: *mut c_char,
+    revision_capacity: usize,
+) -> *mut VlGrassPaint {
     if bytes.is_null() {
         return std::ptr::null_mut();
     }
     let body = std::slice::from_raw_parts(bytes, len);
-    catch_unwind(|| match vibe_client_core::grass::GrassPaint::from_snapshot_json(body) {
-        Ok((rev, paint)) => {
-            if !revision.is_null() && revision_capacity > rev.len() {
-                std::ptr::copy_nonoverlapping(rev.as_ptr().cast::<c_char>(), revision, rev.len());
-                *revision.add(rev.len()) = 0;
+    catch_unwind(
+        || match vibe_client_core::grass::GrassPaint::from_snapshot_json(body) {
+            Ok((rev, paint)) => {
+                if !revision.is_null() && revision_capacity > rev.len() {
+                    std::ptr::copy_nonoverlapping(
+                        rev.as_ptr().cast::<c_char>(),
+                        revision,
+                        rev.len(),
+                    );
+                    *revision.add(rev.len()) = 0;
+                }
+                Box::into_raw(Box::new(VlGrassPaint(paint)))
             }
-            Box::into_raw(Box::new(VlGrassPaint(paint)))
-        }
-        Err(_) => std::ptr::null_mut(),
-    })
+            Err(_) => std::ptr::null_mut(),
+        },
+    )
     .unwrap_or(std::ptr::null_mut())
 }
 
@@ -1066,12 +1255,20 @@ pub unsafe extern "C" fn vl_grass_paint_tiles(paint: *const VlGrassPaint) -> usi
 /// # Safety
 /// `paint` null or live; `out` writable for four floats.
 #[no_mangle]
-pub unsafe extern "C" fn vl_grass_ground_cover(paint: *const VlGrassPaint, x: f32, z: f32, out: *mut f32) {
+pub unsafe extern "C" fn vl_grass_ground_cover(
+    paint: *const VlGrassPaint,
+    x: f32,
+    z: f32,
+    out: *mut f32,
+) {
     if out.is_null() {
         return;
     }
     let unpainted = vibe_client_core::grass::GrassPaint::default();
-    let (canopy, dirt) = paint.as_ref().map_or(&unpainted, |p| &p.0).ground_cover(x, z);
+    let (canopy, dirt) = paint
+        .as_ref()
+        .map_or(&unpainted, |p| &p.0)
+        .ground_cover(x, z);
     std::ptr::copy_nonoverlapping([canopy[0], canopy[1], canopy[2], dirt].as_ptr(), out, 4);
 }
 
@@ -1099,12 +1296,20 @@ pub unsafe extern "C" fn vl_ground_macro_noise(out: *mut u8, capacity: usize) ->
 /// # Safety
 /// `paint` null or live; `out` writable for three floats.
 #[no_mangle]
-pub unsafe extern "C" fn vl_grass_ground_tint(paint: *const VlGrassPaint, x: f32, z: f32, out: *mut f32) {
+pub unsafe extern "C" fn vl_grass_ground_tint(
+    paint: *const VlGrassPaint,
+    x: f32,
+    z: f32,
+    out: *mut f32,
+) {
     if out.is_null() {
         return;
     }
     let unpainted = vibe_client_core::grass::GrassPaint::default();
-    let tint = paint.as_ref().map_or(&unpainted, |p| &p.0).ground_tint(x, z);
+    let tint = paint
+        .as_ref()
+        .map_or(&unpainted, |p| &p.0)
+        .ground_tint(x, z);
     std::ptr::copy_nonoverlapping(tint.as_ptr(), out, 3);
 }
 
@@ -1115,8 +1320,14 @@ pub unsafe extern "C" fn vl_grass_ground_tint(paint: *const VlGrassPaint, x: f32
 /// # Safety
 /// `paint` null or live; `out` writable for `2 * capacity` ints.
 #[no_mangle]
-pub unsafe extern "C" fn vl_grass_canopy_chunks(paint: *const VlGrassPaint, out: *mut i32, capacity: usize) -> usize {
-    let Some(paint) = paint.as_ref() else { return 0 };
+pub unsafe extern "C" fn vl_grass_canopy_chunks(
+    paint: *const VlGrassPaint,
+    out: *mut i32,
+    capacity: usize,
+) -> usize {
+    let Some(paint) = paint.as_ref() else {
+        return 0;
+    };
     let mut chunks = std::collections::BTreeSet::new();
     for (x, z) in paint.0.tiles() {
         let (min_x, min_z, max_x, max_z) = (x * 8 - 1, z * 8 - 1, x * 8 + 9, z * 8 + 9);
@@ -1151,8 +1362,14 @@ pub unsafe extern "C" fn vl_grass_canopy(
     out: *mut vibe_client_core::grass::VlCanopyClump,
     capacity: usize,
 ) -> usize {
-    let Some(paint) = paint.as_ref() else { return 0 };
-    let ex = if exclusions.is_null() { &[][..] } else { std::slice::from_raw_parts(exclusions, exclusion_count) };
+    let Some(paint) = paint.as_ref() else {
+        return 0;
+    };
+    let ex = if exclusions.is_null() {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(exclusions, exclusion_count)
+    };
     catch_unwind(|| {
         let mut clumps = Vec::new();
         vibe_client_core::grass::canopy_clumps(&paint.0, cx, cz, ex, &mut clumps);
@@ -1192,10 +1409,21 @@ pub unsafe extern "C" fn vl_grass_patch(
     out: *mut VlGrassBlade,
     capacity: usize,
 ) -> usize {
-    let ex = if exclusions.is_null() { &[][..] } else { std::slice::from_raw_parts(exclusions, exclusion_count) };
+    let ex = if exclusions.is_null() {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(exclusions, exclusion_count)
+    };
     catch_unwind(|| {
         let mut blades = Vec::new();
-        vibe_client_core::grass::generate_patch(px, pz, density, ex, paint.as_ref().map(|p| &p.0), &mut blades);
+        vibe_client_core::grass::generate_patch(
+            px,
+            pz,
+            density,
+            ex,
+            paint.as_ref().map(|p| &p.0),
+            &mut blades,
+        );
         if !out.is_null() {
             std::ptr::copy_nonoverlapping(blades.as_ptr(), out, blades.len().min(capacity));
         }
@@ -1216,9 +1444,14 @@ const _: () = assert!(VL_LOOP_BED == vibe_client_core::audio::VL_LOOP_BED);
 pub extern "C" fn vl_catalog_id(index: u32) -> *const c_char {
     static IDS: std::sync::OnceLock<Vec<std::ffi::CString>> = std::sync::OnceLock::new();
     let ids = IDS.get_or_init(|| {
-        Catalog::get().ids.iter().map(|id| std::ffi::CString::new(id.as_str()).unwrap_or_default()).collect()
+        Catalog::get()
+            .ids
+            .iter()
+            .map(|id| std::ffi::CString::new(id.as_str()).unwrap_or_default())
+            .collect()
     });
-    ids.get(index as usize).map_or(std::ptr::null(), |id| id.as_ptr())
+    ids.get(index as usize)
+        .map_or(std::ptr::null(), |id| id.as_ptr())
 }
 
 /// Copy the last error (UTF-8, NUL-terminated, truncated to `capacity`) into `buffer`. Returns the
@@ -1227,7 +1460,11 @@ pub extern "C" fn vl_catalog_id(index: u32) -> *const c_char {
 /// # Safety
 /// `client` must be a live client; `buffer` must be null or writable for `capacity` bytes.
 #[no_mangle]
-pub unsafe extern "C" fn vl_client_last_error(client: *mut VlClient, buffer: *mut c_char, capacity: usize) -> usize {
+pub unsafe extern "C" fn vl_client_last_error(
+    client: *mut VlClient,
+    buffer: *mut c_char,
+    capacity: usize,
+) -> usize {
     let Some(c) = client.as_ref() else { return 0 };
     let message = c.last_error.as_bytes();
     if !buffer.is_null() && capacity > 0 {
@@ -1272,7 +1509,9 @@ pub extern "C" fn vl_coords_quat_to_unreal(x: f32, y: f32, z: f32, w: f32, out: 
 
 /// Run `f` on a live, unpoisoned client, catching panics.
 unsafe fn guard(client: *mut VlClient, f: impl FnOnce(&mut VlClient) -> i32) -> i32 {
-    let Some(c) = client.as_mut() else { return VL_ERR_ARG };
+    let Some(c) = client.as_mut() else {
+        return VL_ERR_ARG;
+    };
     if c.poisoned {
         return VL_ERR_POISONED;
     }
@@ -1284,7 +1523,10 @@ unsafe fn guard(client: *mut VlClient, f: impl FnOnce(&mut VlClient) -> i32) -> 
                 .downcast_ref::<&str>()
                 .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
-                .map_or_else(|| "panic in the client core".to_string(), |m| format!("panic in the client core: {m}"));
+                .map_or_else(
+                    || "panic in the client core".to_string(),
+                    |m| format!("panic in the client core: {m}"),
+                );
             VL_ERR_PANIC
         }
     }
@@ -1314,10 +1556,18 @@ mod tests {
         unsafe {
             assert!(vl_client_create(std::ptr::null()).is_null());
             let api = CString::new("http://127.0.0.1:1").unwrap();
-            let bad = VlConfig { api_base_url: api.as_ptr(), match_id: std::ptr::null(), space: 1 };
+            let bad = VlConfig {
+                api_base_url: api.as_ptr(),
+                match_id: std::ptr::null(),
+                space: 1,
+            };
             assert!(vl_client_create(&bad).is_null());
             let m = CString::new("citypp-x").unwrap();
-            let bad_space = VlConfig { api_base_url: api.as_ptr(), match_id: m.as_ptr(), space: 9 };
+            let bad_space = VlConfig {
+                api_base_url: api.as_ptr(),
+                match_id: m.as_ptr(),
+                space: 9,
+            };
             assert!(vl_client_create(&bad_space).is_null());
             assert_eq!(vl_client_connect(std::ptr::null_mut()), VL_ERR_ARG);
             vl_client_destroy(std::ptr::null_mut());
@@ -1329,7 +1579,11 @@ mod tests {
         unsafe {
             let api = CString::new("http://127.0.0.1:9").unwrap(); // discard port: refused
             let m = CString::new("citypp-x").unwrap();
-            let client = vl_client_create(&VlConfig { api_base_url: api.as_ptr(), match_id: m.as_ptr(), space: 1 });
+            let client = vl_client_create(&VlConfig {
+                api_base_url: api.as_ptr(),
+                match_id: m.as_ptr(),
+                space: 1,
+            });
             assert!(!client.is_null());
             let mut frame = std::mem::MaybeUninit::<VlFrameView>::uninit();
             assert_eq!(vl_client_poll(client, frame.as_mut_ptr()), VL_OK);
@@ -1339,7 +1593,9 @@ mod tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 assert_eq!(vl_client_poll(client, frame.as_mut_ptr()), VL_OK);
-                if frame.assume_init_ref().transport_state == VL_TRANSPORT_FAILED || std::time::Instant::now() > deadline {
+                if frame.assume_init_ref().transport_state == VL_TRANSPORT_FAILED
+                    || std::time::Instant::now() > deadline
+                {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -1379,7 +1635,12 @@ mod catalog_tests {
         assert!(count >= 16);
         let records = unsafe { std::slice::from_raw_parts(materials, count) };
         let ids: Vec<String> = (0..count as u32)
-            .map(|i| unsafe { CStr::from_ptr(vl_catalog_id(i)) }.to_str().unwrap().to_owned())
+            .map(|i| {
+                unsafe { CStr::from_ptr(vl_catalog_id(i)) }
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
+            })
             .collect();
         assert!(vl_catalog_id(count as u32).is_null());
         assert_eq!(ids[0], "concrete-wall");

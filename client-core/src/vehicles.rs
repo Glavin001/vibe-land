@@ -91,9 +91,15 @@ impl VehicleMesh {
     /// The posed parts' frames for the car's wheels as drawn (`VlCar::wheels`, renderer units; spin
     /// as the stream reports it). Same order as [`posed`](Self::posed).
     pub fn pose(&self, wheels: &[crate::frame::VlWheel; 4]) -> Vec<VlPartPose> {
-        let (Some(rig), Some(space)) = (self.rig.as_ref(), self.space) else { return Vec::new() };
+        let (Some(rig), Some(space)) = (self.rig.as_ref(), self.space) else {
+            return Vec::new();
+        };
         let m = space.metres();
-        let inputs = wheels.map(|w| rig::WheelInput { travel: w.travel / m, steer: w.steer, spin: w.spin });
+        let inputs = wheels.map(|w| rig::WheelInput {
+            travel: w.travel / m,
+            steer: w.steer,
+            spin: w.spin,
+        });
         let state = rig.solve(&inputs);
         self.posed
             .iter()
@@ -112,7 +118,11 @@ fn frame_out(part: u32, f: rig::Frame, origin_height: f32, space: Space) -> VlPa
         part,
         pos: space.pos(Vec3::new(-f.t.x, f.t.y - origin_height, -f.t.z)),
         quat: space.quat(glam::Quat::from_rotation_y(std::f32::consts::PI) * f.r),
-        scale: { let s = space.extents(f.s); let m = space.metres(); [s[0] / m, s[1] / m, s[2] / m] },
+        scale: {
+            let s = space.extents(f.s);
+            let m = space.metres();
+            [s[0] / m, s[1] / m, s[2] / m]
+        },
     }
 }
 
@@ -125,7 +135,11 @@ mod rig {
 
     fn v3(v: Option<&Value>) -> Option<Vec3> {
         let a = v?.as_array()?;
-        Some(Vec3::new(a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32))
+        Some(Vec3::new(
+            a.first()?.as_f64()? as f32,
+            a.get(1)?.as_f64()? as f32,
+            a.get(2)?.as_f64()? as f32,
+        ))
     }
     fn num(v: Option<&Value>) -> Option<f32> {
         v.and_then(Value::as_f64).map(|x| x as f32)
@@ -208,8 +222,12 @@ mod rig {
         let a = (kl * kl - ul * ul + d * d) / (2.0 * d);
         let v = (kl * kl - a * a).max(0.0).sqrt();
         let (ux, uy) = (x + a * dx / d + v * dy / d, y + a * dy / d - v * dx / d);
-        let camber = (uy - y).atan2(ux - x) - (h.upper.y - h.lower.y).atan2(h.upper.x.abs() - h.lower.x.abs());
-        let (hx, hy) = (x + 0.15 * camber.cos() - 0.1 * camber.sin(), y + 0.15 * camber.sin() + 0.1 * camber.cos());
+        let camber = (uy - y).atan2(ux - x)
+            - (h.upper.y - h.lower.y).atan2(h.upper.x.abs() - h.lower.x.abs());
+        let (hx, hy) = (
+            x + 0.15 * camber.cos() - 0.1 * camber.sin(),
+            y + 0.15 * camber.sin() + 0.1 * camber.cos(),
+        );
         Some(Linkage {
             lower: Vec3::new(h.side * x, y, h.z),
             upper: Vec3::new(h.side * ux, uy, h.z),
@@ -244,7 +262,14 @@ mod rig {
         }
         // Exact identity at neutral.
         let neutral = travel.abs() < 1e-10 && steering.abs() < 1e-10;
-        linkage(h, if neutral { h.neutral_angle } else { (a + b) / 2.0 })
+        linkage(
+            h,
+            if neutral {
+                h.neutral_angle
+            } else {
+                (a + b) / 2.0
+            },
+        )
     }
 
     pub struct WheelInput {
@@ -283,7 +308,11 @@ mod rig {
 
     impl Default for Frame {
         fn default() -> Self {
-            Self { t: Vec3::ZERO, r: Quat::IDENTITY, s: Vec3::ONE }
+            Self {
+                t: Vec3::ZERO,
+                r: Quat::IDENTITY,
+                s: Vec3::ONE,
+            }
         }
     }
 
@@ -300,7 +329,11 @@ mod rig {
     fn beam(a: Vec3, b: Vec3) -> Frame {
         let d = b - a;
         let len = d.length().max(1e-6);
-        Frame { t: (a + b) * 0.5, r: Quat::from_rotation_arc(Vec3::Z, d / len), s: Vec3::new(1.0, 1.0, len) }
+        Frame {
+            t: (a + b) * 0.5,
+            r: Quat::from_rotation_arc(Vec3::Z, d / len),
+            s: Vec3::new(1.0, 1.0, len),
+        }
     }
 
     #[derive(Clone, Debug, PartialEq)]
@@ -335,7 +368,10 @@ mod rig {
         pub fn parse(meta: &Value, origin_height: f32) -> Option<Self> {
             let rig = meta.get("rig")?;
             let corners_json = rig.get("corners")?;
-            let corners: Vec<Option<Corner>> = WHEEL_CORNERS.iter().map(|id| corners_json.get(*id).and_then(Corner::parse)).collect();
+            let corners: Vec<Option<Corner>> = WHEEL_CORNERS
+                .iter()
+                .map(|id| corners_json.get(*id).and_then(Corner::parse))
+                .collect();
             let steering = rig.get("steering");
             let roles = meta
                 .get("parts")?
@@ -344,7 +380,10 @@ mod rig {
                 .map(|part| {
                     let m = part.get("motion")?;
                     let role = m.get("role")?.as_str()?;
-                    let corner = m.get("corner").and_then(Value::as_str).and_then(|c| WHEEL_CORNERS.iter().position(|w| *w == c));
+                    let corner = m
+                        .get("corner")
+                        .and_then(Value::as_str)
+                        .and_then(|c| WHEEL_CORNERS.iter().position(|w| *w == c));
                     let endpoint = || v3(m.get("endpoints").and_then(|e| e.get(0)));
                     Some(match (role, corner) {
                         ("hub" | "wheel", Some(c)) => Role::Wheel(c),
@@ -386,14 +425,19 @@ mod rig {
                     continue;
                 };
                 let w = &wheels[i];
-                let travel = if w.travel.is_finite() { w.travel.clamp(-1.0, 1.0) } else { 0.0 };
+                let travel = if w.travel.is_finite() {
+                    w.travel.clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
                 let rotation = -w.spin;
                 let Some(k) = solve_corner(h, travel, w.steer) else {
                     corners.push(None);
                     continue;
                 };
                 let camber_q = Quat::from_axis_angle(Vec3::Z, k.camber);
-                let camber = Mat4::from_rotation_translation(camber_q, k.lower) * Mat4::from_translation(-h.lower);
+                let camber = Mat4::from_rotation_translation(camber_q, k.lower)
+                    * Mat4::from_translation(-h.lower);
                 let axis = (k.upper - k.lower).normalize();
                 let steer_q = Quat::from_axis_angle(axis, if h.front { w.steer } else { 0.0 });
                 let steer = pivot(k.lower, steer_q) * camber;
@@ -401,7 +445,8 @@ mod rig {
                 let wheel_axis = steer_q * (camber_q * Vec3::X);
                 let wheel = pivot(hub, Quat::from_axis_angle(wheel_axis, rotation)) * steer;
                 let arm = (k.angle - h.neutral_angle) * h.side;
-                let bottom = Quat::from_axis_angle(Vec3::Z, arm) * (h.shock_bottom - h.lower_pivot) + h.lower_pivot;
+                let bottom = Quat::from_axis_angle(Vec3::Z, arm) * (h.shock_bottom - h.lower_pivot)
+                    + h.lower_pivot;
                 let top = h.shock_top;
                 let length = top.distance(bottom);
                 let shock_dir = (bottom - top) / length.max(1e-6);
@@ -409,7 +454,12 @@ mod rig {
                 let mut tie_inner = h.tie_inner;
                 let rod = h.tie_outer.distance(h.tie_inner);
                 tie_inner.x = tie_outer.x
-                    - h.side * (rod * rod - (tie_outer.y - tie_inner.y).powi(2) - (tie_outer.z - tie_inner.z).powi(2)).max(0.0001).sqrt();
+                    - h.side
+                        * (rod * rod
+                            - (tie_outer.y - tie_inner.y).powi(2)
+                            - (tie_outer.z - tie_inner.z).powi(2))
+                        .max(0.0001)
+                        .sqrt();
                 corners.push(Some(CornerState {
                     lower: k.lower,
                     upper: k.upper,
@@ -428,7 +478,10 @@ mod rig {
             // fl, fr are wheels 1 and 0.
             let centre = (wheels[1].steer + wheels[0].steer) * 0.5 * self.ratio;
             let column = (self.column_end - self.column_start).normalize_or_zero();
-            State { corners, steering_delta: pivot(self.column_end, Quat::from_axis_angle(column, centre)) }
+            State {
+                corners,
+                steering_delta: pivot(self.column_end, Quat::from_axis_angle(column, centre)),
+            }
         }
 
         /// `VisualRig.matrixFor`, as a frame for the part's own geometry (see `VlPosedPart`).
@@ -438,8 +491,18 @@ mod rig {
                 return Some(rigid(state.steering_delta));
             }
             let c = match role {
-                Role::Wheel(c) | Role::Knuckle(c) | Role::LowerArm(c, _) | Role::UpperArm(c, _) | Role::Upright(c) | Role::Damper(c)
-                | Role::Piston(c) | Role::Spring(c) | Role::Seat(c, _) | Role::ShockEye(c) | Role::TieRod(c) | Role::Axle(c)
+                Role::Wheel(c)
+                | Role::Knuckle(c)
+                | Role::LowerArm(c, _)
+                | Role::UpperArm(c, _)
+                | Role::Upright(c)
+                | Role::Damper(c)
+                | Role::Piston(c)
+                | Role::Spring(c)
+                | Role::Seat(c, _)
+                | Role::ShockEye(c)
+                | Role::TieRod(c)
+                | Role::Axle(c)
                 | Role::CvBoot(c) => *c,
                 Role::Steering => unreachable!(),
             };
@@ -457,7 +520,10 @@ mod rig {
                 Role::Spring(_) => beam(s.top, s.top + s.shock_dir * s.coil_length),
                 Role::Seat(_, top) => {
                     let t = if *top { 0.02 } else { s.coil_length };
-                    beam(s.top + s.shock_dir * (t - 0.012), s.top + s.shock_dir * (t + 0.012))
+                    beam(
+                        s.top + s.shock_dir * (t - 0.012),
+                        s.top + s.shock_dir * (t + 0.012),
+                    )
                 }
                 Role::ShockEye(_) => beam(s.bottom - s.shock_dir * 0.06, s.lower),
                 Role::TieRod(_) => beam(s.tie_inner, s.tie_outer),
@@ -469,7 +535,11 @@ mod rig {
                 // The boot follows its half-shaft and spins with it.
                 Role::CvBoot(_) => {
                     let f = beam(h.axle_inner, s.hub);
-                    Frame { t: f.t, r: f.r * Quat::from_rotation_z(s.rotation * h.side), s: Vec3::ONE }
+                    Frame {
+                        t: f.t,
+                        r: f.r * Quat::from_rotation_z(s.rotation * h.side),
+                        s: Vec3::ONE,
+                    }
                 }
                 Role::Steering => unreachable!(),
             })
@@ -478,16 +548,26 @@ mod rig {
 
     impl State {
         pub fn empty() -> Self {
-            Self { corners: Vec::new(), steering_delta: Mat4::IDENTITY }
+            Self {
+                corners: Vec::new(),
+                steering_delta: Mat4::IDENTITY,
+            }
         }
     }
 
     pub(super) fn neutral() -> [WheelInput; 4] {
-        [0, 1, 2, 3].map(|_| WheelInput { travel: 0.0, steer: 0.0, spin: 0.0 })
+        [0, 1, 2, 3].map(|_| WheelInput {
+            travel: 0.0,
+            steer: 0.0,
+            spin: 0.0,
+        })
     }
     #[cfg(test)]
     pub(super) fn corner_target(rig: &Rig, c: usize, travel: f32) -> Option<f32> {
-        rig.corners.get(c)?.as_ref().map(|h| h.radius + travel.clamp(h.min_travel, h.max_travel))
+        rig.corners
+            .get(c)?
+            .as_ref()
+            .map(|h| h.radius + travel.clamp(h.min_travel, h.max_travel))
     }
     #[cfg(test)]
     pub(super) fn corner_hub_y(rig: &Rig, state: &State, c: usize) -> Option<f32> {
@@ -534,7 +614,9 @@ fn palette(material: &str) -> u32 {
 
 fn hex_color(value: Option<&Value>) -> Option<u32> {
     let s = value?.as_str()?.trim_start_matches('#');
-    (s.len() == 6).then(|| u32::from_str_radix(s, 16).ok()).flatten()
+    (s.len() == 6)
+        .then(|| u32::from_str_radix(s, 16).ok())
+        .flatten()
 }
 
 /// A part's colour: the palette, then the configured paint (`VehicleVisual.ts`: finish on frame,
@@ -544,7 +626,9 @@ fn part_color(material: &str, system: &str, configuration: Option<&Value>) -> u3
     let appearance = configuration.and_then(|c| c.get("appearance"));
     let paint = |key: &str| hex_color(appearance.and_then(|a| a.get(key)));
     let rgb = match material {
-        "frame" if system == "Body" => paint("body").or_else(|| hex_color(configuration.and_then(|c| c.get("finish")))),
+        "frame" if system == "Body" => {
+            paint("body").or_else(|| hex_color(configuration.and_then(|c| c.get("finish"))))
+        }
         "frame" => hex_color(configuration.and_then(|c| c.get("finish"))),
         "orange" | "belt" | "race" => paint("accent"),
         "alloy" if system == "Wheels" => paint("wheels"),
@@ -557,22 +641,42 @@ fn part_color(material: &str, system: &str, configuration: Option<&Value>) -> u3
 
 fn vec3(v: Option<&Value>) -> Option<Vec3> {
     let a = v?.as_array()?;
-    Some(Vec3::new(a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32, a.get(2)?.as_f64()? as f32))
+    Some(Vec3::new(
+        a.first()?.as_f64()? as f32,
+        a.get(1)?.as_f64()? as f32,
+        a.get(2)?.as_f64()? as f32,
+    ))
 }
 
 /// Build a car's mesh from its `metadata.json`, with its `configuration` (the vehicle asset's, for
 /// paint; optional).
-pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space: Space) -> Result<VehicleMesh, VehicleMeshError> {
-    let meta: Value = serde_json::from_slice(metadata).map_err(|e| VehicleMeshError::Json(e.to_string()))?;
-    let origin_height = meta.get("originHeight").and_then(Value::as_f64).ok_or(VehicleMeshError::Missing("originHeight"))? as f32;
-    let parts = meta.get("parts").and_then(Value::as_array).ok_or(VehicleMeshError::Missing("parts"))?;
+pub fn build_vehicle_mesh(
+    metadata: &[u8],
+    configuration: Option<&Value>,
+    space: Space,
+) -> Result<VehicleMesh, VehicleMeshError> {
+    let meta: Value =
+        serde_json::from_slice(metadata).map_err(|e| VehicleMeshError::Json(e.to_string()))?;
+    let origin_height = meta
+        .get("originHeight")
+        .and_then(Value::as_f64)
+        .ok_or(VehicleMeshError::Missing("originHeight"))? as f32;
+    let parts = meta
+        .get("parts")
+        .and_then(Value::as_array)
+        .ok_or(VehicleMeshError::Missing("parts"))?;
     let corners = meta.get("rig").and_then(|r| r.get("corners"));
     // The rig's points are in the source frame: into the actor frame the parts are in.
     let source_to_actor = |p: Vec3| Vec3::new(-p.x, p.y - origin_height, -p.z);
 
     let mut hubs = [[0.0f32; 3]; 4];
     for (i, corner) in WHEEL_CORNERS.iter().enumerate() {
-        let hub = vec3(corners.and_then(|c| c.get(*corner)).and_then(|c| c.get("hub"))).ok_or(VehicleMeshError::Missing("rig hubs"))?;
+        let hub = vec3(
+            corners
+                .and_then(|c| c.get(*corner))
+                .and_then(|c| c.get("hub")),
+        )
+        .ok_or(VehicleMeshError::Missing("rig hubs"))?;
         hubs[i] = space.pos(source_to_actor(hub));
     }
     let radius = meta
@@ -582,29 +686,54 @@ pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space:
         .unwrap_or(f64::from(origin_height) - 0.25) as f32;
 
     let rig = rig::Rig::parse(&meta, origin_height);
-    let rest = rig.as_ref().map(|r| r.solve(&rig::neutral())).unwrap_or_else(rig::State::empty);
+    let rest = rig
+        .as_ref()
+        .map(|r| r.solve(&rig::neutral()))
+        .unwrap_or_else(rig::State::empty);
     let mut posed = Vec::new();
     let flip = flips_handedness(space);
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
     for (part_index, part) in parts.iter().enumerate() {
-        let Some(position) = vec3(part.get("position")) else { continue };
+        let Some(position) = vec3(part.get("position")) else {
+            continue;
+        };
         let material = part.get("material").and_then(Value::as_str).unwrap_or("");
         let system = part.get("system").and_then(Value::as_str).unwrap_or("");
         let color = part_color(material, system, configuration);
         let motion = part.get("motion");
         let role = motion.and_then(|m| m.get("role")).and_then(Value::as_str);
         let corner = motion.and_then(|m| m.get("corner")).and_then(Value::as_str);
-        let wheel = corner.and_then(|c| WHEEL_CORNERS.iter().position(|w| *w == c)).map(|i| i as u32);
+        let wheel = corner
+            .and_then(|c| WHEEL_CORNERS.iter().position(|w| *w == c))
+            .map(|i| i as u32);
         let _ = (role, wheel);
-        let posed_part = rig.as_ref().and_then(|r| r.frame(&rest, part_index).map(|f| (r, f)));
-        let section = if posed_part.is_some() { VL_VEHICLE_SECTION_POSED } else { VL_VEHICLE_SECTION_CHASSIS };
+        let posed_part = rig
+            .as_ref()
+            .and_then(|r| r.frame(&rest, part_index).map(|f| (r, f)));
+        let section = if posed_part.is_some() {
+            VL_VEHICLE_SECTION_POSED
+        } else {
+            VL_VEHICLE_SECTION_CHASSIS
+        };
         let mut has_geometry = false;
-        for shape in part.get("shapes").and_then(Value::as_array).into_iter().flatten() {
-            let Some(offset) = vec3(shape.get("position")) else { continue };
+        for shape in part
+            .get("shapes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(offset) = vec3(shape.get("position")) else {
+                continue;
+            };
             let base = position + offset;
             let mut points = Vec::new();
-            for v in shape.get("vertices").and_then(Value::as_array).into_iter().flatten() {
+            for v in shape
+                .get("vertices")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 if let Some(v) = vec3(Some(v)) {
                     let p = base + v;
                     points.extend_from_slice(&[p.x, p.y, p.z]);
@@ -623,14 +752,25 @@ pub fn build_vehicle_mesh(metadata: &[u8], configuration: Option<&Value>, space:
                 };
                 let corners = if flip { [*a, *c, *b] } else { [*a, *b, *c] };
                 for p in corners {
-                    vertices.push(VlVehicleVertex { pos: space.pos(p), normal, color_rgba: color, section, part: part_index as u32 });
+                    vertices.push(VlVehicleVertex {
+                        pos: space.pos(p),
+                        normal,
+                        color_rgba: color,
+                        section,
+                        part: part_index as u32,
+                    });
                 }
                 has_geometry = true;
             }
         }
         if let (Some((r, f)), true) = (posed_part, has_geometry) {
             let o = frame_out(part_index as u32, f, r.origin_height, space);
-            posed.push(VlPosedPart { part: o.part, rest_pos: o.pos, rest_quat: o.quat, rest_scale: o.scale });
+            posed.push(VlPosedPart {
+                part: o.part,
+                rest_pos: o.pos,
+                rest_quat: o.quat,
+                rest_scale: o.scale,
+            });
         }
     }
     if vertices.is_empty() {
@@ -665,16 +805,30 @@ pub fn wheel_centres(metadata: &[u8]) -> Option<[[f32; 3]; 4]> {
 /// Each part's hull points in the source frame (part + shape + vertex, metres), in `parts` order:
 /// what the wire 4 client needs to rest a car's detached groups on the ground.
 pub fn part_hull_points(metadata: &[u8]) -> Result<Vec<Vec<Vec3>>, VehicleMeshError> {
-    let meta: Value = serde_json::from_slice(metadata).map_err(|e| VehicleMeshError::Json(e.to_string()))?;
-    let parts = meta.get("parts").and_then(Value::as_array).ok_or(VehicleMeshError::Missing("parts"))?;
+    let meta: Value =
+        serde_json::from_slice(metadata).map_err(|e| VehicleMeshError::Json(e.to_string()))?;
+    let parts = meta
+        .get("parts")
+        .and_then(Value::as_array)
+        .ok_or(VehicleMeshError::Missing("parts"))?;
     Ok(parts
         .iter()
         .map(|part| {
             let base = vec3(part.get("position")).unwrap_or(Vec3::ZERO);
             let mut points = Vec::new();
-            for shape in part.get("shapes").and_then(Value::as_array).into_iter().flatten() {
+            for shape in part
+                .get("shapes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 let offset = vec3(shape.get("position")).unwrap_or(Vec3::ZERO);
-                for v in shape.get("vertices").and_then(Value::as_array).into_iter().flatten() {
+                for v in shape
+                    .get("vertices")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     if let Some(v) = vec3(Some(v)) {
                         // f32 sums in the server's order (the web's Math.fround chain).
                         points.push((base + offset) + v);
@@ -736,7 +890,11 @@ mod tests {
         // Each closed hull has zero net signed area: sum of normal * area per face is 0.
         let mut sum = Vec3::ZERO;
         for t in mesh.vertices.chunks_exact(3) {
-            let (a, b, c) = (Vec3::from_array(t[0].pos), Vec3::from_array(t[1].pos), Vec3::from_array(t[2].pos));
+            let (a, b, c) = (
+                Vec3::from_array(t[0].pos),
+                Vec3::from_array(t[1].pos),
+                Vec3::from_array(t[2].pos),
+            );
             sum += (b - a).cross(c - a);
         }
         assert!(sum.length() < 1e-4, "{sum}");
@@ -752,8 +910,14 @@ mod tests {
         let mesh = build_vehicle_mesh(&tiny_car(), Some(&config), Space::Server).unwrap();
         let wheel: Vec<_> = mesh.vertices.iter().filter(|v| v.part == 1).collect();
         assert_eq!(wheel.len(), 36);
-        assert!(mesh.vertices.iter().any(|v| v.color_rgba == 0x112233FF), "body paint on the Body frame part");
-        assert!(wheel.iter().all(|v| v.color_rgba == 0x202224FF), "rubber from the palette");
+        assert!(
+            mesh.vertices.iter().any(|v| v.color_rgba == 0x112233FF),
+            "body paint on the Body frame part"
+        );
+        assert!(
+            wheel.iter().all(|v| v.color_rgba == 0x202224FF),
+            "rubber from the palette"
+        );
     }
 
     #[test]
@@ -761,9 +925,16 @@ mod tests {
         let mesh = build_vehicle_mesh(&tiny_car(), None, Space::Unreal).unwrap();
         // Outward: each face's normal points away from its hull's centre.
         let chassis: Vec<_> = mesh.vertices.iter().filter(|v| v.part == 0).collect();
-        let centre = chassis.iter().fold(Vec3::ZERO, |s, v| s + Vec3::from_array(v.pos)) / chassis.len() as f32;
+        let centre = chassis
+            .iter()
+            .fold(Vec3::ZERO, |s, v| s + Vec3::from_array(v.pos))
+            / chassis.len() as f32;
         for t in chassis.chunks_exact(3) {
-            let (a, b, c) = (Vec3::from_array(t[0].pos), Vec3::from_array(t[1].pos), Vec3::from_array(t[2].pos));
+            let (a, b, c) = (
+                Vec3::from_array(t[0].pos),
+                Vec3::from_array(t[1].pos),
+                Vec3::from_array(t[2].pos),
+            );
             let face = (a + b + c) / 3.0;
             // The chunk meshes' convention (geometry.rs, drawn front-facing by Unreal): wound so
             // (b - a) x (c - a), computed in Unreal's coordinates, points outward, like the normal.
@@ -774,17 +945,37 @@ mod tests {
 
     fn cached_cars() -> Vec<(std::path::PathBuf, Vec<u8>)> {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.cache/vehicle-assets");
-        let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
-        entries.flatten().filter_map(|e| Some((e.path(), std::fs::read(e.path().join("metadata.json")).ok()?))).collect()
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|e| {
+                Some((
+                    e.path(),
+                    std::fs::read(e.path().join("metadata.json")).ok()?,
+                ))
+            })
+            .collect()
     }
 
     fn wheels(travel: f32, steer: f32, spin: f32) -> [crate::frame::VlWheel; 4] {
-        [crate::frame::VlWheel { travel, steer, spin, grounded: 1 }; 4]
+        [crate::frame::VlWheel {
+            travel,
+            steer,
+            spin,
+            grounded: 1,
+        }; 4]
     }
 
     fn roles(bytes: &[u8]) -> Vec<String> {
         let meta: Value = serde_json::from_slice(bytes).unwrap();
-        meta["parts"].as_array().unwrap().iter().map(|p| p["motion"]["role"].as_str().unwrap_or("").to_string()).collect()
+        meta["parts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["motion"]["role"].as_str().unwrap_or("").to_string())
+            .collect()
     }
 
     /// The rig at neutral wheels draws every posed part exactly where it was built.
@@ -797,8 +988,14 @@ mod tests {
                 assert_eq!(pose.len(), mesh.posed.len());
                 for (r, p) in mesh.posed.iter().zip(&pose) {
                     let d = Vec3::from_array(r.rest_pos).distance(Vec3::from_array(p.pos));
-                    let q = glam::Quat::from_array(r.rest_quat).dot(glam::Quat::from_array(p.quat)).abs();
-                    assert!(d < 1e-6 * space.metres() && q > 1.0 - 1e-6, "{path:?} part {}: {d} {q}", r.part);
+                    let q = glam::Quat::from_array(r.rest_quat)
+                        .dot(glam::Quat::from_array(p.quat))
+                        .abs();
+                    assert!(
+                        d < 1e-6 * space.metres() && q > 1.0 - 1e-6,
+                        "{path:?} part {}: {d} {q}",
+                        r.part
+                    );
                     assert_eq!(r.rest_scale, p.scale);
                 }
             }
@@ -818,16 +1015,32 @@ mod tests {
             for (travel, steer) in [(-0.2, 0.0), (0.15, 0.0), (0.2, 0.3), (-0.1, -0.35)] {
                 let pose = mesh.pose(&wheels(travel, steer, 0.0));
                 for (r, p) in mesh.posed.iter().zip(&pose) {
-                    if matches!(roles[r.part as usize].as_str(), "lowerArm" | "upperArm" | "upright" | "tieRod") {
-                        assert!((r.rest_scale[2] - p.scale[2]).abs() < 1e-4, "{path:?} {} length {} -> {}", roles[r.part as usize], r.rest_scale[2], p.scale[2]);
+                    if matches!(
+                        roles[r.part as usize].as_str(),
+                        "lowerArm" | "upperArm" | "upright" | "tieRod"
+                    ) {
+                        assert!(
+                            (r.rest_scale[2] - p.scale[2]).abs() < 1e-4,
+                            "{path:?} {} length {} -> {}",
+                            roles[r.part as usize],
+                            r.rest_scale[2],
+                            p.scale[2]
+                        );
                     }
                 }
-                let state = rig.solve(&wheels(travel, steer, 0.0).map(|w| rig::WheelInput { travel: w.travel, steer: w.steer, spin: w.spin }));
+                let state = rig.solve(&wheels(travel, steer, 0.0).map(|w| rig::WheelInput {
+                    travel: w.travel,
+                    steer: w.steer,
+                    spin: w.spin,
+                }));
                 for c in 0..4 {
                     let y = rig::corner_hub_y(rig, &state, c).unwrap();
                     // The travel is limited to the corner's (`solveCorner`).
                     let target = rig::corner_target(rig, c, travel).unwrap();
-                    assert!((y - target).abs() < 1e-4, "{path:?} corner {c}: hub y {y}, target {target}");
+                    assert!(
+                        (y - target).abs() < 1e-4,
+                        "{path:?} corner {c}: hub y {y}, target {target}"
+                    );
                 }
             }
         }
@@ -840,8 +1053,16 @@ mod tests {
     #[test]
     fn posing_agrees_across_spaces() {
         fn posed_vertex(v: Vec3, r: &VlPosedPart, p: &VlPartPose) -> Vec3 {
-            let (rt, rq, rs) = (Vec3::from_array(r.rest_pos), glam::Quat::from_array(r.rest_quat), Vec3::from_array(r.rest_scale));
-            let (pt, pq, ps) = (Vec3::from_array(p.pos), glam::Quat::from_array(p.quat), Vec3::from_array(p.scale));
+            let (rt, rq, rs) = (
+                Vec3::from_array(r.rest_pos),
+                glam::Quat::from_array(r.rest_quat),
+                Vec3::from_array(r.rest_scale),
+            );
+            let (pt, pq, ps) = (
+                Vec3::from_array(p.pos),
+                glam::Quat::from_array(p.quat),
+                Vec3::from_array(p.scale),
+            );
             let local = (rq.inverse() * (v - rt)) / rs;
             pt + pq * (ps * local)
         }
@@ -850,7 +1071,12 @@ mod tests {
         for (path, bytes) in &cars {
             let server = build_vehicle_mesh(bytes, None, Space::Server).unwrap();
             let unreal = build_vehicle_mesh(bytes, None, Space::Unreal).unwrap();
-            for (travel, steer, spin) in [(0.12, 0.0, 0.0), (0.0, 0.35, 0.0), (0.0, 0.0, 1.3), (-0.1, -0.3, 2.5)] {
+            for (travel, steer, spin) in [
+                (0.12, 0.0, 0.0),
+                (0.0, 0.35, 0.0),
+                (0.0, 0.0, 1.3),
+                (-0.1, -0.3, 2.5),
+            ] {
                 let ws = wheels(travel, steer, spin);
                 let wu = wheels(travel * Space::Unreal.metres(), steer, spin);
                 let (ps, pu) = (server.pose(&ws), unreal.pose(&wu));
@@ -861,7 +1087,11 @@ mod tests {
                         continue;
                     }
                     let k = server.posed.iter().position(|r| r.part == vs.part).unwrap();
-                    let a = Vec3::from_array(Space::Unreal.pos(posed_vertex(Vec3::from_array(vs.pos), &server.posed[k], &ps[k])));
+                    let a = Vec3::from_array(Space::Unreal.pos(posed_vertex(
+                        Vec3::from_array(vs.pos),
+                        &server.posed[k],
+                        &ps[k],
+                    )));
                     let vu = Vec3::from_array(Space::Unreal.pos(Vec3::from_array(vs.pos)));
                     let b = posed_vertex(vu, &unreal.posed[k], &pu[k]);
                     assert!(a.distance(b) < 0.05, "{path:?} vertex {i} (part {}), wheels {travel} {steer} {spin}: server->unreal {a} vs unreal {b}", vs.part);
@@ -878,14 +1108,25 @@ mod tests {
     fn spinning_wheels_stay_on_the_car() {
         for (path, bytes) in cached_cars() {
             let mesh = build_vehicle_mesh(&bytes, None, Space::Server).unwrap();
-            let reach = mesh.vertices.iter().map(|v| Vec3::from_array(v.pos).length()).fold(0.0f32, f32::max);
+            let reach = mesh
+                .vertices
+                .iter()
+                .map(|v| Vec3::from_array(v.pos).length())
+                .fold(0.0f32, f32::max);
             for spin in [0.5f32, 1.0, 2.4, 3.1, 5.0, 40.0] {
                 let pose = mesh.pose(&wheels(0.0, 0.0, spin));
-                for v in mesh.vertices.iter().filter(|v| v.section == VL_VEHICLE_SECTION_POSED) {
+                for v in mesh
+                    .vertices
+                    .iter()
+                    .filter(|v| v.section == VL_VEHICLE_SECTION_POSED)
+                {
                     let k = mesh.posed.iter().position(|r| r.part == v.part).unwrap();
                     let (r, p) = (&mesh.posed[k], &pose[k]);
-                    let local = (glam::Quat::from_array(r.rest_quat).inverse() * (Vec3::from_array(v.pos) - Vec3::from_array(r.rest_pos))) / Vec3::from_array(r.rest_scale);
-                    let posed = Vec3::from_array(p.pos) + glam::Quat::from_array(p.quat) * (Vec3::from_array(p.scale) * local);
+                    let local = (glam::Quat::from_array(r.rest_quat).inverse()
+                        * (Vec3::from_array(v.pos) - Vec3::from_array(r.rest_pos)))
+                        / Vec3::from_array(r.rest_scale);
+                    let posed = Vec3::from_array(p.pos)
+                        + glam::Quat::from_array(p.quat) * (Vec3::from_array(p.scale) * local);
                     assert!(posed.length() <= reach + 0.01, "{path:?} part {} at spin {spin}: posed vertex {posed} beyond the car's reach {reach}", v.part);
                 }
             }
@@ -900,11 +1141,17 @@ mod tests {
             let roles = roles(&bytes);
             let pose = mesh.pose(&wheels(0.0, 0.0, 0.7));
             for (r, p) in mesh.posed.iter().zip(&pose) {
-                let delta = glam::Quat::from_array(p.quat) * glam::Quat::from_array(r.rest_quat).inverse();
+                let delta =
+                    glam::Quat::from_array(p.quat) * glam::Quat::from_array(r.rest_quat).inverse();
                 let (axis, angle) = delta.to_axis_angle();
                 match roles[r.part as usize].as_str() {
-                    "wheel" | "hub" => assert!((angle - 0.7).abs() < 1e-4 && axis.x.abs() > 0.99, "{path:?} {axis} {angle}"),
-                    "lowerArm" | "upperArm" | "upright" | "knuckle" | "tieRod" | "steering" => assert!(angle < 1e-4, "{path:?} {}", roles[r.part as usize]),
+                    "wheel" | "hub" => assert!(
+                        (angle - 0.7).abs() < 1e-4 && axis.x.abs() > 0.99,
+                        "{path:?} {axis} {angle}"
+                    ),
+                    "lowerArm" | "upperArm" | "upright" | "knuckle" | "tieRod" | "steering" => {
+                        assert!(angle < 1e-4, "{path:?} {}", roles[r.part as usize])
+                    }
                     _ => {}
                 }
             }
@@ -915,11 +1162,16 @@ mod tests {
     fn every_cached_car_builds() {
         // The prepared assets in the repo's cache (present on dev machines; skipped elsewhere).
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.cache/vehicle-assets");
-        let Ok(entries) = std::fs::read_dir(&dir) else { return };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
         let mut built = 0;
         for entry in entries.flatten() {
-            let Ok(bytes) = std::fs::read(entry.path().join("metadata.json")) else { continue };
-            let mesh = build_vehicle_mesh(&bytes, None, Space::Unreal).unwrap_or_else(|e| panic!("{:?}: {e}", entry.path()));
+            let Ok(bytes) = std::fs::read(entry.path().join("metadata.json")) else {
+                continue;
+            };
+            let mesh = build_vehicle_mesh(&bytes, None, Space::Unreal)
+                .unwrap_or_else(|e| panic!("{:?}: {e}", entry.path()));
             assert!(mesh.vertices.len() > 1000);
             assert!(mesh.posed.len() >= 4, "every car has its wheels posed");
             built += 1;

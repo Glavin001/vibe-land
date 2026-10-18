@@ -34,7 +34,9 @@
 use std::collections::HashMap;
 
 use glam::{Quat, Vec3};
-use vibe_land_destruction::manifest::{ChunkDef, ChunkGeometry, DestructionManifest, StructureManifest};
+use vibe_land_destruction::manifest::{
+    ChunkDef, ChunkGeometry, DestructionManifest, StructureManifest,
+};
 
 use crate::coords::Space;
 use crate::materials::{Catalog, VlChunkSurface};
@@ -93,16 +95,30 @@ pub struct Contact {
 
 /// Each chunk's bonded neighbours, in the structure's chunk order.
 pub fn structure_contacts(structure: &StructureManifest) -> Vec<Vec<Contact>> {
-    let slot: HashMap<u32, usize> = structure.chunks.iter().enumerate().map(|(i, c)| (c.node_index, i)).collect();
+    let slot: HashMap<u32, usize> = structure
+        .chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.node_index, i))
+        .collect();
     let mut out = vec![Vec::new(); structure.chunks.len()];
     for bond in &structure.bonds {
-        let (Some(&a), Some(&b)) = (slot.get(&bond.node0), slot.get(&bond.node1)) else { continue };
+        let (Some(&a), Some(&b)) = (slot.get(&bond.node0), slot.get(&bond.node1)) else {
+            continue;
+        };
         if a == b {
             continue;
         }
-        let offset = Vec3::from_array(structure.chunks[b].centroid) - Vec3::from_array(structure.chunks[a].centroid);
-        out[a].push(Contact { neighbour: b, offset });
-        out[b].push(Contact { neighbour: a, offset: -offset });
+        let offset = Vec3::from_array(structure.chunks[b].centroid)
+            - Vec3::from_array(structure.chunks[a].centroid);
+        out[a].push(Contact {
+            neighbour: b,
+            offset,
+        });
+        out[b].push(Contact {
+            neighbour: a,
+            offset: -offset,
+        });
     }
     out
 }
@@ -122,7 +138,11 @@ const CONTACT_GAP_M: f32 = 1e-3;
 /// planar faces by normal, a face is interior when every sample of it (each triangle's corners,
 /// edge midpoints and centroid) lies inside one of its bonded neighbours (`contacts`; their
 /// triangles in `neighbours`, each in its own frame), so a face partly in view stays outside.
-pub fn interior_triangles(triangles: &[[Vec3; 3]], contacts: &[Contact], neighbours: &[Vec<[Vec3; 3]>]) -> Vec<bool> {
+pub fn interior_triangles(
+    triangles: &[[Vec3; 3]],
+    contacts: &[Contact],
+    neighbours: &[Vec<[Vec3; 3]>],
+) -> Vec<bool> {
     if contacts.is_empty() {
         return vec![false; triangles.len()];
     }
@@ -130,7 +150,10 @@ pub fn interior_triangles(triangles: &[[Vec3; 3]], contacts: &[Contact], neighbo
     let mut normals: Vec<Vec3> = Vec::new();
     for tri in triangles {
         let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
-        let face = match normals.iter().position(|n| 1.0 - n.dot(normal) <= SAME_FACE) {
+        let face = match normals
+            .iter()
+            .position(|n| 1.0 - n.dot(normal) <= SAME_FACE)
+        {
             Some(i) => i,
             None => {
                 normals.push(normal);
@@ -143,7 +166,9 @@ pub fn interior_triangles(triangles: &[[Vec3; 3]], contacts: &[Contact], neighbo
     // not on one that faces the same way as the face (there the two are one outside surface).
     let hidden = |p: Vec3, facing: Vec3| {
         contacts.iter().any(|c| {
-            let Some(solid) = neighbours.get(c.neighbour) else { return false };
+            let Some(solid) = neighbours.get(c.neighbour) else {
+                return false;
+            };
             !solid.is_empty()
                 && solid.iter().all(|t| {
                     let n = (t[1] - t[0]).cross(t[2] - t[0]).normalize_or_zero();
@@ -158,7 +183,15 @@ pub fn interior_triangles(triangles: &[[Vec3; 3]], contacts: &[Contact], neighbo
             continue;
         }
         let [a, b, c] = *tri;
-        let samples = [a, b, c, (a + b) * 0.5, (b + c) * 0.5, (c + a) * 0.5, (a + b + c) / 3.0];
+        let samples = [
+            a,
+            b,
+            c,
+            (a + b) * 0.5,
+            (b + c) * 0.5,
+            (c + a) * 0.5,
+            (a + b + c) / 3.0,
+        ];
         covered[face] = samples.iter().all(|&p| hidden(p, normals[face]));
     }
     face_of.iter().map(|&f| covered[f]).collect()
@@ -219,12 +252,23 @@ impl ChunkMeshes {
         let r = self.ranges.get(index)?;
         let v = r.first_vertex as usize..(r.first_vertex + r.vertex_count) as usize;
         let i = r.first_index as usize..(r.first_index + r.index_count) as usize;
-        Some((&self.positions[v.clone()], &self.normals[v], &self.indices[i]))
+        Some((
+            &self.positions[v.clone()],
+            &self.normals[v],
+            &self.indices[i],
+        ))
     }
 
     /// Appends one chunk from its server-space triangles (chunk frame, CCW from outside).
     #[cfg(test)]
-    fn push_chunk(&mut self, chunk: &ChunkDef, triangles: &[[Vec3; 3]], space: Space, flip: bool, hull: bool) {
+    fn push_chunk(
+        &mut self,
+        chunk: &ChunkDef,
+        triangles: &[[Vec3; 3]],
+        space: Space,
+        flip: bool,
+        hull: bool,
+    ) {
         self.push_chunk_surfaced(chunk, triangles, &[], space, flip, hull, None);
     }
 
@@ -243,13 +287,23 @@ impl ChunkMeshes {
         let centroid = Vec3::from_array(chunk.centroid);
         for (t, tri) in triangles.iter().enumerate() {
             let normal = (tri[1] - tri[0]).cross(tri[2] - tri[0]).normalize_or_zero();
-            let target_normal = Vec3::from_array(space.pos(normal)).normalize_or_zero().to_array();
+            let target_normal = Vec3::from_array(space.pos(normal))
+                .normalize_or_zero()
+                .to_array();
             let inside = interior.get(t).copied().unwrap_or(false);
             let material = surface.map(|(s, catalog)| {
                 let a = normal.abs();
-                let id = if a.y >= a.x && a.y >= a.z { s.floor } else { s.wall };
+                let id = if a.y >= a.x && a.y >= a.z {
+                    s.floor
+                } else {
+                    s.wall
+                };
                 let id = if inside { catalog.fracture_of(id) } else { id };
-                let tile = catalog.materials.get(id as usize).map_or(1.0, |m| m.drawn_metres_per_tile()).max(1e-3);
+                let tile = catalog
+                    .materials
+                    .get(id as usize)
+                    .map_or(1.0, |m| m.drawn_metres_per_tile())
+                    .max(1e-3);
                 (u32::from(id), tile)
             });
             let tangent = face_tangent(normal, space);
@@ -308,7 +362,9 @@ pub fn hull_points<'a>(chunk: &'a ChunkDef, shape_library: &'a [Vec<f32>]) -> Op
             if !points.is_empty() {
                 Some(points)
             } else {
-                shape_id.and_then(|id| shape_library.get(id as usize)).map(Vec::as_slice)
+                shape_id
+                    .and_then(|id| shape_library.get(id as usize))
+                    .map(Vec::as_slice)
             }
         }
         ChunkGeometry::Cuboid { .. } => None,
@@ -317,7 +373,11 @@ pub fn hull_points<'a>(chunk: &'a ChunkDef, shape_library: &'a [Vec<f32>]) -> Op
 
 /// The chunk's triangles in server space (chunk frame), counter-clockwise from outside, into
 /// `out`. True when they are its convex hull, false for a box.
-fn server_triangles(chunk: &ChunkDef, shape_library: &[Vec<f32>], out: &mut Vec<[Vec3; 3]>) -> bool {
+fn server_triangles(
+    chunk: &ChunkDef,
+    shape_library: &[Vec<f32>],
+    out: &mut Vec<[Vec3; 3]>,
+) -> bool {
     out.clear();
     if let Some(points) = hull_points(chunk, shape_library) {
         if convex_hull_triangles(points, out) {
@@ -328,7 +388,9 @@ fn server_triangles(chunk: &ChunkDef, shape_library: &[Vec<f32>], out: &mut Vec<
     let half = match &chunk.geometry {
         ChunkGeometry::Cuboid { half_extents } => Vec3::from_array(*half_extents),
         // A degenerate hull: the box of its authored size, floored as the web floors it.
-        ChunkGeometry::ConvexHull { .. } => (Vec3::from_array(chunk.size) * 0.5).max(Vec3::splat(MIN_FALLBACK_HALF_EXTENT_M)),
+        ChunkGeometry::ConvexHull { .. } => {
+            (Vec3::from_array(chunk.size) * 0.5).max(Vec3::splat(MIN_FALLBACK_HALF_EXTENT_M))
+        }
     };
     box_triangles(half, out);
     false
@@ -338,8 +400,15 @@ fn server_triangles(chunk: &ChunkDef, shape_library: &[Vec<f32>], out: &mut Vec<
 /// hull's centre of mass), oriented outward. False when the points span no volume.
 pub fn convex_hull_triangles(points: &[f32], out: &mut Vec<[Vec3; 3]>) -> bool {
     use rapier3d::na::Point3;
-    let input: Vec<Point3<f32>> = points.chunks_exact(3).map(|p| Point3::new(p[0], p[1], p[2])).collect();
-    if input.len() < 4 || input.iter().any(|p| !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite())) {
+    let input: Vec<Point3<f32>> = points
+        .chunks_exact(3)
+        .map(|p| Point3::new(p[0], p[1], p[2]))
+        .collect();
+    if input.len() < 4
+        || input
+            .iter()
+            .any(|p| !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()))
+    {
         return false;
     }
     let Ok((vertices, triangles)) = rapier3d::parry::transformation::try_convex_hull(&input) else {
@@ -352,12 +421,19 @@ pub fn convex_hull_triangles(points: &[f32], out: &mut Vec<[Vec3; 3]>) -> bool {
         let p = vertices[i as usize];
         Vec3::new(p.x, p.y, p.z)
     };
-    let inside = vertices.iter().fold(Vec3::ZERO, |s, p| s + Vec3::new(p.x, p.y, p.z)) / vertices.len() as f32;
+    let inside = vertices
+        .iter()
+        .fold(Vec3::ZERO, |s, p| s + Vec3::new(p.x, p.y, p.z))
+        / vertices.len() as f32;
     let mut volume6 = 0.0f32;
     for t in &triangles {
         let (a, b, c) = (v(t[0]), v(t[1]), v(t[2]));
         // Orient each face away from an interior point, whatever parry's convention.
-        let tri = if (b - a).cross(c - a).dot(a - inside) >= 0.0 { [a, b, c] } else { [a, c, b] };
+        let tri = if (b - a).cross(c - a).dot(a - inside) >= 0.0 {
+            [a, b, c]
+        } else {
+            [a, c, b]
+        };
         volume6 += (tri[0] - inside).dot((tri[1] - inside).cross(tri[2] - inside));
         out.push(tri);
     }
@@ -367,7 +443,11 @@ pub fn convex_hull_triangles(points: &[f32], out: &mut Vec<[Vec3; 3]>) -> bool {
 /// A box of half extents `h` about the origin: two triangles per face, CCW from outside.
 fn box_triangles(h: Vec3, out: &mut Vec<[Vec3; 3]>) {
     // Each face: outward axis, then two in-face axes with u × v = outward.
-    let faces = [(Vec3::X, Vec3::Y, Vec3::Z), (Vec3::Y, Vec3::Z, Vec3::X), (Vec3::Z, Vec3::X, Vec3::Y)];
+    let faces = [
+        (Vec3::X, Vec3::Y, Vec3::Z),
+        (Vec3::Y, Vec3::Z, Vec3::X),
+        (Vec3::Z, Vec3::X, Vec3::Y),
+    ];
     for (n, u, v) in faces {
         for sign in [1.0f32, -1.0] {
             let (n, u) = (n * sign, u * sign);
@@ -387,9 +467,17 @@ fn box_axes(n: Vec3) -> (Vec3, Vec3) {
     let a = n.abs();
     if a.y >= a.x && a.y >= a.z {
         // Tops seen from above with −z up the image; bottoms seen from below with +z up.
-        if n.y >= 0.0 { (Vec3::X, Vec3::Z) } else { (Vec3::X, Vec3::NEG_Z) }
+        if n.y >= 0.0 {
+            (Vec3::X, Vec3::Z)
+        } else {
+            (Vec3::X, Vec3::NEG_Z)
+        }
     } else if a.x >= a.z {
-        if n.x >= 0.0 { (Vec3::NEG_Z, Vec3::NEG_Y) } else { (Vec3::Z, Vec3::NEG_Y) }
+        if n.x >= 0.0 {
+            (Vec3::NEG_Z, Vec3::NEG_Y)
+        } else {
+            (Vec3::Z, Vec3::NEG_Y)
+        }
     } else if n.z >= 0.0 {
         (Vec3::X, Vec3::NEG_Y)
     } else {
@@ -409,7 +497,11 @@ fn face_tangent(n: Vec3, space: Space) -> [f32; 4] {
     let t = (u - n * n.dot(u)).normalize_or_zero();
     let to = |d: Vec3| Vec3::from_array(space.pos(d)).normalize_or_zero();
     let (nt, tt, vt) = (to(n), to(t), to(v));
-    let w = if nt.cross(tt).dot(vt) >= 0.0 { 1.0 } else { -1.0 };
+    let w = if nt.cross(tt).dot(vt) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
     [tt.x, tt.y, tt.z, w]
 }
 
@@ -424,7 +516,10 @@ mod tests {
     use std::collections::HashMap;
 
     fn cuboid(half: [f32; 3]) -> ChunkDef {
-        chunk(ChunkGeometry::Cuboid { half_extents: half }, [half[0] * 2.0, half[1] * 2.0, half[2] * 2.0])
+        chunk(
+            ChunkGeometry::Cuboid { half_extents: half },
+            [half[0] * 2.0, half[1] * 2.0, half[2] * 2.0],
+        )
     }
 
     fn chunk(geometry: ChunkGeometry, size: [f32; 3]) -> ChunkDef {
@@ -442,25 +537,42 @@ mod tests {
         }
     }
 
-    fn mesh_of(chunk: &ChunkDef, library: &[Vec<f32>], space: Space) -> (Vec<Vec3>, Vec<u32>, bool) {
+    fn mesh_of(
+        chunk: &ChunkDef,
+        library: &[Vec<f32>],
+        space: Space,
+    ) -> (Vec<Vec3>, Vec<u32>, bool) {
         let mut tris = Vec::new();
         let hull = server_triangles(chunk, library, &mut tris);
         let mut m = ChunkMeshes::default();
         m.push_chunk(chunk, &tris, space, reverses_winding(space), hull);
         let (p, _, i) = m.chunk(0).unwrap();
-        (p.iter().map(|v| Vec3::from_array(*v)).collect(), i.to_vec(), hull)
+        (
+            p.iter().map(|v| Vec3::from_array(*v)).collect(),
+            i.to_vec(),
+            hull,
+        )
     }
 
     /// Signed volume of a closed triangle mesh (positive when wound CCW from outside in a
     /// right-handed frame; in a left-handed one the same outward winding reads negative).
     fn signed_volume(p: &[Vec3], idx: &[u32]) -> f32 {
-        idx.chunks_exact(3).map(|t| p[t[0] as usize].dot(p[t[1] as usize].cross(p[t[2] as usize]))).sum::<f32>() / 6.0
+        idx.chunks_exact(3)
+            .map(|t| p[t[0] as usize].dot(p[t[1] as usize].cross(p[t[2] as usize])))
+            .sum::<f32>()
+            / 6.0
     }
 
     /// Every edge is shared by exactly two triangles, in opposite directions (closed, consistently
     /// oriented). Vertices are welded by position since faces are flat-shaded.
     fn assert_closed(p: &[Vec3], idx: &[u32]) {
-        let key = |v: Vec3| ((v.x * 1e4).round() as i64, (v.y * 1e4).round() as i64, (v.z * 1e4).round() as i64);
+        let key = |v: Vec3| {
+            (
+                (v.x * 1e4).round() as i64,
+                (v.y * 1e4).round() as i64,
+                (v.z * 1e4).round() as i64,
+            )
+        };
         let mut edges: HashMap<_, i32> = HashMap::new();
         for t in idx.chunks_exact(3) {
             for k in 0..3 {
@@ -470,7 +582,11 @@ mod tests {
         }
         for (&(a, b), &n) in &edges {
             assert_eq!(n, 1, "edge {a:?}->{b:?} used {n} times in one direction");
-            assert_eq!(edges.get(&(b, a)), Some(&1), "edge {a:?}->{b:?} has no opposite");
+            assert_eq!(
+                edges.get(&(b, a)),
+                Some(&1),
+                "edge {a:?}->{b:?} has no opposite"
+            );
         }
     }
 
@@ -502,19 +618,31 @@ mod tests {
     fn hull_volume_matches_parry_and_normals_face_out() {
         // A random-ish convex point cloud (an irregular octahedron plus interior points).
         let pts: Vec<f32> = vec![
-            0.7, 0.0, 0.0, -0.4, 0.1, 0.0, 0.0, 0.9, 0.1, 0.1, -0.6, 0.0, 0.0, 0.0, 0.5, 0.05, 0.1, -0.8,
-            0.1, 0.1, 0.1, -0.1, 0.0, 0.05,
+            0.7, 0.0, 0.0, -0.4, 0.1, 0.0, 0.0, 0.9, 0.1, 0.1, -0.6, 0.0, 0.0, 0.0, 0.5, 0.05, 0.1,
+            -0.8, 0.1, 0.1, 0.1, -0.1, 0.0, 0.05,
         ];
-        let c = chunk(ChunkGeometry::ConvexHull { points: pts.clone(), shape_id: None }, [1.0, 1.0, 1.0]);
+        let c = chunk(
+            ChunkGeometry::ConvexHull {
+                points: pts.clone(),
+                shape_id: None,
+            },
+            [1.0, 1.0, 1.0],
+        );
         let (p, idx, hull) = mesh_of(&c, &[], Space::Server);
         assert!(hull);
         assert_closed(&p, &idx);
-        let points: Vec<_> = pts.chunks_exact(3).map(|q| rapier3d::na::Point3::new(q[0], q[1], q[2])).collect();
+        let points: Vec<_> = pts
+            .chunks_exact(3)
+            .map(|q| rapier3d::na::Point3::new(q[0], q[1], q[2]))
+            .collect();
         let parry = rapier3d::parry::shape::ConvexPolyhedron::from_convex_hull(&points).unwrap();
         use rapier3d::parry::shape::Shape;
         let expected = parry.mass_properties(1.0).mass();
         let got = signed_volume(&p, &idx);
-        assert!((got - expected).abs() < 1e-4 * expected, "volume {got} vs parry {expected}");
+        assert!(
+            (got - expected).abs() < 1e-4 * expected,
+            "volume {got} vs parry {expected}"
+        );
         // Outward normals: each face's normal points away from the hull's interior.
         let centre = p.iter().copied().sum::<Vec3>() / p.len() as f32;
         for t in idx.chunks_exact(3) {
@@ -525,8 +653,16 @@ mod tests {
 
     #[test]
     fn shape_library_hulls_resolve_and_degenerate_hulls_fall_back_to_their_box() {
-        let library = vec![vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]];
-        let by_id = chunk(ChunkGeometry::ConvexHull { points: vec![], shape_id: Some(0) }, [1.0, 1.0, 1.0]);
+        let library = vec![vec![
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+        ]];
+        let by_id = chunk(
+            ChunkGeometry::ConvexHull {
+                points: vec![],
+                shape_id: Some(0),
+            },
+            [1.0, 1.0, 1.0],
+        );
         let (p, idx, hull) = mesh_of(&by_id, &library, Space::Server);
         assert!(hull);
         assert_eq!(idx.len(), 12, "a tetrahedron");
@@ -534,7 +670,10 @@ mod tests {
 
         // Coplanar points span no volume: the box of the authored size.
         let flat = chunk(
-            ChunkGeometry::ConvexHull { points: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0], shape_id: None },
+            ChunkGeometry::ConvexHull {
+                points: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+                shape_id: None,
+            },
             [2.0, 0.02, 4.0],
         );
         let (p, idx, hull) = mesh_of(&flat, &[], Space::Server);
@@ -558,7 +697,9 @@ mod tests {
             let centroid = Vec3::from_array(c.centroid);
             for t in &tris {
                 for v in t {
-                    if (centroid + *v - world).length() < 1e-5 && (t[1] - t[0]).cross(t[2] - t[0]).z > 0.0 {
+                    if (centroid + *v - world).length() < 1e-5
+                        && (t[1] - t[0]).cross(t[2] - t[0]).z > 0.0
+                    {
                         return box_uv(centroid + *v, Vec3::Z);
                     }
                 }
@@ -582,23 +723,44 @@ mod tests {
     fn interior_normals(half: [f32; 3], neighbours: &[([f32; 3], Vec3)]) -> Vec<Vec3> {
         let tris = boxed(half);
         let shapes: Vec<Vec<[Vec3; 3]>> = neighbours.iter().map(|n| boxed(n.0)).collect();
-        let contacts: Vec<Contact> = neighbours.iter().enumerate().map(|(i, n)| Contact { neighbour: i, offset: n.1 }).collect();
+        let contacts: Vec<Contact> = neighbours
+            .iter()
+            .enumerate()
+            .map(|(i, n)| Contact {
+                neighbour: i,
+                offset: n.1,
+            })
+            .collect();
         let inside = interior_triangles(&tris, &contacts, &shapes);
-        tris.iter().zip(inside).filter(|(_, i)| *i).map(|(t, _)| (t[1] - t[0]).cross(t[2] - t[0]).normalize()).collect()
+        tris.iter()
+            .zip(inside)
+            .filter(|(_, i)| *i)
+            .map(|(t, _)| (t[1] - t[0]).cross(t[2] - t[0]).normalize())
+            .collect()
     }
 
     #[test]
     fn a_face_its_neighbour_covers_is_interior_and_no_other() {
         // Two 1 m cubes stacked.
         let lower = interior_normals([0.5; 3], &[([0.5; 3], Vec3::Y)]);
-        assert_eq!(lower.len(), 2, "both triangles of the top face, nothing else");
+        assert_eq!(
+            lower.len(),
+            2,
+            "both triangles of the top face, nothing else"
+        );
         assert!(lower.iter().all(|n| n.dot(Vec3::Y) > 0.9999));
         let upper = interior_normals([0.5; 3], &[([0.5; 3], Vec3::NEG_Y)]);
         assert_eq!(upper.len(), 2);
         assert!(upper.iter().all(|n| n.dot(Vec3::NEG_Y) > 0.9999));
         // A neighbour wider than the face covers it too.
-        assert_eq!(interior_normals([0.5; 3], &[([2.0, 0.5, 2.0], Vec3::Y)]).len(), 2);
-        assert!(interior_normals([0.5; 3], &[]).is_empty(), "an unbonded chunk is all outside");
+        assert_eq!(
+            interior_normals([0.5; 3], &[([2.0, 0.5, 2.0], Vec3::Y)]).len(),
+            2
+        );
+        assert!(
+            interior_normals([0.5; 3], &[]).is_empty(),
+            "an unbonded chunk is all outside"
+        );
     }
 
     #[test]
@@ -607,9 +769,15 @@ mod tests {
         // top stays its own outside surface.
         let post = |x: f32, z: f32| ([0.5; 3], Vec3::new(x, 0.6, z));
         assert!(interior_normals([2.0, 0.1, 2.0], &[post(0.0, 0.0)]).is_empty());
-        assert_eq!(interior_normals([0.5; 3], &[([2.0, 0.1, 2.0], Vec3::new(0.0, -0.6, 0.0))]).len(), 2);
+        assert_eq!(
+            interior_normals([0.5; 3], &[([2.0, 0.1, 2.0], Vec3::new(0.0, -0.6, 0.0))]).len(),
+            2
+        );
         // Sixteen posts tiling the slab cover its top; without the corner one, it shows.
-        let grid: Vec<_> = [-1.5f32, -0.5, 0.5, 1.5].iter().flat_map(|&x| [-1.5f32, -0.5, 0.5, 1.5].map(|z| post(x, z))).collect();
+        let grid: Vec<_> = [-1.5f32, -0.5, 0.5, 1.5]
+            .iter()
+            .flat_map(|&x| [-1.5f32, -0.5, 0.5, 1.5].map(|z| post(x, z)))
+            .collect();
         assert_eq!(interior_normals([2.0, 0.1, 2.0], &grid).len(), 2);
         assert!(interior_normals([2.0, 0.1, 2.0], &grid[..15]).is_empty());
         // A wall panel 0.3 m thick under a slab 0.2 m deep set to its back: the panel's top shows
@@ -625,8 +793,14 @@ mod tests {
         // face), not inside it. Its top and bottom, inside the panel, are covered.
         let panel = ([0.5, 1.0, 0.1], Vec3::new(0.0, 0.0, 0.0));
         let inside = interior_normals([0.5, 0.1, 0.1], &[panel]);
-        assert!(inside.iter().all(|n| n.dot(Vec3::Z).abs() < 0.5), "the flush front (and back) stay outside: {inside:?}");
-        assert!(!inside.is_empty(), "the faces buried in the panel are interior");
+        assert!(
+            inside.iter().all(|n| n.dot(Vec3::Z).abs() < 0.5),
+            "the flush front (and back) stay outside: {inside:?}"
+        );
+        assert!(
+            !inside.is_empty(),
+            "the faces buried in the panel are interior"
+        );
     }
 
     #[test]
@@ -634,7 +808,10 @@ mod tests {
         // Two 1 m cubes bonded across a 5 cm joint (an authored gap between panels): the faces
         // either side of it stay outside; closed to 0.5 mm they touch.
         assert!(interior_normals([0.5; 3], &[([0.5; 3], Vec3::new(0.0, 1.05, 0.0))]).is_empty());
-        assert_eq!(interior_normals([0.5; 3], &[([0.5; 3], Vec3::new(0.0, 1.0005, 0.0))]).len(), 2);
+        assert_eq!(
+            interior_normals([0.5; 3], &[([0.5; 3], Vec3::new(0.0, 1.0005, 0.0))]).len(),
+            2
+        );
     }
 
     #[test]
@@ -647,28 +824,66 @@ mod tests {
         b.centroid = [0.0, 1.5, 0.0];
         let structure = StructureManifest {
             chunks: vec![a, b],
-            bonds: vec![BondDef { bond_index: 0, node0: 0, node1: 1, centroid: [0.0, 1.0, 0.0], normal: [0.0, 1.0, 0.0], area: 1.0, material: 0 }],
+            bonds: vec![BondDef {
+                bond_index: 0,
+                node0: 0,
+                node1: 1,
+                centroid: [0.0, 1.0, 0.0],
+                normal: [0.0, 1.0, 0.0],
+                area: 1.0,
+                material: 0,
+            }],
             structure_id: 0,
             world_position: [0.0; 3],
             world_rotation: [0.0, 0.0, 0.0, 1.0],
         };
         let c = structure_contacts(&structure);
-        assert_eq!(c[0], vec![Contact { neighbour: 1, offset: Vec3::Y }]);
-        assert_eq!(c[1], vec![Contact { neighbour: 0, offset: Vec3::NEG_Y }]);
+        assert_eq!(
+            c[0],
+            vec![Contact {
+                neighbour: 1,
+                offset: Vec3::Y
+            }]
+        );
+        assert_eq!(
+            c[1],
+            vec![Contact {
+                neighbour: 0,
+                offset: Vec3::NEG_Y
+            }]
+        );
     }
 
     #[test]
     fn tangents_follow_u_and_signs_recover_v_in_both_spaces() {
         // For every face of a hull and a box: the tangent lies in the face, points along +u (the uv
         // increases along it), and w·(n × t) points along +v.
-        let pts: Vec<f32> = vec![0.7, 0.0, 0.0, -0.4, 0.1, 0.0, 0.0, 0.9, 0.1, 0.1, -0.6, 0.0, 0.0, 0.0, 0.5, 0.05, 0.1, -0.8];
+        let pts: Vec<f32> = vec![
+            0.7, 0.0, 0.0, -0.4, 0.1, 0.0, 0.0, 0.9, 0.1, 0.1, -0.6, 0.0, 0.0, 0.0, 0.5, 0.05, 0.1,
+            -0.8,
+        ];
         for space in [Space::Server, Space::Unreal] {
-            for c in [cuboid([0.5, 1.0, 1.5]), chunk(ChunkGeometry::ConvexHull { points: pts.clone(), shape_id: None }, [1.0; 3])] {
+            for c in [
+                cuboid([0.5, 1.0, 1.5]),
+                chunk(
+                    ChunkGeometry::ConvexHull {
+                        points: pts.clone(),
+                        shape_id: None,
+                    },
+                    [1.0; 3],
+                ),
+            ] {
                 let mut tris = Vec::new();
                 let hull = server_triangles(&c, &[], &mut tris);
                 let mut m = ChunkMeshes::default();
                 m.push_chunk(&c, &tris, space, reverses_winding(space), hull);
-                for tri in m.positions.chunks_exact(3).zip(m.tangents.chunks_exact(3)).zip(m.uvs.chunks_exact(3)).zip(m.normals.chunks_exact(3)) {
+                for tri in m
+                    .positions
+                    .chunks_exact(3)
+                    .zip(m.tangents.chunks_exact(3))
+                    .zip(m.uvs.chunks_exact(3))
+                    .zip(m.normals.chunks_exact(3))
+                {
                     let (((p, tg), uv), n) = tri;
                     let p: Vec<Vec3> = p.iter().map(|v| Vec3::from_array(*v)).collect();
                     let n = Vec3::from_array(n[0]);
@@ -688,7 +903,10 @@ mod tests {
                     let (gu, gv) = (g(du1, du2), g(dv1, dv2));
                     assert!(t.dot(gu) > 0.0, "tangent does not run along +u ({space:?})");
                     let bit = n.cross(t) * tg[0][3];
-                    assert!(bit.dot(gv) > 0.0, "w·(n×t) does not run along +v ({space:?})");
+                    assert!(
+                        bit.dot(gv) > 0.0,
+                        "w·(n×t) does not run along +v ({space:?})"
+                    );
                 }
             }
         }

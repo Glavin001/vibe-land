@@ -15,11 +15,14 @@ use vibe_land_perplayer::client::{BodyChange, Client};
 use vibe_land_perplayer::predict::Physics;
 use vibe_land_perplayer::structure::REMOVED;
 use vibe_land_perplayer::wire::{
-    encode_ack, encode_ack_missing, BodyKey, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS, PKT_PP_KEYFRAMES, VEHICLE_STRUCTURE_BASE,
+    encode_ack, encode_ack_missing, BodyKey, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS, PKT_PP_KEYFRAMES,
+    VEHICLE_STRUCTURE_BASE,
 };
 
 use crate::coords::Space;
-use crate::effects::{classify_motion_impact, MotionSample, Source, SourceKind, SourceState, SourceTable};
+use crate::effects::{
+    classify_motion_impact, MotionSample, Source, SourceKind, SourceState, SourceTable,
+};
 use crate::frame::*;
 
 /// Playout delay of the city stream, ticks (the browser's `delayTicks`).
@@ -46,18 +49,27 @@ pub enum ManifestError {
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ManifestError::HashMismatch { expected, actual } => write!(f, "city manifest hash {actual} is not the session's {expected}"),
+            ManifestError::HashMismatch { expected, actual } => write!(
+                f,
+                "city manifest hash {actual} is not the session's {expected}"
+            ),
             ManifestError::Decode(e) => write!(f, "city manifest: {e}"),
         }
     }
 }
 
 /// Check the manifest's bytes against the session's hash and decode them.
-pub fn decode_manifest(bytes: &[u8], expected_hash: Option<&str>) -> Result<DestructionManifest, ManifestError> {
+pub fn decode_manifest(
+    bytes: &[u8],
+    expected_hash: Option<&str>,
+) -> Result<DestructionManifest, ManifestError> {
     if let Some(expected) = expected_hash.filter(|h| !h.is_empty()) {
         let actual = hex::encode(Sha256::digest(bytes));
         if !actual.eq_ignore_ascii_case(expected) {
-            return Err(ManifestError::HashMismatch { expected: expected.to_string(), actual });
+            return Err(ManifestError::HashMismatch {
+                expected: expected.to_string(),
+                actual,
+            });
         }
     }
     manifest_binary::decode(bytes).map_err(|e| ManifestError::Decode(format!("{e:?}")))
@@ -78,7 +90,12 @@ impl CityModel {
     pub fn from_manifest(bytes: &[u8], space: Space) -> Result<Self, ManifestError> {
         let manifest = decode_manifest(bytes, None)?;
         let (chunks, surfaces, meshes) = city_tables(&manifest, space);
-        Ok(Self { hash: hex::encode(Sha256::digest(bytes)), chunks, surfaces, meshes })
+        Ok(Self {
+            hash: hex::encode(Sha256::digest(bytes)),
+            chunks,
+            surfaces,
+            meshes,
+        })
     }
 }
 
@@ -86,10 +103,18 @@ impl CityModel {
 pub fn city_tables(
     manifest: &DestructionManifest,
     space: Space,
-) -> (Vec<crate::frame::VlChunk>, Vec<crate::materials::VlChunkSurface>, crate::geometry::ChunkMeshes) {
+) -> (
+    Vec<crate::frame::VlChunk>,
+    Vec<crate::materials::VlChunkSurface>,
+    crate::geometry::ChunkMeshes,
+) {
     let catalog = crate::materials::Catalog::get();
     let surfaces = crate::materials::chunk_surfaces(manifest, catalog);
-    let meshes = crate::geometry::ChunkMeshes::build_with_surfaces(manifest, space, Some((&surfaces, catalog)));
+    let meshes = crate::geometry::ChunkMeshes::build_with_surfaces(
+        manifest,
+        space,
+        Some((&surfaces, catalog)),
+    );
     let chunks = chunk_table(manifest, space);
     (chunks, surfaces, meshes)
 }
@@ -98,11 +123,23 @@ fn appearance_colors(manifest: &DestructionManifest) -> Vec<u32> {
     manifest
         .material_appearance
         .iter()
-        .map(|a| a.color.as_deref().and_then(parse_hex_color).unwrap_or(DEFAULT_COLOR))
+        .map(|a| {
+            a.color
+                .as_deref()
+                .and_then(parse_hex_color)
+                .unwrap_or(DEFAULT_COLOR)
+        })
         .collect()
 }
 
-fn chunk_record(structure: u32, c: &ChunkDef, world_p: Vec3, world_q: Quat, colors: &[u32], space: Space) -> VlChunk {
+fn chunk_record(
+    structure: u32,
+    c: &ChunkDef,
+    world_p: Vec3,
+    world_q: Quat,
+    colors: &[u32],
+    space: Space,
+) -> VlChunk {
     let rest = world_p + world_q * Vec3::from_array(c.centroid);
     let mut flags = 0;
     if c.support {
@@ -117,7 +154,10 @@ fn chunk_record(structure: u32, c: &ChunkDef, world_p: Vec3, world_q: Quat, colo
         rest_pos: space.pos(rest),
         rest_quat: space.quat(world_q),
         extents: space.extents(Vec3::from_array(c.size)),
-        color_rgba: colors.get(c.material as usize).copied().unwrap_or(DEFAULT_COLOR),
+        color_rgba: colors
+            .get(c.material as usize)
+            .copied()
+            .unwrap_or(DEFAULT_COLOR),
         flags,
     }
 }
@@ -130,7 +170,14 @@ pub fn chunk_table(manifest: &DestructionManifest, space: Space) -> Vec<VlChunk>
         let world_p = Vec3::from_array(s.world_position);
         let world_q = Quat::from_array(s.world_rotation).normalize();
         for c in &s.chunks {
-            chunks.push(chunk_record(s.structure_id, c, world_p, world_q, &colors, space));
+            chunks.push(chunk_record(
+                s.structure_id,
+                c,
+                world_p,
+                world_q,
+                &colors,
+                space,
+            ));
         }
     }
     chunks
@@ -195,10 +242,26 @@ impl CityStream {
             for c in &s.chunks {
                 let index = chunks.len() as u32;
                 let rest = world_p + world_q * Vec3::from_array(c.centroid);
-                chunks.push(chunk_record(s.structure_id, c, world_p, world_q, &colors, space));
+                chunks.push(chunk_record(
+                    s.structure_id,
+                    c,
+                    world_p,
+                    world_q,
+                    &colors,
+                    space,
+                ));
                 chunk_index.insert((s.structure_id, c.node_index), index);
-                occluders.push(Occluder { structure: s.structure_id, node: c.node_index, centre: rest, rotation: world_q, half: Vec3::from_array(c.size) * 0.5 });
-                structure_chunks.entry(s.structure_id).or_default().push((c.node_index, index));
+                occluders.push(Occluder {
+                    structure: s.structure_id,
+                    node: c.node_index,
+                    centre: rest,
+                    rotation: world_q,
+                    half: Vec3::from_array(c.size) * 0.5,
+                });
+                structure_chunks
+                    .entry(s.structure_id)
+                    .or_default()
+                    .push((c.node_index, index));
             }
         }
 
@@ -253,7 +316,14 @@ impl CityStream {
                         self.reassign_structure(structure, frame);
                     }
                 }
-                BodyChange::Fracture { tick, structure, broken_bonds, removed_chunks, changed, .. } => {
+                BodyChange::Fracture {
+                    tick,
+                    structure,
+                    broken_bonds,
+                    removed_chunks,
+                    changed,
+                    ..
+                } => {
                     self.fractures += 1;
                     // Where it broke and how much: bonds clustered by cell, crushed chunks. Parted =
                     // the bond's two chunks now ride different bodies (the fracture is applied).
@@ -263,14 +333,29 @@ impl CityStream {
                     let nodes = broken_bonds
                         .iter()
                         .filter_map(|b| self.source_table.bond_nodes(structure, *b).map(|(n, _)| n))
-                        .chain(changed.iter().filter_map(|(_, members)| members.first().copied()));
+                        .chain(
+                            changed
+                                .iter()
+                                .filter_map(|(_, members)| members.first().copied()),
+                        );
                     for node in nodes {
-                        if let (Some(rest), Some((now, q))) = (self.chunk_rest_server(structure, node), self.chunk_world_server(structure, node)) {
-                            let world_q = self.client.structures.get(&structure).map_or(Quat::IDENTITY, |cs| cs.def.world_rotation);
+                        if let (Some(rest), Some((now, q))) = (
+                            self.chunk_rest_server(structure, node),
+                            self.chunk_world_server(structure, node),
+                        ) {
+                            let world_q = self
+                                .client
+                                .structures
+                                .get(&structure)
+                                .map_or(Quat::IDENTITY, |cs| cs.def.world_rotation);
                             riders.insert(node, (rest, now, q * world_q.inverse()));
                         }
                     }
-                    let locate = move |node: u32, x: Vec3| riders.get(&node).map_or(x, |&(rest, now, turn)| now + turn * (x - rest));
+                    let locate = move |node: u32, x: Vec3| {
+                        riders
+                            .get(&node)
+                            .map_or(x, |&(rest, now, turn)| now + turn * (x - rest))
+                    };
                     let client = &self.client;
                     let born: Vec<(Vec3, f32)> = changed
                         .iter()
@@ -343,7 +428,9 @@ impl CityStream {
                 self.motion_shape.remove(&key);
             }
             let moved = match self.last_pose.get(&key) {
-                Some(&(lp, lq, ls)) => ls != settled || lp.distance_squared(p) > 1e-10 || lq.dot(q).abs() < 1.0 - 1e-9,
+                Some(&(lp, lq, ls)) => {
+                    ls != settled || lp.distance_squared(p) > 1e-10 || lq.dot(q).abs() < 1.0 - 1e-9
+                }
                 None => true,
             };
             if moved {
@@ -361,7 +448,12 @@ impl CityStream {
         // about the group's centre (the web's presentVehicleDebris).
         let (groups, _) = self.client.vehicle_groups();
         for (key, p, q) in car_groups {
-            let Some(group) = groups.get(&key.structure).and_then(|g| g.iter().find(|g| g.body == key.body)) else { continue };
+            let Some(group) = groups
+                .get(&key.structure)
+                .and_then(|g| g.iter().find(|g| g.body == key.body))
+            else {
+                continue;
+            };
             let translation = p - q * group.centre;
             for &part in &group.members {
                 frame.car_parts.push(VlCarPart {
@@ -424,27 +516,51 @@ impl CityStream {
     fn members_of(&self, key: BodyKey) -> Vec<u32> {
         self.structure_chunks
             .get(&key.structure)
-            .map(|nodes| nodes.iter().filter(|(n, _)| self.client.chunk_body(key.structure, *n) == Some(key.body)).map(|(n, _)| *n).collect())
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter(|(n, _)| self.client.chunk_body(key.structure, *n) == Some(key.body))
+                    .map(|(n, _)| *n)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     fn note_motion(&mut self, key: BodyKey, position: Vec3, render_tick: f32) {
-        let Some(track) = self.client.track(key) else { return };
+        let Some(track) = self.client.track(key) else {
+            return;
+        };
         let (velocity, _) = track.velocity_at(render_tick, self.physics);
         let time_ms = f64::from(render_tick) / f64::from(self.sim_hz) * 1000.0;
         let mass_guess = 1.0;
-        let sample = MotionSample { position, velocity, time_ms, mass: mass_guess };
+        let sample = MotionSample {
+            position,
+            velocity,
+            time_ms,
+            mass: mass_guess,
+        };
         if self.motion_shape.len() > 8192 {
             self.motion_shape.clear(); // retired bodies' entries
         }
         if !self.motion_shape.contains_key(&key) {
             let members = self.members_of(key);
             let radius = self.source_table.radius_of(key.structure, &members);
-            let material = self.source_table.acoustic(members.first().map_or(0, |&n| self.source_table.material_of(key.structure, n)));
+            let material = self.source_table.acoustic(
+                members
+                    .first()
+                    .map_or(0, |&n| self.source_table.material_of(key.structure, n)),
+            );
             self.motion_shape.insert(key, (radius, material));
         }
         let (size, material) = self.motion_shape[&key];
-        self.motions.push(crate::audio::Motion { id: (u64::from(key.structure) << 32) | u64::from(key.body), position, velocity, time_ms, material, size });
+        self.motions.push(crate::audio::Motion {
+            id: (u64::from(key.structure) << 32) | u64::from(key.body),
+            position,
+            velocity,
+            time_ms,
+            material,
+            size,
+        });
         let Some((previous, last_impact_ms)) = self.motion.get(&key).copied() else {
             self.motion.insert(key, (sample, f64::NEG_INFINITY));
             return;
@@ -454,7 +570,8 @@ impl CityStream {
         }
         let mut impact_at = last_impact_ms;
         // Cheap test first (a real drop at all), then weigh the body.
-        if velocity.length() < previous.velocity.length() * 0.85 && time_ms - last_impact_ms > 220.0 {
+        if velocity.length() < previous.velocity.length() * 0.85 && time_ms - last_impact_ms > 220.0
+        {
             let members = self.members_of(key);
             let mass = self.source_table.mass_of(key.structure, &members);
             let weighed = MotionSample { mass, ..sample };
@@ -463,8 +580,17 @@ impl CityStream {
                 impact_at = time_ms;
                 // Collapse fronts: impacts' impulse (mass × |Δv|) per 8 m cell (dustImpacts.ts).
                 let impulse = mass * (weighed.velocity - previous.velocity).length();
-                self.source_state.note_impact(key.structure, render_tick as u32, position, impulse, time_ms, &mut self.sources);
-                let material = members.first().map_or(0, |&n| self.source_table.material_of(key.structure, n));
+                self.source_state.note_impact(
+                    key.structure,
+                    render_tick as u32,
+                    position,
+                    impulse,
+                    time_ms,
+                    &mut self.sources,
+                );
+                let material = members
+                    .first()
+                    .map_or(0, |&n| self.source_table.material_of(key.structure, n));
                 self.sources.push(Source {
                     kind: SourceKind::Impact,
                     structure: key.structure,
@@ -503,7 +629,12 @@ impl CityStream {
                 record.flags |= VL_CAR_HAS_WHEELS;
                 let scale = self.space.metres();
                 for (out_wheel, w) in record.wheels.iter_mut().zip(wheels) {
-                    *out_wheel = VlWheel { travel: w.travel * scale, steer: w.steer, spin: w.angle, grounded: u32::from(w.grounded) };
+                    *out_wheel = VlWheel {
+                        travel: w.travel * scale,
+                        steer: w.steer,
+                        spin: w.angle,
+                        grounded: u32::from(w.grounded),
+                    };
                 }
             }
             out.push(record);
@@ -513,25 +644,37 @@ impl CityStream {
     /// A car's part hulls (its asset's parts: part + shape + vertex, source frame): its detached
     /// groups then rest on the ground as the server's do (the web's `setVehicleParts`).
     pub fn set_vehicle_parts(&mut self, handle: u32, parts: Vec<Vec<Vec3>>) {
-        self.client.set_vehicle_parts(VEHICLE_STRUCTURE_BASE + handle, parts);
+        self.client
+            .set_vehicle_parts(VEHICLE_STRUCTURE_BASE + handle, parts);
     }
 
     /// Every chunk of `structure` from the client's current state (after a bootstrap).
     fn reassign_structure(&mut self, structure: u32, frame: &mut SceneFrame) {
-        let nodes: Vec<u32> = self.structure_chunks.get(&structure).map(|v| v.iter().map(|&(n, _)| n).collect()).unwrap_or_default();
+        let nodes: Vec<u32> = self
+            .structure_chunks
+            .get(&structure)
+            .map(|v| v.iter().map(|&(n, _)| n).collect())
+            .unwrap_or_default();
         for node in nodes {
             self.assign(structure, node, frame);
         }
     }
 
     fn assign(&self, structure: u32, node: u32, frame: &mut SceneFrame) {
-        let Some(&chunk) = self.chunk_index.get(&(structure, node)) else { return };
+        let Some(&chunk) = self.chunk_index.get(&(structure, node)) else {
+            return;
+        };
         let (body, local) = match self.client.chunk_body(structure, node) {
             None => (VL_BODY_STANDING, [0.0; 3]),
             Some(REMOVED) => (VL_BODY_REMOVED, [0.0; 3]),
             Some(id) => (id, self.space.pos(self.client.chunk_local(structure, node))),
         };
-        frame.assignments.push(VlChunkAssignment { chunk, structure, body, local_pos: local });
+        frame.assignments.push(VlChunkAssignment {
+            chunk,
+            structure,
+            body,
+            local_pos: local,
+        });
     }
 
     /// The keyframe ack, every [`ACK_INTERVAL_MS`].
@@ -590,10 +733,19 @@ impl CityStream {
         let cs = self.client.structures.get(&structure)?;
         let world_q = cs.def.world_rotation;
         match self.client.chunk_body(structure, node) {
-            None => Some((cs.def.world_position + world_q * cs.def.rest[node as usize], world_q)),
+            None => Some((
+                cs.def.world_position + world_q * cs.def.rest[node as usize],
+                world_q,
+            )),
             Some(REMOVED) => None,
             Some(id) => {
-                let (p, q) = self.client.track(BodyKey { structure, body: id })?.pose_at(self.client.render_tick(), self.client.physics);
+                let (p, q) = self
+                    .client
+                    .track(BodyKey {
+                        structure,
+                        body: id,
+                    })?
+                    .pose_at(self.client.render_tick(), self.client.physics);
                 Some((p + q * self.client.chunk_local(structure, node), q))
             }
         }
@@ -608,7 +760,9 @@ impl CityStream {
 fn parse_hex_color(text: &str) -> Option<u32> {
     let hex = text.trim().trim_start_matches('#');
     match hex.len() {
-        6 => u32::from_str_radix(hex, 16).ok().map(|rgb| (rgb << 8) | 0xFF),
+        6 => u32::from_str_radix(hex, 16)
+            .ok()
+            .map(|rgb| (rgb << 8) | 0xFF),
         8 => u32::from_str_radix(hex, 16).ok(),
         _ => None,
     }

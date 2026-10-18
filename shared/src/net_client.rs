@@ -58,15 +58,26 @@ pub enum DecodeError {
     /// The packet was empty.
     Empty,
     /// The packet ended before a field it must contain.
-    Truncated { kind: u8, needed: usize, remaining: usize },
+    Truncated {
+        kind: u8,
+        needed: usize,
+        remaining: usize,
+    },
 }
 
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DecodeError::Empty => write!(f, "empty packet"),
-            DecodeError::Truncated { kind, needed, remaining } => {
-                write!(f, "packet kind {kind} truncated: needed {needed} more bytes, {remaining} left")
+            DecodeError::Truncated {
+                kind,
+                needed,
+                remaining,
+            } => {
+                write!(
+                    f,
+                    "packet kind {kind} truncated: needed {needed} more bytes, {remaining} left"
+                )
             }
         }
     }
@@ -97,7 +108,9 @@ pub enum ServerMessage {
     Pong(u32),
     /// A packet this module leaves to another decoder (the city stream, vehicles, effects), or one
     /// the client does not handle yet. `kind` is its first byte; the full packet is the caller's.
-    Other { kind: u8 },
+    Other {
+        kind: u8,
+    },
 }
 
 /// Decode one server packet (reliable or datagram: the server falls back to the reliable stream
@@ -154,7 +167,11 @@ pub fn decode_server_packet(bytes: &[u8]) -> Result<ServerMessage, DecodeError> 
             for _ in 0..removed {
                 removed_ids.push(r.u32()?);
             }
-            ServerMessage::BatterySync(crate::protocol::BatterySyncPacket { full_resync, battery_states, removed_ids })
+            ServerMessage::BatterySync(crate::protocol::BatterySyncPacket {
+                full_resync,
+                battery_states,
+                removed_ids,
+            })
         }
         PKT_DAMAGE_EVENT => ServerMessage::DamageEvent(DamageEventPacket {
             attacker_player_id: r.u32()?,
@@ -165,7 +182,9 @@ pub fn decode_server_packet(bytes: &[u8]) -> Result<ServerMessage, DecodeError> 
             attacker_pz_mm: r.i32()?,
             server_time_ms: r.u32()?,
         }),
-        PKT_LOCAL_PLAYER_ENERGY => ServerMessage::LocalPlayerEnergy(LocalPlayerEnergyPacket { energy_centi: r.u32()? }),
+        PKT_LOCAL_PLAYER_ENERGY => ServerMessage::LocalPlayerEnergy(LocalPlayerEnergyPacket {
+            energy_centi: r.u32()?,
+        }),
         PKT_DYNAMIC_BODY_META => {
             let count = r.u16()? as usize;
             let mut entries = Vec::with_capacity(count.min(1024));
@@ -194,11 +213,12 @@ const WELCOME_WITH_CAPABILITIES_BYTES: usize = 22;
 
 fn decode_welcome(r: &mut Reader) -> Result<WelcomePacket, DecodeError> {
     let player_id = r.u32()?;
-    let (protocol_version, physics_backend, client_movement_mode) = if r.remaining() + 4 >= WELCOME_WITH_CAPABILITIES_BYTES {
-        (r.u16()?, r.u8()?, r.u8()?)
-    } else {
-        (1, PHYSICS_BACKEND_RAPIER, CLIENT_MOVEMENT_FULL_PREDICTION)
-    };
+    let (protocol_version, physics_backend, client_movement_mode) =
+        if r.remaining() + 4 >= WELCOME_WITH_CAPABILITIES_BYTES {
+            (r.u16()?, r.u8()?, r.u8()?)
+        } else {
+            (1, PHYSICS_BACKEND_RAPIER, CLIENT_MOVEMENT_FULL_PREDICTION)
+        };
     Ok(WelcomePacket {
         player_id,
         protocol_version,
@@ -215,7 +235,10 @@ fn decode_player_roster(r: &mut Reader) -> Result<PlayerRosterPacket, DecodeErro
     let count = r.u8()? as usize;
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
-        entries.push(PlayerRosterEntry { handle: r.u8()?, player_id: r.u32()? });
+        entries.push(PlayerRosterEntry {
+            handle: r.u8()?,
+            player_id: r.u32()?,
+        });
     }
     Ok(PlayerRosterPacket { entries })
 }
@@ -365,7 +388,10 @@ fn decode_snapshot_v2(r: &mut Reader) -> Result<SnapshotV2Packet, DecodeError> {
             let count = r.u8()? as usize;
             if r.remaining() >= count * SNAPSHOT_V2_REMOVAL_BYTES {
                 for _ in 0..count {
-                    packet.removals.push(SnapshotRemoval { handle: r.u16()?, age_ticks: r.u8()? });
+                    packet.removals.push(SnapshotRemoval {
+                        handle: r.u16()?,
+                        age_ticks: r.u8()?,
+                    });
                 }
             }
         }
@@ -449,13 +475,19 @@ pub fn server_packet_flat(bytes: &[u8]) -> Result<Option<Vec<f64>>, DecodeError>
         ServerMessage::DynamicBodyMeta(m) => {
             let mut out = vec![kind, m.entries.len() as f64];
             for e in &m.entries {
-                out.extend([f64::from(e.handle), f64::from(e.body_id), f64::from(e.shape_type)]);
+                out.extend([
+                    f64::from(e.handle),
+                    f64::from(e.body_id),
+                    f64::from(e.shape_type),
+                ]);
                 out.extend([e.hx_cm, e.hy_cm, e.hz_cm].map(f64::from));
             }
             out
         }
         ServerMessage::Ping(v) | ServerMessage::Pong(v) => vec![kind, f64::from(v)],
-        ServerMessage::SnapshotV2(_) | ServerMessage::BatterySync(_) | ServerMessage::Other { .. } => return Ok(None),
+        ServerMessage::SnapshotV2(_)
+        | ServerMessage::BatterySync(_)
+        | ServerMessage::Other { .. } => return Ok(None),
     }))
 }
 
@@ -481,7 +513,11 @@ pub const SNAPSHOT_V2_FLAT_REMOVAL: usize = 2;
 /// then the removals (raw handle, age ticks).
 pub fn snapshot_v2_flat(bytes: &[u8]) -> Result<Vec<f64>, DecodeError> {
     let ServerMessage::SnapshotV2(s) = decode_server_packet(bytes)? else {
-        return Err(DecodeError::Truncated { kind: bytes.first().copied().unwrap_or(0), needed: 1, remaining: 0 });
+        return Err(DecodeError::Truncated {
+            kind: bytes.first().copied().unwrap_or(0),
+            needed: 1,
+            remaining: 0,
+        });
     };
     // Which optional tail parts the packet carries: the decoder reads each exactly when these hold
     // (`decode_snapshot_v2`), and absent parts leave defaults the web must not see as values.
@@ -515,50 +551,117 @@ pub fn snapshot_v2_flat(bytes: &[u8]) -> Result<Vec<f64>, DecodeError> {
             + s.vehicle_states.len() * SNAPSHOT_V2_FLAT_VEHICLE
             + s.removals.len() * SNAPSHOT_V2_FLAT_REMOVAL,
     );
-    let (depth, target) = s.input_queue.map_or((-1.0, -1.0), |(d, t)| (f64::from(d), f64::from(t)));
+    let (depth, target) = s
+        .input_queue
+        .map_or((-1.0, -1.0), |(d, t)| (f64::from(d), f64::from(t)));
     out.extend_from_slice(&[
         f64::from(s.server_tick),
         f64::from(s.ack_input_seq),
         f64::from(s.anchor_px_mm),
         f64::from(s.anchor_py_mm),
         f64::from(s.anchor_pz_mm),
-        if has_trailer { f64::from(s.server_wall_us) } else { -1.0 },
+        if has_trailer {
+            f64::from(s.server_wall_us)
+        } else {
+            -1.0
+        },
         s.remote_players.len() as f64,
         s.sphere_states.len() as f64,
         s.box_states.len() as f64,
         s.vehicle_states.len() as f64,
-        if has_removals { s.removals.len() as f64 } else { -1.0 },
+        if has_removals {
+            s.removals.len() as f64
+        } else {
+            -1.0
+        },
         depth,
         target,
     ]);
     let st = &s.self_state;
     out.extend([st.vx_cms, st.vy_cms, st.vz_cms, st.yaw_i16, st.pitch_i16].map(f64::from));
-    out.extend([f64::from(st.hp), f64::from(st.flags), f64::from(st.support_handle)]);
+    out.extend([
+        f64::from(st.hp),
+        f64::from(st.flags),
+        f64::from(st.support_handle),
+    ]);
     out.extend(st.support_local_q2_5mm.map(f64::from));
     out.extend(st.support_velocity_cms.map(f64::from));
     out.push(f64::from(st.support_flags));
     out.extend(st.support_angular_velocity_mrads.map(f64::from));
     for p in &s.remote_players {
         out.push(f64::from(p.handle));
-        out.extend([p.dx_q2_5mm, p.dy_q2_5mm, p.dz_q2_5mm, p.vx_cms, p.vy_cms, p.vz_cms, p.yaw_i16, p.pitch_i16].map(f64::from));
+        out.extend(
+            [
+                p.dx_q2_5mm,
+                p.dy_q2_5mm,
+                p.dz_q2_5mm,
+                p.vx_cms,
+                p.vy_cms,
+                p.vz_cms,
+                p.yaw_i16,
+                p.pitch_i16,
+            ]
+            .map(f64::from),
+        );
         out.extend([f64::from(p.hp), f64::from(p.flags)]);
     }
     for b in &s.sphere_states {
         out.push(f64::from(b.handle));
-        out.extend([b.dx_q2_5mm, b.dy_q2_5mm, b.dz_q2_5mm, b.vx_cms, b.vy_cms, b.vz_cms, b.wx_mrads, b.wy_mrads, b.wz_mrads].map(f64::from));
+        out.extend(
+            [
+                b.dx_q2_5mm,
+                b.dy_q2_5mm,
+                b.dz_q2_5mm,
+                b.vx_cms,
+                b.vy_cms,
+                b.vz_cms,
+                b.wx_mrads,
+                b.wy_mrads,
+                b.wz_mrads,
+            ]
+            .map(f64::from),
+        );
     }
     for b in &s.box_states {
         out.push(f64::from(b.handle));
         out.extend(
-            [b.dx_q2_5mm, b.dy_q2_5mm, b.dz_q2_5mm, b.qx_snorm, b.qy_snorm, b.qz_snorm, b.qw_snorm, b.vx_cms, b.vy_cms, b.vz_cms, b.wx_mrads, b.wy_mrads, b.wz_mrads]
-                .map(f64::from),
+            [
+                b.dx_q2_5mm,
+                b.dy_q2_5mm,
+                b.dz_q2_5mm,
+                b.qx_snorm,
+                b.qy_snorm,
+                b.qz_snorm,
+                b.qw_snorm,
+                b.vx_cms,
+                b.vy_cms,
+                b.vz_cms,
+                b.wx_mrads,
+                b.wy_mrads,
+                b.wz_mrads,
+            ]
+            .map(f64::from),
         );
     }
     for v in &s.vehicle_states {
         out.extend([v.handle, v.vehicle_type, v.driver_handle, v.flags].map(f64::from));
         out.extend(
-            [v.dx_q2_5mm, v.dy_q2_5mm, v.dz_q2_5mm, v.qx_snorm, v.qy_snorm, v.qz_snorm, v.qw_snorm, v.vx_cms, v.vy_cms, v.vz_cms, v.wx_mrads, v.wy_mrads, v.wz_mrads]
-                .map(f64::from),
+            [
+                v.dx_q2_5mm,
+                v.dy_q2_5mm,
+                v.dz_q2_5mm,
+                v.qx_snorm,
+                v.qy_snorm,
+                v.qz_snorm,
+                v.qw_snorm,
+                v.vx_cms,
+                v.vy_cms,
+                v.vz_cms,
+                v.wx_mrads,
+                v.wy_mrads,
+                v.wz_mrads,
+            ]
+            .map(f64::from),
         );
     }
     if has_removals {
@@ -631,7 +734,8 @@ pub struct MeteorLaunched {
 pub fn decode_meteor_launched(bytes: &[u8]) -> Result<MeteorLaunched, DecodeError> {
     let (&kind, body) = bytes.split_first().ok_or(DecodeError::Empty)?;
     let mut r = Reader { bytes: body, kind };
-    let mut v3 = |r: &mut Reader| -> Result<[f32; 3], DecodeError> { Ok([r.f32()?, r.f32()?, r.f32()?]) };
+    let mut v3 =
+        |r: &mut Reader| -> Result<[f32; 3], DecodeError> { Ok([r.f32()?, r.f32()?, r.f32()?]) };
     Ok(MeteorLaunched {
         body_id: r.u32()?,
         shooter_player_id: r.u32()?,
@@ -663,17 +767,36 @@ pub struct VehicleAsset {
 /// Decode a `PKT_VEHICLE_ASSET` packet.
 pub fn decode_vehicle_asset(bytes: &[u8]) -> Result<VehicleAsset, DecodeError> {
     let (&kind, body) = bytes.split_first().ok_or(DecodeError::Empty)?;
-    let malformed = || DecodeError::Truncated { kind, needed: body.len() + 1, remaining: body.len() };
+    let malformed = || DecodeError::Truncated {
+        kind,
+        needed: body.len() + 1,
+        remaining: body.len(),
+    };
     let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| malformed())?;
-    let handle = value.get("handle").and_then(serde_json::Value::as_u64).and_then(|h| u8::try_from(h).ok()).ok_or_else(malformed)?;
+    let handle = value
+        .get("handle")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|h| u8::try_from(h).ok())
+        .ok_or_else(malformed)?;
     let vehicle = value.get("vehicle").ok_or_else(malformed)?;
-    let text = |key: &str| vehicle.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
+    let text = |key: &str| {
+        vehicle
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
     Ok(VehicleAsset {
         handle,
         geometry_hash: text("geometryHash").ok_or_else(malformed)?,
         asset_hash: text("assetHash").unwrap_or_default(),
-        configuration: vehicle.get("configuration").cloned().unwrap_or(serde_json::Value::Null),
-        driving: vehicle.get("driving").cloned().unwrap_or(serde_json::Value::Null),
+        configuration: vehicle
+            .get("configuration")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        driving: vehicle
+            .get("driving")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
     })
 }
 
@@ -703,9 +826,18 @@ pub fn decode_vehicle_rig(bytes: &[u8]) -> Result<VehicleRig, DecodeError> {
     let handle = r.u8()?;
     let mut wheels = [RigWheel::default(); 4];
     for w in &mut wheels {
-        *w = RigWheel { travel_m: r.f32()?, steer_rad: r.f32()?, rotation_rad: r.f32()?, grounded: r.u8()? != 0 };
+        *w = RigWheel {
+            travel_m: r.f32()?,
+            steer_rad: r.f32()?,
+            rotation_rad: r.f32()?,
+            grounded: r.u8()? != 0,
+        };
     }
-    Ok(VehicleRig { server_tick, handle, wheels })
+    Ok(VehicleRig {
+        server_tick,
+        handle,
+        wheels,
+    })
 }
 
 /// One contact the server judged audible (`PKT_AUDIO_CONTACTS`, server `contact_audio.rs`):
@@ -782,7 +914,11 @@ pub fn js_to_int32(x: f64) -> i32 {
         return 0;
     }
     let m = x.trunc().rem_euclid(4_294_967_296.0);
-    (if m >= 2_147_483_648.0 { m - 4_294_967_296.0 } else { m }) as i32
+    (if m >= 2_147_483_648.0 {
+        m - 4_294_967_296.0
+    } else {
+        m
+    }) as i32
 }
 
 /// JavaScript's `Math.round`: halves toward +∞.
@@ -804,20 +940,32 @@ pub fn client_angle_i16(angle_rad: f64) -> i16 {
 
 /// `f32ToSnorm16`, written as `setInt16` writes it.
 pub fn client_snorm16(value: f64) -> i16 {
-    let clamped = if value.is_nan() { value } else { value.clamp(-1.0, 1.0) };
+    let clamped = if value.is_nan() {
+        value
+    } else {
+        value.clamp(-1.0, 1.0)
+    };
     js_to_int32(js_round(clamped * 32767.0)) as i16
 }
 
 /// `clampI8`, written as `setInt8` writes it.
 pub fn client_i8(value: f64) -> i8 {
     let r = js_round(value);
-    let clamped = if r.is_nan() { r } else { r.clamp(-127.0, 127.0) };
+    let clamped = if r.is_nan() {
+        r
+    } else {
+        r.clamp(-127.0, 127.0)
+    };
     js_to_int32(clamped) as i8
 }
 
 /// `setUint64` of a JavaScript number: floored, at least 0, the low and high 32-bit words.
 pub fn js_u64(value: f64) -> u64 {
-    let n = if value.is_nan() { 0.0 } else { value.floor().max(0.0) };
+    let n = if value.is_nan() {
+        0.0
+    } else {
+        value.floor().max(0.0)
+    };
     let low = js_to_int32(n) as u32;
     let high = js_to_int32((n / 4_294_967_296.0).floor()) as u32;
     (u64::from(high) << 32) | u64::from(low)
@@ -854,7 +1002,15 @@ pub fn encode_input_bundle_js(frames: &[f64]) -> Result<Vec<u8>, &'static str> {
 
 /// A fire command from the web's numbers (`encodeFirePacket`).
 #[allow(clippy::too_many_arguments)]
-pub fn encode_fire_js(seq: f64, shot_id: f64, weapon: f64, client_fire_time_us: f64, interp_ms: f64, dynamic_interp_ms: f64, dir: [f64; 3]) -> Vec<u8> {
+pub fn encode_fire_js(
+    seq: f64,
+    shot_id: f64,
+    weapon: f64,
+    client_fire_time_us: f64,
+    interp_ms: f64,
+    dynamic_interp_ms: f64,
+    dir: [f64; 3],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(26);
     out.push(PKT_FIRE);
     out.extend_from_slice(&js_u16(seq).to_le_bytes());
@@ -870,7 +1026,13 @@ pub fn encode_fire_js(seq: f64, shot_id: f64, weapon: f64, client_fire_time_us: 
 }
 
 /// A melee swing from the web's numbers (`encodeMeleePacket`).
-pub fn encode_melee_js(seq: f64, swing_id: f64, client_time_us: f64, yaw: f64, pitch: f64) -> Vec<u8> {
+pub fn encode_melee_js(
+    seq: f64,
+    swing_id: f64,
+    client_time_us: f64,
+    yaw: f64,
+    pitch: f64,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(19);
     out.push(PKT_MELEE);
     out.extend_from_slice(&js_u16(seq).to_le_bytes());
@@ -882,7 +1044,11 @@ pub fn encode_melee_js(seq: f64, swing_id: f64, client_time_us: f64, yaw: f64, p
 }
 
 /// A client hello from the web's values (`encodeClientHello`).
-pub fn encode_client_hello_js(match_id: &str, protocol_version: f64, movement_caps: f64) -> Vec<u8> {
+pub fn encode_client_hello_js(
+    match_id: &str,
+    protocol_version: f64,
+    movement_caps: f64,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(6 + match_id.len());
     out.push(PKT_CLIENT_HELLO);
     out.extend_from_slice(&js_u16(match_id.len() as f64).to_le_bytes());
@@ -984,7 +1150,11 @@ impl<'a> Reader<'a> {
 
     fn take<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
         if self.bytes.len() < N {
-            return Err(DecodeError::Truncated { kind: self.kind, needed: N, remaining: self.bytes.len() });
+            return Err(DecodeError::Truncated {
+                kind: self.kind,
+                needed: N,
+                remaining: self.bytes.len(),
+            });
         }
         let (head, tail) = self.bytes.split_at(N);
         self.bytes = tail;
@@ -1025,7 +1195,16 @@ mod tests {
         for len in 1..19 {
             let mut welcome = vec![0u8; len];
             welcome[0] = PKT_WELCOME;
-            assert!(matches!(decode_server_packet(&welcome), Err(DecodeError::Truncated { kind: PKT_WELCOME, .. })), "len {len}");
+            assert!(
+                matches!(
+                    decode_server_packet(&welcome),
+                    Err(DecodeError::Truncated {
+                        kind: PKT_WELCOME,
+                        ..
+                    })
+                ),
+                "len {len}"
+            );
         }
         for len in 1..34 {
             let mut snapshot = vec![0u8; len];
@@ -1044,7 +1223,9 @@ mod tests {
         w.extend(30u16.to_le_bytes());
         w.extend(123_456u64.to_le_bytes());
         w.extend(50u16.to_le_bytes());
-        let ServerMessage::Welcome(p) = decode_server_packet(&w).unwrap() else { panic!() };
+        let ServerMessage::Welcome(p) = decode_server_packet(&w).unwrap() else {
+            panic!()
+        };
         assert_eq!(
             p,
             WelcomePacket {
@@ -1063,7 +1244,10 @@ mod tests {
     #[test]
     fn unknown_kinds_pass_through() {
         // 132 is perplayer::wire::PKT_PP_KEYFRAMES (shared does not depend on perplayer).
-        assert!(matches!(decode_server_packet(&[132, 1, 2, 3]), Ok(ServerMessage::Other { kind: 132 })));
+        assert!(matches!(
+            decode_server_packet(&[132, 1, 2, 3]),
+            Ok(ServerMessage::Other { kind: 132 })
+        ));
     }
 
     #[test]
@@ -1092,6 +1276,9 @@ mod tests {
         assert_eq!(u16::from_le_bytes([hello[11], hello[12]]), PROTOCOL_VERSION);
         assert_eq!(hello[13], CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE);
         let framed = frame_reliable(&hello);
-        assert_eq!(u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize, hello.len());
+        assert_eq!(
+            u32::from_le_bytes(framed[..4].try_into().unwrap()) as usize,
+            hello.len()
+        );
     }
 }

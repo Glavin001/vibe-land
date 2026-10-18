@@ -61,21 +61,27 @@ impl PerPlayerClient {
             }
             n_at += n;
             let b = bond_counts[i] as usize;
-            let list = (0..b).map(|k| (bonds[(b_at + k) * 2], bonds[(b_at + k) * 2 + 1])).collect();
+            let list = (0..b)
+                .map(|k| (bonds[(b_at + k) * 2], bonds[(b_at + k) * 2 + 1]))
+                .collect();
             b_at += b;
-            defs.push(StructureDef::new(
-                id,
-                Vec3::new(p[0], p[1], p[2]),
-                Quat::from_xyzw(p[3], p[4], p[5], p[6]).normalize(),
-                rest,
-                mass_center,
-                mass,
-                support,
-                list,
-            )
-            .with_half_extents(half));
+            defs.push(
+                StructureDef::new(
+                    id,
+                    Vec3::new(p[0], p[1], p[2]),
+                    Quat::from_xyzw(p[3], p[4], p[5], p[6]).normalize(),
+                    rest,
+                    mass_center,
+                    mass,
+                    support,
+                    list,
+                )
+                .with_half_extents(half),
+            );
         }
-        PerPlayerClient { inner: Client::new(defs, Physics::at_hz(hz, gravity_y), hz, delay_ticks) }
+        PerPlayerClient {
+            inner: Client::new(defs, Physics::at_hz(hz, gravity_y), hz, delay_ticks),
+        }
     }
 
     pub fn ingest(&mut self, bytes: &[u8], arrival_ms: f64) {
@@ -108,7 +114,18 @@ impl PerPlayerClient {
         for (key, p, q, settled) in poses {
             // Last: 0 while it moves; at rest, 1 + the tick it settled at.
             let rest = settled.map_or(0.0, |t| t as f32 + 1.0);
-            out.extend_from_slice(&[key.structure as f32, key.body as f32, p.x, p.y, p.z, q.x, q.y, q.z, q.w, rest]);
+            out.extend_from_slice(&[
+                key.structure as f32,
+                key.body as f32,
+                p.x,
+                p.y,
+                p.z,
+                q.x,
+                q.y,
+                q.z,
+                q.w,
+                rest,
+            ]);
         }
         out
     }
@@ -122,7 +139,14 @@ impl PerPlayerClient {
         for change in self.inner.drain_body_changes() {
             match change {
                 BodyChange::Reset => out.push(1),
-                BodyChange::Fracture { tick, structure, broken_bonds, removed_chunks, retired, changed } => {
+                BodyChange::Fracture {
+                    tick,
+                    structure,
+                    broken_bonds,
+                    removed_chunks,
+                    retired,
+                    changed,
+                } => {
                     out.extend_from_slice(&[0, tick, structure]);
                     for list in [&broken_bonds, &removed_chunks, &retired] {
                         out.push(list.len() as u32);
@@ -173,7 +197,13 @@ impl PerPlayerClient {
             Some((newest, mask)) => {
                 // Then the bodies it could not decode: count, then (structure, body) each.
                 let missing = self.inner.take_missing_baselines();
-                let mut out = vec![newest, mask as u32, (mask >> 32) as u32, self.inner.events_through(), missing.len() as u32];
+                let mut out = vec![
+                    newest,
+                    mask as u32,
+                    (mask >> 32) as u32,
+                    self.inner.events_through(),
+                    missing.len() as u32,
+                ];
                 out.extend(missing.iter().flat_map(|k| [k.structure, k.body]));
                 out
             }
@@ -195,7 +225,17 @@ impl PerPlayerClient {
         for _ in 0..value(0) as usize {
             let n = value(at) as usize;
             at += 1;
-            parts.push((0..n).map(|i| Vec3::new(value(at + 3 * i), value(at + 3 * i + 1), value(at + 3 * i + 2))).collect());
+            parts.push(
+                (0..n)
+                    .map(|i| {
+                        Vec3::new(
+                            value(at + 3 * i),
+                            value(at + 3 * i + 1),
+                            value(at + 3 * i + 2),
+                        )
+                    })
+                    .collect(),
+            );
             at += 3 * n;
         }
         self.inner.set_vehicle_parts(structure, parts);
@@ -211,7 +251,11 @@ impl PerPlayerClient {
 
     /// `car_states` as drawn at `tick` (NaN: the car clock); moves no clock.
     pub fn car_states_at(&self, tick: f32) -> Vec<f32> {
-        let cars = if tick.is_finite() { self.inner.car_states_at(tick) } else { self.inner.car_states() };
+        let cars = if tick.is_finite() {
+            self.inner.car_states_at(tick)
+        } else {
+            self.inner.car_states()
+        };
         let mut out = Vec::with_capacity(cars.len() * 35);
         for car in cars {
             out.push((car.structure - crate::wire::VEHICLE_STRUCTURE_BASE) as f32);
@@ -221,7 +265,13 @@ impl PerPlayerClient {
             out.extend_from_slice(&car.angular_velocity.to_array());
             out.push(if car.wheels.is_some() { 1.0 } else { 0.0 });
             for w in car.wheels.unwrap_or_default() {
-                out.extend_from_slice(&[w.travel, w.steer, w.angle, w.rate, if w.grounded { 1.0 } else { 0.0 }]);
+                out.extend_from_slice(&[
+                    w.travel,
+                    w.steer,
+                    w.angle,
+                    w.rate,
+                    if w.grounded { 1.0 } else { 0.0 },
+                ]);
             }
         }
         out
@@ -241,7 +291,13 @@ impl PerPlayerClient {
         for (&structure, groups) in cars {
             out.extend_from_slice(&[structure as f32, groups.len() as f32]);
             for g in groups {
-                out.extend_from_slice(&[g.body as f32, g.centre.x, g.centre.y, g.centre.z, g.members.len() as f32]);
+                out.extend_from_slice(&[
+                    g.body as f32,
+                    g.centre.x,
+                    g.centre.y,
+                    g.centre.z,
+                    g.members.len() as f32,
+                ]);
                 out.extend(g.members.iter().map(|&m| m as f32));
             }
         }

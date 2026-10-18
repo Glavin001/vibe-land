@@ -21,7 +21,9 @@ pub const DIRT_END: f32 = 0.72;
 pub fn macro_noise() -> Vec<u8> {
     let size = MACRO_NOISE_SIZE;
     let fract = |x: f64| x - x.floor();
-    let hash = |x: f64, y: f64, seed: f64| fract((x * 127.1 + y * 311.7 + seed * 74.7).sin() * 43758.5453123);
+    let hash = |x: f64, y: f64, seed: f64| {
+        fract((x * 127.1 + y * 311.7 + seed * 74.7).sin() * 43758.5453123)
+    };
     let smooth = |t: f64| t * t * (3.0 - 2.0 * t);
     let noise = |x: f64, y: f64, period: f64, seed: f64| {
         let (ix, iy) = (x.floor(), y.floor());
@@ -40,7 +42,13 @@ pub fn macro_noise() -> Vec<u8> {
             let (mut sum, mut amp, mut norm) = (0.0, 0.5, 0.0);
             for octave in 0..4 {
                 let period = f64::from(3u32 << octave);
-                sum += amp * noise(u * period, v * period, period, 55.2 + f64::from(octave) * 17.31);
+                sum += amp
+                    * noise(
+                        u * period,
+                        v * period,
+                        period,
+                        55.2 + f64::from(octave) * 17.31,
+                    );
                 norm += amp;
                 amp *= 0.5;
             }
@@ -61,7 +69,10 @@ mod tests {
     fn noise_matches_the_web() {
         let n = macro_noise();
         let at = |x: usize, y: usize| n[y * MACRO_NOISE_SIZE + x];
-        assert_eq!([at(0, 0), at(17, 3), at(128, 200), at(255, 255)], WEB_TEXELS);
+        assert_eq!(
+            [at(0, 0), at(17, 3), at(128, 200), at(255, 255)],
+            WEB_TEXELS
+        );
         assert_eq!(n.iter().map(|&b| u64::from(b)).sum::<u64>(), WEB_SUM);
     }
 

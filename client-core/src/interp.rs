@@ -49,7 +49,11 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 }
 
 fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
-    [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]
+    [
+        lerp(a[0], b[0], t),
+        lerp(a[1], b[1], t),
+        lerp(a[2], b[2], t),
+    ]
 }
 
 /// `lerpAngle`: the short way round.
@@ -66,7 +70,11 @@ fn lerp_angle(a: f64, b: f64, t: f64) -> f64 {
 }
 
 /// `insertWithRestHold` for players.
-fn insert_with_rest_hold(queue: &mut Vec<PlayerSample>, sample: PlayerSample, snapshot_interval_us: f64) {
+fn insert_with_rest_hold(
+    queue: &mut Vec<PlayerSample>,
+    sample: PlayerSample,
+    snapshot_interval_us: f64,
+) {
     let mut i = queue.len();
     while i > 0 {
         i -= 1;
@@ -74,7 +82,9 @@ fn insert_with_rest_hold(queue: &mut Vec<PlayerSample>, sample: PlayerSample, sn
         if !hold.held || hold.server_time_us < sample.server_time_us {
             continue;
         }
-        if hold.server_time_us == sample.server_time_us || distance3(hold.position, sample.position) > REST_HOLD_TOLERANCE_M {
+        if hold.server_time_us == sample.server_time_us
+            || distance3(hold.position, sample.position) > REST_HOLD_TOLERANCE_M
+        {
             queue.remove(i);
         }
     }
@@ -89,7 +99,14 @@ fn insert_with_rest_hold(queue: &mut Vec<PlayerSample>, sample: PlayerSample, sn
             && sample.server_time_us - previous.server_time_us > 1.5 * snapshot_interval_us
             && at_rest(&previous)
         {
-            queue.insert(at, PlayerSample { server_time_us: sample.server_time_us - snapshot_interval_us, held: true, ..previous });
+            queue.insert(
+                at,
+                PlayerSample {
+                    server_time_us: sample.server_time_us - snapshot_interval_us,
+                    held: true,
+                    ..previous
+                },
+            );
         }
     }
 }
@@ -109,13 +126,23 @@ impl Default for PlayerInterpolator {
 
 impl PlayerInterpolator {
     pub fn new(max_samples: usize) -> Self {
-        Self { by_entity: HashMap::new(), max_samples }
+        Self {
+            by_entity: HashMap::new(),
+            max_samples,
+        }
     }
 
     /// A snapshot's sample of `id`; `snapshot_interval_us` (0 for none) enables rest holds.
     pub fn push(&mut self, id: u32, sample: PlayerSample, snapshot_interval_us: f64) {
         let queue = self.by_entity.entry(id).or_default();
-        insert_with_rest_hold(queue, PlayerSample { held: false, ..sample }, snapshot_interval_us);
+        insert_with_rest_hold(
+            queue,
+            PlayerSample {
+                held: false,
+                ..sample
+            },
+            snapshot_interval_us,
+        );
         while queue.len() > self.max_samples {
             queue.remove(0);
         }
@@ -140,7 +167,12 @@ impl PlayerInterpolator {
 
     /// The newest snapshot sample (not a rest hold).
     pub fn latest(&self, id: u32) -> Option<PlayerSample> {
-        self.by_entity.get(&id)?.iter().rev().find(|s| !s.held).copied()
+        self.by_entity
+            .get(&id)?
+            .iter()
+            .rev()
+            .find(|s| !s.held)
+            .copied()
     }
 
     /// The player at `target_us` of server time.
@@ -156,7 +188,9 @@ impl PlayerInterpolator {
                 if next.server_time_us == prev.server_time_us {
                     return Some(next);
                 }
-                let alpha = ((target_us - prev.server_time_us) / (next.server_time_us - prev.server_time_us)).clamp(0.0, 1.0);
+                let alpha = ((target_us - prev.server_time_us)
+                    / (next.server_time_us - prev.server_time_us))
+                    .clamp(0.0, 1.0);
                 return Some(PlayerSample {
                     server_time_us: target_us,
                     position: lerp3(prev.position, next.position, alpha),
@@ -177,6 +211,9 @@ impl PlayerInterpolator {
         let s = extrapolate_us / 1_000_000.0;
         let p = latest.position;
         let v = latest.velocity;
-        Some(PlayerSample { position: [p[0] + v[0] * s, p[1] + v[1] * s, p[2] + v[2] * s], ..latest })
+        Some(PlayerSample {
+            position: [p[0] + v[0] * s, p[1] + v[1] * s, p[2] + v[2] * s],
+            ..latest
+        })
     }
 }

@@ -112,7 +112,12 @@ impl Parcel {
 
 /// [`eval_parcel`] for a renderer's parcel `p` at age `age_s`, in a wind of `wind` (server space,
 /// m/s): the cloud's box in the renderer's space, or `None` once its life is over.
-pub fn eval_vl(p: &VlDustParcel, age_s: f32, wind: [f32; 3], space: crate::coords::Space) -> Option<VlDustEval> {
+pub fn eval_vl(
+    p: &VlDustParcel,
+    age_s: f32,
+    wind: [f32; 3],
+    space: crate::coords::Space,
+) -> Option<VlDustEval> {
     let to_server = |a: [f32; 3]| {
         let s = space.pos_to_server(a);
         [f64::from(s.x), f64::from(s.y), f64::from(s.z)]
@@ -127,9 +132,20 @@ pub fn eval_vl(p: &VlDustParcel, age_s: f32, wind: [f32; 3], space: crate::coord
         shape: p.shape,
         palette: p.palette,
     };
-    let ((c, size), r, t, fraction) = eval_parcel(&parcel, f64::from(age_s) * 1000.0, f64::from(wind[0]), f64::from(wind[2]))?;
+    let ((c, size), r, t, fraction) = eval_parcel(
+        &parcel,
+        f64::from(age_s) * 1000.0,
+        f64::from(wind[0]),
+        f64::from(wind[2]),
+    )?;
     let centre = space.pos(glam::Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32));
-    let size = space.pos(glam::Vec3::new(size[0] as f32, size[1] as f32, size[2] as f32)).map(f32::abs);
+    let size = space
+        .pos(glam::Vec3::new(
+            size[0] as f32,
+            size[1] as f32,
+            size[2] as f32,
+        ))
+        .map(f32::abs);
     Some(VlDustEval {
         centre,
         size,
@@ -175,11 +191,56 @@ pub struct ShapeCurve {
 
 /// Indexed by shape (`DUST_SHAPES`).
 pub const DUST_SHAPES: [ShapeCurve; 5] = [
-    ShapeCurve { r0: 1.0, growth: 0.9, rise: 2.0, life: 10.0, aspect_y: 0.75, drag: 1.4, density: 1.6, erosion: 0.55 },
-    ShapeCurve { r0: 1.2, growth: 1.3, rise: 1.2, life: 14.0, aspect_y: 0.40, drag: 1.4, density: 1.2, erosion: 0.50 },
-    ShapeCurve { r0: 0.8, growth: 0.9, rise: 2.0, life: 12.0, aspect_y: 0.90, drag: 0.9, density: 0.7, erosion: 0.60 },
-    ShapeCurve { r0: 0.6, growth: 1.1, rise: 0.4, life: 5.0, aspect_y: 0.80, drag: 2.2, density: 1.8, erosion: 0.70 },
-    ShapeCurve { r0: 1.5, growth: 1.6, rise: 0.8, life: 24.0, aspect_y: 0.30, drag: 0.8, density: 1.0, erosion: 0.45 },
+    ShapeCurve {
+        r0: 1.0,
+        growth: 0.9,
+        rise: 2.0,
+        life: 10.0,
+        aspect_y: 0.75,
+        drag: 1.4,
+        density: 1.6,
+        erosion: 0.55,
+    },
+    ShapeCurve {
+        r0: 1.2,
+        growth: 1.3,
+        rise: 1.2,
+        life: 14.0,
+        aspect_y: 0.40,
+        drag: 1.4,
+        density: 1.2,
+        erosion: 0.50,
+    },
+    ShapeCurve {
+        r0: 0.8,
+        growth: 0.9,
+        rise: 2.0,
+        life: 12.0,
+        aspect_y: 0.90,
+        drag: 0.9,
+        density: 0.7,
+        erosion: 0.60,
+    },
+    ShapeCurve {
+        r0: 0.6,
+        growth: 1.1,
+        rise: 0.4,
+        life: 5.0,
+        aspect_y: 0.80,
+        drag: 2.2,
+        density: 1.8,
+        erosion: 0.70,
+    },
+    ShapeCurve {
+        r0: 1.5,
+        growth: 1.6,
+        rise: 0.8,
+        life: 24.0,
+        aspect_y: 0.30,
+        drag: 0.8,
+        density: 1.0,
+        erosion: 0.45,
+    },
 ];
 
 /// A parcel drawn now (`DustEval`): the cloud's box centre and size, server space.
@@ -200,7 +261,12 @@ pub struct VlDustEval {
 
 /// `evalParcel` without the room measurement: where parcel `p` is at `now_ms` in a wind of
 /// (`wind_x`, `wind_z`) m/s, or `None` before its birth or after its life.
-pub fn eval_parcel(p: &Parcel, now_ms: f64, wind_x: f64, wind_z: f64) -> Option<(([f64; 3], [f64; 3]), f64, f64, f64)> {
+pub fn eval_parcel(
+    p: &Parcel,
+    now_ms: f64,
+    wind_x: f64,
+    wind_z: f64,
+) -> Option<(([f64; 3], [f64; 3]), f64, f64, f64)> {
     let curve = DUST_SHAPES.get(p.shape as usize)?;
     let t = (now_ms - p.born_ms) / 1000.0;
     if t < 0.0 || t >= curve.life {
@@ -299,7 +365,9 @@ struct Rng {
 
 impl Rng {
     fn new(seed: u32) -> Self {
-        Self { state: if seed == 0 { 1 } else { seed } }
+        Self {
+            state: if seed == 0 { 1 } else { seed },
+        }
     }
     fn next(&mut self) -> f64 {
         self.state = imul(self.state, 1_664_525).wrapping_add(1_013_904_223);
@@ -349,7 +417,13 @@ impl Default for DustPolicy {
 
 impl DustPolicy {
     pub fn new(config: DustPolicyConfig) -> Self {
-        Self { config, stats: DustPolicyStats::default(), current_tick: -1, tick_budget: 0, smoulder: Vec::new() }
+        Self {
+            config,
+            stats: DustPolicyStats::default(),
+            current_tick: -1,
+            tick_budget: 0,
+            smoulder: Vec::new(),
+        }
     }
 
     /// Burst emission for one source of palette `palette`, into `out`; returns parcels spawned.
@@ -366,7 +440,8 @@ impl DustPolicy {
         }
         let m = source.magnitude.max(0.0);
         // Math.round: halves round up.
-        let mut n = ((cfg.parcels_scale * m.sqrt() + 0.5).floor() as u32).clamp(1, cfg.parcels_per_source_max.max(1));
+        let mut n = ((cfg.parcels_scale * m.sqrt() + 0.5).floor() as u32)
+            .clamp(1, cfg.parcels_per_source_max.max(1));
         let kind = source.kind;
         if kind == DustKind::Wave {
             n = n.max(6);
@@ -384,7 +459,15 @@ impl DustPolicy {
         let impact = kind == DustKind::Impact || wave;
         let entry = kind == DustKind::Entry;
         let radius0 = (cfg.radius_scale * m.cbrt()).clamp(cfg.radius_min, cfg.radius_max)
-            * if wave { 2.0 } else if impact { 1.5 } else if entry { 0.6 } else { 1.0 };
+            * if wave {
+                2.0
+            } else if impact {
+                1.5
+            } else if entry {
+                0.6
+            } else {
+                1.0
+            };
         let intensity = (0.35 + 0.15 * (1.0 + m).log2()).min(1.0) * factor;
         let shape = if wave {
             VL_DUST_WAVE
@@ -408,7 +491,11 @@ impl DustPolicy {
         } else {
             (nx, ny, nz) = (nx / nl, ny / nl, nz / nl);
         }
-        let (hx, hy) = if ny.abs() < 0.9 { (0.0, 1.0) } else { (1.0, 0.0) };
+        let (hx, hy) = if ny.abs() < 0.9 {
+            (0.0, 1.0)
+        } else {
+            (1.0, 0.0)
+        };
         let (mut tx, mut ty, mut tz) = (hy * nz - 0.0 * ny, 0.0 * nx - hx * nz, hx * ny - hy * nx);
         let tl = (tx * tx + ty * ty + tz * tz).sqrt();
         let tl = if tl == 0.0 { 1.0 } else { tl };
@@ -429,7 +516,11 @@ impl DustPolicy {
             let (position, velocity);
             if wave {
                 let r = radius0 * 0.8;
-                position = [o[0] + (tx * ct + bx * st) * r, o[1] + 0.3, o[2] + (tz * ct + bz * st) * r];
+                position = [
+                    o[0] + (tx * ct + bx * st) * r,
+                    o[1] + 0.3,
+                    o[2] + (tz * ct + bz * st) * r,
+                ];
                 let push = rng.range(5.0, 9.0);
                 velocity = [(tx * ct + bx * st) * push, 0.3, (tz * ct + bz * st) * push];
             } else if impact {
@@ -440,10 +531,18 @@ impl DustPolicy {
                     o[2] + (tz * ct + bz * st) * r,
                 ];
                 let push = rng.range(1.5, 3.0);
-                velocity = [(tx * ct + bx * st) * push, (ty * ct + by * st) * push, (tz * ct + bz * st) * push];
+                velocity = [
+                    (tx * ct + bx * st) * push,
+                    (ty * ct + by * st) * push,
+                    (tz * ct + bz * st) * push,
+                ];
             } else if entry {
                 let r = radius0 * 0.5 * rng.next().sqrt();
-                position = [o[0] + (tx * ct + bx * st) * r, o[1] + (ty * ct + by * st) * r, o[2] + (tz * ct + bz * st) * r];
+                position = [
+                    o[0] + (tx * ct + bx * st) * r,
+                    o[1] + (ty * ct + by * st) * r,
+                    o[2] + (tz * ct + bz * st) * r,
+                ];
                 let push = rng.range(4.0, 8.0);
                 let spread = rng.range(0.0, 0.35);
                 velocity = [
@@ -454,7 +553,11 @@ impl DustPolicy {
             } else {
                 let r = radius0 * 0.6 * rng.next().cbrt();
                 let phi = rng.range(-1.0, 1.0).acos();
-                position = [o[0] + phi.sin() * ct * r, o[1] + phi.cos() * r, o[2] + phi.sin() * st * r];
+                position = [
+                    o[0] + phi.sin() * ct * r,
+                    o[1] + phi.cos() * r,
+                    o[2] + phi.sin() * st * r,
+                ];
                 let push = rng.range(0.5, 1.5);
                 let phi2 = rng.range(-1.0, 1.0).acos();
                 let theta2 = rng.range(0.0, std::f64::consts::PI * 2.0);
@@ -466,7 +569,16 @@ impl DustPolicy {
             }
             let radius = radius0 * rng.range(0.8, 1.2);
             let thickness = intensity * rng.range(0.8, 1.0);
-            out.push(Parcel { born_ms: source.at_ms, position, velocity, radius0: radius, intensity: thickness, seed, shape, palette });
+            out.push(Parcel {
+                born_ms: source.at_ms,
+                position,
+                velocity,
+                radius0: radius,
+                intensity: thickness,
+                seed,
+                shape,
+                palette,
+            });
         }
         self.stats.emitted += u64::from(n);
         if matches!(kind, DustKind::Fracture | DustKind::Entry | DustKind::Crush) {
@@ -479,7 +591,12 @@ impl DustPolicy {
     fn feed_smoulder(&mut self, source: &DustSource, palette: u32) {
         let size = self.config.smoulder_cell_m;
         let cell = |v: f64| ((v / size).floor() as i64 + 100_000) as u32;
-        let key = hash32(source.structure, cell(source.position[0]), cell(source.position[1]), cell(source.position[2]));
+        let key = hash32(
+            source.structure,
+            cell(source.position[0]),
+            cell(source.position[1]),
+            cell(source.position[2]),
+        );
         if let Some((_, c)) = self.smoulder.iter_mut().find(|(k, _)| *k == key) {
             c.last_fed_ms = source.at_ms;
             c.magnitude = c.magnitude.max(source.magnitude);
@@ -530,14 +647,20 @@ impl DustPolicy {
                 let mut rng = Rng::new(seed);
                 let theta = rng.range(0.0, std::f64::consts::PI * 2.0);
                 let r = rng.range(0.0, 1.5);
-                let position = [cell.position[0] + theta.cos() * r, cell.position[1] + rng.range(-0.5, 0.5), cell.position[2] + theta.sin() * r];
+                let position = [
+                    cell.position[0] + theta.cos() * r,
+                    cell.position[1] + rng.range(-0.5, 0.5),
+                    cell.position[2] + theta.sin() * r,
+                ];
                 let velocity = [rng.range(-0.3, 0.3), 0.6, rng.range(-0.3, 0.3)];
                 out.push(Parcel {
                     born_ms: cell.next_ms,
                     position,
                     velocity,
                     radius0: 0.8,
-                    intensity: 0.25 * (cell.magnitude / 40.0).min(1.0) * palette_factor(cell.palette),
+                    intensity: 0.25
+                        * (cell.magnitude / 40.0).min(1.0)
+                        * palette_factor(cell.palette),
                     seed,
                     shape: VL_DUST_SMOULDER,
                     palette: cell.palette,

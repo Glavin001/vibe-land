@@ -554,18 +554,35 @@ impl WasmSimWorld {
     /// (centroid-relative xyz in `data`). They join the next sweep without a
     /// broad-phase rebuild. Returns how many were added.
     #[wasm_bindgen(js_name = setStaticShapes)]
-    pub fn set_static_shapes(&mut self, keys: &[u32], poses: &[f32], counts: &[u32], data: &[f32]) -> u32 {
+    pub fn set_static_shapes(
+        &mut self,
+        keys: &[u32],
+        poses: &[f32],
+        counts: &[u32],
+        data: &[f32],
+    ) -> u32 {
         let mut at = 0usize;
         let mut added = 0u32;
         for (i, &key) in keys.iter().enumerate() {
-            let (Some(p), Some(&n)) = (poses.get(i * 7..i * 7 + 7), counts.get(i)) else { break };
+            let (Some(p), Some(&n)) = (poses.get(i * 7..i * 7 + 7), counts.get(i)) else {
+                break;
+            };
             let take = if n == 0 { 3 } else { 3 * n as usize };
-            let Some(values) = data.get(at..at + take) else { break };
+            let Some(values) = data.get(at..at + take) else {
+                break;
+            };
             at += take;
             let shape = if n == 0 {
-                Some(ColliderBuilder::cuboid(values[0].max(1e-4), values[1].max(1e-4), values[2].max(1e-4)))
+                Some(ColliderBuilder::cuboid(
+                    values[0].max(1e-4),
+                    values[1].max(1e-4),
+                    values[2].max(1e-4),
+                ))
             } else {
-                let points: Vec<Point<f32>> = values.chunks_exact(3).map(|v| point![v[0], v[1], v[2]]).collect();
+                let points: Vec<Point<f32>> = values
+                    .chunks_exact(3)
+                    .map(|v| point![v[0], v[1], v[2]])
+                    .collect();
                 ColliderBuilder::convex_hull(&points)
             };
             let Some(shape) = shape else { continue };
@@ -573,7 +590,10 @@ impl WasmSimWorld {
             if !p.iter().all(|v| v.is_finite()) || q.norm_squared() < 1e-6 {
                 continue;
             }
-            let pose = Isometry::from_parts(Translation::new(p[0], p[1], p[2]), UnitQuaternion::new_normalize(q));
+            let pose = Isometry::from_parts(
+                Translation::new(p[0], p[1], p[2]),
+                UnitQuaternion::new_normalize(q),
+            );
             if let Some(old) = self.static_shapes.remove(&key) {
                 self.sim.remove_static_collider(old);
             }
@@ -605,14 +625,40 @@ impl WasmSimWorld {
     /// Sweep a box (radius=0) or sphere against fixed, non-sensor world geometry.
     /// Returns [fraction, normalX, normalY, normalZ]. Never changes gameplay state.
     #[wasm_bindgen(js_name = sweepVehicleStatic)]
-    pub fn sweep_vehicle_static(&self, px:f32, py:f32, pz:f32,
-        qx:f32, qy:f32, qz:f32, qw:f32, dx:f32, dy:f32, dz:f32,
-        hx:f32, hy:f32, hz:f32, radius:f32) -> Box<[f32]> {
-        let q = Quaternion::new(qw,qx,qy,qz);
-        if !q.coords.iter().all(|v| v.is_finite()) || q.norm_squared() < 0.0001 { return Box::new([]); }
-        let pose = Isometry::from_parts(Translation::new(px,py,pz), UnitQuaternion::new_normalize(q));
-        match crate::vehicle_presentation::sweep_static(&self.sim, pose, vector![dx,dy,dz], vector![hx,hy,hz], radius) {
-            Some(hit) => Box::new(hit), None => Box::new([]),
+    pub fn sweep_vehicle_static(
+        &self,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        radius: f32,
+    ) -> Box<[f32]> {
+        let q = Quaternion::new(qw, qx, qy, qz);
+        if !q.coords.iter().all(|v| v.is_finite()) || q.norm_squared() < 0.0001 {
+            return Box::new([]);
+        }
+        let pose = Isometry::from_parts(
+            Translation::new(px, py, pz),
+            UnitQuaternion::new_normalize(q),
+        );
+        match crate::vehicle_presentation::sweep_static(
+            &self.sim,
+            pose,
+            vector![dx, dy, dz],
+            vector![hx, hy, hz],
+            radius,
+        ) {
+            Some(hit) => Box::new(hit),
+            None => Box::new([]),
         }
     }
 
@@ -2395,34 +2441,72 @@ pub fn decode_server_packet_flat(bytes: &[u8]) -> Result<Option<Box<[f64]>>, JsV
 
 #[wasm_bindgen]
 pub fn encode_input_bundle_js(frames: &[f64]) -> Result<Box<[u8]>, JsValue> {
-    crate::net_client::encode_input_bundle_js(frames).map(Vec::into_boxed_slice).map_err(JsValue::from_str)
+    crate::net_client::encode_input_bundle_js(frames)
+        .map(Vec::into_boxed_slice)
+        .map_err(JsValue::from_str)
 }
 
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
-pub fn encode_fire_js(seq: f64, shot_id: f64, weapon: f64, client_fire_time_us: f64, interp_ms: f64, dynamic_interp_ms: f64, dx: f64, dy: f64, dz: f64) -> Box<[u8]> {
-    crate::net_client::encode_fire_js(seq, shot_id, weapon, client_fire_time_us, interp_ms, dynamic_interp_ms, [dx, dy, dz]).into_boxed_slice()
+pub fn encode_fire_js(
+    seq: f64,
+    shot_id: f64,
+    weapon: f64,
+    client_fire_time_us: f64,
+    interp_ms: f64,
+    dynamic_interp_ms: f64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+) -> Box<[u8]> {
+    crate::net_client::encode_fire_js(
+        seq,
+        shot_id,
+        weapon,
+        client_fire_time_us,
+        interp_ms,
+        dynamic_interp_ms,
+        [dx, dy, dz],
+    )
+    .into_boxed_slice()
 }
 
 #[wasm_bindgen]
-pub fn encode_melee_js(seq: f64, swing_id: f64, client_time_us: f64, yaw: f64, pitch: f64) -> Box<[u8]> {
+pub fn encode_melee_js(
+    seq: f64,
+    swing_id: f64,
+    client_time_us: f64,
+    yaw: f64,
+    pitch: f64,
+) -> Box<[u8]> {
     crate::net_client::encode_melee_js(seq, swing_id, client_time_us, yaw, pitch).into_boxed_slice()
 }
 
 #[wasm_bindgen]
-pub fn encode_client_hello_js(match_id: &str, protocol_version: f64, movement_caps: f64) -> Box<[u8]> {
-    crate::net_client::encode_client_hello_js(match_id, protocol_version, movement_caps).into_boxed_slice()
+pub fn encode_client_hello_js(
+    match_id: &str,
+    protocol_version: f64,
+    movement_caps: f64,
+) -> Box<[u8]> {
+    crate::net_client::encode_client_hello_js(match_id, protocol_version, movement_caps)
+        .into_boxed_slice()
 }
 
 #[wasm_bindgen]
 pub fn encode_city_camera_drop_js(x: f64, y: f64, z: f64, yaw: f64, pitch: f64) -> Box<[u8]> {
-    crate::net_client::encode_city_camera_drop([x as f32, y as f32, z as f32], yaw as f32, pitch as f32).into_boxed_slice()
+    crate::net_client::encode_city_camera_drop(
+        [x as f32, y as f32, z as f32],
+        yaw as f32,
+        pitch as f32,
+    )
+    .into_boxed_slice()
 }
 
 #[wasm_bindgen]
 pub fn encode_vehicle_enter_js(vehicle_id: f64, seat: f64) -> Box<[u8]> {
     let seat = (crate::net_client::js_to_int32(seat) & 0xff) as u8;
-    crate::net_client::encode_vehicle_enter(crate::net_client::js_u32(vehicle_id), seat).into_boxed_slice()
+    crate::net_client::encode_vehicle_enter(crate::net_client::js_u32(vehicle_id), seat)
+        .into_boxed_slice()
 }
 
 #[wasm_bindgen]

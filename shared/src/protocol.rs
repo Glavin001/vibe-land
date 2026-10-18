@@ -10,9 +10,13 @@ pub struct CityCameraDropCmd {
 
 impl CityCameraDropCmd {
     pub fn is_valid(&self) -> bool {
-        self.position.iter().all(|v| v.is_finite() && v.abs() <= 10_000.0)
-            && self.yaw.is_finite() && self.yaw.abs() <= 1_000_000.0
-            && self.pitch.is_finite() && self.pitch.abs() <= std::f32::consts::FRAC_PI_2
+        self.position
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= 10_000.0)
+            && self.yaw.is_finite()
+            && self.yaw.abs() <= 1_000_000.0
+            && self.pitch.is_finite()
+            && self.pitch.abs() <= std::f32::consts::FRAC_PI_2
     }
 }
 

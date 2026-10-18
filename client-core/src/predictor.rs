@@ -67,8 +67,16 @@ impl ThinPredictor {
         }
         let dt = dt_s.clamp(0.0, MAX_PREDICTION_HORIZON_S);
         let len = input.move_x.hypot(input.move_y);
-        let (mx, my) = if len > 1.0 { (input.move_x / len, input.move_y / len) } else { (input.move_x, input.move_y) };
-        let speed = if input.buttons & BTN_SPRINT != 0 { self.sprint } else { self.walk };
+        let (mx, my) = if len > 1.0 {
+            (input.move_x / len, input.move_y / len)
+        } else {
+            (input.move_x, input.move_y)
+        };
+        let speed = if input.buttons & BTN_SPRINT != 0 {
+            self.sprint
+        } else {
+            self.walk
+        };
         let (sin, cos) = input.yaw.sin_cos();
         // shared::movement::build_wish_dir: forward (sin, cos), right (-cos, sin).
         let desired_x = (-mx * cos + my * sin) * speed;
@@ -85,7 +93,10 @@ impl ThinPredictor {
             self.offset.x *= s;
             self.offset.z *= s;
         }
-        self.offset.y = self.offset.y.clamp(-MAX_VERTICAL_OFFSET_M, MAX_VERTICAL_OFFSET_M);
+        self.offset.y = self
+            .offset
+            .y
+            .clamp(-MAX_VERTICAL_OFFSET_M, MAX_VERTICAL_OFFSET_M);
         authoritative + self.offset
     }
 
@@ -103,7 +114,11 @@ impl ThinPredictor {
     /// Forget the offset and the observed state (a respawn, a teleport).
     pub fn reset(&mut self) {
         let (walk, sprint) = (self.walk, self.sprint);
-        *self = Self { walk, sprint, ..Self::default() };
+        *self = Self {
+            walk,
+            sprint,
+            ..Self::default()
+        };
     }
 }
 
@@ -114,20 +129,29 @@ mod tests {
     #[test]
     fn leads_in_the_pushed_direction_and_stays_bounded() {
         let mut p = ThinPredictor::default();
-        let forward = InputState { move_y: 1.0, ..Default::default() }; // yaw 0: forward is +z
+        let forward = InputState {
+            move_y: 1.0,
+            ..Default::default()
+        }; // yaw 0: forward is +z
         let mut pos = Vec3::ZERO;
         for _ in 0..600 {
             p.observe(Vec3::ZERO, true, false, 1.0 / 60.0);
             pos = p.update(Vec3::ZERO, 1.0 / 60.0, &forward);
         }
-        assert!(pos.z > 0.3 && pos.z <= MAX_HORIZONTAL_OFFSET_M + 1e-6, "{pos}");
+        assert!(
+            pos.z > 0.3 && pos.z <= MAX_HORIZONTAL_OFFSET_M + 1e-6,
+            "{pos}"
+        );
         assert!(pos.x.abs() < 1e-6);
     }
 
     #[test]
     fn no_lead_once_the_server_moves_at_the_pushed_speed() {
         let mut p = ThinPredictor::default();
-        let forward = InputState { move_y: 1.0, ..Default::default() };
+        let forward = InputState {
+            move_y: 1.0,
+            ..Default::default()
+        };
         for _ in 0..600 {
             p.observe(Vec3::new(0.0, 0.0, 6.0), true, false, 1.0 / 60.0);
             p.update(Vec3::ZERO, 1.0 / 60.0, &forward);
@@ -148,6 +172,16 @@ mod tests {
         let mut p = ThinPredictor::default();
         p.offset = Vec3::new(0.2, 0.1, 0.0);
         p.observe(Vec3::ZERO, false, true, 0.0);
-        assert_eq!(p.update(Vec3::ONE, 0.016, &InputState { move_y: 1.0, ..Default::default() }), Vec3::ONE);
+        assert_eq!(
+            p.update(
+                Vec3::ONE,
+                0.016,
+                &InputState {
+                    move_y: 1.0,
+                    ..Default::default()
+                }
+            ),
+            Vec3::ONE
+        );
     }
 }

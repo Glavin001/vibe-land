@@ -130,10 +130,17 @@ impl Catalog {
             let index = index as u16;
             if let Some(layer) = e.layer {
                 if layer != i32::from(index) {
-                    return Err(format!("catalog entry {} has layer {layer}; entries must be in layer order", e.id));
+                    return Err(format!(
+                        "catalog entry {} has layer {layer}; entries must be in layer order",
+                        e.id
+                    ));
                 }
             }
-            let mut flags = if e.directional { VL_MATERIAL_DIRECTIONAL } else { 0 };
+            let mut flags = if e.directional {
+                VL_MATERIAL_DIRECTIONAL
+            } else {
+                0
+            };
             match e.role.as_str() {
                 "wall" => {
                     flags |= VL_MATERIAL_WALL;
@@ -160,7 +167,8 @@ impl Catalog {
                 metres_per_tile: e.metres_per_tile,
                 roughness: e.roughness,
                 metalness: e.metalness,
-                base_color_rgba: parse_hex_rgba(&e.base_color).ok_or_else(|| format!("{}: bad baseColor", e.id))?,
+                base_color_rgba: parse_hex_rgba(&e.base_color)
+                    .ok_or_else(|| format!("{}: bad baseColor", e.id))?,
                 layer: e.layer.unwrap_or(-1),
                 flags,
                 hd_metres_per_tile: e.hd.as_ref().map_or(0.0, |h| h.metres_per_tile),
@@ -168,7 +176,9 @@ impl Catalog {
         }
         for (index, e) in parsed.materials.iter().enumerate() {
             let fracture = match &e.fracture {
-                Some(id) => catalog.index_of(id).ok_or_else(|| format!("{}: unknown fracture entry {id}", e.id))?,
+                Some(id) => catalog
+                    .index_of(id)
+                    .ok_or_else(|| format!("{}: unknown fracture entry {id}", e.id))?,
                 None => index as u16,
             };
             catalog.fracture.push(fracture);
@@ -197,18 +207,26 @@ impl Catalog {
     /// `None` for a key the catalog does not know. `""` (a material with appearance but no named
     /// surface) is entry 0.
     pub fn surfaces_for_texture_key(&self, key: &str) -> Option<(u16, u16)> {
-        let wall = if key.is_empty() { 0 } else { *self.by_texture_key.get(key)? };
+        let wall = if key.is_empty() {
+            0
+        } else {
+            *self.by_texture_key.get(key)?
+        };
         Some((wall, self.floor_for(wall)))
     }
 
     /// Up-facing surfaces: metal and the authored sets keep their own texture; everything else
     /// shows worn concrete floor, which is what a slab top or a broken edge is.
     fn floor_for(&self, wall: u16) -> u16 {
-        let keeps_own = matches!(self.ids[wall as usize].as_str(), "metal" | "white-limestone" | "roof-slate" | "aged-timber");
+        let keeps_own = matches!(
+            self.ids[wall as usize].as_str(),
+            "metal" | "white-limestone" | "roof-slate" | "aged-timber"
+        );
         if keeps_own {
             wall
         } else {
-            self.index_of("concrete-floor").unwrap_or(self.wall_layers as u16)
+            self.index_of("concrete-floor")
+                .unwrap_or(self.wall_layers as u16)
         }
     }
 
@@ -264,7 +282,11 @@ pub fn chunk_surfaces(manifest: &DestructionManifest, catalog: &Catalog) -> Vec<
         })
         .collect();
 
-    let buildings = if authored { Vec::new() } else { building_ids(manifest) };
+    let buildings = if authored {
+        Vec::new()
+    } else {
+        building_ids(manifest)
+    };
     let mut out = Vec::new();
     let mut slot = 0usize;
     for structure in &manifest.structures {
@@ -279,8 +301,14 @@ pub fn chunk_surfaces(manifest: &DestructionManifest, catalog: &Catalog) -> Vec<
             } else {
                 (None, 0)
             };
-            let (wall, floor) = keyed.unwrap_or_else(|| catalog.surfaces_for_building(buildings.get(slot).copied().unwrap_or(0)));
-            out.push(VlChunkSurface { wall, floor, tint_rgba: tint });
+            let (wall, floor) = keyed.unwrap_or_else(|| {
+                catalog.surfaces_for_building(buildings.get(slot).copied().unwrap_or(0))
+            });
+            out.push(VlChunkSurface {
+                wall,
+                floor,
+                tint_rgba: tint,
+            });
             slot += 1;
         }
     }
@@ -359,8 +387,16 @@ mod tests {
     fn building_hash_matches_the_web() {
         // From client/src/scene/cityTextures.ts `layerCodeForBuilding`, run with tsx.
         let expected = [
-            (0u32, 128u32), (1, 135), (2, 150), (7, 132), (42, 148), (317, 132), (905, 145), (65535, 135),
-            (123456789, 130), (4294967295, 145),
+            (0u32, 128u32),
+            (1, 135),
+            (2, 150),
+            (7, 132),
+            (42, 148),
+            (317, 132),
+            (905, 145),
+            (65535, 135),
+            (123456789, 130),
+            (4294967295, 145),
         ];
         let c = Catalog::get();
         for (id, web) in expected {
@@ -372,13 +408,25 @@ mod tests {
     fn texture_keys_match_the_web() {
         // From `layerCodeForTextureKey`, run with tsx.
         let expected = [
-            ("", Some(128u32)), ("concrete-wall", Some(128)), ("brick", Some(132)), ("stone", Some(133)), ("metal", Some(102)),
-            ("white-concrete", Some(135)), ("concrete-floor", Some(136)), ("white-limestone", Some(204)),
-            ("roof-slate", Some(221)), ("aged-timber", Some(238)), ("nope", None),
+            ("", Some(128u32)),
+            ("concrete-wall", Some(128)),
+            ("brick", Some(132)),
+            ("stone", Some(133)),
+            ("metal", Some(102)),
+            ("white-concrete", Some(135)),
+            ("concrete-floor", Some(136)),
+            ("white-limestone", Some(204)),
+            ("roof-slate", Some(221)),
+            ("aged-timber", Some(238)),
+            ("nope", None),
         ];
         let c = Catalog::get();
         for (key, web) in expected {
-            assert_eq!(c.surfaces_for_texture_key(key).map(code), web, "key {key:?}");
+            assert_eq!(
+                c.surfaces_for_texture_key(key).map(code),
+                web,
+                "key {key:?}"
+            );
         }
     }
 
@@ -386,10 +434,21 @@ mod tests {
     fn catalog_layers_match_the_web_texture_sets() {
         // client/src/scene/cityTextureSets.generated.ts, in order, with tile sizes.
         let web = [
-            ("concrete-wall", 1.0), ("plaster-mossy", 1.8), ("concrete-cracked-dark", 2.23), ("concrete-layers", 2.0),
-            ("brick", 1.0), ("stone", 2.0), ("metal", 0.5), ("white-concrete", 2.0), ("concrete-floor", 2.0),
-            ("concrete-floor-damaged", 5.0), ("grass", 2.0), ("mud-leaves", 1.3), ("white-limestone", 3.0),
-            ("roof-slate", 3.0), ("aged-timber", 3.0),
+            ("concrete-wall", 1.0),
+            ("plaster-mossy", 1.8),
+            ("concrete-cracked-dark", 2.23),
+            ("concrete-layers", 2.0),
+            ("brick", 1.0),
+            ("stone", 2.0),
+            ("metal", 0.5),
+            ("white-concrete", 2.0),
+            ("concrete-floor", 2.0),
+            ("concrete-floor-damaged", 5.0),
+            ("grass", 2.0),
+            ("mud-leaves", 1.3),
+            ("white-limestone", 3.0),
+            ("roof-slate", 3.0),
+            ("aged-timber", 3.0),
         ];
         let c = Catalog::get();
         for (layer, (id, metres)) in web.iter().enumerate() {
@@ -407,7 +466,10 @@ mod tests {
                 assert_eq!(hd, *metres as f32, "{id}");
             }
         }
-        assert_eq!(c.materials[c.glass as usize].flags & VL_MATERIAL_GLASS, VL_MATERIAL_GLASS);
+        assert_eq!(
+            c.materials[c.glass as usize].flags & VL_MATERIAL_GLASS,
+            VL_MATERIAL_GLASS
+        );
     }
 
     #[test]

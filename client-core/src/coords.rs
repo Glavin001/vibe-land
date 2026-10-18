@@ -105,7 +105,10 @@ mod tests {
             for _ in 0..1000 {
                 let v = g.vec();
                 let back = space.pos_to_server(space.pos(v));
-                assert!((back - v).length() <= 1e-5 * v.length().max(1.0), "{space:?} {v} -> {back}");
+                assert!(
+                    (back - v).length() <= 1e-5 * v.length().max(1.0),
+                    "{space:?} {v} -> {back}"
+                );
                 let (yaw, pitch) = (g.f() * 3.0, g.f() * 1.5);
                 let (a, b) = space.yaw_pitch(yaw, pitch);
                 let (y2, p2) = space.yaw_pitch_to_server(a, b);
@@ -122,11 +125,19 @@ mod tests {
         let mut g = Gen(0xBEEF);
         for _ in 0..1000 {
             let (yaw, pitch) = (g.f() * 3.0, g.f() * 1.5);
-            let server = Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos());
+            let server = Vec3::new(
+                yaw.sin() * pitch.cos(),
+                pitch.sin(),
+                yaw.cos() * pitch.cos(),
+            );
             let (uy, up) = Space::Unreal.yaw_pitch(yaw, pitch);
             let (uy, up) = (uy.to_radians(), up.to_radians());
             let unreal = [up.cos() * uy.cos(), up.cos() * uy.sin(), up.sin()];
-            let mapped = Space::Unreal.pos_to_server([unreal[0] * 100.0, unreal[1] * 100.0, unreal[2] * 100.0]);
+            let mapped = Space::Unreal.pos_to_server([
+                unreal[0] * 100.0,
+                unreal[1] * 100.0,
+                unreal[2] * 100.0,
+            ]);
             assert!((mapped - server).length() < 1e-5, "{server} vs {mapped}");
         }
     }
@@ -172,9 +183,13 @@ mod tests {
         for _ in 0..1000 {
             let (p, q, local) = (g.vec(), g.quat(), g.vec());
             let expected = ue_vec(Space::Unreal.pos(p + q * local));
-            let composed = ue_vec(Space::Unreal.pos(p)) + Quat::from_array(Space::Unreal.quat(q)) * ue_vec(Space::Unreal.pos(local));
+            let composed = ue_vec(Space::Unreal.pos(p))
+                + Quat::from_array(Space::Unreal.quat(q)) * ue_vec(Space::Unreal.pos(local));
             // f32 keeps ~7 significant digits; a handful of operations stays within 1e-6 relative.
-            assert!((expected - composed).length() <= 1e-6 * expected.length().max(100.0), "{expected:?} vs {composed:?}");
+            assert!(
+                (expected - composed).length() <= 1e-6 * expected.length().max(100.0),
+                "{expected:?} vs {composed:?}"
+            );
         }
     }
 
@@ -195,7 +210,10 @@ mod tests {
             let ue = ue_vec(Space::Unreal.pos(forward)) / 100.0;
             let (ue_yaw, _) = Space::Unreal.yaw_pitch(yaw, 0.0);
             let from_yaw = Vec3::new(ue_yaw.to_radians().cos(), ue_yaw.to_radians().sin(), 0.0);
-            assert!((ue - from_yaw).length() < 1e-5, "yaw {deg}: {ue:?} vs {from_yaw:?}");
+            assert!(
+                (ue - from_yaw).length() < 1e-5,
+                "yaw {deg}: {ue:?} vs {from_yaw:?}"
+            );
         }
     }
 
@@ -203,7 +221,10 @@ mod tests {
     fn up_is_up_and_metres_are_centimetres() {
         assert_eq!(Space::Unreal.pos(Vec3::Y), [0.0, 0.0, 100.0]);
         assert_eq!(Space::Unreal.pos(Vec3::Z), [100.0, 0.0, 0.0]);
-        assert_eq!(Space::Unreal.extents(Vec3::new(1.0, 2.0, 3.0)), [300.0, 100.0, 200.0]);
+        assert_eq!(
+            Space::Unreal.extents(Vec3::new(1.0, 2.0, 3.0)),
+            [300.0, 100.0, 200.0]
+        );
         assert_eq!(Space::Server.pos(Vec3::new(1.0, 2.0, 3.0)), [1.0, 2.0, 3.0]);
     }
 }

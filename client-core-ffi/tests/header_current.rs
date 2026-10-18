@@ -9,7 +9,8 @@ use std::path::PathBuf;
 fn committed_header_matches_cbindgen_output() {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let header_path = crate_dir.join("include/vibe_client_core.h");
-    let config = cbindgen::Config::from_file(crate_dir.join("cbindgen.toml")).expect("cbindgen.toml");
+    let config =
+        cbindgen::Config::from_file(crate_dir.join("cbindgen.toml")).expect("cbindgen.toml");
 
     let mut generated = Vec::new();
     cbindgen::Builder::new()

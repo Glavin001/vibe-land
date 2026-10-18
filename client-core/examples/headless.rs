@@ -22,29 +22,40 @@ use std::time::{Duration, Instant};
 use vibe_client_core::coords::Space;
 use vibe_client_core::frame::VlCoreState;
 use vibe_client_core::{ClientCore, Lane};
-use vibe_client_transport_wt::{Inbound, Lane as WireLane, Transport, TransportConfig, TransportState};
+use vibe_client_transport_wt::{
+    Inbound, Lane as WireLane, Transport, TransportConfig, TransportState,
+};
 
 fn flag(name: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn main() {
     let api = flag("--api").unwrap_or_else(|| "http://127.0.0.1:4001".into());
     let match_id = flag("--match").unwrap_or_else(|| "citypp-headless".into());
     let seconds: f64 = flag("--seconds").map_or(30.0, |v| v.parse().expect("--seconds"));
-    let meteor_after: Option<f64> = flag("--meteor-after").map(|v| v.parse().expect("--meteor-after"));
+    let meteor_after: Option<f64> =
+        flag("--meteor-after").map(|v| v.parse().expect("--meteor-after"));
     // A soak: --meteor-every S drops a further meteor every S seconds after the first, on the next
     // building's highest chunk in turn; --min-fractures N gates on the fractures seen.
-    let meteor_every: Option<f64> = flag("--meteor-every").map(|v| v.parse().expect("--meteor-every"));
-    let min_fractures: u64 = flag("--min-fractures").map_or(0, |v| v.parse().expect("--min-fractures"));
+    let meteor_every: Option<f64> =
+        flag("--meteor-every").map(|v| v.parse().expect("--meteor-every"));
+    let min_fractures: u64 =
+        flag("--min-fractures").map_or(0, |v| v.parse().expect("--min-fractures"));
     let mut meteors_sent = 0u32;
     // --record DIR: the manifest (manifest.vlcm) and every wire 4 city packet with its arrival
     // (packets.bin: lane u8, arrival ms f64, length u32, bytes; little-endian), a corpus for the
     // web's stream parity test (client/src/city/perPlayerWasm.core.test.ts).
     let record = flag("--record").map(|dir| {
         std::fs::create_dir_all(&dir).expect("--record dir");
-        (dir.clone(), std::fs::File::create(std::path::Path::new(&dir).join("packets.bin")).expect("packets.bin"))
+        (
+            dir.clone(),
+            std::fs::File::create(std::path::Path::new(&dir).join("packets.bin"))
+                .expect("packets.bin"),
+        )
     });
     let mut record = record;
     let gate = std::env::args().any(|a| a == "--gate");
@@ -56,13 +67,17 @@ fn main() {
     let walk = std::env::args().any(|a| a == "--walk");
     let mut last_walk_tick = 0u32;
     let drop: Option<[f32; 3]> = flag("--drop").map(|v| {
-        let p: Vec<f32> = v.split(',').map(|x| x.trim().parse().expect("--drop x,y,z")).collect();
+        let p: Vec<f32> = v
+            .split(',')
+            .map(|x| x.trim().parse().expect("--drop x,y,z"))
+            .collect();
         [p[0], p[1], p[2]]
     });
     let mut dropped = false;
     let poll_ms: u64 = flag("--poll-ms").map_or(4, |v| v.parse().expect("--poll-ms"));
 
-    let transport = Transport::start(TransportConfig::new(&api, &match_id)).expect("start transport");
+    let transport =
+        Transport::start(TransportConfig::new(&api, &match_id)).expect("start transport");
     let mut core = ClientCore::new(Space::Server);
     let started = Instant::now();
     let mut joined_at: Option<Instant> = None;
@@ -88,22 +103,41 @@ fn main() {
                     }
                 }
                 Inbound::SessionConfig(config) => {
-                    eprintln!("vl-headless: session {} wire {} snapshot {} Hz", config.match_id, config.city_wire(), config.snapshot_hz);
+                    eprintln!(
+                        "vl-headless: session {} wire {} snapshot {} Hz",
+                        config.match_id,
+                        config.city_wire(),
+                        config.snapshot_hz
+                    );
                     core.on_session_config(config);
                 }
                 Inbound::Manifest(bytes) => {
                     if let Some((dir, _)) = &record {
-                        std::fs::write(std::path::Path::new(dir).join("manifest.vlcm"), &bytes).expect("manifest.vlcm");
+                        std::fs::write(std::path::Path::new(dir).join("manifest.vlcm"), &bytes)
+                            .expect("manifest.vlcm");
                     }
                     core.on_manifest(&bytes);
-                    eprintln!("vl-headless: manifest {} bytes, {} chunks", bytes.len(), core.chunks().len());
+                    eprintln!(
+                        "vl-headless: manifest {} bytes, {} chunks",
+                        bytes.len(),
+                        core.chunks().len()
+                    );
                 }
-                Inbound::Packet { lane, bytes, arrival_us } => {
-                    let lane = if lane == WireLane::Reliable { Lane::Reliable } else { Lane::Datagram };
+                Inbound::Packet {
+                    lane,
+                    bytes,
+                    arrival_us,
+                } => {
+                    let lane = if lane == WireLane::Reliable {
+                        Lane::Reliable
+                    } else {
+                        Lane::Datagram
+                    };
                     if let (Some((_, file)), Some(&kind)) = (record.as_mut(), bytes.first()) {
                         if (132..=134).contains(&kind) {
                             file.write_all(&[u8::from(lane == Lane::Reliable)]).unwrap();
-                            file.write_all(&(arrival_us as f64 / 1000.0).to_le_bytes()).unwrap();
+                            file.write_all(&(arrival_us as f64 / 1000.0).to_le_bytes())
+                                .unwrap();
                             file.write_all(&(bytes.len() as u32).to_le_bytes()).unwrap();
                             file.write_all(&bytes).unwrap();
                         }
@@ -113,7 +147,10 @@ fn main() {
             }
         }
         if core.state() == VlCoreState::Failed {
-            eprintln!("vl-headless: core failed: {}", core.last_error().unwrap_or("?"));
+            eprintln!(
+                "vl-headless: core failed: {}",
+                core.last_error().unwrap_or("?")
+            );
             std::process::exit(2);
         }
 
@@ -129,12 +166,18 @@ fn main() {
         sounds += frame.sounds.len();
         dust += frame.dust.len();
         for pose in &frame.body_poses {
-            tracks.entry((pose.structure, pose.body)).or_default().push((r, pose.pos[1]));
+            tracks
+                .entry((pose.structure, pose.body))
+                .or_default()
+                .push((r, pose.pos[1]));
         }
         if joined_at.is_none() && core.state() == VlCoreState::Playing {
             joined_at = Some(Instant::now());
             if jump {
-                core.set_input(&vibe_client_core::frame::VlInput { buttons: vibe_client_core::frame::VL_BTN_JUMP, ..Default::default() });
+                core.set_input(&vibe_client_core::frame::VlInput {
+                    buttons: vibe_client_core::frame::VL_BTN_JUMP,
+                    ..Default::default()
+                });
             }
         }
         if let (Some(p), false, Some(j)) = (drop, dropped, joined_at) {
@@ -145,11 +188,24 @@ fn main() {
         }
         if let (true, Some(j)) = (walk, joined_at) {
             if j.elapsed().as_secs_f64() > 2.0 {
-                core.set_input(&vibe_client_core::frame::VlInput { move_y: 1.0, ..Default::default() });
+                core.set_input(&vibe_client_core::frame::VlInput {
+                    move_y: 1.0,
+                    ..Default::default()
+                });
                 if frame.stats.newest_server_tick != last_walk_tick {
                     last_walk_tick = frame.stats.newest_server_tick;
                     let (p, v) = (frame.local.acked_pos, frame.local.player.vel);
-                    println!("walk tick={} ack={} pos=({:.3},{:.3},{:.3}) vel=({:.2},{:.2},{:.2})", last_walk_tick, frame.local.ack_input_seq, p[0], p[1], p[2], v[0], v[1], v[2]);
+                    println!(
+                        "walk tick={} ack={} pos=({:.3},{:.3},{:.3}) vel=({:.2},{:.2},{:.2})",
+                        last_walk_tick,
+                        frame.local.ack_input_seq,
+                        p[0],
+                        p[1],
+                        p[2],
+                        v[0],
+                        v[1],
+                        v[2]
+                    );
                 }
             }
         }
@@ -171,15 +227,22 @@ fn main() {
                 meteor_sent = true;
                 let mut structures: Vec<u32> = core.chunks().iter().map(|c| c.structure).collect();
                 structures.dedup();
-                let first = (!structures.is_empty()).then(|| structures[meteors_sent as usize % structures.len()]);
+                let first = (!structures.is_empty())
+                    .then(|| structures[meteors_sent as usize % structures.len()]);
                 meteors_sent += 1;
                 let target = core
                     .chunks()
                     .iter()
                     .filter(|c| Some(c.structure) == first)
                     .map(|c| c.rest_pos)
-                    .fold([0.0f32, f32::MIN, 0.0], |b, p| if p[1] > b[1] { p } else { b });
-                let body = format!("{{\"targets\":[[{},{},{}]]}}", target[0], target[1], target[2]);
+                    .fold(
+                        [0.0f32, f32::MIN, 0.0],
+                        |b, p| if p[1] > b[1] { p } else { b },
+                    );
+                let body = format!(
+                    "{{\"targets\":[[{},{},{}]]}}",
+                    target[0], target[1], target[2]
+                );
                 match http_post(&api, &format!("/city-meteor/{match_id}"), &body) {
                     Ok(status) => eprintln!("vl-headless: meteor at {target:?}: {status}"),
                     Err(e) => eprintln!("vl-headless: meteor request failed: {e}"),
@@ -248,7 +311,10 @@ fn main() {
             }
         }
         if stats.fractures < min_fractures {
-            failures.push(format!("{} fractures, fewer than {min_fractures}", stats.fractures));
+            failures.push(format!(
+                "{} fractures, fewer than {min_fractures}",
+                stats.fractures
+            ));
         }
         if !failures.is_empty() {
             eprintln!("vl-headless: GATE FAILED: {}", failures.join("; "));
@@ -264,7 +330,12 @@ fn best_free_fall(tracks: &HashMap<(u32, u32), Vec<(f32, f32)>>, hz: f32) -> Opt
     tracks
         .values()
         .filter_map(|track| {
-            let w: Vec<_> = track.iter().copied().filter(|(r, _)| r.is_finite()).take(window).collect();
+            let w: Vec<_> = track
+                .iter()
+                .copied()
+                .filter(|(r, _)| r.is_finite())
+                .take(window)
+                .collect();
             if w.len() < window || w.windows(2).any(|p| p[1].0 <= p[0].0) || w.last()?.1 >= w[0].1 {
                 return None;
             }
@@ -289,7 +360,8 @@ fn fitted_acceleration(samples: &[(f32, f32)], hz: f32) -> f32 {
     }
     let m = [[s[0], s[1], s[2]], [s[1], s[2], s[3]], [s[2], s[3], s[4]]];
     let det = |m: [[f64; 3]; 3]| {
-        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
             + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
     };
     let mut mc = m;
@@ -301,15 +373,22 @@ fn fitted_acceleration(samples: &[(f32, f32)], hz: f32) -> f32 {
 
 /// A minimal HTTP/1.1 POST for a local `http://host:port` API (the dev server).
 fn http_post(api: &str, path: &str, body: &str) -> Result<String, String> {
-    let host = api.strip_prefix("http://").ok_or("--meteor-after needs an http:// API")?.trim_end_matches('/');
+    let host = api
+        .strip_prefix("http://")
+        .ok_or("--meteor-after needs an http:// API")?
+        .trim_end_matches('/');
     let mut stream = std::net::TcpStream::connect(host).map_err(|e| e.to_string())?;
     let request = format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| e.to_string())?;
     let mut response = String::new();
-    stream.read_to_string(&mut response).map_err(|e| e.to_string())?;
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| e.to_string())?;
     Ok(response.lines().next().unwrap_or("").to_string())
 }
 
@@ -319,7 +398,14 @@ mod tests {
 
     #[test]
     fn fit_recovers_a_known_parabola() {
-        let samples: Vec<(f32, f32)> = (0..18).map(|i| (100.0 + i as f32, 20.0 + 1.5 * (i as f32 / 60.0) - 0.5 * 9.81 * (i as f32 / 60.0).powi(2))).collect();
+        let samples: Vec<(f32, f32)> = (0..18)
+            .map(|i| {
+                (
+                    100.0 + i as f32,
+                    20.0 + 1.5 * (i as f32 / 60.0) - 0.5 * 9.81 * (i as f32 / 60.0).powi(2),
+                )
+            })
+            .collect();
         assert!((fitted_acceleration(&samples, 60.0) + 9.81).abs() < 1e-2);
     }
 }

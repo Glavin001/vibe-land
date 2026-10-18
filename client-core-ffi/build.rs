@@ -19,9 +19,18 @@ fn main() {
         .map(|out| !out.stdout.is_empty())
         .unwrap_or(false);
 
-    println!("cargo:rustc-env=VL_GIT_SHA={sha}{}", if dirty { "-dirty" } else { "" });
-    println!("cargo:rustc-env=VL_TARGET={}", std::env::var("TARGET").unwrap_or_default());
-    println!("cargo:rustc-env=VL_PROFILE={}", std::env::var("PROFILE").unwrap_or_default());
+    println!(
+        "cargo:rustc-env=VL_GIT_SHA={sha}{}",
+        if dirty { "-dirty" } else { "" }
+    );
+    println!(
+        "cargo:rustc-env=VL_TARGET={}",
+        std::env::var("TARGET").unwrap_or_default()
+    );
+    println!(
+        "cargo:rustc-env=VL_PROFILE={}",
+        std::env::var("PROFILE").unwrap_or_default()
+    );
     println!("cargo:rerun-if-changed=../.git/HEAD");
     println!("cargo:rerun-if-changed=../.git/index");
 }
