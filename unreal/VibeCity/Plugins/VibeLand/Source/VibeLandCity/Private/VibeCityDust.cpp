@@ -78,6 +78,7 @@ void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
 		{
 			MarkGround(Frame.dust[i]);
 		}
+		SpawnRubble(Frame.dust[i]);
 		FDustParcel& Slot = DustParcels[DustHead];
 		LiveDustCount += Slot.bAlive ? 0 : 1;
 		Slot.P = Frame.dust[i];

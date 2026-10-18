@@ -31,6 +31,7 @@ public:
 	/** Meteors that have landed (surge and scorch made), and scorch marks on the ground now (tests). */
 	int32 Landings() const { return LandingCount; }
 	int32 ScorchMarks() const { return Scorches.Num(); }
+	int32 DebrisFieldCount() const { return DebrisFields.Num(); }
 
 protected:
 	virtual void BeginPlay() override;
@@ -82,6 +83,15 @@ private:
 	TObjectPtr<UMaterialInterface> ScorchBase;
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<class UDecalComponent>> Scorches;
+	/** Debris fields where meteors landed (M_VibeCityRubbleDecal), each fading in as the debris
+	 * comes down. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> RubbleDecalBase;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UDecalComponent>> DebrisFields;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> DebrisFieldMaterials;
+	TArray<double> DebrisFieldBorn;
 	int32 LandingCount = 0;
 	TSet<uint32> BodiesSeen;
 	int32 Shown = 0;

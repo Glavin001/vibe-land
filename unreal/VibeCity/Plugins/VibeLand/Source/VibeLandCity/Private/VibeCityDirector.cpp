@@ -111,6 +111,7 @@ void AVibeCityDirector::Tick(float DeltaSeconds)
 	}
 	const double DustStart = FPlatformTime::Seconds();
 	TickDust(DeltaSeconds);
+	TickRubble(DeltaSeconds);
 	Sample.DustMs = static_cast<float>((FPlatformTime::Seconds() - DustStart) * 1000.0);
 	Sample.LiveBodies = PosedBodies();
 	Sample.LiveDust = LiveDust();

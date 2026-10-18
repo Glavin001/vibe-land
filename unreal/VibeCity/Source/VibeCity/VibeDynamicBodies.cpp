@@ -59,6 +59,7 @@ void AVibeDynamicBodies::BeginPlay()
 	// Forged iron and glowing basalt (M_VibeCityCannonball, M_VibeCityMeteor), else flat colours.
 	UMaterialInterface* Iron = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityCannonball.M_VibeCityCannonball"));
 	UMaterialInterface* Basalt = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityMeteor.M_VibeCityMeteor"));
+	RubbleDecalBase = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityRubbleDecal.M_VibeCityRubbleDecal"));
 	ScorchBase = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityScorch.M_VibeCityScorch"));
 	TrailBase = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityMeteorTrail.M_VibeCityMeteorTrail"));
 	BallMaterial = UMaterialInstanceDynamic::Create(Iron ? Iron : Base, this);
@@ -179,6 +180,19 @@ void AVibeDynamicBodies::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	const double Now = FPlatformTime::Seconds();
+	// Debris fields fade in over 1.5 s: the time thrown chunks take to come back down.
+	for (int32 i = 0; i < DebrisFields.Num(); ++i)
+	{
+		const double T = FMath::Clamp((Now - DebrisFieldBorn[i]) / 1.5, 0.0, 1.0);
+		if (T < 1.0 || DebrisFieldBorn[i] > 0.0)
+		{
+			DebrisFieldMaterials[i]->SetScalarParameterValue(TEXT("Fade"), static_cast<float>(T * T * (3.0 - 2.0 * T)));
+			if (T >= 1.0)
+			{
+				DebrisFieldBorn[i] = -1.0; // settled
+			}
+		}
+	}
 	for (TPair<uint32, FFlight>& Pair : Flights)
 	{
 		FFlight& F = Pair.Value;
@@ -240,6 +254,30 @@ void AVibeDynamicBodies::Land(FFlight& F)
 			Ring.Add(D);
 		}
 		Director->EmitDust(Ring);
+	}
+	// The debris field: rubble strewn around the landing, laid under the scorch, fading in as the
+	// debris comes down (at most 16 kept).
+	if (RubbleDecalBase)
+	{
+		if (DebrisFields.Num() >= 16)
+		{
+			DebrisFields[0]->DestroyComponent();
+			DebrisFields.RemoveAt(0);
+			DebrisFieldMaterials.RemoveAt(0);
+			DebrisFieldBorn.RemoveAt(0);
+		}
+		UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(RubbleDecalBase, this);
+		Material->SetScalarParameterValue(TEXT("Fade"), 0.0f);
+		UDecalComponent* Field = NewObject<UDecalComponent>(this);
+		Field->SetDecalMaterial(Material);
+		Field->SortOrder = -1;
+		Field->DecalSize = FVector(Radius * 4.0, Radius * 10.0, Radius * 10.0);
+		Field->SetupAttachment(RootComponent);
+		Field->RegisterComponent();
+		Field->SetWorldLocationAndRotation(Ground, FRotator(-90.0, FMath::FRandRange(0.0, 360.0), 0.0));
+		DebrisFields.Add(Field);
+		DebrisFieldMaterials.Add(Material);
+		DebrisFieldBorn.Add(FPlatformTime::Seconds());
 	}
 	// The scorch mark on the ground beneath (at most 16 kept, the oldest replaced).
 	if (ScorchBase)

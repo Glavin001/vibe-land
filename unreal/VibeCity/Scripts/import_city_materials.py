@@ -75,6 +75,40 @@ def import_layers(kind: str, srgb: bool, directory: str = None, ext: str = "png"
     return textures
 
 
+# CC0 sets from Poly Haven (downloaded by the owner's go-ahead into target/cc0/<slug>/, 2K JPG):
+# granular_concrete (broken concrete, exposed aggregate), brick_gravel (broken brick), rubble (debris
+# strewn on the ground).
+CC0_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "target", "cc0"))
+CC0 = f"{TEXTURES}/CC0"
+
+
+def import_cc0(slug: str) -> dict:
+    """One Poly Haven set's albedo, DirectX normal and AO/roughness/metal as textures."""
+    tasks = []
+    for kind in ("diff", "nor_dx", "arm"):
+        task = unreal.AssetImportTask()
+        task.filename = os.path.join(CC0_DIR, slug, f"{slug}_{kind}_2k.jpg")
+        task.destination_path = CC0
+        task.destination_name = f"T_{slug}_{kind}"
+        task.replace_existing = True
+        task.automated = True
+        task.save = False
+        tasks.append(task)
+    tools.import_asset_tasks(tasks)
+    out = {}
+    for kind in ("diff", "nor_dx", "arm"):
+        t = unreal.load_asset(f"{CC0}/T_{slug}_{kind}")
+        assert t, f"import failed: {slug} {kind}"
+        if kind == "nor_dx":
+            t.set_editor_property("srgb", False)
+            t.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_NORMALMAP)
+        elif kind == "arm":
+            t.set_editor_property("srgb", False)
+            t.set_editor_property("compression_settings", unreal.TextureCompressionSettings.TC_MASKS)
+        out[kind] = t
+    return out
+
+
 def texture_array(name: str, textures: list, srgb: bool, compression=None):
     path = f"{TEXTURES}/{name}"
     array = unreal.load_asset(path) if assets.does_asset_exist(path) else None
@@ -272,7 +306,7 @@ def weathering(m, albedo, roughness, x, y):
     return out_albedo, out_rough
 
 
-def hd_chunk_material(albedo_array, normal_array, arm_array):
+def hd_chunk_material(albedo_array, normal_array, arm_array, fracture_sets=None):
     """The chunk material on 2K Poly Haven sources: albedo, a DirectX normal map, and AO/roughness/
     metalness from the ARM map. UV0 must already be in tiles of the hd source (the renderer scales
     the core's tile UVs by metres_per_tile / hd_metres_per_tile)."""
@@ -311,7 +345,49 @@ def hd_chunk_material(albedo_array, normal_array, arm_array):
     mel.connect_material_property(arm, "B", unreal.MaterialProperty.MP_METALLIC)
     rough = mask(m, "g", -500, 300)
     mel.connect_material_expressions(arm, "RGB", rough, "")
-    weathered, weathered_rough = weathering(m, tinted, rough, 0, 700)
+    surface_albedo, surface_normal, surface_rough = tinted, normal, rough
+    # A face the break exposed (interior: UV2.g) shows broken material: broken brick on brick (the
+    # catalog's brick layer), exposed-aggregate concrete on everything else (Poly Haven CC0 sets).
+    if fracture_sets:
+        uv2 = expr(m, unreal.MaterialExpressionTextureCoordinate, -1400, 1300)
+        uv2.set_editor_property("coordinate_index", 2)
+        interior = mask(m, "g", -1250, 1300)
+        mel.connect_material_expressions(uv2, "", interior, "")
+        is_brick = custom(m, "return saturate(1.0 - abs(L - 4.0) * 4.0);", ["L"], unreal.CustomMaterialOutputType.CMOT_FLOAT1, -1250, 1400)
+        mel.connect_material_expressions(layer, "", is_brick, "L")
+        fuv = expr(m, unreal.MaterialExpressionMultiply, -1250, 1500)
+        fuv.set_editor_property("const_b", 0.6)
+        mel.connect_material_expressions(uv0, "", fuv, "A")
+
+        def sample(texture, sampler, x, y):
+            t = expr(m, unreal.MaterialExpressionTextureSample, x, y)
+            t.set_editor_property("texture", texture)
+            t.set_editor_property("sampler_type", sampler)
+            mel.connect_material_expressions(fuv, "", t, "UVs")
+            return t
+
+        def lerp3(a, b, alpha, x, y, a_pin="", b_pin=""):
+            e = expr(m, unreal.MaterialExpressionLinearInterpolate, x, y)
+            mel.connect_material_expressions(a, a_pin, e, "A")
+            mel.connect_material_expressions(b, b_pin, e, "B")
+            mel.connect_material_expressions(alpha, "", e, "Alpha")
+            return e
+
+        conc, brick = fracture_sets
+        c_alb = sample(conc["diff"], unreal.MaterialSamplerType.SAMPLERTYPE_COLOR, -1000, 1300)
+        b_alb = sample(brick["diff"], unreal.MaterialSamplerType.SAMPLERTYPE_COLOR, -1000, 1450)
+        c_nor = sample(conc["nor_dx"], unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL, -1000, 1600)
+        b_nor = sample(brick["nor_dx"], unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL, -1000, 1750)
+        c_arm = sample(conc["arm"], unreal.MaterialSamplerType.SAMPLERTYPE_MASKS, -1000, 1900)
+        b_arm = sample(brick["arm"], unreal.MaterialSamplerType.SAMPLERTYPE_MASKS, -1000, 2050)
+        f_alb = lerp3(c_alb, b_alb, is_brick, -800, 1350, "RGB", "RGB")
+        f_nor = lerp3(c_nor, b_nor, is_brick, -800, 1650, "RGB", "RGB")
+        f_rough = lerp3(c_arm, b_arm, is_brick, -800, 1950, "G", "G")
+        surface_albedo = lerp3(tinted, f_alb, interior, -600, 1350)
+        surface_normal = lerp3(normal, f_nor, interior, -600, 1650, "RGB")
+        surface_rough = lerp3(rough, f_rough, interior, -600, 1950)
+        mel.connect_material_property(surface_normal, "", unreal.MaterialProperty.MP_NORMAL)
+    weathered, weathered_rough = weathering(m, surface_albedo, surface_rough, 0, 700)
     mel.connect_material_property(weathered, "", unreal.MaterialProperty.MP_BASE_COLOR)
     mel.connect_material_property(weathered_rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
     mel.recompile_material(m)
@@ -476,6 +552,115 @@ def hd_ground_material(albedo_array, normal_array, arm_array):
         c = mask(m, ch, -350, 150 if ch == "r" else 250)
         mel.connect_material_expressions(arm, "", c, "")
         mel.connect_material_property(c, "", prop)
+    mel.recompile_material(m)
+    return m
+
+
+RUBBLE_SAMPLE = r"""
+// Triplanar in the chip's own space (instance space: the 100 cm cube), so the texture rides the chip:
+// a small patch of its material's 2K texture, offset per chip.
+float3 n = abs(normalize(N));
+n /= (n.x + n.y + n.z);
+float3 p = LP / 100.0 * 0.18 + Seed * 7.31;
+float4 a = Albedo.Sample(AlbedoSampler, float3(p.yz, Layer)) * n.x
+         + Albedo.Sample(AlbedoSampler, float3(p.xz, Layer)) * n.y
+         + Albedo.Sample(AlbedoSampler, float3(p.xy, Layer)) * n.z;
+float4 r = Arm.Sample(ArmSampler, float3(p.yz, Layer)) * n.x
+         + Arm.Sample(ArmSampler, float3(p.xz, Layer)) * n.y
+         + Arm.Sample(ArmSampler, float3(p.xy, Layer)) * n.z;
+return float4(a.rgb, r.g);
+"""
+
+
+def rubble_material():
+    """M_VibeCityRubble: cosmetic rubble chips (instanced; AVibeCityDirector's rubble) in the 2K
+    texture of the material they broke from (per-instance custom data: 0-2 tint, 3 the catalog's
+    texture-array layer, 4 a seed), sampled triplanar in the chip's own space; roughness from the
+    ARM array."""
+    m = fresh_material("M_VibeCityRubble")
+    m.set_editor_property("used_with_instanced_static_meshes", True)
+    data = []
+    for i in range(5):
+        c = expr(m, unreal.MaterialExpressionPerInstanceCustomData, -1400, -300 + i * 110)
+        c.set_editor_property("data_index", i)
+        data.append(c)
+    rg = expr(m, unreal.MaterialExpressionAppendVector, -1200, -250)
+    mel.connect_material_expressions(data[0], "", rg, "A")
+    mel.connect_material_expressions(data[1], "", rg, "B")
+    tint = expr(m, unreal.MaterialExpressionAppendVector, -1050, -220)
+    mel.connect_material_expressions(rg, "", tint, "A")
+    mel.connect_material_expressions(data[2], "", tint, "B")
+    albedo = expr(m, unreal.MaterialExpressionTextureObject, -1200, 200)
+    albedo.set_editor_property("texture", unreal.load_asset(f"{TEXTURES}/T_CityAlbedoHDArray"))
+    albedo.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_COLOR)
+    arm = expr(m, unreal.MaterialExpressionTextureObject, -1200, 350)
+    arm.set_editor_property("texture", unreal.load_asset(f"{TEXTURES}/T_CityARMHDArray"))
+    arm.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_MASKS)
+    world = expr(m, unreal.MaterialExpressionWorldPosition, -1400, 500)
+    local = expr(m, unreal.MaterialExpressionTransformPosition, -1200, 500)
+    local.set_editor_property("transform_source_type", unreal.MaterialPositionTransformSource.TRANSFORMPOSSOURCE_WORLD)
+    local.set_editor_property("transform_type", unreal.MaterialPositionTransformSource.TRANSFORMPOSSOURCE_INSTANCE)
+    mel.connect_material_expressions(world, "", local, "")
+    normal = expr(m, unreal.MaterialExpressionVertexNormalWS, -1200, 650)
+    sample = custom(m, RUBBLE_SAMPLE, ["LP", "N", "Seed", "Layer", "Albedo", "Arm"], unreal.CustomMaterialOutputType.CMOT_FLOAT4, -800, 200)
+    for pin, node in (("LP", local), ("N", normal), ("Seed", data[4]), ("Layer", data[3]), ("Albedo", albedo), ("Arm", arm)):
+        mel.connect_material_expressions(node, "", sample, pin)
+    rgb = mask(m, "rgb", -600, 150)
+    mel.connect_material_expressions(sample, "", rgb, "")
+    rough = mask(m, "a", -600, 300)
+    mel.connect_material_expressions(sample, "", rough, "")
+    col = expr(m, unreal.MaterialExpressionMultiply, -450, 0)
+    mel.connect_material_expressions(rgb, "", col, "A")
+    mel.connect_material_expressions(tint, "", col, "B")
+    mel.connect_material_property(col, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    mel.connect_material_property(rough, "", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.recompile_material(m)
+    return m
+
+
+def rubble_decal_material():
+    """M_VibeCityRubbleDecal: debris strewn on the ground around an impact (Poly Haven CC0 'rubble':
+    its colour, normal and roughness), scattered by the texture's own lightness (pieces show, the
+    gaps between them let the ground through) and fading out toward a ragged edge. Scalar Fade."""
+    if not os.path.isdir(os.path.join(CC0_DIR, "rubble")):
+        return None
+    t = import_cc0("rubble")
+    m = fresh_material("M_VibeCityRubbleDecal")
+    m.set_editor_property("material_domain", unreal.MaterialDomain.MD_DEFERRED_DECAL)
+    m.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
+    uv = expr(m, unreal.MaterialExpressionTextureCoordinate, -1400, 0)
+    tiled = expr(m, unreal.MaterialExpressionMultiply, -1250, 100)
+    tiled.set_editor_property("const_b", 3.0)
+    mel.connect_material_expressions(uv, "", tiled, "A")
+
+    def sample(texture, sampler, y):
+        e = expr(m, unreal.MaterialExpressionTextureSample, -1000, y)
+        e.set_editor_property("texture", texture)
+        e.set_editor_property("sampler_type", sampler)
+        mel.connect_material_expressions(tiled, "", e, "UVs")
+        return e
+
+    alb = sample(t["diff"], unreal.MaterialSamplerType.SAMPLERTYPE_COLOR, -200)
+    nor = sample(t["nor_dx"], unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL, 50)
+    arm = sample(t["arm"], unreal.MaterialSamplerType.SAMPLERTYPE_MASKS, 300)
+    world = expr(m, unreal.MaterialExpressionWorldPosition, -1250, 500)
+    n = expr(m, unreal.MaterialExpressionNoise, -1000, 500)
+    n.set_editor_property("scale", 0.006)
+    n.set_editor_property("levels", 3)
+    n.set_editor_property("output_min", 0.0)
+    n.set_editor_property("output_max", 1.0)
+    mel.connect_material_expressions(world, "", n, "Position")
+    fade = expr(m, unreal.MaterialExpressionScalarParameter, -1000, 650)
+    fade.set_editor_property("parameter_name", "Fade")
+    fade.set_editor_property("default_value", 1.0)
+    opacity = custom(m, "float r = length(UV - 0.5) * 2.0; float edge = 1.0 - smoothstep(0.25 + 0.45 * N, 1.0, r); float pieces = saturate((dot(A.rgb, 0.333) - 0.12) * 4.0); return saturate(edge * pieces) * Fade;",
+        ["UV", "N", "A", "Fade"], unreal.CustomMaterialOutputType.CMOT_FLOAT1, -650, 400)
+    for pin, node in (("UV", uv), ("N", n), ("A", alb), ("Fade", fade)):
+        mel.connect_material_expressions(node, "", opacity, pin)
+    mel.connect_material_property(alb, "RGB", unreal.MaterialProperty.MP_BASE_COLOR)
+    mel.connect_material_property(nor, "RGB", unreal.MaterialProperty.MP_NORMAL)
+    mel.connect_material_property(arm, "G", unreal.MaterialProperty.MP_ROUGHNESS)
+    mel.connect_material_property(opacity, "", unreal.MaterialProperty.MP_OPACITY)
     mel.recompile_material(m)
     return m
 
@@ -1058,14 +1243,21 @@ if only == "battery":
     raise SystemExit(0)
 if only == "chunkhd":
     # Rebuilds M_VibeCityChunkHD on the HD arrays a full --hd import made.
-    hd_chunk_material(*(unreal.load_asset(f"{TEXTURES}/{n}") for n in ("T_CityAlbedoHDArray", "T_CityNormalHDArray", "T_CityARMHDArray")))
+    hd_chunk_material(*(unreal.load_asset(f"{TEXTURES}/{n}") for n in ("T_CityAlbedoHDArray", "T_CityNormalHDArray", "T_CityARMHDArray")),
+                      fracture_sets=(import_cc0("granular_concrete"), import_cc0("brick_gravel")) if os.path.isdir(CC0_DIR) else None)
     saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
+    if assets.does_directory_exist(CC0):
+        saved = assets.save_directory(CC0, only_if_is_dirty=False, recursive=True) and saved
     unreal.log(f"VIBE_IMPORT_OK chunkhd saved={saved}")
     raise SystemExit(0)
 if only == "projectiles":
     projectile_materials()
     scorch_material()
+    rubble_material()
+    rubble_decal_material()
     saved = assets.save_directory(MATERIALS, only_if_is_dirty=False, recursive=True)
+    if assets.does_directory_exist(CC0):
+        saved = assets.save_directory(CC0, only_if_is_dirty=False, recursive=True) and saved
     unreal.log(f"VIBE_IMPORT_OK projectiles saved={saved}")
     raise SystemExit(0)
 if only == "dustvolume":
@@ -1098,6 +1290,8 @@ dust_material()
 dust_volume_material()
 projectile_materials()
 scorch_material()
+rubble_material()
+rubble_decal_material()
 grass_material()
 weather_material("M_VibeCityWeather", additive=False)
 weather_material("M_VibeCityWeatherAdditive", additive=True)
@@ -1115,7 +1309,7 @@ if hd_dir:
         texture_array("T_CityNormalHDArray", hd_normal, srgb=False, compression=unreal.TextureCompressionSettings.TC_NORMALMAP),
         texture_array("T_CityARMHDArray", hd_arm, srgb=False, compression=unreal.TextureCompressionSettings.TC_MASKS),
     )
-    hd_chunk_material(*hd_arrays)
+    hd_chunk_material(*hd_arrays, fracture_sets=(import_cc0("granular_concrete"), import_cc0("brick_gravel")) if os.path.isdir(CC0_DIR) else None)
     hd_ground_material(*hd_arrays)
 saved = assets.save_directory(ROOT, only_if_is_dirty=False, recursive=True)
 unreal.log(f"VIBE_IMPORT_OK layers={len(layered)} saved={saved} chunk={chunk.get_path_name()} glass={glass.get_path_name()}")

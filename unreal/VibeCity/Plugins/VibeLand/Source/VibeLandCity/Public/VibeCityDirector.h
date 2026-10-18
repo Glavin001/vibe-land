@@ -68,6 +68,9 @@ public:
 	int64 TrailPuffs() const { return TrailPuffCount; }
 	/** Dust marks left on the ground where heavy debris landed so far (tests). */
 	int64 DustMarks() const { return DustMarkCount; }
+	/** Cosmetic rubble chips alive, and still flying or tumbling (tests). */
+	int32 LiveRubble() const { return LiveRubbleCount; }
+	int32 MovingRubble() const;
 	/** The dust marks' colour and strength (tests). */
 	TPair<FLinearColor, float> DustMarkLook() const;
 	/** How strong the newest mark is now, as the dust settles (tests). */
@@ -162,6 +165,31 @@ private:
 	TArray<double> DustMarkBorn;
 	TArray<double> DustMarkSize;
 	void TickDustMarks();
+	/** Cosmetic rubble (an Unreal addition, client-side only): small chips thrown where things break,
+	 * bouncing to rest on the ground, then shrinking away. VibeCityRubble.cpp. */
+	void SpawnRubble(const VlDustParcel& Source);
+	void TickRubble(float DeltaSeconds);
+	struct FChip
+	{
+		FVector Pos = FVector::ZeroVector;
+		FVector Vel = FVector::ZeroVector;
+		FQuat Rot = FQuat::Identity;
+		FVector Spin = FVector::ZeroVector;
+		FVector Scale = FVector::OneVector;
+		float Half = 0.0f;
+		double RestSince = -1.0;
+		bool bAlive = false;
+	};
+	TArray<FChip> Chips;
+	/** The catalog texture-array layer of the chunk nearest `Position` (rubble wears what broke). */
+	int32 LayerNear(const FVector& Position);
+	TMap<FIntPoint, int32> CellIndexByKey;
+	int32 ChipHead = 0;
+	int32 LiveRubbleCount = 0;
+	int32 RubbleSpawnedThisFrame = 0;
+	FRandomStream RubbleRandom{ 0x5eed };
+	UPROPERTY(Transient)
+	TObjectPtr<class UInstancedStaticMeshComponent> RubbleInstances;
 	UPROPERTY(Transient)
 	TObjectPtr<class UMaterialInstanceDynamic> DustMarkMaterial;
 	int64 DustMarkCount = 0;
