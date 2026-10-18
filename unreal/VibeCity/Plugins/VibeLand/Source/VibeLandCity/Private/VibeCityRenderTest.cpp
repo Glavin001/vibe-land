@@ -742,6 +742,30 @@ bool FVibeCityRenderDust::RunTest(const FString& Parameters)
 		TestTrue(TEXT("the one behind the camera is not"), D->DustBox(S->Many + 1500).IsSet() && D->DustBox(S->Many + 1500)->GetSize().X == 0.0);
 		return true;
 	}));
+	// A heavy chunk landing on the ground (an impact puff at ground level, radius over 40 cm) leaves a
+	// dust mark; a light one, or one high up, does not.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		if (!D)
+		{
+			return true;
+		}
+		const int64 Before = D->DustMarks();
+		auto Impact = [](float Z, float RadiusCm) {
+			VlDustParcel P = {};
+			P.position[0] = 0.0f; P.position[1] = 0.0f; P.position[2] = Z;
+			P.radius0 = RadiusCm;
+			P.intensity = 0.8f;
+			P.shape = 1; // VL_DUST_IMPACT
+			P.color_rgba = 0xb3afa8ff;
+			return P;
+		};
+		const VlDustParcel Parcels[] = { Impact(50.0f, 70.0f), Impact(50.0f, 20.0f), Impact(900.0f, 70.0f) };
+		D->InjectDustForTest(Parcels);
+		TestEqual(TEXT("only the heavy chunk on the ground marked it"), D->DustMarks() - Before, (int64)1);
+		return true;
+	}));
 	return true;
 }
 
