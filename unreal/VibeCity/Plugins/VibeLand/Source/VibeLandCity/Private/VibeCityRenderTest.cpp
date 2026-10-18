@@ -10,6 +10,7 @@
 // Run in the game on a citypp match (scripts/unreal/play-tests.sh --only VibeCity.Render.CityAndEffects).
 
 #include "EngineUtils.h"
+#include "VibeCityFilm.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -1025,7 +1026,7 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 			S->bGlide = VibeCityCapture::Parse(To, S->EyeTo, S->LookTo, Unused);
 		}
 		FParse::Value(FCommandLine::Get(), TEXT("VibeShowcaseSeconds="), S->Seconds);
-		S->bFilm = FParse::Value(FCommandLine::Get(), TEXT("VibeShotEvery="), S->ShotEvery);
+		S->bFilm = FParse::Value(FCommandLine::Get(), TEXT("VibeFilmEvery="), S->ShotEvery);
 		FParse::Value(FCommandLine::Get(), TEXT("VibeShowcaseMeteorAt="), S->MeteorAt);
 		FParse::Value(FCommandLine::Get(), TEXT("VibeShowcaseCannonAt="), S->CannonAt);
 		const FVector From(100.0 * Eye.Z, -100.0 * Eye.X, 100.0);
@@ -1072,9 +1073,17 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 				FString::Printf(TEXT("{\"targets\":[[%f,%f,%f]]}"), -Top.Y / 100.0, Top.Z / 100.0, Top.X / 100.0));
 		}
 		FString ShotDir;
-		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir) && T >= S->ShotEvery * S->Shots)
+		if (S->bFilm && FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
 		{
-			FScreenshotRequest::RequestScreenshot(ShotDir / (S->bFilm ? FString::Printf(TEXT("frame_%05d.png"), S->Shots) : FString::Printf(TEXT("showcase_%02d.png"), S->Shots)), false, false);
+			// A film: the recorder reads the viewport back asynchronously, frames by wall clock.
+			if (!VibeCityFilm::IsRecording() && S->Shots == 0 && VibeCityFilm::Start(ShotDir, 1.0 / S->ShotEvery))
+			{
+				S->Shots = 1;
+			}
+		}
+		else if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir) && T >= S->ShotEvery * S->Shots)
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / FString::Printf(TEXT("showcase_%02d.png"), S->Shots), false, false);
 			// A slow frame skips the frames it covered: the film keeps wall-clock time.
 			S->Shots = FMath::Max(S->Shots + 1, FMath::FloorToInt(T / S->ShotEvery) + 1);
 		}
@@ -1083,6 +1092,10 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
 	{
 		VibeCityCapture::Park(GameWorld(), FVector3f::ZeroVector, FVector3f::ZeroVector, 0.0f);
+		if (VibeCityFilm::IsRecording())
+		{
+			S->Shots = VibeCityFilm::Stop();
+		}
 		AddInfo(FString::Printf(TEXT("showcase: %d frames"), S->Shots));
 		TestTrue(TEXT("frames saved (with -VibeShotDir)"), S->Shots > 0 || !FParse::Param(FCommandLine::Get(), TEXT("VibeShotDir")));
 		return true;

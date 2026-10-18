@@ -1625,12 +1625,13 @@ bool FVibeCityPlayMeetAndWalk::RunTest(const FString& Parameters)
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "GameFramework/HUD.h"
+#include "VibeCityFilm.h"
 
 // VibeCity.Film.Drive: a driving take for films. Optionally a meteor first (-VibeFilmMeteor=x,y,z,
 // server metres; then -VibeFilmMeteorWait seconds for the collapse), then the player boards the car
 // nearest -VibeCarNear, drives through -VibeFilmRoute=x,z;x,z;... (server metres) steering by
 // heading error with the throttle held, and at the end pulls the handbrake with full steer and lifts
-// off, sliding to a stop. The game's own chase camera films it; frames every -VibeShotEvery seconds
+// off, sliding to a stop. The game's own chase camera films it; frames every -VibeFilmEvery seconds
 // to -VibeShotDir as frame_NNNNN.png (frame numbers follow wall-clock time).
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityFilmDrive, "VibeCity.Film.Drive",
 	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
@@ -1665,11 +1666,9 @@ bool FVibeCityFilmDrive::RunTest(const FString& Parameters)
 		{
 			return;
 		}
-		const double T = Now() - S->T0;
-		if (T >= S->ShotEvery * S->Shots)
+		if (!VibeCityFilm::IsRecording() && S->Shots == 0 && VibeCityFilm::Start(Dir, 1.0 / S->ShotEvery))
 		{
-			FScreenshotRequest::RequestScreenshot(Dir / FString::Printf(TEXT("frame_%05d.png"), S->Shots), false, false);
-			S->Shots = FMath::Max(S->Shots + 1, FMath::FloorToInt(T / S->ShotEvery) + 1);
+			S->Shots = 1;
 		}
 	};
 	auto SetSteer = [S](int32 Want)
@@ -1696,7 +1695,7 @@ bool FVibeCityFilmDrive::RunTest(const FString& Parameters)
 		{
 			S->Deadline = Now() + 120.0;
 			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame) { S->Local = Frame.local; });
-			FParse::Value(FCommandLine::Get(), TEXT("VibeShotEvery="), S->ShotEvery);
+			FParse::Value(FCommandLine::Get(), TEXT("VibeFilmEvery="), S->ShotEvery);
 			FString Route;
 			if (FParse::Value(FCommandLine::Get(), TEXT("VibeFilmRoute="), Route, /*bShouldStopOnSeparator=*/false))
 			{
@@ -1841,6 +1840,10 @@ bool FVibeCityFilmDrive::RunTest(const FString& Parameters)
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
 	{
 		Key(EKeys::SpaceBar, false);
+		if (VibeCityFilm::IsRecording())
+		{
+			S->Shots = VibeCityFilm::Stop();
+		}
 		AddInfo(FString::Printf(TEXT("drive film: %d frames, reached %d of %d route points"), S->Shots, S->Next, S->Route.Num()));
 		TestTrue(TEXT("the drive was filmed"), S->Shots > 0 || !FParse::Param(FCommandLine::Get(), TEXT("VibeShotDir")));
 		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))

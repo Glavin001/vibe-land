@@ -6,6 +6,6 @@ public class VibeLandCity : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.NoPCHs;
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "VibeLandNet", "ProceduralMeshComponent" });
-		PrivateDependencyModuleNames.AddRange(new string[] { "HTTP", "MeshDescription", "StaticMeshDescription" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "HTTP", "MeshDescription", "StaticMeshDescription", "ImageWrapper", "Slate", "SlateCore", "RenderCore", "RHI" });
 	}
 }
