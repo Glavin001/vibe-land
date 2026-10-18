@@ -26,6 +26,8 @@
 #include "UObject/UObjectIterator.h"
 #include "UnrealClient.h"
 #include "Engine/StaticMesh.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Components/StaticMeshComponent.h"
 #include "Rendering/NaniteResources.h"
 #include "StaticMeshResources.h"
 #include "VibeCityCapture.h"
@@ -1059,6 +1061,76 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 		return true;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(0.5f));
+	return true;
+}
+
+// VibeCity.Render.ProjectileLook: a still of the meteor material (hot, and cooling) and the iron
+// cannonball, 10 m from a parked camera against the sky, to judge their surfaces (frames go to
+// -VibeShotDir as projectiles.png).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityRenderProjectileLook, "VibeCity.Render.ProjectileLook",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityRenderProjectileLook::RunTest(const FString& Parameters)
+{
+	TSharedRef<double> Started = MakeShared<double>(FPlatformTime::Seconds());
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, Started]()
+	{
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		if (!D || !D->IsCityBuilt())
+		{
+			return FPlatformTime::Seconds() - *Started > 120.0;
+		}
+		UWorld* World = GameWorld();
+		UStaticMesh* Sphere = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+		UMaterialInterface* Meteor = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityMeteor.M_VibeCityMeteor"));
+		UMaterialInterface* Iron = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityCannonball.M_VibeCityCannonball"));
+		if (!TestTrue(TEXT("meshes and materials load"), Sphere && Meteor && Iron))
+		{
+			return true;
+		}
+		AActor* Holder = World->SpawnActor<AActor>();
+		Holder->SetRootComponent(NewObject<USceneComponent>(Holder));
+		Holder->GetRootComponent()->RegisterComponent();
+		// Server (0, 30, 130) and on: 10 m ahead of the camera at server (0, 30, 140).
+		auto Add = [&](UMaterialInterface* M, float Glow, const FVector& Server, double DiameterM)
+		{
+			UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(Holder);
+			C->SetStaticMesh(Sphere);
+			UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(M, Holder);
+			Mid->SetScalarParameterValue(TEXT("Glow"), Glow);
+			C->SetMaterial(0, Mid);
+			C->SetupAttachment(Holder->GetRootComponent());
+			C->RegisterComponent();
+			C->SetWorldLocation(FVector(100.0 * Server.Z, -100.0 * Server.X, 100.0 * Server.Y));
+			C->SetWorldScale3D(FVector(DiameterM));
+		};
+		Add(Meteor, 1.0f, FVector(-2.2, 30.0, 130.0), 3.0);
+		Add(Meteor, 0.15f, FVector(1.8, 30.0, 130.0), 3.0);
+		Add(Iron, 1.0f, FVector(0.0, 28.4, 133.0), 0.6);
+		VibeCityCapture::Park(World, FVector3f(0.0f, 30.0f, 140.0f), FVector3f(0.0f, 30.0f, 130.0f), 40.0f);
+		if (APlayerController* PC = World->GetFirstPlayerController(); PC && PC->GetHUD())
+		{
+			PC->GetHUD()->bShowHUD = false;
+		}
+		*Started = FPlatformTime::Seconds();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(8.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this]()
+	{
+		FString ShotDir;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir))
+		{
+			FScreenshotRequest::RequestScreenshot(ShotDir / TEXT("projectiles.png"), false, false);
+		}
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(1.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this]()
+	{
+		VibeCityCapture::Park(GameWorld(), FVector3f::ZeroVector, FVector3f::ZeroVector, 0.0f);
+		return true;
+	}));
 	return true;
 }
 

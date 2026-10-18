@@ -746,36 +746,50 @@ def projectile_materials():
         mel.connect_material_expressions(dot, "", sat, "")
         return sat
 
-    # Meteor.
+    # Meteor: a rock surface (the CC0 aggregate set, darkened to basalt, with its normal map) glowing
+    # from its real crevices and hotter toward the rim. The set's AO spans 0.50-0.65 (median 0.56):
+    # its darkest tenth, below 0.53, are the crevices.
+    rock = import_cc0("granular_concrete") if os.path.isdir(os.path.join(CC0_DIR, "granular_concrete")) else None
     m = fresh_material("M_VibeCityMeteor")
-    world = expr(m, unreal.MaterialExpressionWorldPosition, -1400, 0)
-    mottle = noise(m, world, 0.03, 3, -1200, -200)
-    stone = expr(m, unreal.MaterialExpressionConstant3Vector, -1200, -350)
-    stone.set_editor_property("constant", unreal.LinearColor(0.045, 0.04, 0.038, 0.0))
-    basalt = mul(m, stone, add(m, mul(m, mottle, const(m, 0.6, -1050, -150), -950, -200), const(m, 0.4, -950, -100), -850, -200), -700, -300)
-    mel.connect_material_property(basalt, "", unreal.MaterialProperty.MP_BASE_COLOR)
-    cracks_raw = noise(m, world, 0.05, 4, -1200, 100, -1.0, 1.0)
-    absn = expr(m, unreal.MaterialExpressionAbs, -1050, 100)
-    mel.connect_material_expressions(cracks_raw, "", absn, "")
-    ridge = expr(m, unreal.MaterialExpressionOneMinus, -950, 100)
-    mel.connect_material_expressions(absn, "", ridge, "")
-    sharp = expr(m, unreal.MaterialExpressionPower, -850, 100)
-    sharp.set_editor_property("const_exponent", 12.0)
-    mel.connect_material_expressions(ridge, "", sharp, "Base")
+    glow = expr(m, unreal.MaterialExpressionScalarParameter, -450, 400)
+    glow.set_editor_property("parameter_name", "Glow")
+    glow.set_editor_property("default_value", 1.0)
+    ember = expr(m, unreal.MaterialExpressionConstant3Vector, -450, 0)
+    ember.set_editor_property("constant", unreal.LinearColor(1.0, 0.32, 0.06, 0.0))
     rim = expr(m, unreal.MaterialExpressionOneMinus, -850, 300)
     mel.connect_material_expressions(facing(m, -950, 260), "", rim, "")
     rim3 = expr(m, unreal.MaterialExpressionPower, -750, 300)
     rim3.set_editor_property("const_exponent", 3.0)
     mel.connect_material_expressions(rim, "", rim3, "Base")
-    heat = add(m, mul(m, sharp, const(m, 30.0, -750, 160), -650, 120), mul(m, rim3, const(m, 6.0, -650, 360), -550, 320), -450, 200)
-    ember = expr(m, unreal.MaterialExpressionConstant3Vector, -450, 0)
-    ember.set_editor_property("constant", unreal.LinearColor(1.0, 0.32, 0.06, 0.0))
-    glow = expr(m, unreal.MaterialExpressionScalarParameter, -450, 400)
-    glow.set_editor_property("parameter_name", "Glow")
-    glow.set_editor_property("default_value", 1.0)
+    if rock:
+        uv = expr(m, unreal.MaterialExpressionTextureCoordinate, -1500, 0)
+        tiled = expr(m, unreal.MaterialExpressionMultiply, -1350, 0)
+        tiled.set_editor_property("const_b", 2.0)
+        mel.connect_material_expressions(uv, "", tiled, "A")
+
+        def sample(texture, sampler, y):
+            e = expr(m, unreal.MaterialExpressionTextureSample, -1150, y)
+            e.set_editor_property("texture", texture)
+            e.set_editor_property("sampler_type", sampler)
+            mel.connect_material_expressions(tiled, "", e, "UVs")
+            return e
+
+        alb = sample(rock["diff"], unreal.MaterialSamplerType.SAMPLERTYPE_COLOR, -300)
+        nor = sample(rock["nor_dx"], unreal.MaterialSamplerType.SAMPLERTYPE_NORMAL, -50)
+        arm = sample(rock["arm"], unreal.MaterialSamplerType.SAMPLERTYPE_MASKS, 200)
+        basalt = expr(m, unreal.MaterialExpressionMultiply, -800, -300)
+        basalt.set_editor_property("const_b", 0.14)
+        mel.connect_material_expressions(alb, "RGB", basalt, "A")
+        mel.connect_material_property(basalt, "", unreal.MaterialProperty.MP_BASE_COLOR)
+        mel.connect_material_property(nor, "RGB", unreal.MaterialProperty.MP_NORMAL)
+        mel.connect_material_property(arm, "G", unreal.MaterialProperty.MP_ROUGHNESS)
+        heat = custom(m, "float crevice = pow(saturate((0.53 - AO) * 20.0), 2.0); return crevice * 40.0 + Rim * 3.0;", ["AO", "Rim"], unreal.CustomMaterialOutputType.CMOT_FLOAT1, -600, 200)
+        mel.connect_material_expressions(arm, "R", heat, "AO")
+        mel.connect_material_expressions(rim3, "", heat, "Rim")
+    else:
+        heat = mul(m, rim3, const(m, 6.0, -650, 360), -550, 320)
     emissive = mul(m, mul(m, ember, heat, -300, 100), glow, -150, 150)
     mel.connect_material_property(emissive, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
-    mel.connect_material_property(const(m, 0.9, -150, 300), "", unreal.MaterialProperty.MP_ROUGHNESS)
     mel.recompile_material(m)
 
     # Trail.
