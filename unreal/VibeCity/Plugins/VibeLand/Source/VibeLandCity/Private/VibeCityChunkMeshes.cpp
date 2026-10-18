@@ -313,8 +313,19 @@ void AVibeCityDirector::FinishCellBuilds(bool bWait)
 			DropImportedCell(Built->Cell);
 			DropBake(Built->Cell);
 			ApplySections(CellComponents[Built->Cell], Built->Opaque, Built->Glass);
+			// Only a broken cell of an imported city is baked (it lost its imported mesh's distance
+			// field when it swapped): a city without an import builds every cell at runtime, its cells
+			// with loose bodies count as changed, and baking them (Vibe Town, 52k chunks) held the game
+			// at 1-2 fps.
+			bool bBroken = !ImportedFolder.IsEmpty();
+			bool bChanged = false;
+			for (const int32 ChunkIndex : CellChunks[Built->Cell])
+			{
+				bChanged |= Slots[ChunkIndex].Body != 0 || Slots[ChunkIndex].bRemoved;
+			}
+			bBroken = bBroken && bChanged;
 			CellOpaque.SetNum(CellChunks.Num());
-			CellOpaque[Built->Cell] = { MakeShared<VibeCityCells::FSection>(MoveTemp(Built->Opaque)), FPlatformTime::Seconds(), Built->Version };
+			CellOpaque[Built->Cell] = bBroken ? FCellOpaque{ MakeShared<VibeCityCells::FSection>(MoveTemp(Built->Opaque)), FPlatformTime::Seconds(), Built->Version } : FCellOpaque{};
 		}
 	}
 }

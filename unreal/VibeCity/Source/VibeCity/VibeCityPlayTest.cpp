@@ -1619,3 +1619,237 @@ bool FVibeCityPlayMeetAndWalk::RunTest(const FString& Parameters)
 
 #endif
 
+
+#if WITH_DEV_AUTOMATION_TESTS
+
+#include "HttpModule.h"
+#include "Interfaces/IHttpRequest.h"
+#include "GameFramework/HUD.h"
+
+// VibeCity.Film.Drive: a driving take for films. Optionally a meteor first (-VibeFilmMeteor=x,y,z,
+// server metres; then -VibeFilmMeteorWait seconds for the collapse), then the player boards the car
+// nearest -VibeCarNear, drives through -VibeFilmRoute=x,z;x,z;... (server metres) steering by
+// heading error with the throttle held, and at the end pulls the handbrake with full steer and lifts
+// off, sliding to a stop. The game's own chase camera films it; frames every -VibeShotEvery seconds
+// to -VibeShotDir as frame_NNNNN.png (frame numbers follow wall-clock time).
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FVibeCityFilmDrive, "VibeCity.Film.Drive",
+	EAutomationTestFlags::ClientContext | EAutomationTestFlags::ProductFilter)
+
+bool FVibeCityFilmDrive::RunTest(const FString& Parameters)
+{
+	struct FState
+	{
+		VlLocal Local = {};
+		FDelegateHandle Handle;
+		double Deadline = 0.0;
+		double T0 = 0.0;
+		double ShotEvery = 1.0 / 24.0;
+		int32 Shots = 0;
+		uint32 Car = 0;
+		TArray<FVector> Route;
+		int32 Next = 0;
+		FVector LastPos = FVector::ZeroVector;
+		FVector Heading = FVector::ZeroVector;
+		int32 Steer = 0; // -1 A, 0, +1 D
+		double SlideStart = -1.0;
+	};
+	TSharedRef<FState> S = MakeShared<FState>();
+	auto Vehicles = []() -> AVibeVehicles* { TActorIterator<AVibeVehicles> It(GameWorld()); return It ? *It : nullptr; };
+	auto Pawn = []() { return Cast<AVibePlayerPawn>(UGameplayStatics::GetPlayerPawn(GameWorld(), 0)); };
+	auto ToUe = [](double X, double Y, double Z) { return FVector(100.0 * Z, -100.0 * X, 100.0 * Y); };
+	// Frames by wall-clock time while filming.
+	auto Film = [S]()
+	{
+		FString Dir;
+		if (S->T0 <= 0.0 || !FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), Dir))
+		{
+			return;
+		}
+		const double T = Now() - S->T0;
+		if (T >= S->ShotEvery * S->Shots)
+		{
+			FScreenshotRequest::RequestScreenshot(Dir / FString::Printf(TEXT("frame_%05d.png"), S->Shots), false, false);
+			S->Shots = FMath::Max(S->Shots + 1, FMath::FloorToInt(T / S->ShotEvery) + 1);
+		}
+	};
+	auto SetSteer = [S](int32 Want)
+	{
+		if (Want == S->Steer)
+		{
+			return;
+		}
+		if (S->Steer < 0) Key(EKeys::A, false);
+		if (S->Steer > 0) Key(EKeys::D, false);
+		if (Want < 0) Key(EKeys::A, true);
+		if (Want > 0) Key(EKeys::D, true);
+		S->Steer = Want;
+	};
+
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles, ToUe]()
+	{
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		if (!Net)
+		{
+			return false;
+		}
+		if (!S->Handle.IsValid())
+		{
+			S->Deadline = Now() + 120.0;
+			S->Handle = Net->OnFrame.AddLambda([S](const VlFrameView& Frame) { S->Local = Frame.local; });
+			FParse::Value(FCommandLine::Get(), TEXT("VibeShotEvery="), S->ShotEvery);
+			FString Route;
+			if (FParse::Value(FCommandLine::Get(), TEXT("VibeFilmRoute="), Route, /*bShouldStopOnSeparator=*/false))
+			{
+				TArray<FString> Points;
+				Route.ParseIntoArray(Points, TEXT(";"));
+				for (const FString& Point : Points)
+				{
+					TArray<FString> P;
+					if (Point.ParseIntoArray(P, TEXT(",")) == 2)
+					{
+						S->Route.Add(ToUe(FCString::Atod(*P[0]), 0.0, FCString::Atod(*P[1])));
+					}
+				}
+			}
+		}
+		const AVibeVehicles* V = Vehicles();
+		if ((S->Local.player.flags & VL_PLAYER_VALID) && V && V->BuiltCars() > 0)
+		{
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("no car drawn"));
+			return true;
+		}
+		return false;
+	}));
+	// The meteor, and a wait for the collapse (filmed by the drive's camera standing by the car).
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles, ToUe]()
+	{
+		const AVibeVehicles* V = Vehicles();
+		FVector Near(S->Local.player.pos[0], S->Local.player.pos[1], S->Local.player.pos[2]);
+		FString Text;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeCarNear="), Text, /*bShouldStopOnSeparator=*/false))
+		{
+			TArray<FString> P;
+			if (Text.ParseIntoArray(P, TEXT(",")) == 3)
+			{
+				Near = ToUe(FCString::Atod(*P[0]), FCString::Atod(*P[1]), FCString::Atod(*P[2]));
+			}
+		}
+		const TOptional<uint32> Car = V ? V->NearestCar(Near, 1.0e9) : TOptional<uint32>();
+		if (!Car)
+		{
+			AddError(TEXT("no car to drive"));
+			return true;
+		}
+		S->Car = *Car;
+		const FVector At = *V->CarPosition(*Car);
+		UVibeNetSubsystem* Net = NetOf(GameWorld());
+		Net->CameraDrop(At + FVector(0.0, 250.0, 150.0), 0.0f, 0.0f);
+		if (APlayerController* PC = GameWorld()->GetFirstPlayerController(); PC && PC->GetHUD())
+		{
+			PC->GetHUD()->bShowHUD = false;
+		}
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeFilmMeteor="), Text, /*bShouldStopOnSeparator=*/false))
+		{
+			TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = FHttpModule::Get().CreateRequest();
+			Request->SetURL(Net->CurrentApiBaseUrl() / TEXT("city-meteor") / Net->CurrentMatchId());
+			Request->SetVerb(TEXT("POST"));
+			Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+			Request->SetContentAsString(FString::Printf(TEXT("{\"targets\":[[%s]]}"), *Text));
+			Request->ProcessRequest();
+		}
+		double Wait = 0.0;
+		FParse::Value(FCommandLine::Get(), TEXT("VibeFilmMeteorWait="), Wait);
+		S->Deadline = Now() + Wait;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]() { return Now() > S->Deadline; }));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S]()
+	{
+		Click();
+		Key(EKeys::E, true);
+		Key(EKeys::E, false);
+		S->Deadline = Now() + 8.0;
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Pawn, Vehicles]()
+	{
+		if (Pawn() && Pawn()->IsInVehicle())
+		{
+			S->LastPos = *Vehicles()->CarPosition(S->Car);
+			S->Heading = Vehicles()->CarRotation(S->Car)->GetForwardVector().GetSafeNormal2D();
+			S->T0 = Now();
+			S->Deadline = Now() + 60.0;
+			Key(EKeys::W, true);
+			return true;
+		}
+		if (Now() > S->Deadline)
+		{
+			AddError(TEXT("E did not put the player in the car"));
+			S->Deadline = 0.0;
+			return true;
+		}
+		return false;
+	}));
+	// Drive the route: steer toward the next point (heading from the car's own motion once moving).
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, Vehicles, Film, SetSteer]()
+	{
+		Film();
+		const AVibeVehicles* V = Vehicles();
+		const TOptional<FVector> Pos = V ? V->CarPosition(S->Car) : TOptional<FVector>();
+		if (!Pos || Now() > S->Deadline || S->Next >= S->Route.Num())
+		{
+			return true;
+		}
+		const FVector Move = (*Pos - S->LastPos).GetSafeNormal2D();
+		if ((*Pos - S->LastPos).Size2D() > 20.0)
+		{
+			S->Heading = Move;
+			S->LastPos = *Pos;
+		}
+		const FVector To = S->Route[S->Next] - *Pos;
+		if (To.Size2D() < 700.0)
+		{
+			++S->Next;
+			return S->Next >= S->Route.Num();
+		}
+		const double Err = FRotator::NormalizeAxis(To.Rotation().Yaw - S->Heading.Rotation().Yaw);
+		SetSteer(Err > 4.0 ? 1 : (Err < -4.0 ? -1 : 0));
+		return false;
+	}));
+	// The handbrake turn: lift off, handbrake, full steer; then let it slide to a stop.
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S, SetSteer]()
+	{
+		Key(EKeys::W, false);
+		SetSteer(1);
+		Key(EKeys::SpaceBar, true);
+		S->SlideStart = Now();
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([S, Film, SetSteer]()
+	{
+		Film();
+		if (Now() - S->SlideStart > 1.6 && S->Steer != 0)
+		{
+			SetSteer(0);
+		}
+		return Now() - S->SlideStart > 5.0;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
+	{
+		Key(EKeys::SpaceBar, false);
+		AddInfo(FString::Printf(TEXT("drive film: %d frames, reached %d of %d route points"), S->Shots, S->Next, S->Route.Num()));
+		TestTrue(TEXT("the drive was filmed"), S->Shots > 0 || !FParse::Param(FCommandLine::Get(), TEXT("VibeShotDir")));
+		if (UVibeNetSubsystem* Net = NetOf(GameWorld()))
+		{
+			Net->OnFrame.Remove(S->Handle);
+		}
+		return true;
+	}));
+	return true;
+}
+
+#endif

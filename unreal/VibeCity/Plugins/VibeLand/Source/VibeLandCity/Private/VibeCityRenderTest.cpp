@@ -971,6 +971,13 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 		bool bCannon = false;
 		bool bMeteor = false;
 		FVector Target = FVector::ZeroVector;
+		// For films: the camera glides from (Eye, Look) to (EyeTo, LookTo) over Seconds, eased;
+		// frames every ShotEvery seconds; the meteor at MeteorAt, the cannon at CannonAt (< 0: none).
+		FVector3f Eye, Look, EyeTo, LookTo;
+		float Fov = 60.0f;
+		bool bGlide = false;
+		double Seconds = 20.0, ShotEvery = 0.5, MeteorAt = 1.0, CannonAt = 1.5;
+		bool bFilm = false;
 	};
 	TSharedRef<FState> S = MakeShared<FState>();
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
@@ -1008,6 +1015,19 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 			AddError(FString::Printf(TEXT("bad -VibeShowcase=%s"), *Shot));
 			return true;
 		}
+		S->Eye = Eye;
+		S->Look = Look;
+		S->Fov = Fov > 0.0f ? Fov : 60.0f;
+		FString To;
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShowcaseTo="), To, /*bShouldStopOnSeparator=*/false))
+		{
+			float Unused = 0.0f;
+			S->bGlide = VibeCityCapture::Parse(To, S->EyeTo, S->LookTo, Unused);
+		}
+		FParse::Value(FCommandLine::Get(), TEXT("VibeShowcaseSeconds="), S->Seconds);
+		S->bFilm = FParse::Value(FCommandLine::Get(), TEXT("VibeShotEvery="), S->ShotEvery);
+		FParse::Value(FCommandLine::Get(), TEXT("VibeShowcaseMeteorAt="), S->MeteorAt);
+		FParse::Value(FCommandLine::Get(), TEXT("VibeShowcaseCannonAt="), S->CannonAt);
 		const FVector From(100.0 * Eye.Z, -100.0 * Eye.X, 100.0);
 		S->Target = FVector(100.0 * Look.Z, -100.0 * Look.X, 100.0 * Look.Y);
 		N->CameraDrop(From, static_cast<float>((S->Target - From).Rotation().Yaw), 0.0f);
@@ -1024,12 +1044,18 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 	{
 		const double T = FPlatformTime::Seconds() - S->T0;
 		UVibeNetSubsystem* N = Net();
-		if (N && !S->bCannon && T > 1.5)
+		if (S->bGlide)
+		{
+			const double U = FMath::Clamp(T / S->Seconds, 0.0, 1.0);
+			const float Ease = static_cast<float>(U * U * (3.0 - 2.0 * U));
+			VibeCityCapture::Park(GameWorld(), FMath::Lerp(S->Eye, S->EyeTo, Ease), FMath::Lerp(S->Look, S->LookTo, Ease), S->Fov);
+		}
+		if (N && !S->bCannon && S->CannonAt >= 0.0 && T > S->CannonAt)
 		{
 			S->bCannon = true;
 			N->Fire(VL_WEAPON_CANNON);
 		}
-		if (N && !S->bMeteor && T > 1.0)
+		if (N && !S->bMeteor && S->MeteorAt >= 0.0 && T > S->MeteorAt)
 		{
 			S->bMeteor = true;
 			// The building's highest chunk.
@@ -1046,12 +1072,13 @@ bool FVibeCityRenderShowcase::RunTest(const FString& Parameters)
 				FString::Printf(TEXT("{\"targets\":[[%f,%f,%f]]}"), -Top.Y / 100.0, Top.Z / 100.0, Top.X / 100.0));
 		}
 		FString ShotDir;
-		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir) && T >= 0.5 * S->Shots)
+		if (FParse::Value(FCommandLine::Get(), TEXT("VibeShotDir="), ShotDir) && T >= S->ShotEvery * S->Shots)
 		{
-			FScreenshotRequest::RequestScreenshot(ShotDir / FString::Printf(TEXT("showcase_%02d.png"), S->Shots), false, false);
-			++S->Shots;
+			FScreenshotRequest::RequestScreenshot(ShotDir / (S->bFilm ? FString::Printf(TEXT("frame_%05d.png"), S->Shots) : FString::Printf(TEXT("showcase_%02d.png"), S->Shots)), false, false);
+			// A slow frame skips the frames it covered: the film keeps wall-clock time.
+			S->Shots = FMath::Max(S->Shots + 1, FMath::FloorToInt(T / S->ShotEvery) + 1);
 		}
-		return T > 20.0;
+		return T > S->Seconds;
 	}));
 	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S]()
 	{
