@@ -20,6 +20,10 @@
 // Everything above ground is destructible: buildings, roads, pavements,
 // paint, fixtures. Only buried footings and road subgrade are fixed.
 //
+// VIBE_TOWN_VARIANT=low: the same town without the five ten-storey towers, so
+// nothing stands above two storeys (out/vibe-town-low.*): a lighter scene for
+// live play while the towers' collapse costs more than a tick.
+//
 // VIBE_TOWN_VARIANT=hero: the town the hero film drives through
 // (client/native/films/hero-run.mjs, --scene hero), as vibe-town-hero.*: the
 // same town plus an approach road and a launch ramp west of Elm Park, the
@@ -221,6 +225,7 @@ const ASSETS = {
 // ------------------------------------------------------------- the town
 function layout(variant = null) {
   const hero = variant === 'hero';
+  const towers = variant !== 'low';
   const placements = [], paths = [], slots = [], labels = [];
   let n = 0;
   const place = (asset, x, z, yaw, name, y = 0) => placements.push({ ...asset, position: [x, y, z], yaw, group: `${name}@${name}-${n++}` });
@@ -314,7 +319,7 @@ function layout(variant = null) {
   for (const x of [13, 21, 29]) place(ASSETS.prop('bench'), x, -14, 180, 'bench');
   frontage(ASSETS.grocery('MARKET', 'rose', hero), 52, 0, -1, 7.4, 'grocery');
   // Main Street's first tower is the hero variant's glass office tower: the one its film brings down.
-  for (const [k, x] of [90, 112, 134].entries()) frontage(hero && k === 0 ? ASSETS.office() : ASSETS.tower(['limestone', 'glass', 'brick'][k]), x, 0, -1, 8, 'tower');
+  if (towers) for (const [k, x] of [90, 112, 134].entries()) frontage(hero && k === 0 ? ASSETS.office() : ASSETS.tower(['limestone', 'glass', 'brick'][k]), x, 0, -1, 8, 'tower');
   labels.push({ title: 'Bus station', position: [20, 0, -10] });
   // North Street: shops facing south; the market square behind Main Street's shops.
   shopRow(48, -1, 10, ['DELI', 'BOOKS', 'BAKERY', 'CAFE', 'TOYS', 'FLORIST', 'BARBER'], ['slate', 'blue', 'cream', 'sage', 'rose']);
@@ -326,7 +331,7 @@ function layout(variant = null) {
   for (const [k, x] of [54, 60].entries()) place(ASSETS.tree(['shade', 'ornamental'][k], k), x, 25, 0, 'tree');
   labels.push({ title: 'Market square', position: [27, 0, 24] });
   // North Street east: two towers and the car park between them.
-  for (const [k, x] of [90, 134].entries()) frontage(ASSETS.tower(['glass', 'limestone'][k]), x, 48, 1, 8, 'tower');
+  if (towers) for (const [k, x] of [90, 134].entries()) frontage(ASSETS.tower(['glass', 'limestone'][k]), x, 48, 1, 8, 'tower');
   paths.push([100, 124, 55, 70, 'asphalt']);
   slots.push([106.5, 63, 180], [115.5, 63, 180]);
   // car-10, the chase car: North Street's west end, in the eastbound lane,
@@ -508,7 +513,7 @@ export function buildTown(variant = process.env.VIBE_TOWN_VARIANT || null) {
   const { placements, paths, slots, labels, fleet } = layout(variant);
   const { asset: ground, surfaces } = buildGround({ paths, approach: hero ? APPROACH : null });
   const all = [{ ...ground, position: [0, 0, 0], yaw: 0, group: 'terrain@terrain-0' }, ...placements];
-  const pack = composeScene(all, { key: hero ? `${TOWN_KEY}-hero` : TOWN_KEY, title: hero ? 'Vibe Town (hero)' : 'Vibe Town' });
+  const pack = composeScene(all, { key: variant ? `${TOWN_KEY}-${variant}` : TOWN_KEY, title: hero ? 'Vibe Town (hero)' : variant === 'low' ? 'Vibe Town (low-rise)' : 'Vibe Town' });
   // The ground is ungrouped (`ground` to the qualifier); everything else is `kind@name-n`.
   pack.scenario.nodeGroups = pack.scenario.nodeGroups.map((g) => (g === 'terrain@terrain-0' ? 'terrain' : g));
   const problems = check(all, pack, surfaces);
