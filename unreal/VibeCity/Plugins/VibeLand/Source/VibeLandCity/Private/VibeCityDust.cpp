@@ -208,7 +208,10 @@ void AVibeCityDirector::MarkGround(const VlDustParcel& Impact)
 			return;
 		}
 		DustMarkMaterial = UMaterialInstanceDynamic::Create(Base, this);
-		DustMarkMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.42f, 0.40f, 0.37f));
+		// Settled dust: an earth tone a little lighter than asphalt, at under half strength, so the
+		// street shows through (full strength in pale grey read as white paint).
+		DustMarkMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.26f, 0.24f, 0.21f));
+		DustMarkMaterial->SetScalarParameterValue(TEXT("Fade"), 0.45f);
 	}
 	constexpr int32 MaxMarks = 64;
 	if (DustMarkDecals.Num() >= MaxMarks)
