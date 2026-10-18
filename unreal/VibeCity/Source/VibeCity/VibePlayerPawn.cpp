@@ -398,6 +398,7 @@ void AVibePlayerPawn::ApplyLook(const FVector2D& Raw)
 void AVibePlayerPawn::OnFire(const FInputActionValue&)
 {
 	bFireHeld = true;
+	bFirePressed = true;
 }
 
 void AVibePlayerPawn::OnFireStopped(const FInputActionValue&)
@@ -660,7 +661,9 @@ void AVibePlayerPawn::Tick(float DeltaSeconds)
 	LastSentButtons = Input.buttons;
 	LastSentMove = FVector2D(Input.move_x, Input.move_y);
 	NetSubsystem->SetInput(Input);
-	if ((bFireHeld || PadRightTrigger > PadPressed) && bJoined && CanUseAim())
+	const bool bWantsFire = bFireHeld || bFirePressed || PadRightTrigger > PadPressed;
+	bFirePressed = false;
+	if (bWantsFire && bJoined && CanUseAim())
 	{
 		// The core repeats at most at the server's fire interval and stamps the shot.
 		NetSubsystem->Fire(CurrentWeapon);

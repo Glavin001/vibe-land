@@ -238,7 +238,9 @@ bool FVibeCityPlayWalkAndShoot::RunTest(const FString& Parameters)
 		}
 		if (Now() > S->Deadline)
 		{
-			AddError(FString::Printf(TEXT("no %s within 5 s"), Local ? TEXT("ShotResult for the shot") : TEXT("local shot")));
+			const AVibePlayerPawn* Pawn = Cast<AVibePlayerPawn>(UGameplayStatics::GetPlayerPawn(GameWorld(), 0));
+			AddError(FString::Printf(TEXT("no %s within 5 s (the pawn asked the core to fire %d times; %d events seen)"), Local ? TEXT("ShotResult for the shot") : TEXT("local shot"),
+				Pawn ? Pawn->FireRequests() : -1, S->Events.Num()));
 			return true;
 		}
 		return false;

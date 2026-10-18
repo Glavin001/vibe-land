@@ -182,6 +182,8 @@ private:
 	FVector2D MoveAxes = FVector2D::ZeroVector;
 	uint32 Buttons = 0;
 	bool bFireHeld = false;
+	/** A press not yet fired: a click released within the frame it was pressed still shoots once. */
+	bool bFirePressed = false;
 	uint32 CurrentWeapon = VL_WEAPON_RIFLE;
 	bool bJoined = false;
 	bool bOrderedBeforeDirector = false;
