@@ -142,7 +142,9 @@ pub fn grass_patch(px: i32, pz: i32, density: f32, exclusions: &[f32], paint: Op
 /// the structures derived in Rust (`destruction::per_player::structure_defs`, the server's own
 /// derivation, as the Unreal client builds its stream) rather than flattened in TypeScript
 /// (`perPlayerCoreArgs`). The same `PerPlayerClient` surface the web's stream adapter reads.
-/// Behind `?coreStream=1` (`client/src/city/perPlayerWasm.ts`).
+/// Behind `?coreStream=1` (`client/src/city/perPlayerWasm.ts`). wasm32 only, like
+/// `perplayer::wasm` (a native `cargo check` of the workspace builds this crate too).
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub fn core_city_stream(manifest: &[u8], hz: u32, gravity_y: f32, delay_ticks: f32) -> Result<vibe_land_perplayer::wasm::PerPlayerClient, JsValue> {
     let manifest = vibe_client_core::city::decode_manifest(manifest, None).map_err(|e| JsValue::from_str(&e.to_string()))?;

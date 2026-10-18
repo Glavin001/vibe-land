@@ -609,7 +609,7 @@ class CityTapeRecorder {
         version: 2,
         capturedAt: new Date().toISOString(),
         ...meta,
-        userAgent: navigator.userAgent,
+        userAgent: globalThis.navigator?.userAgent ?? '', // Node 20 (CI) has no navigator
         durationMs,
         packets: this.packets.length,
         bytes: this.bytes,

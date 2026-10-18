@@ -13,7 +13,7 @@
 
 services:
   minio:
-    image: quay.io/minio/minio:latest
+    image: minio/minio:latest
     container_name: vibe-land-minio
     # Host networking so the daemon doesn't need iptables-managed bridge NAT.
     # The container binds 9000 (S3 API) and 9001 (web console) directly on the
@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
 
   minio-init:
-    image: quay.io/minio/mc:latest
+    image: minio/mc:latest
     container_name: vibe-land-minio-init
     network_mode: host
     depends_on:
