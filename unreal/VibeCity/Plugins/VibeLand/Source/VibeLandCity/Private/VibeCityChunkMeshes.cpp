@@ -236,6 +236,11 @@ void AVibeCityDirector::RebuildCell(int32 Cell, bool bAsync)
 	if (bIntact && !ImportedFolder.IsEmpty() && (ImportedOpaque[Cell] || UseImportedCell(Cell, ImportedFolder)))
 	{
 		CellComponents[Cell]->ClearAllMeshSections();
+		DropBake(Cell);
+		if (CellOpaque.IsValidIndex(Cell))
+		{
+			CellOpaque[Cell] = {};
+		}
 		return;
 	}
 	// The standing chunks to draw: cells sit at the world origin, so a standing chunk's vertex is
@@ -306,7 +311,10 @@ void AVibeCityDirector::FinishCellBuilds(bool bWait)
 		if (Built && CellVersions.IsValidIndex(Built->Cell) && CellVersions[Built->Cell] == Built->Version)
 		{
 			DropImportedCell(Built->Cell);
+			DropBake(Built->Cell);
 			ApplySections(CellComponents[Built->Cell], Built->Opaque, Built->Glass);
+			CellOpaque.SetNum(CellChunks.Num());
+			CellOpaque[Built->Cell] = { MakeShared<VibeCityCells::FSection>(MoveTemp(Built->Opaque)), FPlatformTime::Seconds(), Built->Version };
 		}
 	}
 }
@@ -408,6 +416,7 @@ void AVibeCityDirector::ApplyFrame(const VlFrameView& Frame)
 
 	// Cell rebuilds run on workers; finished ones land here, next frame at the latest.
 	FinishCellBuilds(false);
+	TickBakes();
 	for (const int32 Cell : DirtyCells)
 	{
 		RebuildCell(Cell, /*bAsync=*/true);
@@ -489,4 +498,82 @@ int64 AVibeCityDirector::ExpectedVertices() const
 		N += Slots[i].bRemoved ? 0 : M.ranges[i].vertex_count;
 	}
 	return N;
+}
+
+void AVibeCityDirector::DropBake(int32 Cell)
+{
+	if (BakedOpaque.IsValidIndex(Cell) && BakedOpaque[Cell])
+	{
+		BakedOpaque[Cell]->DestroyComponent();
+		BakedOpaque[Cell] = nullptr;
+	}
+}
+
+int32 AVibeCityDirector::BakedCellsDrawn() const
+{
+	int32 N = 0;
+	for (const TObjectPtr<UStaticMeshComponent>& C : BakedOpaque)
+	{
+		N += C ? 1 : 0;
+	}
+	return N;
+}
+
+const UStaticMesh* AVibeCityDirector::BakedCellMesh(int32 Cell) const
+{
+	return BakedOpaque.IsValidIndex(Cell) && BakedOpaque[Cell] ? BakedOpaque[Cell]->GetStaticMesh() : nullptr;
+}
+
+void AVibeCityDirector::TickBakes()
+{
+#if WITH_EDITOR
+	static const bool bOff = FParse::Param(FCommandLine::Get(), TEXT("VibeNoBake"));
+	if (bOff)
+	{
+		return;
+	}
+	BakedOpaque.SetNum(CellChunks.Num());
+	BakedVersions.SetNum(CellChunks.Num());
+	// A cell must hold still this long before it is baked: a collapse rebuilds its cells many times
+	// a second, and each bake costs a mesh build.
+	constexpr double StillS = 2.0;
+	if (BakeInFlight)
+	{
+		if (BakeInFlight->IsCompiling())
+		{
+			return;
+		}
+		// Current still (no change since it was taken): it draws the cell's opaque part from now on.
+		if (CellOpaque.IsValidIndex(BakeCell) && CellOpaque[BakeCell].Version == BakeVersion && CellComponents.IsValidIndex(BakeCell))
+		{
+			DropBake(BakeCell);
+			UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(this);
+			C->SetStaticMesh(BakeInFlight);
+			C->SetMobility(EComponentMobility::Movable);
+			C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			C->SetCastShadow(true);
+			C->SetMaterial(0, ChunkMaterial ? ChunkMaterial.Get() : BaseMaterial.Get());
+			C->SetupAttachment(RootComponent);
+			C->RegisterComponent();
+			BakedOpaque[BakeCell] = C;
+			BakedVersions[BakeCell] = BakeVersion;
+			CellComponents[BakeCell]->SetMeshSectionVisible(0, false);
+		}
+		BakeInFlight = nullptr;
+		BakeCell = INDEX_NONE;
+		return;
+	}
+	const double Now = FPlatformTime::Seconds();
+	for (int32 Cell = 0; Cell < CellOpaque.Num(); ++Cell)
+	{
+		const FCellOpaque& O = CellOpaque[Cell];
+		if (O.Section && O.Section->Vertices.Num() > 0 && BakedVersions[Cell] != O.Version && Now - O.ChangedAt >= StillS)
+		{
+			BakeCell = Cell;
+			BakeVersion = O.Version;
+			BakeInFlight = VibeCityCells::BuildStaticMesh(this, NAME_None, *O.Section, /*bNanite=*/false);
+			return;
+		}
+	}
+#endif
 }

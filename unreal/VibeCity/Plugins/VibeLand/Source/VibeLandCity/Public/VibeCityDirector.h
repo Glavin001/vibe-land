@@ -72,6 +72,10 @@ public:
 	TOptional<FBox> DustBox(int32 Slot) const;
 	/** Cells drawn from the imported city now, and cells in all. */
 	int32 ImportedCellsDrawn() const;
+	/** Broken cells drawn by a baked static mesh with a distance field (Lumen sees them), and one's
+	 * mesh (tests). */
+	int32 BakedCellsDrawn() const;
+	const UStaticMesh* BakedCellMesh(int32 Cell) const;
 	int32 CellCount() const { return CellChunks.Num(); }
 	/** The imported mesh of cell `Cell` (null when it draws its runtime mesh). */
 	const class UStaticMesh* ImportedCellMesh(int32 Cell) const;
@@ -179,6 +183,26 @@ private:
 		VibeCityCells::FSection Glass;
 	};
 	TArray<TFuture<TSharedPtr<FCellBuild>>> CellBuilds;
+	/** A changed cell's runtime mesh has no distance field, so Lumen does not see it. In a game run
+	 * from the editor binaries, a cell unchanged for a while is baked into a static mesh with one
+	 * (VibeCityCells::BuildStaticMesh, compiled in the background) that then draws its opaque part
+	 * in place of the runtime section; its next change drops the bake. Off with -VibeNoBake. */
+	void TickBakes();
+	void DropBake(int32 Cell);
+	struct FCellOpaque
+	{
+		TSharedPtr<VibeCityCells::FSection> Section;
+		double ChangedAt = 0.0;
+		uint32 Version = 0;
+	};
+	TArray<FCellOpaque> CellOpaque;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UStaticMeshComponent>> BakedOpaque;
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMesh> BakeInFlight;
+	int32 BakeCell = INDEX_NONE;
+	uint32 BakeVersion = 0;
+	TArray<uint32> BakedVersions;
 	FDelegateHandle ClientDestroyingHandle;
 	/** Where this manifest's imported cells are (empty: none, or -VibeRuntimeCells). */
 	FString ImportedFolder;

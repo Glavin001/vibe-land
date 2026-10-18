@@ -544,6 +544,37 @@ bool FVibeCityRenderImportedCity::RunTest(const FString& Parameters)
 			AddInfo(FString::Printf(TEXT("after the meteor: %d cells imported, %d removed chunks"), D->ImportedCellsDrawn(), D->RemovedChunks()));
 			TestEqual(TEXT("all vertices drawn after the swap"), D->DrawnCellVertices() + D->DrawnBodyVertices(), D->ExpectedVertices());
 		}
+		return true;
+	}));
+	// Once still, a broken cell is baked back into a static mesh with a distance field (Lumen sees it).
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this, S, WaitFor]()
+	{
+		if (S->Cell == INDEX_NONE)
+		{
+			return true;
+		}
+		if (!WaitFor([] { AVibeCityDirector* D = Find<AVibeCityDirector>(); return D && D->BakedCellsDrawn() > 0; }, 40.0))
+		{
+			return false;
+		}
+		AVibeCityDirector* D = Find<AVibeCityDirector>();
+		int32 WithField = 0, Baked = 0;
+		for (int32 Cell = 0; D && Cell < D->CellCount(); ++Cell)
+		{
+			if (const UStaticMesh* Mesh = D->BakedCellMesh(Cell))
+			{
+				++Baked;
+				const FStaticMeshRenderData* Data = Mesh->GetRenderData();
+				WithField += Data && Data->LODResources.Num() > 0 && Data->LODResources[0].DistanceFieldData != nullptr ? 1 : 0;
+			}
+		}
+		AddInfo(FString::Printf(TEXT("baked broken cells: %d, %d with a distance field"), Baked, WithField));
+		TestTrue(TEXT("a broken cell was baked"), Baked > 0);
+		TestEqual(TEXT("every baked cell has a distance field"), WithField, Baked);
+		if (D)
+		{
+			TestEqual(TEXT("all vertices still drawn"), D->DrawnCellVertices() + D->DrawnBodyVertices(), D->ExpectedVertices());
+		}
 		UVibeNetSubsystem* N = Net();
 		Post(N->CurrentApiBaseUrl() / TEXT("city-reset") / N->CurrentMatchId(), TEXT("{}"));
 		return true;

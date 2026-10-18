@@ -23,59 +23,7 @@ namespace
 		const FString PackageName = Folder / Name;
 		UPackage* Package = CreatePackage(*PackageName);
 		Package->FullyLoad();
-		UStaticMesh* Mesh = NewObject<UStaticMesh>(Package, *Name, RF_Public | RF_Standalone);
-
-		FMeshDescription Description;
-		FStaticMeshAttributes Attributes(Description);
-		Attributes.Register();
-		Attributes.GetVertexInstanceUVs().SetNumChannels(3);
-		const FPolygonGroupID Group = Description.CreatePolygonGroup();
-		Attributes.GetPolygonGroupMaterialSlotNames()[Group] = TEXT("Chunk");
-		TVertexAttributesRef<FVector3f> Positions = Attributes.GetVertexPositions();
-		TVertexInstanceAttributesRef<FVector3f> Normals = Attributes.GetVertexInstanceNormals();
-		TVertexInstanceAttributesRef<FVector3f> Tangents = Attributes.GetVertexInstanceTangents();
-		TVertexInstanceAttributesRef<float> Signs = Attributes.GetVertexInstanceBinormalSigns();
-		TVertexInstanceAttributesRef<FVector2f> UVs = Attributes.GetVertexInstanceUVs();
-		Description.ReserveNewVertices(S.Vertices.Num());
-		Description.ReserveNewVertexInstances(S.Vertices.Num());
-		Description.ReserveNewTriangles(S.Triangles.Num() / 3);
-		for (int32 t = 0; t + 2 < S.Triangles.Num(); t += 3)
-		{
-			TArray<FVertexInstanceID, TFixedAllocator<3>> Corners;
-			for (int32 k = 0; k < 3; ++k)
-			{
-				const int32 V = S.Triangles[t + k];
-				const FVertexID Vertex = Description.CreateVertex();
-				Positions[Vertex] = FVector3f(S.Vertices[V]);
-				const FVertexInstanceID Instance = Description.CreateVertexInstance(Vertex);
-				Normals[Instance] = FVector3f(S.Normals[V]);
-				Tangents[Instance] = FVector3f(S.Tangents[V].TangentX);
-				// As the procedural mesh reads FProcMeshTangent: binormal = normal x tangent, flipped
-				// when bFlipTangentY.
-				Signs[Instance] = S.Tangents[V].bFlipTangentY ? -1.0f : 1.0f;
-				UVs.Set(Instance, 0, FVector2f(S.UV0[V]));
-				UVs.Set(Instance, 1, FVector2f(S.UV1[V]));
-				UVs.Set(Instance, 2, FVector2f(S.UV2[V]));
-				Corners.Add(Instance);
-			}
-			Description.CreateTriangle(Group, Corners);
-		}
-
-		Mesh->GetStaticMaterials().Add(FStaticMaterial(nullptr, TEXT("Chunk"), TEXT("Chunk")));
-		FStaticMeshSourceModel& Source = Mesh->AddSourceModel();
-		Source.BuildSettings.bRecomputeNormals = false;
-		Source.BuildSettings.bRecomputeTangents = false;
-		Source.BuildSettings.bGenerateLightmapUVs = false;
-		Source.BuildSettings.bRemoveDegenerates = false;
-		Source.BuildSettings.bUseFullPrecisionUVs = true;
-		Mesh->NaniteSettings.bEnabled = bNanite;
-		// UV1 holds each face's texture-array layer: an index, not interpolable.
-		Mesh->NaniteSettings.bLerpUVs = false;
-		Mesh->NaniteSettings.bExplicitTangents = true;
-		Mesh->bGenerateMeshDistanceField = true;
-		Mesh->CreateMeshDescription(0, MoveTemp(Description));
-		Mesh->CommitMeshDescription(0);
-		Mesh->Build(/*bInSilent=*/true);
+		UStaticMesh* Mesh = VibeCityCells::BuildStaticMesh(Package, *Name, S, bNanite, RF_Public | RF_Standalone);
 		Mesh->MarkPackageDirty();
 		FAssetRegistryModule::AssetCreated(Mesh);
 

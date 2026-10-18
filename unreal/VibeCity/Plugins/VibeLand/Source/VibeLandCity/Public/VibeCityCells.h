@@ -64,6 +64,14 @@ namespace VibeCityCells
 	VIBELANDCITY_API void AppendChunk(const VlMeshView& Meshes, int32 ChunkIndex, const FTransform& ToComponent, const FTransform& Rest,
 		const FCatalogMap& Catalog, FSection& Opaque, FSection& Glass);
 
+#if WITH_EDITOR
+	/** A static mesh holding one section (no welding: each triangle keeps its own corners, as the
+	 * runtime mesh does), with a mesh distance field for Lumen, built (asynchronously where the
+	 * engine compiles meshes in the background). Editor builds only: the import step bakes cells
+	 * with it, and a game run from the editor binaries bakes broken cells. */
+	VIBELANDCITY_API UStaticMesh* BuildStaticMesh(UObject* Outer, FName Name, const FSection& Section, bool bNanite, EObjectFlags Flags = RF_NoFlags);
+#endif
+
 	/** Where an imported city's cells are kept: /Game/VibeCity/Scenes/<first 16 of the hash>_<HD|Web>. */
 	VIBELANDCITY_API FString SceneFolder(const FString& ManifestHash, bool bHd);
 	/** A cell's static mesh asset name in that folder (Cell_<x>_<y>, and _Glass for its glass). */
