@@ -8,6 +8,8 @@
 
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Components/DecalComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/StaticMesh.h"
@@ -70,6 +72,12 @@ void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
 	}
 	for (size_t i = 0; i < Frame.dust_count; ++i)
 	{
+		// A heavy chunk landing on the ground (an impact puff at ground level from a body of some
+		// size) leaves a mark.
+		if (Frame.dust[i].shape == 1 /* VL_DUST_IMPACT */ && Frame.dust[i].position[2] < 150.0f && Frame.dust[i].radius0 > 40.0f)
+		{
+			MarkGround(Frame.dust[i]);
+		}
 		FDustParcel& Slot = DustParcels[DustHead];
 		LiveDustCount += Slot.bAlive ? 0 : 1;
 		Slot.P = Frame.dust[i];
@@ -188,6 +196,35 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 			/*bMarkRenderStateDirty=*/false);
 	}
 	DustInstances->MarkRenderStateDirty();
+}
+
+void AVibeCityDirector::MarkGround(const VlDustParcel& Impact)
+{
+	if (!DustMarkMaterial)
+	{
+		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityScorch.M_VibeCityScorch"));
+		if (!Base)
+		{
+			return;
+		}
+		DustMarkMaterial = UMaterialInstanceDynamic::Create(Base, this);
+		DustMarkMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.42f, 0.40f, 0.37f));
+	}
+	constexpr int32 MaxMarks = 64;
+	if (DustMarkDecals.Num() >= MaxMarks)
+	{
+		DustMarkDecals[0]->DestroyComponent();
+		DustMarkDecals.RemoveAt(0);
+	}
+	UDecalComponent* Decal = NewObject<UDecalComponent>(this);
+	Decal->SetDecalMaterial(DustMarkMaterial);
+	const double Size = Impact.radius0 * 3.0;
+	Decal->DecalSize = FVector(Size, Size, Size);
+	Decal->SetupAttachment(RootComponent);
+	Decal->RegisterComponent();
+	Decal->SetWorldLocationAndRotation(FVector(Impact.position[0], Impact.position[1], 0.0), FRotator(-90.0, (Impact.seed % 360), 0.0));
+	DustMarkDecals.Add(Decal);
+	++DustMarkCount;
 }
 
 void AVibeCityDirector::EmitTrails(const VlFrameView& Frame)

@@ -66,6 +66,8 @@ public:
 	int32 EmitDust(TArrayView<const VlDustParcel> Parcels) { return InjectDustForTest(Parcels); }
 	/** Trail puffs emitted behind falling debris so far (tests). */
 	int64 TrailPuffs() const { return TrailPuffCount; }
+	/** Dust marks left on the ground where heavy debris landed so far (tests). */
+	int64 DustMarks() const { return DustMarkCount; }
 	/** Tests: the drawn box of ring slot `Slot` (centre and size, cm), unset while it is not live. */
 	TOptional<FBox> DustBox(int32 Slot) const;
 	/** Cells drawn from the imported city now, and cells in all. */
@@ -142,6 +144,13 @@ private:
 	};
 	TMap<uint64, FTrail> Trails;
 	int64 TrailPuffCount = 0;
+	/** Pale dust decals where heavy debris landed on the ground (M_VibeCityScorch in dust colour). */
+	void MarkGround(const VlDustParcel& Impact);
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UDecalComponent>> DustMarkDecals;
+	UPROPERTY(Transient)
+	TObjectPtr<class UMaterialInstanceDynamic> DustMarkMaterial;
+	int64 DustMarkCount = 0;
 	void ShowStatus(const VlFrameView& Frame) const;
 	void LogTransitions(const VlFrameView& Frame, float DeltaSeconds);
 	void MaybeScreenshot(float DeltaSeconds);

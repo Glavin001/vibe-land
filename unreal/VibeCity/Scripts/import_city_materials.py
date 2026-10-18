@@ -262,7 +262,11 @@ def weathering(m, albedo, roughness, x, y):
     dark = mul(add(mul(band, const(0.35, -250, 200), -200, 160), mul(streaks, const(0.18, -250, 420), -200, 380), -120, 240), outside, -40, 240)
     shade = expr(m, unreal.MaterialExpressionOneMinus, x + 40, y + 240)
     mel.connect_material_expressions(dark, "", shade, "")
-    variation = lerp(const(1.0, -300, -260), vary, outside, -200, -200)
+    # A fresh break (interior faces): unweathered, so lighter than the weathered skin, with the
+    # speckle of exposed aggregate (fine noise, x0.85..1.25).
+    speck = noise(rest, 12.0, 1, -900, -350)
+    fresh = add(mul(speck, const(0.4, -800, -300), -700, -330), const(0.85, -700, -260), -600, -330)
+    variation = lerp(fresh, vary, outside, -200, -200)
     out_albedo = mul(mul(albedo, variation, 0, -100), shade, 120, 0)
     out_rough = lerp(roughness, const(1.0, 0, 380), mul(band, mul(const(0.5, -100, 460), outside, 0, 440), 60, 420), 160, 360)
     return out_albedo, out_rough
@@ -498,8 +502,10 @@ def scorch_material():
     mel.connect_material_expressions(uv, "", shape, "UV")
     mel.connect_material_expressions(n, "", shape, "N")
     mel.connect_material_expressions(fade, "", shape, "Fade")
-    soot = expr(m, unreal.MaterialExpressionConstant3Vector, -700, -100)
-    soot.set_editor_property("constant", unreal.LinearColor(0.018, 0.016, 0.014, 0.0))
+    # Vector Color: soot by default; pale dust for the marks debris leaves.
+    soot = expr(m, unreal.MaterialExpressionVectorParameter, -700, -100)
+    soot.set_editor_property("parameter_name", "Color")
+    soot.set_editor_property("default_value", unreal.LinearColor(0.018, 0.016, 0.014, 1.0))
     mel.connect_material_property(soot, "", unreal.MaterialProperty.MP_BASE_COLOR)
     mel.connect_material_property(shape, "", unreal.MaterialProperty.MP_OPACITY)
     rough = expr(m, unreal.MaterialExpressionConstant, -700, 300)

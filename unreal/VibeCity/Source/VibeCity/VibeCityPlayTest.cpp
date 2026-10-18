@@ -661,7 +661,7 @@ bool FVibeCityPlayCannonAndMeteor::RunTest(const FString& Parameters)
 		{
 			return false;
 		}
-		AddInfo(FString::Printf(TEXT("landing: %d landing(s), %d scorch mark(s), %lld trail puffs"), B ? B->Landings() : -1, B ? B->ScorchMarks() : -1, D ? D->TrailPuffs() : -1));
+		AddInfo(FString::Printf(TEXT("landing: %d landing(s), %d scorch mark(s), %lld trail puffs, %lld dust marks"), B ? B->Landings() : -1, B ? B->ScorchMarks() : -1, D ? D->TrailPuffs() : -1, D ? D->DustMarks() : -1));
 		TestTrue(TEXT("the meteor landed (surge and scorch)"), B && B->Landings() > 0 && B->ScorchMarks() > 0);
 		TestTrue(TEXT("falling debris trailed dust"), D && D->TrailPuffs() > 0);
 		return true;
