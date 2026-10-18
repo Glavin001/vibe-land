@@ -68,6 +68,8 @@ public:
 	int64 TrailPuffs() const { return TrailPuffCount; }
 	/** Dust marks left on the ground where heavy debris landed so far (tests). */
 	int64 DustMarks() const { return DustMarkCount; }
+	/** The dust marks' colour and strength (tests). */
+	TPair<FLinearColor, float> DustMarkLook() const;
 	/** Tests: the drawn box of ring slot `Slot` (centre and size, cm), unset while it is not live. */
 	TOptional<FBox> DustBox(int32 Slot) const;
 	/** Cells drawn from the imported city now, and cells in all. */

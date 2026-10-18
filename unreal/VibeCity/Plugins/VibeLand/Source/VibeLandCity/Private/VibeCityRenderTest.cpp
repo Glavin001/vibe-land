@@ -795,6 +795,11 @@ bool FVibeCityRenderDust::RunTest(const FString& Parameters)
 		const VlDustParcel Parcels[] = { Impact(50.0f, 70.0f), Impact(50.0f, 20.0f), Impact(900.0f, 70.0f) };
 		D->InjectDustForTest(Parcels);
 		TestEqual(TEXT("only the heavy chunk on the ground marked it"), D->DustMarks() - Before, (int64)1);
+		// Settled dust, not paint: darker than mid grey and under half strength.
+		const TPair<FLinearColor, float> Look = D->DustMarkLook();
+		AddInfo(FString::Printf(TEXT("dust mark: colour %s, strength %.2f"), *Look.Key.ToString(), Look.Value));
+		TestTrue(TEXT("the mark is an earth tone darker than mid grey"), Look.Key.GetLuminance() < 0.3f && Look.Key.R >= Look.Key.B);
+		TestTrue(TEXT("the mark is under half strength"), Look.Value > 0.0f && Look.Value < 0.5f);
 		return true;
 	}));
 	return true;

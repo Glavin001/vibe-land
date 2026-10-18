@@ -300,3 +300,15 @@ TOptional<FBox> AVibeCityDirector::DustBox(int32 Slot) const
 	const FVector Half = T.GetScale3D() * 50.0; // the 100 cm sphere
 	return FBox(T.GetLocation() - Half, T.GetLocation() + Half);
 }
+
+TPair<FLinearColor, float> AVibeCityDirector::DustMarkLook() const
+{
+	FLinearColor Color = FLinearColor::Transparent;
+	float Fade = -1.0f;
+	if (DustMarkMaterial)
+	{
+		DustMarkMaterial->GetVectorParameterValue(FHashedMaterialParameterInfo(TEXT("Color")), Color);
+		DustMarkMaterial->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Fade")), Fade);
+	}
+	return { Color, Fade };
+}
