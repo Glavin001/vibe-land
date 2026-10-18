@@ -11,6 +11,8 @@ pub use vibe_land_shared::unit_conv::*;
 #[derive(Clone, Debug)]
 pub struct ClientHello {
     pub match_id: String,
+    pub protocol_version: u16,
+    pub movement_capabilities: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -18,11 +20,43 @@ pub enum ClientPacket {
     InputBundle(Vec<InputCmd>),
     Fire(FireCmd),
     Melee(MeleeCmd),
+    CityCameraDrop(CityCameraDropCmd),
     BlockEdit(BlockEditCmd),
     Ping(u32),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
-    DebugStats { correction_m: f32, physics_ms: f32 },
+    DebugStats {
+        correction_m: f32,
+        physics_ms: f32,
+    },
+    /// City topology stream gap detected client-side; server replies with a
+    /// fresh PKT_CITY_BOOTSTRAP. When `structures` is non-empty the client
+    /// detected a per-structure hash mismatch and the server replies with a
+    /// PKT_CITY_STRUCTURE_BOOTSTRAP scoped to exactly those (empty = full,
+    /// which is also what a pre-hash client's short packet decodes to).
+    CityResyncRequest {
+        last_topo_seq: u32,
+        structures: Vec<u32>,
+    },
+    /// Bodies whose v3 chains a lost datagram poisoned; restate exactly these.
+    CityNack {
+        bodies: Vec<u32>,
+    },
+    /// City wire 4: the newest keyframe-datagram ordinal received and a mask
+    /// of the 64 before it (`vibe_land_perplayer::wire::encode_ack`).
+    CityPerPlayerAck {
+        newest: u32,
+        mask: u64,
+        /// The first events sequence the client has not received (newer
+        /// clients append it).
+        events_through: Option<u32>,
+        /// Bodies whose delta records the client could not decode: resent
+        /// absolute (`vibe_land_perplayer::wire::encode_ack_missing`).
+        missing: Vec<vibe_land_perplayer::wire::BodyKey>,
+    },
+    /// The client could not fetch the manifest over HTTP; send it down the
+    /// session instead. Only this asks for it -- see `PKT_CITY_MANIFEST`.
+    CityManifestRequest,
 }
 
 #[derive(Clone, Debug)]
@@ -48,11 +82,35 @@ pub enum ClientDatagram {
     InputBundle(Vec<InputFrame>),
     Fire(FireCmd),
     Melee(MeleeCmd),
+    CityCameraDrop(CityCameraDropCmd),
     BlockEdit(BlockEditCmd),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
     Ping(u32),
-    DebugStats { correction_m: f32, physics_ms: f32 },
+    DebugStats {
+        correction_m: f32,
+        physics_ms: f32,
+    },
+    CityResyncRequest {
+        last_topo_seq: u32,
+        structures: Vec<u32>,
+    },
+    /// Bodies whose v3 chains a lost datagram poisoned; restate exactly these.
+    CityNack {
+        bodies: Vec<u32>,
+    },
+    /// City wire 4: the newest keyframe-datagram ordinal received and a mask
+    /// of the 64 before it (`vibe_land_perplayer::wire::encode_ack`).
+    CityPerPlayerAck {
+        newest: u32,
+        mask: u64,
+        /// The first events sequence the client has not received (newer
+        /// clients append it).
+        events_through: Option<u32>,
+        /// Bodies whose delta records the client could not decode: resent
+        /// absolute (`vibe_land_perplayer::wire::encode_ack_missing`).
+        missing: Vec<vibe_land_perplayer::wire::BodyKey>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -75,137 +133,6 @@ pub enum ServerDatagramPacket {
     SnapshotV2(SnapshotV2Packet),
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SelfPlayerStateV2 {
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub yaw_i16: i16,
-    pub pitch_i16: i16,
-    pub hp: u8,
-    pub flags: u8,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RemotePlayerStateV2 {
-    pub handle: u8,
-    pub dx_q2_5mm: i16,
-    pub dy_q2_5mm: i16,
-    pub dz_q2_5mm: i16,
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub yaw_i16: i16,
-    pub pitch_i16: i16,
-    pub hp: u8,
-    pub flags: u8,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DynamicSphereStateV2 {
-    pub handle: u16,
-    pub dx_q2_5mm: i16,
-    pub dy_q2_5mm: i16,
-    pub dz_q2_5mm: i16,
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub wx_mrads: i16,
-    pub wy_mrads: i16,
-    pub wz_mrads: i16,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DynamicBoxStateV2 {
-    pub handle: u16,
-    pub dx_q2_5mm: i16,
-    pub dy_q2_5mm: i16,
-    pub dz_q2_5mm: i16,
-    pub qx_snorm: i16,
-    pub qy_snorm: i16,
-    pub qz_snorm: i16,
-    pub qw_snorm: i16,
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub wx_mrads: i16,
-    pub wy_mrads: i16,
-    pub wz_mrads: i16,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct VehicleStateV2 {
-    pub handle: u8,
-    pub vehicle_type: u8,
-    pub driver_handle: u8,
-    pub flags: u8,
-    pub dx_q2_5mm: i16,
-    pub dy_q2_5mm: i16,
-    pub dz_q2_5mm: i16,
-    pub qx_snorm: i16,
-    pub qy_snorm: i16,
-    pub qz_snorm: i16,
-    pub qw_snorm: i16,
-    pub vx_cms: i16,
-    pub vy_cms: i16,
-    pub vz_cms: i16,
-    pub wx_mrads: i16,
-    pub wy_mrads: i16,
-    pub wz_mrads: i16,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct SnapshotV2Packet {
-    pub server_tick: u32,
-    pub ack_input_seq: u16,
-    pub anchor_px_mm: i32,
-    pub anchor_py_mm: i32,
-    pub anchor_pz_mm: i32,
-    pub self_state: SelfPlayerStateV2,
-    pub remote_players: Vec<RemotePlayerStateV2>,
-    pub sphere_states: Vec<DynamicSphereStateV2>,
-    pub box_states: Vec<DynamicBoxStateV2>,
-    pub vehicle_states: Vec<VehicleStateV2>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PlayerRosterEntry {
-    pub handle: u8,
-    pub player_id: u32,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct PlayerRosterPacket {
-    pub entries: Vec<PlayerRosterEntry>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DynamicBodyMetaEntry {
-    pub handle: u16,
-    pub body_id: u32,
-    pub shape_type: u8,
-    pub hx_cm: u16,
-    pub hy_cm: u16,
-    pub hz_cm: u16,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct DynamicBodyMetaPacket {
-    pub entries: Vec<DynamicBodyMetaEntry>,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub struct LocalPlayerEnergyPacket {
-    pub energy_centi: u32,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct BatterySyncPacket {
-    pub full_resync: bool,
-    pub battery_states: Vec<NetBatteryState>,
-    pub removed_ids: Vec<u32>,
-}
-
 // ── Server-only decode/encode functions ─────────
 
 pub fn decode_client_hello(bytes: &[u8]) -> Result<ClientHello> {
@@ -217,7 +144,32 @@ pub fn decode_client_hello(bytes: &[u8]) -> Result<ClientHello> {
     let match_len = buf.get_u16_le() as usize;
     ensure!(buf.remaining() >= match_len, "truncated match id");
     let match_id = std::str::from_utf8(&buf[..match_len])?.to_string();
-    Ok(ClientHello { match_id })
+    buf.advance(match_len);
+    let protocol_version = if buf.remaining() >= 2 {
+        buf.get_u16_le()
+    } else {
+        1
+    };
+    let movement_capabilities = if buf.has_remaining() {
+        buf.get_u8()
+    } else {
+        CLIENT_MOVEMENT_CAP_FULL_PREDICTION
+    };
+    Ok(ClientHello {
+        match_id,
+        protocol_version,
+        movement_capabilities,
+    })
+}
+
+fn decode_camera_drop(buf: &mut impl Buf) -> Result<CityCameraDropCmd> {
+    ensure!(buf.remaining() == 20, "invalid camera drop length");
+    let cmd = CityCameraDropCmd {
+        position: [buf.get_f32_le(), buf.get_f32_le(), buf.get_f32_le()],
+        yaw: buf.get_f32_le(), pitch: buf.get_f32_le(),
+    };
+    ensure!(cmd.is_valid(), "invalid camera drop coordinates");
+    Ok(cmd)
 }
 
 pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
@@ -252,6 +204,7 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 dir,
             })
         }
+        PKT_CITY_CAMERA_DROP => ClientDatagram::CityCameraDrop(decode_camera_drop(&mut buf)?),
         PKT_MELEE => {
             ensure!(buf.remaining() >= 18, "short melee datagram");
             let seq = buf.get_u16_le();
@@ -308,16 +261,52 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 physics_ms,
             }
         }
+        PKT_CITY_RESYNC_REQUEST => {
+            ensure!(buf.remaining() >= 4, "short city resync datagram");
+            let last_topo_seq = buf.get_u32_le();
+            ClientDatagram::CityResyncRequest {
+                last_topo_seq,
+                structures: decode_resync_structures(&mut buf)?,
+            }
+        }
+        vibe_land_perplayer::wire::PKT_PP_ACK => {
+            let (newest, mask, events_through) = vibe_land_perplayer::wire::decode_ack(bytes)
+                .map_err(|_| anyhow::anyhow!("short city per-player ack datagram"))?;
+            let missing = vibe_land_perplayer::wire::decode_ack_missing(bytes);
+            ClientDatagram::CityPerPlayerAck { newest, mask, events_through, missing }
+        }
+        PKT_CITY_NACK => {
+            ensure!(buf.remaining() >= 2, "short city nack datagram");
+            let count = usize::from(buf.get_u16_le());
+            ensure!(count <= 4096, "oversized city nack");
+            ensure!(buf.remaining() >= count * 4, "short city nack body list");
+            let bodies = (0..count).map(|_| buf.get_u32_le()).collect();
+            ClientDatagram::CityNack { bodies }
+        }
         other => bail!("unknown client datagram packet kind {other}"),
     })
 }
 
 /// Convert a [`ClientDatagram`] (WebTransport) to a [`ClientPacket`] (match event).
+/// Optional tail of a resync request: `[count u8][structure_id u32]*`.
+/// A packet that ends after `last_topo_seq` (every client that predates the
+/// topology-hash detector) decodes as an empty list, meaning full bootstrap.
+fn decode_resync_structures(buf: &mut impl Buf) -> Result<Vec<u32>> {
+    if buf.remaining() == 0 {
+        return Ok(Vec::new());
+    }
+    let count = usize::from(buf.get_u8());
+    // The u8 count supports all 255 independently authored structures.
+    ensure!(buf.remaining() >= count * 4, "short resync structure list");
+    Ok((0..count).map(|_| buf.get_u32_le()).collect())
+}
+
 pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
     match d {
         ClientDatagram::InputBundle(frames) => ClientPacket::InputBundle(frames),
         ClientDatagram::Fire(cmd) => ClientPacket::Fire(cmd),
         ClientDatagram::Melee(cmd) => ClientPacket::Melee(cmd),
+        ClientDatagram::CityCameraDrop(cmd) => ClientPacket::CityCameraDrop(cmd),
         ClientDatagram::BlockEdit(cmd) => ClientPacket::BlockEdit(cmd),
         ClientDatagram::VehicleEnter(cmd) => ClientPacket::VehicleEnter(cmd),
         ClientDatagram::VehicleExit(cmd) => ClientPacket::VehicleExit(cmd),
@@ -329,6 +318,17 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
             correction_m,
             physics_ms,
         },
+        ClientDatagram::CityNack { bodies } => ClientPacket::CityNack { bodies },
+        ClientDatagram::CityPerPlayerAck { newest, mask, events_through, missing } => {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, missing }
+        }
+        ClientDatagram::CityResyncRequest {
+            last_topo_seq,
+            structures,
+        } => ClientPacket::CityResyncRequest {
+            last_topo_seq,
+            structures,
+        },
     }
 }
 
@@ -338,6 +338,9 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
         ServerReliablePacket::Welcome(pkt) => {
             out.put_u8(PKT_WELCOME);
             out.put_u32_le(pkt.player_id);
+            out.put_u16_le(pkt.protocol_version);
+            out.put_u8(pkt.physics_backend);
+            out.put_u8(pkt.client_movement_mode);
             out.put_u16_le(pkt.sim_hz);
             out.put_u16_le(pkt.snapshot_hz);
             out.put_u64_le(pkt.server_time_us);
@@ -433,7 +436,10 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
         }
         ServerReliablePacket::PlayerRoster(pkt) => {
             out.put_u8(PKT_PLAYER_ROSTER);
-            out.put_u8(pkt.entries.len() as u8);
+            out.put_u8(
+                u8::try_from(pkt.entries.len())
+                    .expect("player roster exceeds snapshot V2 handle capacity"),
+            );
             for entry in &pkt.entries {
                 out.put_u8(entry.handle);
                 out.put_u32_le(entry.player_id);
@@ -441,7 +447,10 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
         }
         ServerReliablePacket::DynamicBodyMeta(pkt) => {
             out.put_u8(PKT_DYNAMIC_BODY_META);
-            out.put_u16_le(pkt.entries.len() as u16);
+            out.put_u16_le(
+                u16::try_from(pkt.entries.len())
+                    .expect("dynamic metadata exceeds snapshot V2 handle capacity"),
+            );
             for entry in &pkt.entries {
                 out.put_u16_le(entry.handle);
                 out.put_u32_le(entry.body_id);
@@ -534,6 +543,19 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_i16_le(s.pitch_i16);
             out.put_u8(s.hp);
             out.put_u8(s.flags);
+            if !pkt.compact_self || !pkt.removals.is_empty() {
+                out.put_u16_le(s.support_handle);
+                for value in s.support_local_q2_5mm {
+                    out.put_i16_le(value);
+                }
+                for value in s.support_velocity_cms {
+                    out.put_i16_le(value);
+                }
+                out.put_u8(s.support_flags);
+                for value in s.support_angular_velocity_mrads {
+                    out.put_i16_le(value);
+                }
+            }
 
             for player in &pkt.remote_players {
                 out.put_u8(player.handle);
@@ -598,6 +620,21 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(vehicle.wy_mrads);
                 out.put_i16_le(vehicle.wz_mrads);
             }
+            out.put_u32_le(pkt.server_wall_us);
+            if !pkt.removals.is_empty() {
+                let count = pkt.removals.len().min(u8::MAX as usize);
+                out.put_u8(SNAPSHOT_V2_REMOVALS_TAG);
+                out.put_u8(count as u8);
+                for removal in &pkt.removals[..count] {
+                    out.put_u16_le(removal.handle);
+                    out.put_u8(removal.age_ticks);
+                }
+            }
+            if let Some((depth, target)) = pkt.input_queue {
+                out.put_u8(SNAPSHOT_V2_INPUT_QUEUE_TAG);
+                out.put_u8(depth);
+                out.put_u8(target);
+            }
         }
     }
     out.to_vec()
@@ -632,6 +669,7 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
                 dir,
             })
         }
+        PKT_CITY_CAMERA_DROP => ClientPacket::CityCameraDrop(decode_camera_drop(&mut buf)?),
         PKT_MELEE => {
             ensure!(buf.remaining() >= 18, "short melee packet");
             let seq = buf.get_u16_le();
@@ -688,6 +726,29 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
                 physics_ms,
             }
         }
+        PKT_CITY_RESYNC_REQUEST => {
+            ensure!(buf.remaining() >= 4, "short city resync packet");
+            let last_topo_seq = buf.get_u32_le();
+            ClientPacket::CityResyncRequest {
+                last_topo_seq,
+                structures: decode_resync_structures(&mut buf)?,
+            }
+        }
+        PKT_CITY_MANIFEST_REQUEST => ClientPacket::CityManifestRequest,
+        vibe_land_perplayer::wire::PKT_PP_ACK => {
+            let (newest, mask, events_through) = vibe_land_perplayer::wire::decode_ack(bytes)
+                .map_err(|_| anyhow::anyhow!("short city per-player ack packet"))?;
+            let missing = vibe_land_perplayer::wire::decode_ack_missing(bytes);
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, missing }
+        }
+        PKT_CITY_NACK => {
+            ensure!(buf.remaining() >= 2, "short city nack packet");
+            let count = usize::from(buf.get_u16_le());
+            ensure!(count <= 4096, "oversized city nack");
+            ensure!(buf.remaining() >= count * 4, "short city nack body list");
+            let bodies = (0..count).map(|_| buf.get_u32_le()).collect();
+            ClientPacket::CityNack { bodies }
+        }
         other => bail!("unknown client packet kind {other}"),
     })
 }
@@ -742,6 +803,9 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
         ServerPacket::Welcome(pkt) => {
             out.put_u8(PKT_WELCOME);
             out.put_u32_le(pkt.player_id);
+            out.put_u16_le(pkt.protocol_version);
+            out.put_u8(pkt.physics_backend);
+            out.put_u8(pkt.client_movement_mode);
             out.put_u16_le(pkt.sim_hz);
             out.put_u16_le(pkt.snapshot_hz);
             out.put_u64_le(pkt.server_time_us);
@@ -881,6 +945,58 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// The 5-byte packet every pre-hash client sends must keep meaning "full
+    /// bootstrap", and the extended form must carry its structure list.
+    #[test]
+    fn resync_request_decodes_legacy_and_targeted_forms() {
+        let legacy = [9u8, 7, 0, 0, 0];
+        match decode_client_packet(&legacy).expect("legacy resync") {
+            ClientPacket::CityResyncRequest {
+                last_topo_seq,
+                structures,
+            } => {
+                assert_eq!(last_topo_seq, 7);
+                assert!(structures.is_empty());
+            }
+            other => panic!("wrong packet: {other:?}"),
+        }
+        // Pinned against encodeCityResyncRequest(7, [3, 1]) in wire.test.ts.
+        let targeted = [9u8, 7, 0, 0, 0, 2, 3, 0, 0, 0, 1, 0, 0, 0];
+        match decode_client_packet(&targeted).expect("targeted resync") {
+            ClientPacket::CityResyncRequest {
+                last_topo_seq,
+                structures,
+            } => {
+                assert_eq!(last_topo_seq, 7);
+                assert_eq!(structures, vec![3, 1]);
+            }
+            other => panic!("wrong packet: {other:?}"),
+        }
+    }
+
+    /// City wire 4's ack, on both client paths (WebTransport datagram, and the
+    /// reliable/WebSocket packet), in `vibe_land_perplayer::wire::encode_ack`'s
+    /// layout: u8 135, u32 newest LE, u64 mask LE.
+    #[test]
+    fn per_player_ack_decodes_on_both_paths() {
+        let bytes = vibe_land_perplayer::wire::encode_ack(0x0102_0304, 0x8000_0000_0000_0005, None);
+        assert_eq!(bytes.len(), 13);
+        assert_eq!(bytes[0], 135);
+        match decode_client_packet(&bytes).expect("ack packet") {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, .. } => {
+                assert_eq!((newest, mask, events_through), (0x0102_0304, 0x8000_0000_0000_0005, None));
+            }
+            other => panic!("wrong packet: {other:?}"),
+        }
+        match client_datagram_to_packet(decode_client_datagram(&bytes).expect("ack datagram")) {
+            ClientPacket::CityPerPlayerAck { newest, mask, events_through, .. } => {
+                assert_eq!((newest, mask, events_through), (0x0102_0304, 0x8000_0000_0000_0005, None));
+            }
+            other => panic!("wrong packet: {other:?}"),
+        }
+        assert!(decode_client_packet(&bytes[..9]).is_err(), "a short ack must not decode");
+    }
+
     #[test]
     fn decode_client_packet_preserves_full_input_bundle() {
         let bytes = [
@@ -927,6 +1043,9 @@ mod tests {
     fn welcome_encode_decode_roundtrip() {
         let packet = ServerPacket::Welcome(WelcomePacket {
             player_id: 42,
+            protocol_version: PROTOCOL_VERSION,
+            physics_backend: PHYSICS_BACKEND_RAPIER,
+            client_movement_mode: CLIENT_MOVEMENT_FULL_PREDICTION,
             sim_hz: 60,
             snapshot_hz: 30,
             server_time_us: 5_000_000,
@@ -936,7 +1055,8 @@ mod tests {
         assert_eq!(encoded[0], PKT_WELCOME);
         let view = &encoded[1..];
         assert_eq!(u32::from_le_bytes([view[0], view[1], view[2], view[3]]), 42);
-        assert_eq!(u16::from_le_bytes([view[4], view[5]]), 60);
+        assert_eq!(u16::from_le_bytes([view[4], view[5]]), PROTOCOL_VERSION);
+        assert_eq!(u16::from_le_bytes([view[8], view[9]]), 60);
     }
 
     #[test]
@@ -983,6 +1103,77 @@ mod tests {
         let encoded = encode_server_packet(&packet);
         let view = &encoded[1..];
         assert_eq!(u16::from_le_bytes([view[14], view[15]]), 0);
+    }
+
+    #[test]
+    fn snapshot_v2_encodes_complete_moving_support_state() {
+        let packet = ServerPacket::SnapshotV2(SnapshotV2Packet {
+            self_state: SelfPlayerStateV2 {
+                support_handle: 0x8003,
+                support_local_q2_5mm: [400, -200, 100],
+                support_velocity_cms: [150, 0, -50],
+                support_flags: 1,
+                support_angular_velocity_mrads: [250, -500, 750],
+                ..SelfPlayerStateV2::default()
+            },
+            ..SnapshotV2Packet::default()
+        });
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_SNAPSHOT_V2);
+        // Header, 33-byte self state, no entities, wall-clock trailer.
+        assert_eq!(encoded.len(), 23 + 33 + SNAPSHOT_V2_TRAILER_BYTES);
+        assert_eq!(u16::from_le_bytes([encoded[35], encoded[36]]), 0x8003);
+        assert_eq!(encoded[49], 1);
+        assert_eq!(i16::from_le_bytes([encoded[50], encoded[51]]), 250);
+        assert_eq!(i16::from_le_bytes([encoded[52], encoded[53]]), -500);
+        assert_eq!(i16::from_le_bytes([encoded[54], encoded[55]]), 750);
+    }
+
+    #[test]
+    fn snapshot_v2_wall_clock_trailer_follows_the_entities() {
+        let packet = ServerPacket::SnapshotV2(SnapshotV2Packet {
+            server_tick: 42,
+            vehicle_states: vec![VehicleStateV2::default()],
+            sphere_states: vec![DynamicSphereStateV2::default()],
+            server_wall_us: 0xDEAD_BEEF,
+            ..SnapshotV2Packet::default()
+        });
+        let encoded = encode_server_packet(&packet);
+        let entities = 20 + 30;
+        assert_eq!(encoded.len(), 23 + 33 + entities + SNAPSHOT_V2_TRAILER_BYTES);
+        let tail = &encoded[encoded.len() - 4..];
+        assert_eq!(u32::from_le_bytes([tail[0], tail[1], tail[2], tail[3]]), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn snapshot_v2_input_queue_section_is_last_and_keeps_the_compact_self_state() {
+        let queue = |compact_self, removals: Vec<SnapshotRemoval>| {
+            encode_server_packet(&ServerPacket::SnapshotV2(SnapshotV2Packet {
+                compact_self,
+                removals,
+                input_queue: Some((5, 3)),
+                ..SnapshotV2Packet::default()
+            }))
+        };
+        let compact = queue(true, vec![]);
+        // The client reads a support block only with 27 or more bytes after
+        // the entities (decodeSnapshotV2Packet).
+        let after_entities = SNAPSHOT_V2_COMPACT_SELF_PLAYER_BYTES + SNAPSHOT_V2_TRAILER_BYTES + 3;
+        assert!(after_entities < 27);
+        assert_eq!(compact.len(), 23 + after_entities);
+        assert_eq!(&compact[compact.len() - 3..], &[SNAPSHOT_V2_INPUT_QUEUE_TAG, 5, 3]);
+        let with_removals = queue(true, vec![SnapshotRemoval { handle: 7, age_ticks: 1 }]);
+        assert_eq!(
+            with_removals.len(),
+            23 + 33 + SNAPSHOT_V2_TRAILER_BYTES + 2 + SNAPSHOT_V2_REMOVAL_BYTES + 3
+        );
+        assert_eq!(&with_removals[with_removals.len() - 3..], &[SNAPSHOT_V2_INPUT_QUEUE_TAG, 5, 3]);
+        // Absent, the packet is byte for byte what it was.
+        let plain = encode_server_packet(&ServerPacket::SnapshotV2(SnapshotV2Packet {
+            compact_self: true,
+            ..SnapshotV2Packet::default()
+        }));
+        assert_eq!(plain[..], compact[..compact.len() - 3]);
     }
 
     #[test]
@@ -1153,5 +1344,468 @@ mod tests {
             u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
             0xDEAD_BEEF
         );
+    }
+}
+
+#[cfg(test)]
+mod camera_drop_tests {
+    use super::*;
+    fn packet(values: [f32; 5]) -> Vec<u8> {
+        let mut bytes = vec![PKT_CITY_CAMERA_DROP];
+        for value in values { bytes.extend(value.to_le_bytes()); }
+        bytes
+    }
+    #[test]
+    fn camera_drop_decodes_on_both_transports() {
+        let bytes = packet([12.0, 40.0, -8.0, 1.0, -0.4]);
+        for decoded in [decode_client_packet(&bytes).unwrap(), client_datagram_to_packet(decode_client_datagram(&bytes).unwrap())] {
+            let ClientPacket::CityCameraDrop(cmd) = decoded else { panic!("wrong packet") };
+            assert_eq!(cmd.position, [12.0, 40.0, -8.0]);
+            assert_eq!(cmd.yaw, 1.0);
+            assert_eq!(cmd.pitch, -0.4);
+        }
+    }
+    #[test]
+    fn camera_drop_rejects_nonfinite_out_of_range_and_wrong_lengths() {
+        for value in [f32::NAN, f32::INFINITY, 10_001.0] {
+            assert!(decode_client_datagram(&packet([value, 40.0, 0.0, 0.0, 0.0])).is_err());
+        }
+        assert!(decode_client_datagram(&packet([0.0, 40.0, 0.0, 0.0, 2.0])).is_err());
+        let bytes = packet([0.0; 5]);
+        assert!(decode_client_datagram(&bytes[..20]).is_err());
+        let mut long = bytes; long.push(0);
+        assert!(decode_client_datagram(&long).is_err());
+    }
+}
+
+/// Every packet the client core decodes, produced by the server's own encoder and read back by
+/// `vibe_land_shared::net_client` -- and every packet it encodes, read back by the server's decoder.
+/// The client side is shared by the Unreal client and (through WASM) the web client.
+#[cfg(test)]
+mod client_codec_roundtrip {
+    use super::*;
+    use vibe_land_shared::net_client::{self, ServerMessage};
+
+    /// Deterministic field filler (xorshift32), so failures reproduce.
+    struct Fill(u32);
+    impl Fill {
+        fn next(&mut self) -> u32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            self.0
+        }
+        fn i16(&mut self) -> i16 { self.next() as i16 }
+        fn u16(&mut self) -> u16 { self.next() as u16 }
+        fn u8(&mut self) -> u8 { self.next() as u8 }
+        fn i32(&mut self) -> i32 { self.next() as i32 }
+        fn i16x3(&mut self) -> [i16; 3] { [self.i16(), self.i16(), self.i16()] }
+    }
+
+    fn decode(bytes: &[u8]) -> ServerMessage {
+        net_client::decode_server_packet(bytes).expect("client failed to decode a server packet")
+    }
+
+    fn snapshot(f: &mut Fill, remotes: usize, spheres: usize, boxes: usize, vehicles: usize) -> SnapshotV2Packet {
+        SnapshotV2Packet {
+            server_tick: f.next(),
+            ack_input_seq: f.u16(),
+            anchor_px_mm: f.i32(),
+            anchor_py_mm: f.i32(),
+            anchor_pz_mm: f.i32(),
+            self_state: SelfPlayerStateV2 {
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), yaw_i16: f.i16(), pitch_i16: f.i16(),
+                hp: f.u8(), flags: f.u8(), support_handle: f.u16(),
+                support_local_q2_5mm: f.i16x3(), support_velocity_cms: f.i16x3(),
+                support_flags: f.u8(), support_angular_velocity_mrads: f.i16x3(),
+            },
+            remote_players: (0..remotes).map(|_| RemotePlayerStateV2 {
+                handle: f.u8(), dx_q2_5mm: f.i16(), dy_q2_5mm: f.i16(), dz_q2_5mm: f.i16(),
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), yaw_i16: f.i16(), pitch_i16: f.i16(),
+                hp: f.u8(), flags: f.u8(),
+            }).collect(),
+            sphere_states: (0..spheres).map(|_| DynamicSphereStateV2 {
+                handle: f.u16(), dx_q2_5mm: f.i16(), dy_q2_5mm: f.i16(), dz_q2_5mm: f.i16(),
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), wx_mrads: f.i16(), wy_mrads: f.i16(), wz_mrads: f.i16(),
+            }).collect(),
+            box_states: (0..boxes).map(|_| DynamicBoxStateV2 {
+                handle: f.u16(), dx_q2_5mm: f.i16(), dy_q2_5mm: f.i16(), dz_q2_5mm: f.i16(),
+                qx_snorm: f.i16(), qy_snorm: f.i16(), qz_snorm: f.i16(), qw_snorm: f.i16(),
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), wx_mrads: f.i16(), wy_mrads: f.i16(), wz_mrads: f.i16(),
+            }).collect(),
+            vehicle_states: (0..vehicles).map(|_| VehicleStateV2 {
+                handle: f.u8(), vehicle_type: f.u8(), driver_handle: f.u8(), flags: f.u8(),
+                dx_q2_5mm: f.i16(), dy_q2_5mm: f.i16(), dz_q2_5mm: f.i16(),
+                qx_snorm: f.i16(), qy_snorm: f.i16(), qz_snorm: f.i16(), qw_snorm: f.i16(),
+                vx_cms: f.i16(), vy_cms: f.i16(), vz_cms: f.i16(), wx_mrads: f.i16(), wy_mrads: f.i16(), wz_mrads: f.i16(),
+            }).collect(),
+            server_wall_us: f.next(),
+            compact_self: false,
+            removals: Vec::new(),
+            input_queue: None,
+        }
+    }
+
+    /// What the client should read back from `sent`: the encoder drops the support block when
+    /// `compact_self` is set and there are no removals, which the decoder reads as no support.
+    fn expected(sent: &SnapshotV2Packet) -> SnapshotV2Packet {
+        let mut want = sent.clone();
+        let compact = sent.compact_self && sent.removals.is_empty();
+        want.compact_self = compact;
+        if compact {
+            let s = &mut want.self_state;
+            s.support_handle = 0;
+            s.support_local_q2_5mm = [0; 3];
+            s.support_velocity_cms = [0; 3];
+            s.support_flags = 0;
+            s.support_angular_velocity_mrads = [0; 3];
+        }
+        want
+    }
+
+    fn assert_snapshot_round_trips(sent: SnapshotV2Packet) {
+        let bytes = encode_server_datagram(&ServerDatagramPacket::SnapshotV2(sent.clone()));
+        match decode(&bytes) {
+            ServerMessage::SnapshotV2(got) => assert_eq!(got, expected(&sent)),
+            other => panic!("decoded as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn welcome() {
+        let mut f = Fill(7);
+        for _ in 0..64 {
+            let sent = WelcomePacket {
+                player_id: f.next(), protocol_version: f.u16(), physics_backend: f.u8(),
+                client_movement_mode: f.u8(), sim_hz: f.u16(), snapshot_hz: f.u16(),
+                server_time_us: (u64::from(f.next()) << 32) | u64::from(f.next()),
+                interpolation_delay_ms: f.u16(),
+            };
+            let bytes = encode_server_reliable(&ServerReliablePacket::Welcome(sent.clone()));
+            assert_eq!(bytes.len(), 23);
+            match decode(&bytes) {
+                ServerMessage::Welcome(got) => assert_eq!(got, sent),
+                other => panic!("decoded as {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn player_roster() {
+        let mut f = Fill(11);
+        for count in [0usize, 1, 7, u8::MAX as usize] {
+            let sent = PlayerRosterPacket {
+                entries: (0..count).map(|_| PlayerRosterEntry { handle: f.u8(), player_id: f.next() }).collect(),
+            };
+            let bytes = encode_server_reliable(&ServerReliablePacket::PlayerRoster(sent.clone()));
+            match decode(&bytes) {
+                ServerMessage::PlayerRoster(got) => assert_eq!(got, sent),
+                other => panic!("decoded as {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_v2_full_self_state_with_every_entity_kind() {
+        let mut f = Fill(13);
+        for (r, s, b, v) in [(0, 0, 0, 0), (1, 0, 0, 0), (3, 2, 4, 1), (12, 9, 7, 3), (40, 0, 0, 0)] {
+            assert_snapshot_round_trips(snapshot(&mut f, r, s, b, v));
+        }
+    }
+
+    #[test]
+    fn snapshot_v2_compact_self_state() {
+        let mut f = Fill(17);
+        for (r, s, b, v) in [(0, 0, 0, 0), (2, 1, 1, 1), (9, 3, 2, 0)] {
+            let mut sent = snapshot(&mut f, r, s, b, v);
+            sent.compact_self = true;
+            assert_snapshot_round_trips(sent.clone());
+            // The 3-byte input-queue section may follow a compact self state (12 + 4 + 3 < 27).
+            sent.input_queue = Some((f.u8(), f.u8()));
+            assert_snapshot_round_trips(sent);
+        }
+    }
+
+    #[test]
+    fn snapshot_v2_removals_and_input_queue() {
+        let mut f = Fill(19);
+        for removals in [1usize, 5, u8::MAX as usize] {
+            let mut sent = snapshot(&mut f, 3, 1, 2, 1);
+            sent.removals = (0..removals).map(|_| SnapshotRemoval { handle: f.u16(), age_ticks: f.u8() }).collect();
+            assert_snapshot_round_trips(sent.clone());
+            sent.input_queue = Some((f.u8(), f.u8()));
+            assert_snapshot_round_trips(sent.clone());
+            // Removals force the full self state even when compact was asked for.
+            sent.compact_self = true;
+            assert_snapshot_round_trips(sent);
+        }
+    }
+
+    #[test]
+    fn ping_and_pong() {
+        for nonce in [0u32, 1, 0xDEAD_BEEF, u32::MAX] {
+            assert!(matches!(decode(&encode_server_packet(&ServerPacket::Ping(nonce))), ServerMessage::Ping(n) if n == nonce));
+            assert!(matches!(decode(&encode_server_packet(&ServerPacket::Pong(nonce))), ServerMessage::Pong(n) if n == nonce));
+        }
+    }
+
+    #[test]
+    fn client_hello_reads_back_on_the_server() {
+        for match_id in ["citypp-ue", "city-default", ""] {
+            for caps in [CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE, CLIENT_MOVEMENT_CAP_FULL_PREDICTION] {
+                let hello = decode_client_hello(&net_client::encode_client_hello(match_id, caps)).unwrap();
+                assert_eq!(hello.match_id, match_id);
+                assert_eq!(hello.protocol_version, PROTOCOL_VERSION);
+                assert_eq!(hello.movement_capabilities, caps);
+            }
+        }
+    }
+
+    #[test]
+    fn client_resync_request_reads_back_on_the_server() {
+        for seq in [0u32, 7, u32::MAX] {
+            match decode_client_datagram(&net_client::encode_city_resync_request(seq)).unwrap() {
+                ClientDatagram::CityResyncRequest { last_topo_seq, structures } => {
+                    assert_eq!(last_topo_seq, seq);
+                    assert!(structures.is_empty());
+                }
+                other => panic!("decoded as {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn client_ping_echo_reads_back_on_the_server() {
+        for nonce in [0u32, 42, u32::MAX] {
+            assert!(matches!(decode_client_datagram(&net_client::encode_ping(nonce)).unwrap(), ClientDatagram::Ping(n) if n == nonce));
+        }
+    }
+
+    /// Angles survive quantisation to within one u16 step (2π/65535) and wrap into [0, 2π).
+    fn same_angle(a: f32, b: f32) -> bool {
+        let tau = std::f32::consts::TAU;
+        let d = (a - b).rem_euclid(tau);
+        d.min(tau - d) <= tau / 65535.0 + 1e-6
+    }
+
+    #[test]
+    fn client_input_bundle_reads_back_on_the_server() {
+        let mut f = Fill(0x1234_5678);
+        for count in [1usize, 3, 115, 255, 300] {
+            let frames: Vec<InputFrame> = (0..count)
+                .map(|i| InputFrame {
+                    seq: (i as u16).wrapping_add(f.u16()),
+                    buttons: f.u16(),
+                    move_x: f.u8() as i8,
+                    move_y: f.u8() as i8,
+                    yaw: (f.next() as f32 / u32::MAX as f32) * 20.0 - 10.0,
+                    pitch: (f.next() as f32 / u32::MAX as f32) * 3.0 - 1.5,
+                })
+                .collect();
+            let ClientDatagram::InputBundle(got) = decode_client_datagram(&net_client::encode_input_bundle(&frames)).unwrap() else {
+                panic!("not an input bundle");
+            };
+            let sent = &frames[frames.len().saturating_sub(net_client::INPUT_BUNDLE_MAX_FRAMES)..];
+            assert_eq!(got.len(), sent.len());
+            for (g, s) in got.iter().zip(sent) {
+                assert_eq!((g.seq, g.buttons, g.move_x, g.move_y), (s.seq, s.buttons, s.move_x, s.move_y));
+                assert!(same_angle(g.yaw, s.yaw), "yaw {} vs {}", g.yaw, s.yaw);
+                assert!(same_angle(g.pitch, s.pitch), "pitch {} vs {}", g.pitch, s.pitch);
+            }
+        }
+    }
+
+    #[test]
+    fn client_fire_reads_back_on_the_server() {
+        let dir = [0.6f32, -0.48, 0.64];
+        let cmd = FireCmd {
+            seq: 513,
+            shot_id: 0xDEAD_BEEF,
+            weapon: 3,
+            client_fire_time_us: 0x0102_0304_0506_0708,
+            client_interp_ms: 33,
+            client_dynamic_interp_ms: 83,
+            dir,
+        };
+        let bytes = net_client::encode_fire(&cmd);
+        assert_eq!(bytes.len(), 26);
+        let ClientDatagram::Fire(got) = decode_client_datagram(&bytes).unwrap() else { panic!("not fire") };
+        assert_eq!(
+            (got.seq, got.shot_id, got.weapon, got.client_fire_time_us, got.client_interp_ms, got.client_dynamic_interp_ms),
+            (cmd.seq, cmd.shot_id, cmd.weapon, cmd.client_fire_time_us, cmd.client_interp_ms, cmd.client_dynamic_interp_ms)
+        );
+        for i in 0..3 {
+            assert!((got.dir[i] - dir[i]).abs() <= 0.5 / 32767.0 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn client_melee_and_vehicle_commands_read_back_on_the_server() {
+        let melee = MeleeCmd { seq: 9, swing_id: 77, client_time_us: 123_456_789, yaw: 2.5, pitch: -0.4 };
+        let ClientDatagram::Melee(got) = decode_client_datagram(&net_client::encode_melee(&melee)).unwrap() else { panic!("not melee") };
+        assert_eq!((got.seq, got.swing_id, got.client_time_us), (9, 77, 123_456_789));
+        assert!(same_angle(got.yaw, 2.5) && same_angle(got.pitch, -0.4));
+
+        let ClientDatagram::VehicleEnter(enter) = decode_client_datagram(&net_client::encode_vehicle_enter(0xABCD, 0)).unwrap() else { panic!() };
+        assert_eq!((enter.vehicle_id, enter.seat), (0xABCD, 0));
+        let ClientDatagram::VehicleExit(exit) = decode_client_datagram(&net_client::encode_vehicle_exit(42)).unwrap() else { panic!() };
+        assert_eq!(exit.vehicle_id, 42);
+    }
+
+    #[test]
+    fn shot_damage_energy_and_body_meta_read_back_on_the_client() {
+        let mut f = Fill(0x0BAD_F00D);
+        let result = ShotResultPacket {
+            shot_id: f.next(),
+            weapon: 1,
+            confirmed: true,
+            hit_player_id: f.next(),
+            hit_zone: 2,
+            server_resolution: SHOT_RESOLUTION_DYNAMIC,
+            server_dynamic_body_id: f.next(),
+            server_dynamic_hit_toi_cm: f.u16(),
+            server_dynamic_impulse_centi: f.u16(),
+        };
+        match decode(&encode_server_packet(&ServerPacket::ShotResult(result.clone()))) {
+            ServerMessage::ShotResult(got) => assert_eq!(got, result),
+            other => panic!("{other:?}"),
+        }
+        let fired = ShotFiredPacket {
+            shooter_player_id: f.next(),
+            shot_id: f.next(),
+            weapon: 1,
+            hit_kind: 2,
+            hit_zone: 1,
+            server_fire_time_us: u64::from(f.next()) << 20,
+            origin_px_mm: f.i32(),
+            origin_py_mm: f.i32(),
+            origin_pz_mm: f.i32(),
+            end_px_mm: f.i32(),
+            end_py_mm: f.i32(),
+            end_pz_mm: f.i32(),
+        };
+        match decode(&encode_server_packet(&ServerPacket::ShotFired(fired))) {
+            ServerMessage::ShotFired(got) => assert_eq!(got, fired),
+            other => panic!("{other:?}"),
+        }
+        let damage = DamageEventPacket {
+            attacker_player_id: f.next(),
+            damage_amount: 14,
+            hit_zone: 1,
+            attacker_px_mm: f.i32(),
+            attacker_py_mm: f.i32(),
+            attacker_pz_mm: f.i32(),
+            server_time_ms: f.next(),
+        };
+        match decode(&encode_server_packet(&ServerPacket::DamageEvent(damage))) {
+            ServerMessage::DamageEvent(got) => assert_eq!(got, damage),
+            other => panic!("{other:?}"),
+        }
+        let energy = LocalPlayerEnergyPacket { energy_centi: 98_765 };
+        match decode(&encode_server_packet(&ServerPacket::LocalPlayerEnergy(energy))) {
+            ServerMessage::LocalPlayerEnergy(got) => assert_eq!(got, energy),
+            other => panic!("{other:?}"),
+        }
+        let meta = DynamicBodyMetaPacket {
+            entries: (0..5)
+                .map(|i| DynamicBodyMetaEntry { handle: i, body_id: f.next(), shape_type: (i % 2) as u8, hx_cm: f.u16(), hy_cm: f.u16(), hz_cm: f.u16() })
+                .collect(),
+        };
+        match decode(&encode_server_packet(&ServerPacket::DynamicBodyMeta(meta.clone()))) {
+            ServerMessage::DynamicBodyMeta(got) => assert_eq!(got, meta),
+            other => panic!("{other:?}"),
+        }
+        let batteries = BatterySyncPacket {
+            full_resync: true,
+            battery_states: (0..3)
+                .map(|i| NetBatteryState { id: 0x4000_0000 + i, px_mm: f.i32(), py_mm: f.i32(), pz_mm: f.i32(), energy_centi: f.next(), radius_cm: f.u16(), height_cm: f.u16() })
+                .collect(),
+            removed_ids: vec![0x4000_0007, 0x4000_0009],
+        };
+        match decode(&encode_server_reliable(&ServerReliablePacket::BatterySync(batteries.clone()))) {
+            ServerMessage::BatterySync(got) => assert_eq!(got, batteries),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn meteor_launch_reads_back_on_the_client() {
+        let sent = crate::meteor::MeteorLaunchedPacket {
+            body_id: 0x0102_0304,
+            shooter_player_id: 7,
+            server_launch_time_us: 123_456_789_012,
+            start: [-180.5, 240.25, 300.0],
+            velocity: [12.5, -90.0, -100.75],
+            target: [3.0, 10.5, -4.25],
+            radius_m: 2.0,
+            gravity_ms2: 9.81,
+            flight_time_s: 2.75,
+        };
+        let got = net_client::decode_meteor_launched(&crate::meteor::encode_meteor_launched(&sent)).unwrap();
+        assert_eq!(
+            (got.body_id, got.shooter_player_id, got.server_launch_time_us, got.start, got.velocity, got.target, got.radius_m, got.gravity_ms2, got.flight_time_s),
+            (sent.body_id, sent.shooter_player_id, sent.server_launch_time_us, sent.start, sent.velocity, sent.target, sent.radius_m, sent.gravity_ms2, sent.flight_time_s)
+        );
+        assert!(net_client::decode_meteor_launched(&crate::meteor::encode_meteor_launched(&sent)[..40]).is_err());
+    }
+
+    #[test]
+    fn client_camera_drop_reads_back_on_the_server() {
+        let bytes = net_client::encode_city_camera_drop([12.5, 40.0, -3.25], 1.25, -0.5);
+        assert_eq!(bytes.len(), 21);
+        let ClientDatagram::CityCameraDrop(cmd) = decode_client_datagram(&bytes).unwrap() else { panic!("not a camera drop") };
+        assert_eq!((cmd.position, cmd.yaw, cmd.pitch), ([12.5, 40.0, -3.25], 1.25, -0.5));
+    }
+
+    #[test]
+    fn vehicle_asset_reads_back_on_the_client() {
+        let vehicle: crate::vehicle_assets::PreparedVehicle = serde_json::from_value(serde_json::json!({
+            "configuration": { "model": "buggy", "appearance": { "body": "#112233" } },
+            "assetHash": "a".repeat(64),
+            "geometryHash": "b".repeat(64),
+            "partCount": 1, "shapeCount": 1, "bondCount": 0,
+            "driving": {
+                "acceleration": 8.0, "driveTorque": 900.0, "brakeTorque": 1500.0, "springStiffness": 30000.0,
+                "damping": 3000.0, "tyreFriction": 1.2, "topSpeed": 30.0, "maxSteerRadians": 0.6,
+                "frontWheelDrive": false, "rearWheelDrive": true, "steeringResponse": 6.0,
+            },
+        }))
+        .expect("a prepared vehicle");
+        let got = net_client::decode_vehicle_asset(&crate::vehicle_assets::asset_packet(7, &vehicle)).unwrap();
+        assert_eq!(got.handle, 7);
+        assert_eq!(got.geometry_hash, "b".repeat(64));
+        assert_eq!(got.asset_hash, "a".repeat(64));
+        assert_eq!(got.configuration["appearance"]["body"], "#112233");
+        assert!(net_client::decode_vehicle_asset(&[vibe_land_shared::constants::PKT_VEHICLE_ASSET, b'{']).is_err());
+    }
+
+    #[test]
+    fn vehicle_rig_reads_back_on_the_client() {
+        let wheels = [[0.05, -0.2, 1.5, 1.0], [0.04, -0.21, 1.6, 0.0], [0.0, 0.0, 3.0, 1.0], [-0.02, 0.0, -3.0, 1.0]];
+        let got = net_client::decode_vehicle_rig(&crate::vehicle_assets::rig_packet(4242, 3, wheels)).unwrap();
+        assert_eq!((got.server_tick, got.handle), (4242, 3));
+        for (g, w) in got.wheels.iter().zip(wheels) {
+            assert_eq!((g.travel_m, g.steer_rad, g.rotation_rad, g.grounded), (w[0], w[1], w[2], w[3] != 0.0));
+        }
+    }
+
+    #[test]
+    fn audio_contacts_read_back_on_the_client() {
+        use crate::contact_audio::{ContactAudioReducer, ContactSample};
+        let mut reducer = ContactAudioReducer::default();
+        let sample = ContactSample {
+            entity_a: 11, entity_b: 22, position: [3.0, 1.0, -4.0], normal: [0.0, 2.0, 0.0],
+            normal_speed: 6.0, tangent_speed: 0.5, impulse: 5000.0, effective_mass: 800.0,
+        };
+        reducer.ingest(100, [sample]);
+        let packet = reducer.packet_for(100, [0.0, 0.0, 0.0]).expect("an audible contact");
+        let (tick, contacts) = net_client::decode_audio_contacts(&packet).unwrap();
+        assert_eq!(tick, 100);
+        assert_eq!(contacts.len(), 1);
+        let c = contacts[0];
+        assert_eq!((c.entity_a, c.entity_b, c.position), (11, 22, [3.0, 1.0, -4.0]));
+        assert_eq!(c.normal, [0.0, 1.0, 0.0], "the server sends a unit normal");
+        assert!(c.intensity > 0.0 && c.intensity <= 1.0 && c.size > 0.0);
+        assert!(net_client::decode_audio_contacts(&packet[..20]).is_err());
     }
 }

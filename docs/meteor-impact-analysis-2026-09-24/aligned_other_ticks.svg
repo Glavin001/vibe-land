@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="292" font-family="Helvetica,Arial,sans-serif" font-size="11">
+<rect width="100%" height="100%" fill="white"/>
+<text x="70" y="10" font-weight="bold" font-size="12">Ticks without fracture, aligned on impact (all events)</text>
+<rect x="70" y="16" width="1010" height="220" fill="none" stroke="#bbb"/>
+<line x1="70" x2="1080" y1="236.0" y2="236.0" stroke="#eee"/>
+<text x="66" y="239.0" text-anchor="end" fill="#555">0</text>
+<line x1="70" x2="1080" y1="173.1" y2="173.1" stroke="#eee"/>
+<text x="66" y="176.1" text-anchor="end" fill="#555">20</text>
+<line x1="70" x2="1080" y1="110.3" y2="110.3" stroke="#eee"/>
+<text x="66" y="113.3" text-anchor="end" fill="#555">40</text>
+<line x1="70" x2="1080" y1="47.4" y2="47.4" stroke="#eee"/>
+<text x="66" y="50.4" text-anchor="end" fill="#555">60</text>
+<line x1="70.0" x2="70.0" y1="16" y2="236" stroke="#f3f3f3"/>
+<text x="70.0" y="248" text-anchor="middle" fill="#555">0</text>
+<line x1="214.3" x2="214.3" y1="16" y2="236" stroke="#f3f3f3"/>
+<text x="214.3" y="248" text-anchor="middle" fill="#555">1</text>
+<line x1="358.6" x2="358.6" y1="16" y2="236" stroke="#f3f3f3"/>
+<text x="358.6" y="248" text-anchor="middle" fill="#555">2</text>
+<line x1="502.9" x2="502.9" y1="16" y2="236" stroke="#f3f3f3"/>
+<text x="502.9" y="248" text-anchor="middle" fill="#555">3</text>
+<line x1="647.1" x2="647.1" y1="16" y2="236" stroke="#f3f3f3"/>
+<text x="647.1" y="248" text-anchor="middle" fill="#555">4</text>
+<line x1="791.4" x2="791.4" y1="16" y2="236" stroke="#f3f3f3"/>
+<text x="791.4" y="248" text-anchor="middle" fill="#555">5</text>
+<line x1="935.7" x2="935.7" y1="16" y2="236" stroke="#f3f3f3"/>
+<text x="935.7" y="248" text-anchor="middle" fill="#555">6</text>
+<line x1="1080.0" x2="1080.0" y1="16" y2="236" stroke="#f3f3f3"/>
+<text x="1080.0" y="248" text-anchor="middle" fill="#555">7</text>
+<text transform="translate(16,126.0) rotate(-90)" text-anchor="middle" fill="#333">tick ms</text>
+<line x1="70" x2="1080" y1="183.6" y2="183.6" stroke="#16a34a" stroke-dasharray="4 3"/>
+<text x="1076" y="180.6" text-anchor="end" fill="#16a34a">16.7 ms</text>
+<path d="M70.0,121.0L142.1,191.1L214.3,201.7L286.4,204.3L358.6,206.5L430.7,207.7L502.9,207.4L575.0,208.0L647.1,208.7L719.3,209.9L791.4,211.2L863.6,213.1L935.7,211.5L1007.9,210.5L1080.0,212.7" fill="none" stroke="#2563eb" stroke-width="1.2"/>
+<rect x="76" y="21" width="10" height="3" fill="#2563eb"/>
+<text x="89" y="26" fill="#222">p50</text>
+<path d="M70.0,16.0L142.1,71.0L214.3,138.9L286.4,189.5L358.6,195.1L430.7,197.7L502.9,194.2L575.0,195.1L647.1,197.0L719.3,201.4L791.4,201.1L863.6,201.4L935.7,200.5L1007.9,197.3L1080.0,121.6" fill="none" stroke="#dc2626" stroke-width="1.2"/>
+<rect x="114.6" y="21" width="10" height="3" fill="#dc2626"/>
+<text x="127.6" y="26" fill="#222">p90</text>
+<text x="575.0" y="288" text-anchor="middle" fill="#333">sim seconds after impact</text>
+</svg>

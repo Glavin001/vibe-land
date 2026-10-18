@@ -1,0 +1,528 @@
+//! Server-owned preparation of the same parametric recipe used by the garage.
+//! The worker accepts configuration values only; clients cannot author physics.
+use axum::{
+    extract::Path,
+    http::{header, StatusCode},
+    response::IntoResponse,
+    Json,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::{path::PathBuf, process::Stdio, sync::OnceLock};
+use tokio::{io::AsyncWriteExt, process::Command, sync::Semaphore};
+
+mod fracture;
+pub mod lint;
+pub mod rig;
+pub use fracture::{AssetBond, AssetBondStrength, AssetFunction, AssetMassProperties, FractureLayout};
+
+type ApiError = (StatusCode, String);
+static WORKERS: Semaphore = Semaphore::const_new(1);
+static ASSET_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn asset_root() -> &'static PathBuf {
+    ASSET_ROOT.get_or_init(|| {
+        std::env::var_os("VIBE_VEHICLE_ASSET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.cache/vehicle-assets")
+            })
+    })
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedVehicle {
+    pub configuration: Value,
+    pub asset_hash: String,
+    pub geometry_hash: String,
+    pub part_count: usize,
+    pub shape_count: usize,
+    pub bond_count: usize,
+    pub driving: PreparedDriving,
+}
+
+/// Derived by the shared server worker from validated settings and measured mass.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreparedDriving {
+    pub acceleration: f32,
+    pub drive_torque: f32,
+    pub brake_torque: f32,
+    pub spring_stiffness: f32,
+    pub damping: f32,
+    pub tyre_friction: f32,
+    pub top_speed: f32,
+    pub max_steer_radians: f32,
+    #[serde(default)]
+    pub front_wheel_drive: bool,
+    pub rear_wheel_drive: bool,
+    pub steering_response: f32,
+}
+impl PreparedDriving {
+    pub fn is_valid(&self) -> bool {
+        [self.acceleration, self.drive_torque, self.brake_torque, self.spring_stiffness,
+         self.damping, self.tyre_friction, self.top_speed, self.max_steer_radians, self.steering_response]
+            .iter().all(|v| v.is_finite() && *v > 0.0)
+            && self.acceleration <= 9.0 && (12.0..=36.0).contains(&self.top_speed)
+            && (0.8..=1.6).contains(&self.tyre_friction)
+            && (0.6..=1.4).contains(&self.steering_response)
+            && self.max_steer_radians <= 0.65
+            && !(self.front_wheel_drive && self.rear_wheel_drive)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrepareRequest {
+    configuration: Value,
+}
+impl PrepareRequest {
+    pub fn new(configuration: Value) -> Self { Self { configuration } }
+}
+
+pub fn valid_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub async fn prepare(
+    Json(request): Json<PrepareRequest>,
+) -> Result<Json<PreparedVehicle>, ApiError> {
+    let _permit = WORKERS.try_acquire().map_err(|_| {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Another vehicle is being prepared. Please try again shortly.".into(),
+        )
+    })?;
+    let script = std::env::var_os("VIBE_VEHICLE_WORKER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../client/src/vehicles/prepare-asset.mjs")
+        });
+    let mut command =
+        Command::new(std::env::var_os("VIBE_NODE_BIN").unwrap_or_else(|| "node".into()));
+    command
+        .arg(script)
+        .arg(asset_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn().map_err(|error| {
+        tracing::error!(%error, "vehicle worker unavailable");
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Vehicle preparation is unavailable on this server.".into(),
+        )
+    })?;
+    let payload = serde_json::to_vec(&serde_json::json!({"configuration":request.configuration}))
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid configuration".into()))?;
+    let mut stdin = child.stdin.take().ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Vehicle worker input unavailable".into(),
+        )
+    })?;
+    stdin.write_all(&payload).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Vehicle worker input failed".into(),
+        )
+    })?;
+    drop(stdin);
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::GATEWAY_TIMEOUT,
+            "Vehicle preparation timed out; your configuration is unchanged.".into(),
+        )
+    })?
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Vehicle preparation failed".into(),
+        )
+    })?;
+    if !output.status.success() {
+        tracing::warn!(configuration=%request.configuration, stderr=%String::from_utf8_lossy(&output.stderr), "vehicle preparation rejected");
+        return Err(preparation_failure(&output.stdout));
+    }
+    let result: PreparedVehicle = serde_json::from_slice(&output.stdout).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Invalid vehicle preparation result".into(),
+        )
+    })?;
+    if !valid_hash(&result.asset_hash)
+        || !valid_hash(&result.geometry_hash)
+        || result.part_count == 0
+        || !result.driving.is_valid()
+    {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Invalid prepared vehicle identity".into(),
+        ));
+    }
+    Ok(Json(result))
+}
+
+fn preparation_failure(stdout: &[u8]) -> ApiError {
+    // The worker emits a safe diagnostic separately from its private stack/logs.
+    // Process crashes and invalid worker output are service failures, not bad dimensions.
+    if let Ok(value) = serde_json::from_slice::<Value>(stdout) {
+        if let (Some(message), Some(recovery)) = (
+            value["error"]["message"].as_str(), value["error"]["recovery"].as_str(),
+        ) {
+            if !message.is_empty() && message.len() + recovery.len() <= 2048 {
+                return (StatusCode::UNPROCESSABLE_ENTITY, format!("{message} {recovery}"));
+            }
+        }
+    }
+    (StatusCode::INTERNAL_SERVER_ERROR,
+        "Vehicle preparation could not finish on the server. Your dimensions may be valid; try again shortly.".into())
+}
+
+pub async fn asset(
+    Path((hash, file)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !valid_hash(&hash)
+        || !["model.bin", "physics.json", "metadata.json"].contains(&file.as_str())
+    {
+        return Err((StatusCode::NOT_FOUND, "Unknown vehicle asset".into()));
+    }
+    let bytes = tokio::fs::read(asset_root().join(hash).join(&file))
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, "Vehicle asset not found".into()))?;
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                if file.ends_with("json") {
+                    "application/json"
+                } else {
+                    "application/octet-stream"
+                },
+            ),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        bytes,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn preparation_errors_keep_actionable_diagnostics_and_distinguish_worker_crashes() {
+        let diagnostic = br#"{"error":{"message":"Parts are disconnected.","recovery":"Restore wheelbase to 2.62 m."}}"#;
+        let (status, message) = preparation_failure(diagnostic);
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(message, "Parts are disconnected. Restore wheelbase to 2.62 m.");
+        for output in [b"".as_slice(), b"worker crashed".as_slice(), br#"{"error":{}}"#.as_slice()] {
+            assert_eq!(preparation_failure(output).0, StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+    #[test]
+    fn asset_paths_require_canonical_hashes() {
+        assert!(valid_hash(&"a1".repeat(32)));
+        for invalid in [
+            "../metadata.json".to_string(),
+            "A".repeat(64),
+            "a".repeat(63),
+            "g".repeat(64),
+        ] {
+            assert!(!valid_hash(&invalid));
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedGeometry {
+    #[serde(skip)]
+    pub driving: Option<PreparedDriving>,
+    /// Kept at authored precision: posed chunk frames conjugate through it.
+    pub origin_height: f64,
+    pub wheel_centers: [[f32; 3]; 4],
+    pub suspension_travel: f32,
+    pub neutral_jounce: f32,
+    pub suspension_attachment_y: f32,
+    pub wheel_half_width: f32,
+    pub max_steer_radians: f32,
+    pub mass: f32,
+    pub mass_properties: AssetMassProperties,
+    pub bounds: AssetBounds,
+    pub parts: Vec<AssetPart>,
+    pub bonds: Vec<AssetBond>,
+    /// Source-frame suspension rig; absent from older caches.
+    #[serde(default)]
+    pub rig: Option<rig::AssetRig>,
+    /// Derived from validated authored identities, never supplied by the client.
+    #[serde(skip)]
+    pub fracture_layout: Option<FractureLayout>,
+}
+impl PreparedGeometry {
+    /// The wheel radius its Vehicle2 is built with.
+    pub fn wheel_radius(&self) -> f32 {
+        self.origin_height as f32 - 0.25
+    }
+
+    /// The farthest corner of its bounds from its actor origin, m.
+    pub fn reach(&self) -> f32 {
+        let (lo, hi) = (self.bounds.min, self.bounds.max);
+        (0..8)
+            .map(|i| {
+                let c = [if i & 1 == 0 { lo[0] } else { hi[0] }, if i & 2 == 0 { lo[1] } else { hi[1] }, if i & 4 == 0 { lo[2] } else { hi[2] }];
+                (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt()
+            })
+            .fold(0.0f32, f32::max)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct AssetBounds {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetPart {
+    pub id: String,
+    /// The recipe's part name ("Front left hub"); diagnostics only.
+    #[serde(default)]
+    pub name: String,
+    pub visual_ids: Vec<String>,
+    pub mass: f64,
+    pub volume: f64,
+    pub mass_properties: AssetMassProperties,
+    pub motion: Option<Value>,
+    /// Recipe-authored function, independent of part order, paint and mass.
+    pub functionality: Option<AssetFunction>,
+    pub position: [f32; 3],
+    pub shapes: Vec<AssetShape>,
+}
+#[derive(Clone, Debug, Deserialize)]
+pub struct AssetShape {
+    pub position: [f32; 3],
+    pub vertices: Vec<[f32; 3]>,
+}
+
+/// Shared by private garage drives and vehicles published into the city.
+#[derive(Clone)]
+pub struct DrivableVehicle {
+    pub vehicle: PreparedVehicle,
+    pub geometry: PreparedGeometry,
+}
+pub async fn prepare_drivable(request: PrepareRequest) -> Result<DrivableVehicle, ApiError> {
+    let Json(vehicle) = prepare(Json(request)).await?;
+    if vehicle.configuration["model"] == "semi" {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY,
+            "The semi preview is available; its articulated trailer is not ready for driving yet.".into()));
+    }
+    let bytes = tokio::fs::read(asset_root().join(&vehicle.geometry_hash).join("metadata.json"))
+        .await.map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Prepared assembly is unavailable".into()))?;
+    let mut geometry: PreparedGeometry = serde_json::from_slice(&bytes)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Prepared assembly is invalid".into()))?;
+    geometry.fracture_layout = Some(geometry.validate_vehicle2_fracture_layout().map_err(|reason| {
+        tracing::error!(%reason, geometry_hash=%vehicle.geometry_hash, "invalid authored vehicle fracture data");
+        (StatusCode::INTERNAL_SERVER_ERROR, "Vehicle preparation produced inconsistent physical parts. Please report this configuration.".into())
+    })?);
+    geometry.driving = Some(vehicle.driving.clone());
+    Ok(DrivableVehicle { vehicle, geometry })
+}
+
+pub fn asset_packet(handle: u8, vehicle: &PreparedVehicle) -> Vec<u8> {
+    let mut bytes = vec![vibe_land_shared::constants::PKT_VEHICLE_ASSET];
+    bytes.extend(
+        serde_json::to_vec(&serde_json::json!({"handle":handle,"vehicle":vehicle}))
+            .expect("finite configuration"),
+    );
+    bytes
+}
+
+/// One wheel state is twelve bytes of floats plus an on-road byte.
+/// Detached parts ride after the fixed 58-byte rig record: `[n u8]` then per
+/// part `[index u16][position f32 x3][rotation xyzw f32 x4]`, each mapping the
+/// part's authored actor-frame geometry to the world. Capped to fit a datagram.
+/// Datagram budget for one rig packet (the path MTU is ~1200 bytes).
+pub const RIG_PACKET_BUDGET: usize = 1150;
+/// Detached parts, grouped by identical world pose: parts carried by one
+/// fragment body at their authored offset share its pose exactly, so a body
+/// is sent once with its part list. Tail after the 58-byte wheel rig:
+/// `[packet u8][packets u8][groups u8]` then per group
+/// `[position f32x3][rotation f32x4][count u8][part u16 x count]`.
+/// One packet per call; see `RigStream` for a tick's complete set.
+fn rig_packet_with_groups(tick: u32, handle: u8, wheels: [[f32; 4]; 4], groups: &[&([f32; 3], [f32; 4], Vec<u16>)], index: usize, count: usize) -> Vec<u8> {
+    let mut bytes = rig_packet(tick, handle, wheels);
+    if groups.is_empty() && count == 0 { return bytes; }
+    bytes.extend([index as u8, count as u8, groups.len() as u8]);
+    for (position, rotation, parts) in groups {
+        for value in position.iter().chain(rotation) { bytes.extend(value.to_le_bytes()); }
+        bytes.push(parts.len() as u8);
+        for part in parts { bytes.extend(part.to_le_bytes()); }
+    }
+    bytes
+}
+
+fn group_detached(detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<([f32; 3], [f32; 4], Vec<u16>)> {
+    let mut groups: Vec<([f32; 3], [f32; 4], Vec<u16>)> = Vec::new();
+    for (part, position, rotation) in detached {
+        let same = |g: &&mut ([f32; 3], [f32; 4], Vec<u16>)| g.0.map(f32::to_bits) == position.map(f32::to_bits)
+            && g.1.map(f32::to_bits) == rotation.map(f32::to_bits) && g.2.len() < 255;
+        match groups.iter_mut().find(|g| same(g)) {
+            Some(group) => group.2.push(*part),
+            None => groups.push((*position, *rotation, vec![*part])),
+        }
+    }
+    groups
+}
+
+fn paginate<'a>(base: usize, groups: impl Iterator<Item = &'a ([f32; 3], [f32; 4], Vec<u16>)>) -> Vec<Vec<&'a ([f32; 3], [f32; 4], Vec<u16>)>> {
+    let mut pages: Vec<Vec<_>> = Vec::new();
+    let mut used = 0;
+    for group in groups {
+        let size = 29 + 2 * group.2.len();
+        if pages.is_empty() || used + size > RIG_PACKET_BUDGET || pages.last().is_some_and(|p| p.len() == 255) {
+            pages.push(Vec::new());
+            used = base + 3;
+        }
+        pages.last_mut().unwrap().push(group);
+        used += size;
+    }
+    pages
+}
+
+/// Streams a vehicle's detached parts. Every tick it sends every group whose
+/// pose changed since it was last sent -- as many datagrams as that takes --
+/// so a part never lingers drawn on the car after it left it, and moving
+/// pieces are never stale. Unchanged groups are resent one page per tick,
+/// round-robin, for loss recovery. The server sends a client a car's frame
+/// only when it changed or for a periodic refresh, and the whole rig
+/// (`rig_packets_with_parts`) when the car enters its interest.
+/// Each part of a car as the per-player stream needs it for its detached
+/// groups: mass, centre of mass (actor frame, the frame the detached maps
+/// take), the farthest hull point from that centre, and the hull points.
+pub fn per_player_part_models(geometry: &PreparedGeometry) -> Vec<vibe_land_destruction::per_player::VehiclePartModel> {
+    geometry
+        .parts
+        .iter()
+        .map(|part| {
+            let c = part.mass_properties.center.map(|v| v as f32);
+            let points: Vec<[f32; 3]> = part
+                .shapes
+                .iter()
+                .flat_map(|shape| shape.vertices.iter().map(move |v| std::array::from_fn::<f32, 3, _>(|k| part.position[k] + shape.position[k] + v[k])))
+                .collect();
+            let reach = points
+                .iter()
+                .map(|p| ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt())
+                .fold(0.0f32, f32::max);
+            vibe_land_destruction::per_player::VehiclePartModel { mass: part.mass as f32, centre: c, reach, points }
+        })
+        .collect()
+}
+
+pub struct RigStream {
+    sent: std::collections::HashMap<Vec<u16>, [u32; 7]>,
+    /// The wheels as last framed (bits), to tell an unchanged rig.
+    wheels: Option<[[u32; 4]; 4]>,
+}
+
+/// One car's rig this tick (`RigStream::frame`).
+pub struct RigFrame {
+    /// The wheels and the detached groups that changed, plus one refresh page.
+    pub packets: Vec<Vec<u8>>,
+    /// Anything differs from last tick: the wheels, or a detached group.
+    pub changed: bool,
+}
+
+impl RigStream {
+    pub fn packets(&mut self, tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<Vec<u8>> {
+        self.frame(tick, handle, wheels, detached).packets
+    }
+
+    /// This tick's packets, and whether the rig changed since the last frame
+    /// (a client that has the car's rig needs nothing more until it does,
+    /// but for a refresh against loss).
+    pub fn frame(&mut self, tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> RigFrame {
+        let wheel_bits = wheels.map(|w| w.map(f32::to_bits));
+        let wheels_changed = self.wheels != Some(wheel_bits);
+        self.wheels = Some(wheel_bits);
+        let groups = group_detached(detached);
+        if groups.is_empty() {
+            let changed = wheels_changed || !self.sent.is_empty();
+            self.sent.clear();
+            return RigFrame { packets: vec![rig_packet(tick, handle, wheels)], changed };
+        }
+        let key = |g: &([f32; 3], [f32; 4], Vec<u16>)| { let mut k = [0u32; 7]; for (i, v) in g.0.iter().chain(&g.1).enumerate() { k[i] = v.to_bits(); } k };
+        let (changed, unchanged): (Vec<_>, Vec<_>) = groups.iter().partition(|g| self.sent.get(&g.2) != Some(&key(g)));
+        let any_changed = wheels_changed || !changed.is_empty() || self.sent.len() != groups.len();
+        self.sent = groups.iter().map(|g| (g.2.clone(), key(g))).collect();
+        let base = rig_packet(tick, handle, wheels).len();
+        let mut pages = paginate(base, changed.into_iter());
+        let refresh = paginate(base, unchanged.into_iter());
+        if !refresh.is_empty() { pages.push(refresh[tick as usize % refresh.len()].clone()); }
+        let pages = &pages[..pages.len().min(255)];
+        let packets = pages.iter().enumerate().map(|(i, page)| rig_packet_with_groups(tick, handle, wheels, page, i, pages.len())).collect();
+        RigFrame { packets, changed: any_changed }
+    }
+}
+
+impl Default for RigStream {
+    fn default() -> Self {
+        Self { sent: Default::default(), wheels: None }
+    }
+}
+
+/// Every detached group in the fewest packets (tests and tools).
+pub fn rig_packets_with_parts(tick: u32, handle: u8, wheels: [[f32; 4]; 4], detached: &[(u16, [f32; 3], [f32; 4])]) -> Vec<Vec<u8>> {
+    RigStream::default().packets(tick, handle, wheels, detached)
+}
+pub fn rig_packet(tick: u32, handle: u8, wheels: [[f32; 4]; 4]) -> Vec<u8> {
+    let mut bytes = vec![vibe_land_shared::constants::PKT_VEHICLE_RIG];
+    bytes.extend(tick.to_le_bytes());
+    bytes.push(handle);
+    for wheel in wheels {
+        for value in &wheel[..3] {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.push(wheel[3] as u8);
+    }
+    bytes
+}
+
+#[cfg(test)]
+mod rig_frame_tests {
+    use super::*;
+
+    /// A client keeps a car's last rig, so the server sends a car's frame
+    /// only when something in it changed (or for a refresh): a parked car
+    /// must read unchanged, and any wheel or detached-group change, a group
+    /// appearing, moving or going, must read changed.
+    #[test]
+    fn a_rig_frame_says_whether_anything_changed() {
+        let wheels = [[0.5, -0.2, 1.1, 1.0]; 4];
+        let mut stream = RigStream::default();
+        assert!(stream.frame(1, 3, wheels, &[]).changed, "the first frame is news");
+        assert!(!stream.frame(2, 3, wheels, &[]).changed, "a parked car is not");
+        let mut moved = wheels;
+        moved[2][1] = -0.21;
+        assert!(stream.frame(3, 3, moved, &[]).changed, "a wheel moved");
+        assert!(!stream.frame(4, 3, moved, &[]).changed);
+        let part = (7u16, [1.0, 0.2, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        assert!(stream.frame(5, 3, moved, &[part]).changed, "a part came off");
+        assert!(!stream.frame(6, 3, moved, &[part]).changed, "and lies still");
+        let fallen = (7u16, [1.0, 0.1, 3.0], [0.0, 0.0, 0.0, 1.0]);
+        assert!(stream.frame(7, 3, moved, &[fallen]).changed, "it moved");
+        assert!(stream.frame(8, 3, moved, &[]).changed, "it went (a reset)");
+        assert!(!stream.frame(9, 3, moved, &[]).changed);
+    }
+}

@@ -1,0 +1,42 @@
+{
+  "name": "observer-remote",
+  "description": "Two clients: a mover runs a loop while an observer stands still and watches. Measures remote-entity interpolation/extrapolation quality (the observer's remote* columns track the mover).",
+  "symptom": ["jitter", "teleporting", "freeze"],
+  "path": "/play?portal=true",
+  "matchId": "netlab-observer-{iter}",
+  "durationMs": 60000,
+  "join": "auto",
+  "clients": [
+    {
+      "role": "mover",
+      "drive": [
+        { "at": 1000, "cmd": "faceCity" },
+        { "at": 2000, "cmd": "setSprint", "args": [true] },
+        { "at": 2000, "cmd": "move", "args": { "forward": 1, "durationMs": 5000 } },
+        { "at": 7200, "cmd": "look", "args": [1.5708] },
+        { "at": 7300, "cmd": "move", "args": { "forward": 1, "durationMs": 5000 } },
+        { "at": 12500, "cmd": "look", "args": [3.1416] },
+        { "at": 12600, "cmd": "move", "args": { "forward": 1, "durationMs": 5000 } },
+        { "at": 17800, "cmd": "look", "args": [-1.5708] },
+        { "at": 17900, "cmd": "move", "args": { "forward": 1, "durationMs": 5000 } },
+        { "at": 23100, "cmd": "look", "args": [0] },
+        { "at": 23200, "cmd": "move", "args": { "forward": 1, "durationMs": 5000 } },
+        { "at": 28400, "cmd": "look", "args": [1.5708] },
+        { "at": 28500, "cmd": "move", "args": { "forward": 1, "durationMs": 5000 } },
+        { "at": 33700, "cmd": "look", "args": [3.1416] },
+        { "at": 33800, "cmd": "move", "args": { "forward": 1, "durationMs": 5000 } },
+        { "at": 39000, "cmd": "look", "args": [-1.5708] },
+        { "at": 39100, "cmd": "move", "args": { "forward": 1, "durationMs": 5000 } },
+        { "at": 44300, "cmd": "look", "args": [0] },
+        { "at": 44400, "cmd": "move", "args": { "forward": 1, "durationMs": 8000 } },
+        { "at": 52500, "cmd": "stop" }
+      ]
+    },
+    {
+      "role": "observer",
+      "watch": "mover",
+      "drive": []
+    }
+  ],
+  "iterations": 1
+}

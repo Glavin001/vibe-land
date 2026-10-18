@@ -1,6 +1,12 @@
 import type { InputBindings } from './bindings';
 import { getInputSettings } from './inputSettingsStore';
 import type { ActionSnapshot, InputContext } from './types';
+import { getPointerMode, isInputControl } from './pointerMode';
+
+/** Scroll travel per weapon step (a notch is about 100-120 px). */
+const WHEEL_STEP_PX = 50;
+/** The shortest gap between two wheel steps, so one flick is one switch. */
+const WHEEL_STEP_COOLDOWN_MS = 150;
 
 export class KeyboardMouseInputSource {
   private readonly keys = new Set<string>();
@@ -9,8 +15,22 @@ export class KeyboardMouseInputSource {
   private pointerDeltaX = 0;
   private pointerDeltaY = 0;
   private activityId = 0;
+  private canvas: HTMLElement | null = null;
+  private drag: { x: number; y: number; travel: number; moved: boolean } | null = null;
+  private readonly clicks = new Set<number>();
+  /** Weapon steps from the scroll wheel since the last sample (+ next, - previous). */
+  private wheelSteps = 0;
+  private wheelTravel = 0;
+  private lastWheelStepMs = -Infinity;
+
+  get hasPointerControl(): boolean {
+    return getPointerMode() === 'drag' && this.canvas !== null
+      && document.activeElement === this.canvas && document.hasFocus();
+  }
 
   private readonly onKeyDown = (event: KeyboardEvent) => {
+    if (isInputControl(event.target)) return;
+    if (event.code === 'Escape' && getPointerMode() === 'drag') { this.onBlur(); this.canvas?.blur(); return; }
     if (!this.keys.has(event.code)) {
       this.activityId += 1;
     }
@@ -28,10 +48,39 @@ export class KeyboardMouseInputSource {
     this.mouseButtons.clear();
     this.pointerDeltaX = 0;
     this.pointerDeltaY = 0;
+    this.drag = null;
+    this.clicks.clear();
+  };
+
+  /**
+   * The scroll wheel switches weapon, as in Call of Duty: down is next, up
+   * previous. Only while the pointer is captured (or the canvas has it), so a
+   * page still scrolls. A trackpad sends many small deltas: one step per
+   * WHEEL_STEP_PX of travel, at most one per WHEEL_STEP_COOLDOWN_MS.
+   */
+  private readonly onWheel = (event: WheelEvent) => {
+    if (document.pointerLockElement === null && !this.hasPointerControl) return;
+    const scale = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? 800 : 1;
+    this.wheelTravel += event.deltaY * scale;
+    const now = performance.now();
+    if (Math.abs(this.wheelTravel) < WHEEL_STEP_PX || now - this.lastWheelStepMs < WHEEL_STEP_COOLDOWN_MS) return;
+    this.wheelSteps += Math.sign(this.wheelTravel);
+    this.wheelTravel = 0;
+    this.lastWheelStepMs = now;
+    this.activityId += 1;
   };
 
   private readonly onMouseMove = (event: MouseEvent) => {
     if (document.pointerLockElement === null) {
+      if (!this.hasPointerControl || !this.drag || !(event.buttons & 3)) return;
+      const dx = event.clientX - this.drag.x, dy = event.clientY - this.drag.y;
+      this.drag.x = event.clientX; this.drag.y = event.clientY;
+      this.drag.travel += Math.hypot(dx, dy);
+      this.drag.moved ||= this.drag.travel > 4;
+      if (this.drag.moved) {
+        this.pointerDeltaX += dx; this.pointerDeltaY += dy;
+        this.activityId++;
+      }
       return;
     }
     this.pointerDeltaX += event.movementX;
@@ -42,6 +91,9 @@ export class KeyboardMouseInputSource {
   };
 
   private readonly onMouseDown = (event: MouseEvent) => {
+    if (this.canvas && !this.canvas.contains(event.target as Node)) { this.onBlur(); return; }
+    this.canvas?.focus({ preventScroll: true });
+    this.drag = { x: event.clientX, y: event.clientY, travel: 0, moved: false };
     if (!this.mouseButtons.has(event.button)) {
       this.activityId += 1;
     }
@@ -52,36 +104,50 @@ export class KeyboardMouseInputSource {
   };
 
   private readonly onMouseUp = (event: MouseEvent) => {
+    if (this.hasPointerControl && this.drag && !this.drag.moved && this.mouseButtons.has(event.button)) {
+      this.clicks.add(event.button);
+      this.activityId++;
+    }
     this.mouseButtons.delete(event.button);
+    if (!(event.buttons & 3)) this.drag = null;
   };
 
   private readonly onContextMenu = (event: MouseEvent) => {
-    if (document.pointerLockElement !== null) {
+    if (document.pointerLockElement !== null || (this.canvas?.contains(event.target as Node) && getPointerMode() === 'drag')) {
       event.preventDefault();
     }
   };
 
-  attach() {
+  attach(canvas?: HTMLElement) {
+    this.canvas = canvas ?? null;
+    if (this.canvas) this.canvas.tabIndex = 0;
+    this.canvas?.addEventListener('blur', this.onBlur);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
     document.addEventListener('mousemove', this.onMouseMove);
+    document.addEventListener('wheel', this.onWheel, { passive: true });
     document.addEventListener('mousedown', this.onMouseDown);
     document.addEventListener('mouseup', this.onMouseUp);
     document.addEventListener('contextmenu', this.onContextMenu);
   }
 
   detach() {
+    this.canvas?.removeEventListener('blur', this.onBlur);
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
     document.removeEventListener('mousemove', this.onMouseMove);
+    document.removeEventListener('wheel', this.onWheel);
     document.removeEventListener('mousedown', this.onMouseDown);
     document.removeEventListener('mouseup', this.onMouseUp);
     document.removeEventListener('contextmenu', this.onContextMenu);
+    this.onBlur();
+    this.canvas = null;
   }
 
   sample(pointerLocked: boolean, context: InputContext, bindings: InputBindings): ActionSnapshot {
+    const pointerActive = pointerLocked || this.hasPointerControl;
     const keyboard = bindings.keyboard;
     const moveX = (this.keys.has(keyboard.moveRight) ? 1 : 0)
       + (this.keys.has(keyboard.moveLeft) ? -1 : 0);
@@ -96,13 +162,16 @@ export class KeyboardMouseInputSource {
     const baseSens = mouse.sensitivity;
     // invertY=false keeps the legacy "-pointerDeltaY" semantics.
     const ySign = mouse.invertY ? 1 : -1;
-    const lookX = pointerLocked ? -this.pointerDeltaX * baseSens : 0;
+    const lookX = pointerActive ? -this.pointerDeltaX * baseSens : 0;
     // yOverXRatio multiplies only Y so calibrating X (knob 1) stays stable
     // when Y/X ratio (knob 2) is later tuned.
-    const lookY = pointerLocked ? ySign * this.pointerDeltaY * baseSens * mouse.yOverXRatio : 0;
+    const lookY = pointerActive ? ySign * this.pointerDeltaY * baseSens * mouse.yOverXRatio : 0;
     this.pointerDeltaX = 0;
     this.pointerDeltaY = 0;
 
+    // A click fires on release in drag mode; a look drag must never shoot.
+    const fire = context === 'onFoot' && pointerActive && (pointerLocked
+      ? this.mouseButtons.has(keyboard.firePrimaryMouseButton) : this.clicks.has(keyboard.firePrimaryMouseButton));
     const snapshot: ActionSnapshot = {
       family: 'keyboardMouse',
       activityId: this.activityId,
@@ -116,10 +185,10 @@ export class KeyboardMouseInputSource {
       jump: context === 'onFoot' && this.keys.has(keyboard.jump),
       sprint: context === 'onFoot' && this.keys.has(keyboard.sprint),
       crouch: context === 'onFoot' && this.keys.has(keyboard.crouch),
-      firePrimary: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton),
-      firePrimaryValue: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton) ? 1 : 0,
+      firePrimary: fire,
+      firePrimaryValue: fire ? 1 : 0,
       aimSecondary: context === 'onFoot'
-        && pointerLocked
+        && pointerActive
         && (this.mouseButtons.has(keyboard.aimSecondaryMouseButton) || aimingWithKeyboard),
       handbrake: context === 'vehicle' && this.keys.has(keyboard.handbrake),
       interactPressed: this.justPressedKeys.has(keyboard.interact),
@@ -129,9 +198,17 @@ export class KeyboardMouseInputSource {
       materialSlot1Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot1),
       materialSlot2Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot2),
       meleePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.melee),
+      resetWorldPressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.resetWorld),
+      weaponSwitch: context === 'onFoot' ? Math.sign(this.wheelSteps) : 0,
+      weaponSlot: context !== 'onFoot' ? 0
+        : this.justPressedKeys.has(keyboard.weaponSlot1) ? 1
+          : this.justPressedKeys.has(keyboard.weaponSlot2) ? 2
+            : this.justPressedKeys.has(keyboard.weaponSlot3) ? 3 : 0,
     };
 
     this.justPressedKeys.clear();
+    this.clicks.clear();
+    this.wheelSteps = 0;
 
     return snapshot;
   }

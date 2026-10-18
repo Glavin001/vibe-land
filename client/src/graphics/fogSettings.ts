@@ -16,9 +16,20 @@ import { WEATHER_PRESETS, type WeatherPreset } from './weatherPresets';
 
 const STORAGE_KEY = 'vibe-land/graphics-settings';
 
-// Fraction of fog opacity reached at the AOI boundary. 0.99 ≈ "effectively
-// invisible" exactly where server-side streaming stops.
-export const FOG_OPACITY_AT_AOI = 0.99;
+// Fraction of fog opacity reached at the AOI boundary.
+//
+// Was 0.99 -- "effectively invisible" exactly where server-side streaming
+// stops. That is the right target for a PLAYER or a vehicle, which genuinely
+// does pop in at the boundary, and the wrong one for the city: its chunks are
+// all delivered in the manifest up front and never pop in at any distance, so
+// the same curve was erasing a skyline that had nothing to hide. At 0.99 a
+// building 40 m away is already 68% fogged, which is most of a city block.
+//
+// 0.55 keeps the boundary doing its job -- something at 80 m is more than half
+// dissolved and not a target you can pick out -- while leaving the skyline
+// readable. It IS a gameplay-visibility trade and not purely a look one:
+// distant players are correspondingly easier to see than they were.
+export const FOG_OPACITY_AT_AOI = 0.55;
 
 /**
  * FogExp2 density chosen so opacity hits `FOG_OPACITY_AT_AOI` at the given
@@ -51,8 +62,15 @@ export type FogSettings = {
 export const MIN_FOG_INTENSITY = 0.25;
 export const MAX_FOG_INTENSITY = 5;
 
+/**
+ * The native single-player app starts without fog for now, whatever an
+ * earlier run saved, so the whole scene reads from above and afar (the fog
+ * toggle in the debug overlay still turns it on). The web build is unchanged.
+ */
+const NATIVE_FOG_OFF = import.meta.env.MODE === 'native';
+
 export const DEFAULT_FOG_SETTINGS: FogSettings = {
-  enabled: true,
+  enabled: !NATIVE_FOG_OFF,
   density: fogDensityForAoi(),
   color: null,
   weather: 'clear',
@@ -106,7 +124,7 @@ function parseFiniteNumber(raw: unknown, fallback: number, min = -Infinity, max 
 export function parseFogSettings(raw: unknown): FogSettings | null {
   if (!raw || typeof raw !== 'object') return null;
   const candidate = raw as Partial<FogSettings> & Record<string, unknown>;
-  const enabled = typeof candidate.enabled === 'boolean' ? candidate.enabled : DEFAULT_FOG_SETTINGS.enabled;
+  const enabled = !NATIVE_FOG_OFF && typeof candidate.enabled === 'boolean' ? candidate.enabled : DEFAULT_FOG_SETTINGS.enabled;
   const density = typeof candidate.density === 'number' && Number.isFinite(candidate.density) && candidate.density > 0
     ? candidate.density
     : DEFAULT_FOG_SETTINGS.density;

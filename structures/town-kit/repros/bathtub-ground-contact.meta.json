@@ -1,0 +1,114 @@
+{
+  "kind": "prop",
+  "type": "bathtub",
+  "route": [],
+  "shots": {
+    "furniture": [
+      {
+        "from": [
+          0,
+          0.35,
+          -1.9
+        ],
+        "to": [
+          0,
+          0.35,
+          -0.78
+        ],
+        "momentum": 100000,
+        "radius": 0.25,
+        "speed": 25,
+        "tick": 0
+      }
+    ],
+    "fence": [
+      {
+        "from": [
+          0,
+          0.35,
+          -1.9
+        ],
+        "to": [
+          0,
+          0.35,
+          -0.78
+        ],
+        "momentum": 100000,
+        "radius": 0.25,
+        "speed": 25,
+        "tick": 0
+      }
+    ]
+  },
+  "shotGroups": {
+    "furniture": "prop-bathtub",
+    "fence": "prop-bathtub"
+  },
+  "validation": {
+    "passed": true,
+    "chunks": 8,
+    "bonds": 13,
+    "components": 1,
+    "shapes": 0,
+    "overlapCount": 0,
+    "errors": [],
+    "warnings": []
+  },
+  "assetSha256": "e78f6f2069c43a2072b8880a1c2d5d98f701182c9ae889688ea822f29f79b451",
+  "provenance": {
+    "vibeRevision": "4d1af5a74e169926a86811fab90268c995569de8",
+    "authoringRevision": "a0a5af2d31ba18b0c1a8de2a8c321617727f634b",
+    "files": {
+      "../blast-stress-solver-2/blast/blast-stress-solver/scripts/export-fractured-city.mjs": "e98881f02e9f452f60713d265eabe1b54cc30106208e6c16dff0c755ef6df6bb",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/autobond.mjs": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/colliders.mjs": "d12efd552cdda1edbb921df8490b67bfb06c9abe78c6397960a2a7df10123742",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/contact.mjs": "c8e8758102600ff8cfdd66bcc67f3c4128fad1570480bf20c969f3da0d7dfb44",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/design.mjs": "5b2aa56e7bc531adba60f584b239bb244b60a63be1b7842d7d4cf6334c00d9ad",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/elements.mjs": "589b325537ad1c7cca273c434972559d08c98345dbba44a4267b10aec88c1d88",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/fracture-backends.mjs": "356720a3fbe16188e99d663743f4ddfa84e72db2b72ab45b62ab31404b8efb60",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/fracture.mjs": "18af599a718c6c11ed4e6c0ae5add7bee218de766e0076f5aed718d22a7060c2",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/gjk.mjs": "e85dffd15b627a3f693452ced36481d749e35f818986c57f093c78e163b466d4",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/materials.mjs": "d33eda1737932afa8cbc040565b1b490ad430f3c572f882657ebfbb636a470f9",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/pack.mjs": "bd9858ce7cb5740525431352341e8c8c509aed76ab805be27c5a09c9cfd87f18",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/shapes.mjs": "14d0c7650d0784186d0db64ff4262283d137556aabe684337f4fe8dbd4f8976e",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/sliver.mjs": "15233b720c6dd33784403d725a7204807623882c892ac6afaeb6d86b2828c1b0",
+      "client/src/city/chunkGeometry.ts": "4e17c95055f49b9fd1eb7f88c2280ab53fe41f646fedfa50a9e7837abb2c83d7",
+      "client/src/scene/cityMaterialShader.ts": "dd790762645f2f9178c0b115e84fb51da15f91a13a3d749bc8d9c0135a839f1d",
+      "client/src/scene/cityTextures.ts": "dfb87dc5ea7597c0a4e235f37a6902cdf8daa29ef6abcc8d44372ca5c3e31dc7",
+      "client/src/structures/structurePack.ts": "c170b72fc7e95ca06a1b03e354e0bedccc623ec4b0cb355240361d278d7e0777",
+      "physx-bridge/include/destruction.h": "b28432e283c8656300df9b247bec394752f316027ad5258ffaa45a52d6f2e5ab",
+      "physx-bridge/include/native_destruction.h": "0250768ddda3c0736930c6796382340c1b779f71a4998172e4b67496f41cbe46",
+      "physx-bridge/include/native_state.h": "822f2ff56242ec9894eedf9ce989af6e390468094674bdf0c0419e925097626e",
+      "physx-bridge/include/physx_bridge.h": "6cfcbc905145d740185ea8af1c7170bddaef4e420f30af3faccb0729171c051d",
+      "physx-bridge/src/destruction.cc": "3550232c6c4fe9d4a4e4ab608ca2f852490d9eed00e0f8b2d640d65bdc09a615",
+      "physx-bridge/src/lib.rs": "875b4414b4c111eb7796b240753836853eca0791f840efcf645fd09b3436148c",
+      "physx-bridge/src/native_destruction.cc": "40dd576aeaf39a647659ba8ef6154b4b42c005b5f15d2bf5341eab796167d8a5",
+      "physx-bridge/src/native_observation.cc": "e94a08a4b2c49c02293f7a592a96bd858875810f0bc2945ee7abdbc5448bf886",
+      "physx-bridge/src/physx_bridge.cc": "17989eee841c3913aec57cb820e6c11dff16caad1a859c4728ca72d51e9c0f44",
+      "structures/town-kit/native/Cargo.lock": "dcca2c34aa002ccd2b641f842b92e025c05d3ced902955c41cde15c0602d347a",
+      "structures/town-kit/native/Cargo.toml": "d6153a7c340ddff14717660e5d6af63c0694809c6041b542aa0646979a11cd25",
+      "structures/town-kit/native/src/main.rs": "64c5ea3ab66bc68d0199f47b5ca489a8b724d6260c721cd7bc6d1b9cfd443d01",
+      "structures/town-kit/preview/index.html": "a517c7501c5d05ce708e635a18c02b6748b96899809d83490de2a624433a6780",
+      "structures/town-kit/preview/main.ts": "8f5514b5f515bb822f5ada6cd8d849038d9a77357fc130ac9194500691c7727e",
+      "structures/town-kit/scripts/build.mjs": "d720a8e1dcd62a537bb73d385e1730808e473073d62de384737f94d5340b5137",
+      "structures/town-kit/scripts/gallery.mjs": "50648840b91b08b3d1c679f9afebd52466d5bdd90810d51d56e9d0f892bd7666",
+      "structures/town-kit/scripts/matrix.mjs": "4383f93a1c8a39eff130123de0a9e00fbc92f66160fae944ecfa66a32e76ec3d",
+      "structures/town-kit/scripts/preview.mjs": "e151b43a0a0585180900c846381649d5d07d94bc106fa38b846b672543bcd60d",
+      "structures/town-kit/scripts/provenance.mjs": "100148135f3d99d31378a9dd4585d8a089cd08852d58525aadba3bf58c3ab44e",
+      "structures/town-kit/scripts/record.mjs": "bd9b6a60e63eacad8e8675aaada57fe11cff2f1541187ba0a2f797c464db1a1e",
+      "structures/town-kit/scripts/review.mjs": "235b03a21ad90ad95dd47a130f2fad5ac8da36d30e6c16f911fef6db5bc5d409",
+      "structures/town-kit/scripts/screenshots.mjs": "a268b0f0e6c49923b052614f0591f5c63f2a19f5ed0c7c0fa7f07412c08d65d9",
+      "structures/town-kit/scripts/stage.mjs": "9ec2c67a96789e6b08c010555e0227c84c0769cc66135c39a79b427115f8f053",
+      "structures/town-kit/src/attachments.mjs": "e11506fc003e39043999e73bbe1c83931e8e6ee2538395795acefbe9b4244697",
+      "structures/town-kit/src/dependencies.mjs": "2922ed4f7e06eeb459473b5c383bed3fa3a8591409eb885237325a3a41d2ccf8",
+      "structures/town-kit/src/geometry.mjs": "69db899d5a9f0e09c1fa041f79edfeab3bca7f365263234a5b2e528b29809187",
+      "structures/town-kit/src/index.mjs": "d9bb339559f57951228fc1b64837f28fe69686adaf499e5962131b138c433d7d",
+      "structures/town-kit/src/materials.mjs": "b9c8b4f32a79f7521ecf7fa6c0970b03825dc66321d38c32485f655ead9c3a3b",
+      "structures/town-kit/src/props.mjs": "ea3bdff6a8d0df21a738846d8d4a1516a576b74e95973ab3c49aed33aabd24e2",
+      "structures/town-kit/src/stairs.mjs": "52c31fddde5ad98ab7cc9e5687790b2bd215ef24a87e93ef41f80e15df7a6df9",
+      "structures/town-kit/src/validate.mjs": "c98df99e62d8ed7807c9d3167b794817eb6aa85326db0ced58f0d8ce00832140",
+      "structures/town-kit/src/victorian.mjs": "6c3ea301c3b3c9ff7b2e834abc30a0e0c740ed47e8a931a1ce06a30167041b7f"
+    },
+    "contentHash": "f835e66b4af42be0eda52774e21a2d33bcafd37e85212c3551a9499e4dc1e7cf"
+  }
+}

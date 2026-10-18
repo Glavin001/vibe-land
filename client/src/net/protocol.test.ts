@@ -28,6 +28,8 @@ import {
   BTN_SPRINT,
   PKT_SNAPSHOT,
   PKT_SNAPSHOT_V2,
+  SNAPSHOT_V2_REMOVALS_TAG,
+  SNAPSHOT_V2_INPUT_QUEUE_TAG,
   PKT_WELCOME,
   PKT_SHOT_FIRED,
   PKT_SHOT_RESULT,
@@ -443,6 +445,171 @@ describe('snapshot V2 decode', () => {
     expect(packet.vehicleStates).toHaveLength(1);
     expect(packet.vehicleStates[0].handle).toBe(3);
     expect(packet.vehicleStates[0].driverHandle).toBe(2);
+  });
+
+  it('decodes authoritative moving-support metadata', () => {
+    const legacy = buildSnapshotV2Binary();
+    const selfStateEnd = 35;
+    const binary = new Uint8Array(legacy.length + 21);
+    binary.set(legacy.subarray(0, selfStateEnd), 0);
+    binary.set(legacy.subarray(selfStateEnd), selfStateEnd + 21);
+    const view = new DataView(binary.buffer);
+    let o = selfStateEnd;
+    view.setUint16(o, 0x8003, true); o += 2;
+    view.setInt16(o, 400, true); o += 2;
+    view.setInt16(o, -200, true); o += 2;
+    view.setInt16(o, 100, true); o += 2;
+    view.setInt16(o, 150, true); o += 2;
+    view.setInt16(o, 0, true); o += 2;
+    view.setInt16(o, -50, true); o += 2;
+    view.setUint8(o++, 1);
+    view.setInt16(o, 250, true); o += 2;
+    view.setInt16(o, -500, true); o += 2;
+    view.setInt16(o, 750, true); o += 2;
+
+    const packet = decodeServerDatagramPacket(binary);
+    expect(packet.type).toBe('snapshotV2');
+    expect(packet.selfState.supportHandle).toBe(0x8003);
+    expect(packet.selfState.supportLocalPosition).toEqual([1, -0.5, 0.25]);
+    expect(packet.selfState.supportVelocity).toEqual([1.5, 0, -0.5]);
+    expect(packet.selfState.supportAngularVelocity).toEqual([0.25, -0.5, 0.75]);
+    expect(packet.selfState.supportFlags).toBe(1);
+  });
+
+  it('has no server wall clock from a server that predates the trailer', () => {
+    const packet = decodeServerDatagramPacket(buildSnapshotV2Binary());
+    expect(packet.type).toBe('snapshotV2');
+    if (packet.type !== 'snapshotV2') return;
+    expect(packet.serverWallUs).toBeNull();
+  });
+
+  it('reads the server wall-clock trailer after the entities', () => {
+    // The layout server/src/protocol.rs writes: 33-byte self state, then the
+    // entities, then a u32 wall clock.
+    const legacy = buildSnapshotV2Binary();
+    const selfStateEnd = 35;
+    const binary = new Uint8Array(legacy.length + 21 + 4);
+    binary.set(legacy.subarray(0, selfStateEnd), 0);
+    binary.set(legacy.subarray(selfStateEnd), selfStateEnd + 21);
+    const view = new DataView(binary.buffer);
+    view.setUint32(binary.length - 4, 0xdeadbeef, true);
+
+    const packet = decodeServerDatagramPacket(binary);
+    expect(packet.type).toBe('snapshotV2');
+    if (packet.type !== 'snapshotV2') return;
+    expect(packet.serverWallUs).toBe(0xdeadbeef);
+    // The trailer does not disturb the entities before it.
+    expect(packet.remotePlayers[0].handle).toBe(2);
+    expect(packet.sphereStates[0].handle).toBe(7);
+    expect(packet.vehicleStates[0].handle).toBe(3);
+  });
+
+  // server/src/protocol.rs `compact_self`: the 12-byte self state (no support
+  // block) followed by the trailer, as a production server sends it whenever
+  // the player stands on nothing that moves.
+  it('reads a 12-byte self state with the trailer as no support', () => {
+    const legacy = buildSnapshotV2Binary(); // 12-byte self state, no trailer
+    const compact = new Uint8Array(legacy.length + 4);
+    compact.set(legacy, 0);
+    new DataView(compact.buffer).setUint32(compact.length - 4, 1234, true);
+    const full = new Uint8Array(legacy.length + 21 + 4);
+    full.set(legacy.subarray(0, 35), 0);
+    full.set(legacy.subarray(35), 35 + 21); // 21 zero bytes: no support
+    new DataView(full.buffer).setUint32(full.length - 4, 1234, true);
+
+    const a = decodeServerDatagramPacket(compact);
+    const b = decodeServerDatagramPacket(full);
+    expect(a.type).toBe('snapshotV2');
+    // What the client reads is identical either way.
+    expect(a).toEqual(b);
+    if (a.type !== 'snapshotV2') return;
+    expect(a.serverWallUs).toBe(1234);
+    expect(a.selfState.supportHandle).toBe(0);
+    expect(a.selfState.hp).toBe(100);
+    expect(a.vehicleStates[0].handle).toBe(3);
+  });
+
+  it('reads the removals section after the trailer; older layouts have none', () => {
+    const legacy = buildSnapshotV2Binary();
+    const selfStateEnd = 35;
+    const entries = [
+      { raw: 0x0123, age: 0 },
+      { raw: 0x8000 | 3, age: 4 },
+    ];
+    const binary = new Uint8Array(legacy.length + 21 + 4 + 2 + 3 * entries.length);
+    binary.set(legacy.subarray(0, selfStateEnd), 0);
+    binary.set(legacy.subarray(selfStateEnd), selfStateEnd + 21);
+    const view = new DataView(binary.buffer);
+    let o = legacy.length + 21;
+    view.setUint32(o, 0xdeadbeef, true); o += 4;
+    view.setUint8(o++, SNAPSHOT_V2_REMOVALS_TAG);
+    view.setUint8(o++, entries.length);
+    for (const entry of entries) {
+      view.setUint16(o, entry.raw, true); o += 2;
+      view.setUint8(o++, entry.age);
+    }
+
+    const packet = decodeServerDatagramPacket(binary);
+    expect(packet.type).toBe('snapshotV2');
+    if (packet.type !== 'snapshotV2') return;
+    // A server sends the section only with the full self state, so the
+    // length rule still finds the self state and the trailer.
+    expect(packet.serverWallUs).toBe(0xdeadbeef);
+    expect(packet.selfState.supportHandle).toBe(0);
+    expect(packet.vehicleStates[0].handle).toBe(3);
+    expect(packet.removals).toEqual([
+      { handle: 0x0123, vehicle: false, removedTick: 25 },
+      { handle: 3, vehicle: true, removedTick: 21 },
+    ]);
+    const older = decodeServerDatagramPacket(binary.slice(0, legacy.length + 21 + 4));
+    if (older.type !== 'snapshotV2') return;
+    expect(older.removals).toBeUndefined();
+  });
+
+  // server/src/protocol.rs `input_queue`: a driver's vehicle input queue
+  // (depth, target) while pacing is on, a section after the removals.
+  it('reads the input-queue section after the removals, or after the trailer', () => {
+    const legacy = buildSnapshotV2Binary(); // 12-byte self state, no trailer
+    const withRemovals = new Uint8Array(legacy.length + 21 + 4 + 2 + 3 + 3);
+    withRemovals.set(legacy.subarray(0, 35), 0);
+    withRemovals.set(legacy.subarray(35), 35 + 21);
+    let view = new DataView(withRemovals.buffer);
+    let o = legacy.length + 21;
+    view.setUint32(o, 77, true); o += 4;
+    view.setUint8(o++, SNAPSHOT_V2_REMOVALS_TAG);
+    view.setUint8(o++, 1);
+    view.setUint16(o, 0x0123, true); o += 2;
+    view.setUint8(o++, 0);
+    view.setUint8(o++, SNAPSHOT_V2_INPUT_QUEUE_TAG);
+    view.setUint8(o++, 5);
+    view.setUint8(o++, 3);
+    const a = decodeServerDatagramPacket(withRemovals);
+    if (a.type !== 'snapshotV2') throw new Error('not a snapshot');
+    expect(a.serverWallUs).toBe(77);
+    expect(a.removals).toHaveLength(1);
+    expect(a.inputQueue).toEqual({ depth: 5, target: 3 });
+
+    // With the 12-byte self state and no removals: 12 + 4 + 3 bytes after
+    // the entities is still under the 27 that would read as a support block.
+    const compact = new Uint8Array(legacy.length + 4 + 3);
+    compact.set(legacy, 0);
+    view = new DataView(compact.buffer);
+    o = legacy.length;
+    view.setUint32(o, 1234, true); o += 4;
+    view.setUint8(o++, SNAPSHOT_V2_INPUT_QUEUE_TAG);
+    view.setUint8(o++, 0);
+    view.setUint8(o++, 2);
+    const b = decodeServerDatagramPacket(compact);
+    if (b.type !== 'snapshotV2') throw new Error('not a snapshot');
+    expect(b.serverWallUs).toBe(1234);
+    expect(b.selfState.supportHandle).toBe(0);
+    expect(b.vehicleStates[0].handle).toBe(3);
+    expect(b.removals).toBeUndefined();
+    expect(b.inputQueue).toEqual({ depth: 0, target: 2 });
+
+    const none = decodeServerDatagramPacket(compact.slice(0, legacy.length + 4));
+    if (none.type !== 'snapshotV2') throw new Error('not a snapshot');
+    expect(none.inputQueue).toBeUndefined();
   });
 });
 

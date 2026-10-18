@@ -9,8 +9,61 @@ inspiration/
 loadtest-results/
 benchmark-results/
 test-results/
+client/netlab/results/
+target-netlab/
 playwright-report/
 blob-report/
 logs/
 .vercel
 .env*.local
+.certs/
+dist/
+control-plane/.wrangler/
+control-plane/.dev.vars
+
+# Benchmark baselines are machine-specific; regenerate with scripts/bench-campaign.py
+bench-results/*
+!bench-results/guardrails.json
+!bench-results/history.jsonl
+
+client/tools/profiles/
+destruction/assets/scenes/fractured-downtown-pool*.json
+destruction/assets/scenes/fractured-downtown-floor*.json
+destruction/assets/scenes/fractured-downtown-all.json
+
+# Cached Poly Haven downloads for scripts/build-city-textures.py; the baked
+# sheets under client/public/textures are committed, the sources are not.
+client/scripts/.cache/
+
+# Capture output from the city texture and lighting specs; evidence, not source.
+client/e2e/texture-qa/
+client/e2e/texture-tuning/
+client/e2e/look-tuning/
+client/e2e/hero-ab/
+experiments/
+
+# One-button debug reports (client+server state per press); evidence, not source.
+debug-reports/
+scripts/perf/__pycache__/
+
+# Python deployment helper/test imports.
+scripts/__pycache__/
+autoresearch-results.tsv
+__pycache__/
+
+# Content-addressed procedural vehicle assets
+.cache/vehicle-assets/
+
+# Durable authored grass layouts (deployment data, not generated blades)
+.data/grass/
+
+# Generated run output: evidence for the written reports, not source. The
+# reports (*.md) stay; regenerate the data with the tool each report names.
+moq/bench/results/
+docs/reports/**/*.log
+docs/reports/**/*.json
+docs/reports/**/*.jsonl
+docs/reports/**/*.gz
+docs/reports/**/*.csv
+structures/town-kit/repros/**/results.json
+*.pyc

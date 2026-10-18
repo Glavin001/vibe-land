@@ -1,3 +1,5 @@
+import { decodeVehicleAsset, decodeVehicleRig, type VehicleAsset, type VehicleAssetPacket, type VehicleRigPacket } from '../vehicles/vehicleStream';
+import { PKT_VEHICLE_ASSET, PKT_VEHICLE_RIG } from './sharedConstants';
 // All protocol constants are generated from shared/src/constants.rs.
 // Regenerate with: node scripts/gen-constants.mjs
 export * from './sharedConstants';
@@ -6,6 +8,7 @@ import {
   PKT_INPUT_BUNDLE,
   PKT_FIRE,
   PKT_MELEE,
+  PKT_CITY_CAMERA_DROP,
   PKT_BLOCK_EDIT,
   PKT_VEHICLE_ENTER,
   PKT_VEHICLE_EXIT,
@@ -28,10 +31,30 @@ import {
   BTN_BACK,
   BTN_LEFT,
   BTN_RIGHT,
+  PROTOCOL_VERSION,
+  CLIENT_MOVEMENT_CAP_FULL_PREDICTION,
+  CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE,
+  CLIENT_MOVEMENT_FULL_PREDICTION,
+  PHYSICS_BACKEND_RAPIER,
+  SIM_HZ,
 } from './sharedConstants';
+
+/**
+ * Microseconds per server tick, exactly as the server stamps time: every
+ * server-side time on the wire is `tick * (1_000_000 / SIM_HZ)` in integer
+ * arithmetic (server/src/main.rs: snapshots, the welcome, meteor launches,
+ * shots; shared/src/local_session.rs), i.e. 16 666 us at 60 Hz. SnapshotV2
+ * carries only the tick, so the client puts it on this same scale; the
+ * rounded 16 667 it used before put snapshot times 1 us per tick after every
+ * server-stamped time (17 ms at tick 17 000), and a meteor's arc, drawn from
+ * its server launch time, ran that far ahead of its own body.
+ */
+export const SERVER_TICK_US = Math.floor(1_000_000 / SIM_HZ);
 
 export type ClientHello = {
   matchId: string;
+  protocolVersion?: number;
+  movementCapabilities?: number;
 };
 
 export type InputFrame = {
@@ -52,6 +75,42 @@ export type FireCmd = {
   clientDynamicInterpMs: number;
   dir: [number, number, number];
 };
+
+export type CityCameraDropCmd = { position: [number, number, number]; yaw: number; pitch: number };
+
+/**
+ * The shared Rust encoders (net/sharedEncode.ts), once the WASM is loaded and the shared-net flag
+ * is on (wasm/sharedPhysics.ts installs them); this file's encoders otherwise.
+ */
+export type SharedEncoders = {
+  clientHello: (packet: ClientHello) => Uint8Array;
+  inputBundle: (frames: InputFrame[]) => Uint8Array;
+  fire: (packet: FireCmd) => Uint8Array;
+  melee: (packet: MeleeCmd) => Uint8Array;
+  cityCameraDrop: (cmd: CityCameraDropCmd) => Uint8Array;
+  vehicleEnter: (vehicleId: number, seat: number) => Uint8Array;
+  vehicleExit: (vehicleId: number) => Uint8Array;
+  ping: (nonce: number) => Uint8Array;
+};
+let sharedEncoders: SharedEncoders | null = null;
+
+export function provideSharedEncoders(encoders: SharedEncoders | null): void {
+  sharedEncoders = encoders;
+}
+
+/** Which of this file's codecs the shared Rust ones replace now (the `?sharedDecode=1` flag). */
+export function sharedNetStatus(): { snapshotV2: boolean; reliable: boolean; encoders: boolean } {
+  return { snapshotV2: snapshotV2Decoder !== null, reliable: reliablePacketDecoder !== null, encoders: sharedEncoders !== null };
+}
+
+export function encodeCityCameraDrop(cmd: CityCameraDropCmd): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.cityCameraDrop(cmd);
+  const bytes = new Uint8Array(21);
+  const view = new DataView(bytes.buffer);
+  view.setUint8(0, PKT_CITY_CAMERA_DROP);
+  [...cmd.position, cmd.yaw, cmd.pitch].forEach((value, i) => view.setFloat32(1 + 4 * i, value, true));
+  return bytes;
+}
 
 export type MeleeCmd = {
   seq: number;
@@ -141,6 +200,9 @@ export type DynamicBodyStateMeters = {
 export type WelcomePacket = {
   type: 'welcome';
   playerId: number;
+  protocolVersion: number;
+  physicsBackend: number;
+  clientMovementMode: number;
   simHz: number;
   snapshotHz: number;
   serverTimeUs: number;
@@ -169,6 +231,8 @@ export type NetVehicleState = {
 };
 
 export type VehicleStateMeters = {
+  customVehicle?: VehicleAsset;
+  customRig?: VehicleRigPacket;
   id: number;
   vehicleType: number;
   flags: number;
@@ -221,6 +285,11 @@ export type SelfPlayerStateV2 = {
   pitchI16: number;
   hp: number;
   flags: number;
+  supportHandle?: number;
+  supportLocalPosition?: [number, number, number];
+  supportVelocity?: [number, number, number];
+  supportAngularVelocity?: [number, number, number];
+  supportFlags?: number;
 };
 
 export type RemotePlayerStateV2 = {
@@ -300,7 +369,48 @@ export type SnapshotV2Packet = {
   sphereStates: DynamicSphereStateV2[];
   boxStates: DynamicBoxStateV2[];
   vehicleStates: VehicleStateV2[];
+  /**
+   * The server's wall clock when it produced this snapshot, us modulo 2^32
+   * (any origin), or null from a server that predates it. `serverTimeUs` is
+   * simulation time (tick x 16.67 ms); against this, the client measures how
+   * fast the simulation is running rather than inferring it from arrivals.
+   * A trailer after the vehicles: older clients never read it.
+   */
+  serverWallUs?: number | null;
+  /**
+   * Bodies and vehicles this client's stream no longer carries (retired, or
+   * out of its interest), from a server that sends them: a section after the
+   * wall-clock trailer (tag 0xE7, count, entries of u16 handle + u8 age),
+   * which older clients never read. Each entry is restated in a few
+   * consecutive snapshots.
+   */
+  removals?: SnapshotRemovalV2[];
+  /**
+   * This driver's vehicle input queue as the server holds it after the tick
+   * (`depth`), and the depth that absorbs the measured arrival jitter
+   * (`target`), from a server pacing vehicle inputs
+   * (`VIBE_VEHICLE_INPUT_PACING`): a section after the removals (tag 0xE8,
+   * depth, target). The client paces its inputs to the target.
+   */
+  inputQueue?: { depth: number; target: number };
 };
+
+/**
+ * One removals entry: a dynamic body's handle, or a vehicle's (`vehicle`),
+ * absent from this recipient's stream from `removedTick` on.
+ */
+export type SnapshotRemovalV2 = {
+  handle: number;
+  vehicle: boolean;
+  removedTick: number;
+};
+
+/** First byte of the SnapshotV2 input-queue section (after the removals). */
+export const SNAPSHOT_V2_INPUT_QUEUE_TAG = 0xe8;
+/** First byte of the SnapshotV2 removals section. */
+export const SNAPSHOT_V2_REMOVALS_TAG = 0xe7;
+/** Handle bit of a vehicle in a removals entry. */
+export const SNAPSHOT_V2_REMOVAL_VEHICLE_BIT = 0x8000;
 
 export type ShotResultPacket = {
   type: 'shotResult';
@@ -353,6 +463,8 @@ export type BatterySyncPacket = {
 };
 
 export type ServerReliablePacket =
+  | VehicleAssetPacket
+  | VehicleRigPacket
   | WelcomePacket
   | ShotResultPacket
   | ShotFiredPacket
@@ -366,12 +478,14 @@ export type ServerReliablePacket =
   | DynamicBodyMetaPacket
   | ServerPingPacket
   | PongPacket;
-export type ServerDatagramPacket = SnapshotPacket | SnapshotV2Packet;
+export type ServerDatagramPacket = SnapshotPacket | SnapshotV2Packet | VehicleRigPacket;
 
 export type ServerPingPacket = { type: 'serverPing'; value: number };
 export type PongPacket = { type: 'pong'; value: number };
 export type ServerWorldPacket = ChunkFullPacket | ChunkDiffPacket;
 export type ServerPacket =
+  | VehicleAssetPacket
+  | VehicleRigPacket
   | WelcomePacket
   | SnapshotPacket
   | SnapshotV2Packet
@@ -447,16 +561,33 @@ const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 
 export function encodeClientHello(packet: ClientHello): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.clientHello(packet);
   const encodedMatchId = TEXT_ENCODER.encode(packet.matchId);
-  const out = new Uint8Array(1 + 2 + encodedMatchId.length);
+  const out = new Uint8Array(1 + 2 + encodedMatchId.length + 2 + 1);
   const view = new DataView(out.buffer);
   let o = 0;
   view.setUint8(o++, PKT_CLIENT_HELLO);
   view.setUint16(o, encodedMatchId.length, true);
   o += 2;
   out.set(encodedMatchId, o);
+  o += encodedMatchId.length;
+  view.setUint16(o, packet.protocolVersion ?? PROTOCOL_VERSION, true); o += 2;
+  view.setUint8(
+    o,
+    packet.movementCapabilities
+      ?? (CLIENT_MOVEMENT_CAP_FULL_PREDICTION | CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE),
+  );
   return out;
 }
+
+/**
+ * Most input frames one bundle carries and still fits a QUIC datagram:
+ * RFC 9000 guarantees a 1,200-byte UDP payload, less at most 45 bytes of
+ * 1-RTT packet and WebTransport datagram overhead (1 flags, 20 connection id,
+ * 4 packet number, 16 AEAD tag, 1 frame type, 2 length, 1 session id), at 10
+ * bytes a frame after a 2-byte header.
+ */
+export const INPUT_BUNDLE_MAX_FRAMES = Math.floor((1200 - 45 - 2) / 10);
 
 export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
   if (frames.length === 0) {
@@ -465,6 +596,7 @@ export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
   if (frames.length > 255) {
     throw new Error('input bundle too large');
   }
+  if (sharedEncoders) return sharedEncoders.inputBundle(frames);
   const out = new Uint8Array(1 + 1 + frames.length * 10);
   const view = new DataView(out.buffer);
   let o = 0;
@@ -482,6 +614,7 @@ export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
 }
 
 export function encodeFirePacket(packet: FireCmd): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.fire(packet);
   const out = new Uint8Array(1 + 2 + 4 + 1 + 8 + 2 + 2 + 2 + 2 + 2);
   const view = new DataView(out.buffer);
   let o = 0;
@@ -499,6 +632,7 @@ export function encodeFirePacket(packet: FireCmd): Uint8Array {
 }
 
 export function encodeMeleePacket(packet: MeleeCmd): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.melee(packet);
   const out = new Uint8Array(1 + 2 + 4 + 8 + 2 + 2);
   const view = new DataView(out.buffer);
   let o = 0;
@@ -519,8 +653,22 @@ export function frameReliablePacket(payload: Uint8Array): Uint8Array {
   return out;
 }
 
+/**
+ * The shared Rust decoder for the reliable kinds it covers (net/sharedDecode.ts), once the WASM is
+ * loaded and its flag is on; it returns null for the kinds this file still decodes.
+ */
+let reliablePacketDecoder: ((bytes: Uint8Array) => ServerReliablePacket | null) | null = null;
+
+export function provideReliablePacketDecoder(decoder: ((bytes: Uint8Array) => ServerReliablePacket | null) | null): void {
+  reliablePacketDecoder = decoder;
+}
+
 export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): ServerReliablePacket {
   const bytes = toBytes(data);
+  const shared = reliablePacketDecoder?.(bytes);
+  if (shared) return shared;
+  if (bytes[0] === PKT_VEHICLE_RIG) return decodeVehicleRig(bytes);
+  if (bytes[0] === PKT_VEHICLE_ASSET) return decodeVehicleAsset(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let o = 0;
   const kind = view.getUint8(o++);
@@ -528,6 +676,13 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
   switch (kind) {
     case PKT_WELCOME: {
       const playerId = view.getUint32(o, true); o += 4;
+      const hasCapabilities = view.byteLength >= 23;
+      const protocolVersion = hasCapabilities ? view.getUint16(o, true) : 1;
+      if (hasCapabilities) o += 2;
+      const physicsBackend = hasCapabilities ? view.getUint8(o++) : PHYSICS_BACKEND_RAPIER;
+      const clientMovementMode = hasCapabilities
+        ? view.getUint8(o++)
+        : CLIENT_MOVEMENT_FULL_PREDICTION;
       const simHz = view.getUint16(o, true); o += 2;
       const snapshotHz = view.getUint16(o, true); o += 2;
       const serverTimeUs = getUint64(view, o); o += 8;
@@ -535,6 +690,9 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       return {
         type: 'welcome',
         playerId,
+        protocolVersion,
+        physicsBackend,
+        clientMovementMode,
         simHz,
         snapshotHz,
         serverTimeUs,
@@ -742,6 +900,13 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
   const sphereCount = view.getUint8(o++);
   const boxCount = view.getUint8(o++);
   const vehicleCount = view.getUint8(o++);
+  const entityBytes = remotePlayerCount * 19
+    + sphereCount * 20
+    + boxCount * 28
+    + vehicleCount * 30;
+  const hasAngularSupportMetadata = view.byteLength - o >= 33 + entityBytes;
+  const hasSupportMetadata = hasAngularSupportMetadata
+    || view.byteLength - o >= 27 + entityBytes;
 
   const selfState: SelfPlayerStateV2 = {
     vxCms: view.getInt16(o, true),
@@ -751,8 +916,31 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     pitchI16: view.getInt16(o + 8, true),
     hp: view.getUint8(o + 10),
     flags: view.getUint8(o + 11),
+    supportHandle: hasSupportMetadata ? view.getUint16(o + 12, true) : 0,
+    supportLocalPosition: hasSupportMetadata
+      ? [
+          view.getInt16(o + 14, true) / 400,
+          view.getInt16(o + 16, true) / 400,
+          view.getInt16(o + 18, true) / 400,
+        ]
+      : [0, 0, 0],
+    supportVelocity: hasSupportMetadata
+      ? [
+          view.getInt16(o + 20, true) / 100,
+          view.getInt16(o + 22, true) / 100,
+          view.getInt16(o + 24, true) / 100,
+        ]
+      : [0, 0, 0],
+    supportFlags: hasSupportMetadata ? view.getUint8(o + 26) : 0,
+    supportAngularVelocity: hasAngularSupportMetadata
+      ? [
+          view.getInt16(o + 27, true) / 1000,
+          view.getInt16(o + 29, true) / 1000,
+          view.getInt16(o + 31, true) / 1000,
+        ]
+      : [0, 0, 0],
   };
-  o += 12;
+  o += hasAngularSupportMetadata ? 33 : hasSupportMetadata ? 27 : 12;
 
   const remotePlayers: RemotePlayerStateV2[] = [];
   for (let i = 0; i < remotePlayerCount; i += 1) {
@@ -834,9 +1022,41 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     o += 30;
   }
 
+  // Trailer: the server's wall clock (u32 us). Absent from older servers.
+  const serverWallUs = view.byteLength - o >= 4 ? view.getUint32(o, true) : null;
+  // Removals section after the trailer. A server only sends it with the full
+  // 33-byte self state, so the self-state length detection above holds.
+  // Then the input-queue section (3 bytes: with a 12-byte self state, 19
+  // after the entities, still under the 27 a support block needs).
+  let removals: SnapshotRemovalV2[] | undefined;
+  let inputQueue: { depth: number; target: number } | undefined;
+  if (serverWallUs !== null) {
+    let r = o + 4;
+    if (view.byteLength - r >= 2 && view.getUint8(r) === SNAPSHOT_V2_REMOVALS_TAG) {
+      const count = view.getUint8(r + 1);
+      r += 2;
+      if (view.byteLength - r >= count * 3) {
+        removals = [];
+        for (let i = 0; i < count; i += 1) {
+          const raw = view.getUint16(r, true);
+          const age = view.getUint8(r + 2);
+          r += 3;
+          removals.push({
+            handle: raw & ~SNAPSHOT_V2_REMOVAL_VEHICLE_BIT & 0xffff,
+            vehicle: (raw & SNAPSHOT_V2_REMOVAL_VEHICLE_BIT) !== 0,
+            removedTick: serverTick - age,
+          });
+        }
+      }
+    }
+    if (view.byteLength - r >= 3 && view.getUint8(r) === SNAPSHOT_V2_INPUT_QUEUE_TAG) {
+      inputQueue = { depth: view.getUint8(r + 1), target: view.getUint8(r + 2) };
+    }
+  }
+
   return {
     type: 'snapshotV2',
-    serverTimeUs: serverTick * Math.round(1_000_000 / 60),
+    serverTimeUs: serverTick * SERVER_TICK_US,
     serverTick,
     ackInputSeq,
     anchorPxMm,
@@ -847,6 +1067,9 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     sphereStates,
     boxStates,
     vehicleStates,
+    serverWallUs,
+    ...(removals ? { removals } : {}),
+    ...(inputQueue ? { inputQueue } : {}),
   };
 }
 
@@ -929,8 +1152,19 @@ function decodeDamageEventPacket(view: DataView, o: number): DamageEventPacket {
   };
 }
 
+/**
+ * The SnapshotV2 decoder in use: this file's, or the shared Rust one (net/sharedDecode.ts) once
+ * the WASM is loaded and its flag is on (wasm/sharedPhysics.ts installs it).
+ */
+let snapshotV2Decoder: ((bytes: Uint8Array) => SnapshotV2Packet) | null = null;
+
+export function provideSnapshotV2Decoder(decoder: ((bytes: Uint8Array) => SnapshotV2Packet) | null): void {
+  snapshotV2Decoder = decoder;
+}
+
 export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): ServerDatagramPacket {
   const bytes = toBytes(data);
+  if (bytes[0] === PKT_VEHICLE_RIG) return decodeVehicleRig(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let o = 0;
   const kind = view.getUint8(o++);
@@ -939,7 +1173,7 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
     case PKT_SNAPSHOT:
       return decodeSnapshotPacket(view, o);
     case PKT_SNAPSHOT_V2:
-      return decodeSnapshotV2Packet(view, o);
+      return snapshotV2Decoder ? snapshotV2Decoder(bytes) : decodeSnapshotV2Packet(view, o);
     default:
       throw new Error(`unknown datagram packet kind: ${kind}`);
   }
@@ -1060,6 +1294,7 @@ export function netVehicleStateToMeters(state: NetVehicleState): VehicleStateMet
 }
 
 export function encodeVehicleEnterPacket(vehicleId: number, seat = 0): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.vehicleEnter(vehicleId, seat);
   const out = new Uint8Array(6);
   const view = new DataView(out.buffer);
   view.setUint8(0, PKT_VEHICLE_ENTER);
@@ -1069,6 +1304,7 @@ export function encodeVehicleEnterPacket(vehicleId: number, seat = 0): Uint8Arra
 }
 
 export function encodeVehicleExitPacket(vehicleId: number): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.vehicleExit(vehicleId);
   const out = new Uint8Array(5);
   const view = new DataView(out.buffer);
   view.setUint8(0, PKT_VEHICLE_EXIT);
@@ -1255,6 +1491,8 @@ export function stringFromBytes(bytes: Uint8Array): string {
 
 export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket {
   const bytes = toBytes(data);
+  if (bytes[0] === PKT_VEHICLE_RIG) return decodeVehicleRig(bytes);
+  if (bytes[0] === PKT_VEHICLE_ASSET) return decodeVehicleAsset(bytes);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const kind = view.getUint8(0);
 
@@ -1312,6 +1550,7 @@ export function encodeBlockEditPacket(cmd: BlockEditCmd): Uint8Array {
 }
 
 export function encodePingPacket(nonce: number): Uint8Array {
+  if (sharedEncoders) return sharedEncoders.ping(nonce);
   const out = new Uint8Array(5);
   const view = new DataView(out.buffer);
   view.setUint8(0, PKT_PING);

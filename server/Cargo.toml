@@ -3,9 +3,41 @@ name = "web-fps-server"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+physx-gpu = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/gpu"]
+# A PhysX-backed /city: the scene world every destruction backend steps.
+physx-city = ["physx-gpu"]
+# The Blast stress solver backend. Needs BLAST_ROOT.
+destruction = ["physx-city", "vibe-land-physx-bridge/destruction", "vibe-land-destruction/physx"]
+# The CUDA stress solver. Without this the build silently falls back to the CPU
+# solver -- correct, but it only shows up as a "CPU" label in the stats overlay,
+# so it is easy to ship a build that quietly gave up the GPU path.
+cuda-stress = ["destruction", "vibe-land-physx-bridge/cuda-stress"]
+# Drive /city through the standardized blast-stress-solver core rather than the
+# bespoke ExtStressPhysXDestructible path. Both can be built at once and the
+# backend is chosen at runtime by VIBE_CITY_BLAST_CORE=1, so the two can be A/B'd
+# against the same scene before the old path is retired.
+blast-core = ["destruction", "vibe-land-destruction/blast-core"]
+# PhysX-native GPU destruction (physx-2): stress, fracture, fragment bodies and
+# one corrected re-solve run inside PxScene::simulate(). Additive with the two
+# Blast features, so `VIBE_CITY_DESTRUCTION=blast|blast-core|native` selects the
+# backend at runtime in a single binary.
+# Needs no Blast checkout, so on its own it is the build for machines without
+# one (macOS/Metal included).
+native-destruction = ["physx-city", "vibe-land-destruction/native-destruction"]
+
 [dependencies]
+libc = "0.2"
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }
 vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
+vibe-land-destruction = { path = "../destruction" }
+vibe-land-perplayer = { path = "../perplayer" }
+destruction-codec = { path = "../research/destruction-codec" }
+flate2 = "1"
+crc32fast = "1"
+glam = "0.27"
+vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
 anyhow = "1"
 dotenvy = "0.15"
 axum = { version = "0.7", features = ["macros", "ws"] }
@@ -18,9 +50,42 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+# TLS for the standalone web listener. WebTransport needs a secure context, so
+# the page that opens it has to be served over HTTPS -- see WEB_BIND_ADDR in
+# main.rs. rustls/ring are already in the tree via wtransport.
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+# Only to install the process-level crypto provider; see main.rs. ring is
+# what wtransport already pulls in, so this adds no new crypto stack.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
-wtransport = { version = "0.7", features = ["self-signed"] }
+wtransport = { version = "0.7", features = ["self-signed", "quinn"] }
+# `ServiceExt::oneshot`: the in-process session answers HTTP-shaped requests
+# with the real handlers (local_session.rs). Already in the tree via axum.
+tower = { version = "0.5", features = ["util"] }
+
+[dev-dependencies]
+# `ServiceExt::oneshot`, to drive a Router in tests. Already in the tree via axum.
+tower = { version = "0.5", features = ["util"] }
+
+# The server binary. src/main.rs is the library's body (included by
+# src/lib.rs), so the binary has its own small entry point.
+[[bin]]
+name = "web-fps-server"
+path = "src/server_bin.rs"
+
+# Offline trace recorder for the destruction codec. Needs the real GPU sim, so
+# it only builds with the destruction feature rather than breaking a CI build
+# that has no PhysX.
+[[bin]]
+name = "record-city-trace"
+path = "src/bin/record_city_trace.rs"
+required-features = ["destruction"]
+
+# Headless WebTransport load clients for /city; needs no GPU features.
+[[bin]]
+name = "city-bots"
+path = "src/bin/city_bots.rs"

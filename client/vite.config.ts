@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -16,10 +17,76 @@ export default defineConfig(({ mode }) => {
     ? { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }
     : undefined;
 
+  // Renderer backend, fixed at build time. `vite --mode webgpu` (npm run
+  // dev:webgpu) builds the simple three/webgpu path the native app draws
+  // with; every other mode is the WebGL client, unchanged. The webgpu build
+  // draws with its own three (`three-webgpu`, the release mystralnative is
+  // tested against): bare `three` goes to a shim over its three/webgpu that
+  // adds the few WebGL-only names drei imports, and the subpaths follow it.
+  const threeWebgpuAliases = [
+    { find: /^three$/, replacement: path.resolve(process.cwd(), 'src/graphics/webgpu/three.ts') },
+    { find: /^three\/(webgpu|tsl)$/, replacement: 'three-webgpu/$1' },
+    { find: /^three\/(examples|addons)\/(.*)$/, replacement: 'three-webgpu/$1/$2' },
+  ];
+  // `vite build --mode native` is the native macOS app's bundle: the webgpu
+  // build plus the native shell (src/native), as one ES module for
+  // mystralnative (see scripts/native-mac.sh).
+  const native = mode === 'native';
+  const webgpu = native || mode === 'webgpu' || env.VITE_RENDER_BACKEND === 'webgpu';
+
   return {
-    plugins: [tailwindcss(), react()],
+    plugins: [
+      // mystralnative has no import.meta; asset URLs resolve against the
+      // bundle's directory through file://.
+      ...(native ? [{
+        name: 'native-import-meta',
+        renderChunk(code: string) {
+          return code.replace(/import\.meta\.url/g, '"file://./"');
+        },
+      }] : []),
+      tailwindcss(),
+      react(),
+      {
+        // The /structure viewer's packs, for a BUILT client.
+        //
+        // In dev they are served in place through /@fs. A build has neither,
+        // and the SPA fallback answers that path with index.html and a 200 --
+        // so the viewer appeared to work everywhere and failed only on the
+        // deployed QA page, as a JSON parse error that named no file.
+        name: 'copy-scene-packs',
+        apply: 'build' as const,
+        generateBundle(this: { emitFile: (f: unknown) => void }) {
+          // A render-bench build serves no /structure viewer; the packs are
+          // 400 MB it would only delete again.
+          if (process.env.VIBE_SKIP_SCENE_PACKS === '1') return;
+          const dir = path.resolve(process.cwd(), '../destruction/assets/scenes');
+          if (!fs.existsSync(dir)) return;
+          for (const file of fs.readdirSync(dir)) {
+            if (!file.endsWith('.json')) continue;
+            this.emitFile({
+              type: 'asset',
+              fileName: `scenes/${file}`,
+              source: fs.readFileSync(path.join(dir, file)),
+            });
+          }
+        },
+      },
+    ],
     envDir: '../',
+    resolve: {
+      alias: [
+        // Per-build implementations (graphics/webgl or graphics/webgpu).
+        { find: /^@render-backend\/(.*)$/, replacement: path.resolve(process.cwd(), `src/graphics/${webgpu ? 'webgpu' : 'webgl'}/$1`) },
+        ...(webgpu ? threeWebgpuAliases : []),
+      ],
+    },
+    // Its own dependency pre-bundle: the aliases change what deps resolve
+    // to, and a shared cache would hand the WebGL dev server webgpu bundles.
+    cacheDir: webgpu ? 'node_modules/.vite-webgpu' : undefined,
     server: {
+      // The playable review range should not reconnect while other work in
+      // this checkout saves files. Opt back in when developing its client.
+      watch: env.TOWN_KIT_LIVE_RELOAD === '0' ? null : undefined,
       port: Number(env.CLIENT_PORT) || 3001,
       host: '0.0.0.0',
       https: httpsConfig,
@@ -28,6 +95,10 @@ export default defineConfig(({ mode }) => {
         allow: ['..'],
       },
       proxy: {
+        // Optional content-only grass service for updating layouts without restarting physics.
+        ...(env.GRASS_SERVER_PORT ? {
+          '^/match-stats/[^/]+/grass(?:\\?|$)': { target: `http://${env.GRASS_SERVER_HOST || serverHost}:${env.GRASS_SERVER_PORT}` },
+        } : {}),
         '/ws': {
           target: `http://${serverHost}:${serverPort}`,
           ws: true,
@@ -38,15 +109,84 @@ export default defineConfig(({ mode }) => {
         '/session-config': {
           target: `http://${serverHost}:${serverPort}`,
         },
+        '/vehicle-assets': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
+        '/city-visuals': { target: `http://${serverHost}:${serverPort}` },
+        '/city-manifest': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
+        '/match-stats': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
+        // Every server route needs an entry here or the dev server answers it
+        // with the SPA fallback -- a 200 full of HTML, which reads as a
+        // successful request right up until something tries to use the body.
+        '/city-reset': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
+        // Local control plane (`wrangler dev`), proxied so the page can reach
+        // it same-origin. The dev server runs HTTPS whenever WebTransport certs
+        // are configured, and a browser blocks an https page from fetching an
+        // http control plane as mixed content. In production both are HTTPS and
+        // no proxy is involved.
+        '/cp': {
+          target: `http://127.0.0.1:${env.CONTROL_PLANE_PORT || 9001}`,
+          rewrite: (path: string) => path.replace(/^\/cp/, ''),
+        },
       },
     },
+    ...(native ? {
+      build: {
+        outDir: 'dist-native',
+        emptyOutDir: true,
+        target: 'es2022',
+        // VIBE_NATIVE_PROFILE=1 (scripts/native-mac.sh profile): keep the
+        // names, so a CPU profile reads as the source does.
+        minify: process.env.VIBE_NATIVE_PROFILE === '1' ? false : undefined,
+        lib: { entry: path.resolve(process.cwd(), 'src/native/main.tsx'), formats: ['es' as const], fileName: () => 'game.js' },
+        rollupOptions: { output: { inlineDynamicImports: true } },
+      },
+    } : {}),
+    define: {
+      // The native shell (src/native) only.
+      __NATIVE__: JSON.stringify(native),
+      ...(native ? {
+        __VIBE_SIM_LIB__: JSON.stringify(process.env.VIBE_SIM_LIB || 'libvibe_sim.dylib'),
+        // Where the bundle's public/ files sit relative to the working
+        // directory: the bundle itself in development, game/ in the .app.
+        __NATIVE_ASSET_ROOT__: JSON.stringify(process.env.VIBE_NATIVE_ASSET_ROOT || ''),
+      } : {}),
+      ...(native ? { 'process.env.NODE_ENV': JSON.stringify('production') } : {}),
+      // True only in the webgpu build; WebGL-only code sits behind it so the
+      // WebGL bundle drops the WebGPU path entirely.
+      __WEBGPU__: JSON.stringify(webgpu),
+      // Absolute path to the authored ScenePacks, for the /structure viewer.
+      // `server.fs.allow: ['..']` above already lets vite serve them through
+      // /@fs, so the viewer reads them in place instead of duplicating several
+      // megabytes of JSON into public/.
+      __SCENES_DIR__: JSON.stringify(
+        path.resolve(process.cwd(), '../destruction/assets/scenes'),
+      ),
+      // Build stamp so a stale page is visible in a screenshot. The client is
+      // hot-reloaded independently of the server, so "which code is running"
+      // has two answers and both need to be on screen.
+      __CLIENT_BUILD__: JSON.stringify(
+        new Date().toISOString().slice(11, 19),
+      ),
+    },
     optimizeDeps: {
-      exclude: ['vibe-land-shared'],
+      // three stays raw ESM in the webgpu build. Pre-bundling inlines a copy
+      // of three.core.js per chunk, and inside three-webgpu `from 'three'`
+      // self-references its own classic build instead of going through the
+      // alias -- either way, two copies of every class.
+      exclude: ['vibe-land-shared', ...(webgpu ? ['three', 'three-webgpu', 'three/webgpu', 'three/tsl'] : [])],
     },
     test: {
-      // Only run unit tests inside src/ — keeps Playwright E2E specs (e2e/)
-      // out of vitest. E2E tests run separately via `npm run e2e`.
-      include: ['src/**/*.test.ts'],
+      // Unit tests inside src/ plus the netlab analyzer (Node-only, so it
+      // lives outside src/ and is never bundled). Keeps Playwright E2E specs
+      // (e2e/) out of vitest — those run separately via `npm run e2e`.
+      include: ['src/**/*.test.ts', 'netlab/**/*.test.ts'],
       // WASM physics tests run thousands of simulation steps and need extra
       // headroom, especially on slow CI runners or with debug WASM builds.
       testTimeout: 120_000,

@@ -46,9 +46,12 @@ function mixedProfile(networkScale: 'smoke' | 'scale') {
   const botCount = networkScale === 'smoke' ? 12 : 50;
   return {
     botCount,
+    // WebTransport only. These scenarios used to put 30% of the bots on
+    // WebSocket; the game's WebSocket transport is now disabled (see
+    // net/transportPolicy.ts), so no player is on that wire to model.
     transportMix: {
-      websocket: Math.floor(botCount * 0.3),
-      webtransport: botCount - Math.floor(botCount * 0.3),
+      websocket: 0,
+      webtransport: botCount,
     },
     networkProfiles: [
       {

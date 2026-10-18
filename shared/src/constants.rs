@@ -25,6 +25,8 @@ pub const PKT_VEHICLE_ENTER: u8 = 5;
 pub const PKT_VEHICLE_EXIT: u8 = 6;
 pub const PKT_DEBUG_STATS: u8 = 7;
 pub const PKT_MELEE: u8 = 8;
+/// City inspection camera: place the sending player here, then resume gravity.
+pub const PKT_CITY_CAMERA_DROP: u8 = 10;
 
 pub const PKT_WELCOME: u8 = 101;
 pub const PKT_SNAPSHOT: u8 = 102;
@@ -41,9 +43,103 @@ pub const PKT_BATTERY_SYNC: u8 = 116;
 pub const PKT_SHOT_FIRED: u8 = 117;
 pub const PKT_DAMAGE_EVENT: u8 = 118;
 
+// ── Destructible city streams (destruction/src/wire.rs defines the layouts) ──
+pub const PKT_CITY_RESYNC_REQUEST: u8 = 9;
+/// Client -> server: "I could not fetch the manifest; send it down the session."
+///
+/// Asked for rather than pushed, because the push is enormous and the reliable
+/// lane is ordered. See `PKT_CITY_MANIFEST`.
+pub const PKT_CITY_MANIFEST_REQUEST: u8 = 11;
+pub const PKT_CITY_CHUNKS: u8 = 119;
+pub const PKT_CITY_TOPOLOGY: u8 = 120;
+pub const PKT_CITY_BASELINE: u8 = 121;
+pub const PKT_CITY_BOOTSTRAP: u8 = 122;
+/// The city manifest itself, gzipped, sent only when a client asks for it.
+///
+/// Clients fetch this over HTTP from the game server. That works only when the
+/// page and the server share an origin: a rented GPU box serves plain HTTP on a
+/// random port, which an HTTPS page may not fetch, and its WebTransport
+/// certificate is self-signed so an HTTPS fetch is refused too. Sending it down
+/// the session that is already open sidesteps all of it.
+///
+/// It used to be pushed to everyone at join, and that is expensive in a way the
+/// size alone does not show. Every reliable city packet shares ONE ordered QUIC
+/// stream, so 1.8 MB of manifest is 1.8 MB in front of the bootstrap and in
+/// front of every topology update behind it. Measured at +90 ms with 2% loss,
+/// the push had not finished by the end of a 45-second run and the client's
+/// ledger never advanced past join: it agreed with 0 of the server's 544 broken
+/// bonds, and its own desync detector never fired, because the hash that would
+/// have tripped it was queued behind the same megabytes.
+///
+/// So the client asks, and only when its fetch has actually failed.
+pub const PKT_CITY_MANIFEST: u8 = 123;
+/// Per-match server telemetry for the stats overlay, pushed once a second.
+///
+/// The overlay used to poll `/match-stats` over HTTP, which a browser cannot
+/// reach on a rented box for the same reason it cannot fetch the manifest.
+/// Sent on the session so the numbers describe the server actually being
+/// played on, rather than whichever one the page happens to share an origin
+/// with.
+///
+/// A ~250-byte datagram carrying only the fields in
+/// `shared/match-stats-frame.json` (`server/src/match_stats_frame.rs`). It
+/// used to be the whole snapshot as JSON, ~15 kB a second on the ordered
+/// reliable stream in front of topology; older servers still send that, and
+/// the client tells the two apart by the byte after the kind (`{` for JSON).
+pub const PKT_MATCH_STATS: u8 = 124;
+
+/// Wire-v3 debris pose packet: self-healing datagram stream from the live
+/// debris codec. Broadcast, loss-tolerant, dictionary-compressed.
+pub const PKT_CITY_DEBRIS: u8 = 125;
+/// Client -> server: bodies whose chains a lost packet poisoned; the server
+/// restates exactly these. The loss-heal cost scales with actual loss.
+pub const PKT_CITY_NACK: u8 = 126;
+/// Server -> clients: a meteor was launched. Carries the start, the launch
+/// velocity, the aimed point and the gravity it flies under, so a client can
+/// draw the whole flight itself: the body snapshot is relative to the viewer
+/// and quantised to +-82 m, so a rock launched 300 m out cannot be streamed
+/// until the last half second of its fall. Reliable, raw bytes, routed like
+/// the other city packets (127-129 are the destruction wire's, see
+/// `destruction/src/wire.rs`). Layout in `server/src/meteor.rs`.
+pub const PKT_METEOR_LAUNCHED: u8 = 130;
+/// Server -> client: bounded, listener-relevant impact and scrape summaries.
+/// Version 1 format lives in server/src/contact_audio.rs. Loss-tolerant.
+pub const PKT_AUDIO_CONTACTS: u8 = 131;
+// Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
+// 60 Hz: every tick, as the snapshots (30 Hz before; captures record theirs).
+pub const CITY_CHUNK_STREAM_HZ: u16 = 60;
+pub const CITY_BASELINE_INTERVAL_MS: u16 = 1000;
+// Per-client byte ceiling per 60 Hz send (~2.5 Mbps, as 10400 B per 30 Hz
+// send was); a cap, never a fill target.
+pub const CITY_CLIENT_CEILING_BYTES_PER_SEND: u16 = 5200;
+
+// ── Protocol/runtime capabilities ───────────────
+pub const PROTOCOL_VERSION: u16 = 3;
+pub const PHYSICS_BACKEND_RAPIER: u8 = 0;
+pub const PHYSICS_BACKEND_PHYSX_GPU: u8 = 1;
+pub const CLIENT_MOVEMENT_FULL_PREDICTION: u8 = 0;
+pub const CLIENT_MOVEMENT_THIN_AUTHORITATIVE: u8 = 1;
+pub const CLIENT_MOVEMENT_CAP_FULL_PREDICTION: u8 = 1 << 0;
+pub const CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE: u8 = 1 << 1;
+
 // ── Weapon types ────────────────────────────────
 pub const WEAPON_HITSCAN: u8 = 1;
 pub const WEAPON_ROCKET: u8 = 2;
+/// A visible, heavy ball thrown from the muzzle instead of an instant ray.
+///
+/// The native destruction stage takes loads only from contacts PhysX solved,
+/// so this is not a cosmetic variant of the hitscan shot: it is the shot the
+/// engine's own demos fire, and the thing you watch fly and land is the thing
+/// that does the damage.
+pub const WEAPON_CANNONBALL: u8 = 3;
+/// A meteor: a very heavy rock that falls onto the point the shooter aimed at.
+///
+/// The shooter's ray picks the impact point; the server chooses a start high
+/// and far outside the city and solves the ballistic velocity that carries the
+/// rock through that point. It is the cannonball's mechanism -- a real body,
+/// damage from contacts PhysX solved -- at a mass and speed the cannon cannot
+/// reach, coming from a direction the shooter does not control.
+pub const WEAPON_METEOR: u8 = 4;
 
 // ── Hit zones ───────────────────────────────────
 pub const HIT_ZONE_NONE: u8 = 0;
@@ -57,6 +153,9 @@ pub const BLOCK_REMOVE: u8 = 2;
 // ── Shape types ─────────────────────────────────
 pub const SHAPE_BOX: u8 = 0;
 pub const SHAPE_SPHERE: u8 = 1;
+
+// ── Vehicle interaction ─────────────────────────
+pub const VEHICLE_INTERACT_RADIUS_M: f32 = 4.0;
 
 // ── Area-of-interest (AOI) radii ────────────────
 // The server uses these to decide which players, dynamic bodies, and vehicles
@@ -75,6 +174,26 @@ pub const SNAPSHOT_HZ_MULTIPLAYER: u16 = 30;
 pub const SNAPSHOT_HZ_LOCAL: u16 = SIM_HZ;
 pub const MAX_PENDING_INPUTS: usize = 120;
 pub const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 4;
+/// On-foot backlog depth that triggers a jump to the newest input. Small on
+/// purpose: the point is to track the player's current intent, not to replay
+/// a queue. MAX_PENDING_INPUTS remains the hard cap for pathological cases.
+///
+/// UNUSED since the rubber-band fix: on foot the server now DRAINS the
+/// backlog (simulating each frame) instead of skipping to the newest, so
+/// there is no depth at which frames get discarded. Kept only so the vehicle
+/// path's threshold has an obvious sibling; see MAX_INPUT_FRAMES_PER_TICK.
+#[deprecated(note = "on-foot input is drained, not skipped; see MAX_INPUT_FRAMES_PER_TICK")]
+pub const PLAYER_INPUT_CATCHUP_THRESHOLD: usize = 3;
+/// Most 60 Hz input frames one tick may simulate for a player.
+///
+/// The tick's real budget is wall-clock elapsed / dt, so a client cannot buy
+/// speed by sending faster; this only bounds the worst case.
+///
+/// 8 frames = 133 ms of movement, ~0.24 ms of KCC work at the measured 0.03
+/// ms per frame. Was 4, which live reports showed was under the requirement:
+/// a heavy collapse produced 69 ms ticks (4.13 frames) with a p95 of 87 ms
+/// (5.2), so the cap itself became the thing holding the backlog open.
+pub const MAX_INPUT_FRAMES_PER_TICK: usize = 8;
 pub const RIFLE_FIRE_INTERVAL_MS: u32 = 100;
 pub const RIFLE_BODY_DAMAGE: u8 = 14;
 pub const RIFLE_HEAD_DAMAGE: u8 = 16;
@@ -120,3 +239,7 @@ pub const DEFAULT_BATTERY_HEIGHT_M: f32 = 0.8;
 /// Battery ids live in a separate range for easier debugging and to avoid
 /// collisions with other runtime entity ids.
 pub const BATTERY_ID_RANGE_START: u32 = 0x4000_0000;
+
+/// Custom vehicle configuration (reliable) and authoritative wheel poses (latest wins).
+pub const PKT_VEHICLE_ASSET: u8 = 140;
+pub const PKT_VEHICLE_RIG: u8 = 141;

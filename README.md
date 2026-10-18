@@ -4,7 +4,7 @@ Browser-first multiplayer FPS prototype with:
 
 - Rust authoritative simulation server (Axum + Rapier3D)
 - Browser-side client-side prediction via shared WASM physics (wasm-pack)
-- WebTransport (QUIC/UDP) netcode with WebSocket fallback
+- WebTransport (QUIC/UDP) netcode; the WebSocket transport is disabled (opt-in only, see `AGENTS.md`)
 - Lag compensation and snapshot interpolation
 - three.js / React Three Fiber client
 
@@ -28,6 +28,7 @@ The client now ships as one SPA build with multiple entry routes:
 - `/practice` firing range (browser-only single-player)
 - `/stats` server stats
 - `/loadtest` browser load test
+- `/moq` MoQ world-state streaming demo (see `moq/README.md`)
 
 To run the firing range entirely in one browser tab with no Rust server, WebSocket, or WebTransport dependency:
 
@@ -85,5 +86,99 @@ Production notes:
 - `WT_BIND_ADDR` controls the local UDP bind port. `WT_PUBLIC_URL` controls the public URL advertised to browsers.
 - An explicit WebTransport port such as `https://vibe-land.glavin.ca:4002` is the most predictable setup when your main HTTPS site is served separately on `TCP 443`.
 - If you use a custom hostname in `WT_PUBLIC_URL`, the certificate files in `.env` must cover that hostname.
+
+## PhysX GPU authoritative server
+
+PhysX is a process-start backend, not a per-match toggle. Build and run it on
+an NVIDIA host with the PhysX GPU SDK and CUDA driver available (for Apple
+Silicon, see [Running on macOS](#running-on-macos-apple-silicon)):
+
+```bash
+PHYSX_ROOT=/root/PhysX/physx/install/linux-clang/PhysX \
+  cargo build --release -p web-fps-server --features physx-gpu
+VIBE_PHYSICS_BACKEND=physx_gpu \
+WT_STRICT_SNAPSHOT_DATAGRAMS=1 \
+  ./target/release/web-fps-server
+```
+
+Startup fails if the CUDA context or GPU scene cannot execute a validation
+step. The destructible `/city` needs this backend: a server on Rapier (or
+built without a city feature) refuses city matches with the reason in the log
+and in the client's status line. `VIBE_CITY_SYNTHETIC=1` opts into the
+physics-free synthetic city used for protocol tests; it has no colliders. `/healthz` reports the selected backend and required GPU status. PhysX
+sessions negotiate 60 Hz snapshots and thin-authoritative client movement;
+incompatible clients are rejected.
+
+Set `VITE_THIN_PRESENTATION_PREDICTION=0` when building the client to render
+the interpolated authoritative local-player pose with no presentation offset.
+This is the correctness baseline for thin-predictor tuning.
+
+`scripts/package-physx-server.sh` creates a runtime bundle containing the
+server and `libPhysXGpu_64.so`. Build `Dockerfile.physx-gpu` from that bundle
+and run it with the NVIDIA container runtime. Switching back to Rapier requires
+draining and restarting the process with `VIBE_PHYSICS_BACKEND=rapier`.
+
+## Running on macOS (Apple Silicon)
+
+The PhysX GPU server also runs on Apple Silicon: CuMetal runs PhysX's CUDA
+kernels on Metal. Only PhysX's native destruction stage runs there, with its
+GPU stress solver in FP32 at a tolerance of 1e-3; the Blast features
+(`destruction`, `cuda-stress`, `blast-core`) are Linux-only.
+
+It needs two checkouts beside this one: `../PhysX` (`Glavin001/PhysX`, branch
+`codex/cumetal-destruction`) with its macOS package built into
+`out/install/macos-cumetal/release` (see its `docs/destruction/BUILD.md`), and
+`cuda-metal` (branch `codex/physx-metal-integration`). The client's WASM build
+needs Homebrew's `llvm@21`, because Apple's clang has no wasm32 target.
+
+```bash
+scripts/perf/play-server.sh     # builds target/play, takes the GPU lock, serves :4001, WebTransport :4002
+cd client && CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm@21/bin/clang \
+  AR_wasm32_unknown_unknown=/opt/homebrew/opt/llvm@21/bin/llvm-ar npm run dev
+```
+
+Open `http://localhost:<CLIENT_PORT>/city` in Chrome. `CLIENT_PORT` comes from
+`.env` (`.env.example` sets 5555; with no `.env`, vite uses 3001).
+
+- **One GPU job at a time.** Every server, GPU test and benchmark on the Mac
+  runs under `scripts/perf/gpu-run.sh <label> <cmd>`, a machine-wide lock
+  (`play-server.sh` takes it as `user-play`). Launch from bash: zsh runs `&`
+  jobs at nice +5.
+- **The server and the browser share the GPU, and the server yields.** A
+  rendering browser multiplied the post-impact tick overruns about 11×
+  ([meteor impact analysis](docs/meteor-impact-analysis-2026-09-24.md),
+  follow-up section). The mitigation is `?maxFps=30` on the page URL plus a
+  lower DPR cap (the stats overlay's DPR CAP button, stored as
+  `vibe.render.dprCap`). It was measured on `/cityreplay`, not yet in live
+  play.
+- **After rebuilding the PhysX package, rebuild the server and every test
+  binary**; a stale one crashes. Do not time the first run on a new package.
+- **`scripts/run-city-server.sh` is Linux-only.** On a Mac it stops every
+  `web-fps-server` on the machine, including one started by `play-server.sh`
+  or a benchmark, and then fails because `PHYSX_LIB_DIR` is unset.
+- **Resetting the city** needs no restart: the stats overlay's RESET CITY
+  button, or `curl -X POST http://127.0.0.1:4001/city-reset/city-default`.
+
+Details: [physx-bridge/README.md](physx-bridge/README.md) (the package,
+rebuilds, tests on Metal),
+[run-locally](.claude/skills/run-locally/SKILL.md) (playing, the GPU lock,
+opt-in knobs, CuMetal diagnostics),
+[perf-measure](.claude/skills/perf-measure/SKILL.md) and
+[docs/city-bench.md](docs/city-bench.md) (measuring).
+
+## Streaming world state over MoQ
+
+`moq/` holds a proof of concept for carrying world state over
+[Cloudflare's Media over QUIC relays](https://developers.cloudflare.com/moq/):
+a Rust publisher splits a destruction sim into one MoQ track per region, each at
+its own rate, and the `/moq` page subscribes to whichever tracks it wants.
+
+```bash
+make moq-publisher   # build the publisher
+make moq-e2e         # local relay + publisher + headless Chromium, end to end
+```
+
+See `moq/README.md` for the track layout, the wire format, how it splits against
+the existing WebTransport datagram path, and how to provision a Cloudflare relay.
 
 See `AGENTS.md` for full setup details, lint, and build instructions.

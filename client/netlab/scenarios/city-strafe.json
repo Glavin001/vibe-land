@@ -1,0 +1,28 @@
+{
+  "name": "city-strafe",
+  "description": "Sprinting zig-zag strafe: direction reversals stress prediction and reconciliation (rubber-band prone).",
+  "symptom": ["rubber-banding", "jitter"],
+  "path": "/play?portal=true",
+  "matchId": "netlab-strafe-{iter}",
+  "durationMs": 60000,
+  "join": "auto",
+  "clients": [
+    {
+      "role": "mover",
+      "drive": [
+        { "at": 1000, "cmd": "faceCity" },
+        { "at": 2000, "cmd": "setSprint", "args": [true] },
+        { "at": 2000, "cmd": "move", "args": { "forward": 1, "strafe": 1, "durationMs": 6000 } },
+        { "at": 8500, "cmd": "move", "args": { "forward": 1, "strafe": -1, "durationMs": 6000 } },
+        { "at": 15000, "cmd": "move", "args": { "forward": 1, "strafe": 1, "durationMs": 6000 } },
+        { "at": 21500, "cmd": "move", "args": { "forward": 1, "strafe": -1, "durationMs": 6000 } },
+        { "at": 28000, "cmd": "move", "args": { "forward": -1, "strafe": 1, "durationMs": 6000 } },
+        { "at": 34500, "cmd": "move", "args": { "forward": -1, "strafe": -1, "durationMs": 6000 } },
+        { "at": 41000, "cmd": "move", "args": { "forward": 1, "strafe": 1, "durationMs": 6000 } },
+        { "at": 47500, "cmd": "move", "args": { "forward": 1, "strafe": -1, "durationMs": 6000 } },
+        { "at": 54000, "cmd": "stop" }
+      ]
+    }
+  ],
+  "iterations": 1
+}

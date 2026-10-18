@@ -19,6 +19,7 @@ import {
   type NetworkProfile,
 } from '../src/loadtest/scenario.js';
 import type { WebSocketWorkerResult } from '../src/benchmark/contracts.js';
+import { websocketToolingEnabled } from '../src/net/transportPolicy.js';
 
 type BotMetrics = {
   inboundBytes: number;
@@ -293,6 +294,15 @@ export async function runWebSocketWorker(options: {
   const requestedBots = scenario.transportMix.websocket;
   if (requestedBots <= 0) {
     return null;
+  }
+  if (!websocketToolingEnabled(process.env)) {
+    // The game's WebSocket transport is disabled; the server refuses
+    // /ws/:match_id unless it too was started with VIBE_ENABLE_WEBSOCKET=1.
+    throw new Error(
+      `scenario "${scenario.name}" asks for ${requestedBots} WebSocket bots, but the WebSocket game `
+        + 'transport is disabled. Use WebTransport bots, or set VIBE_ENABLE_WEBSOCKET=1 (for this '
+        + 'tool and the server) to benchmark WebSocket deliberately.',
+    );
   }
 
   const startMs = Date.now();

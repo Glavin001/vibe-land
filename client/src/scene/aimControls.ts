@@ -6,11 +6,13 @@ export function canUseScopedAim(
   isDriving: boolean,
   isDead: boolean,
   botAutopilotEnabled: boolean = false,
+  agentDriveActive: boolean = false,
 ): boolean {
   if (isDriving || isDead) {
     return false;
   }
   return botAutopilotEnabled
+    || agentDriveActive
     || pointerLocked
     || activeFamily === 'gamepad'
     || activeFamily === 'touch';

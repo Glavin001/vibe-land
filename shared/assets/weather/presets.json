@@ -1,0 +1,9 @@
+{
+  "_comment": "Weather presets, one source for both clients: client/src/graphics/weatherPresets.ts (web) and client-core/src/weather.rs (Unreal). Each re-skins the fog at the area-of-interest edge and drives the camera-wrapped particle volume. Order is the cycle order and the VL_WEATHER_* index.",
+  "order": ["clear", "dust_storm", "snow_storm"],
+  "presets": {
+    "clear": { "label": "Clear", "fogColor": "#b7c7d8", "particleCount": 0, "particleColor": "#ffffff", "particleSizePx": 0, "particleBlending": "normal", "boxSizeM": 60, "fallSpeedMps": 0, "tumbleHz": 0, "tumbleAmplitudeM": 0, "windFollow": 0 },
+    "dust_storm": { "label": "Dust Storm", "fogColor": "#b89968", "particleCount": 3500, "particleColor": "#d9b57a", "particleSizePx": 36, "particleBlending": "normal", "boxSizeM": 60, "fallSpeedMps": 1.5, "tumbleHz": 0.6, "tumbleAmplitudeM": 0.35, "windFollow": 1.0 },
+    "snow_storm": { "label": "Snow Storm", "fogColor": "#e4ecf3", "particleCount": 5000, "particleColor": "#ffffff", "particleSizePx": 52, "particleBlending": "additive", "boxSizeM": 60, "fallSpeedMps": 2.5, "tumbleHz": 1.1, "tumbleAmplitudeM": 0.55, "windFollow": 0.75 }
+  }
+}

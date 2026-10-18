@@ -1,3 +1,5 @@
+import { TsServerClock, type ServerClockModel } from './serverClockModel';
+
 export type PlayerSample = {
   serverTimeUs: number;
   position: [number, number, number];
@@ -6,6 +8,8 @@ export type PlayerSample = {
   pitch: number;
   hp: number;
   flags: number;
+  /** A rest hold (`pushWithRestHold`), not a snapshot. */
+  held?: boolean;
 };
 
 export type VehicleSample = {
@@ -17,6 +21,8 @@ export type VehicleSample = {
   wheelData: [number, number, number, number];
   driverPlayerId: number;
   flags: number;
+  /** A rest hold (`pushWithRestHold`), not a snapshot. */
+  held?: boolean;
 };
 
 export type DynamicBodySample = {
@@ -31,15 +37,92 @@ export type DynamicBodySample = {
 
 const MAX_PLAYER_EXTRAPOLATION_US = 100_000;
 
+/** Speed (m/s, rad/s) at or under which a player's or vehicle's sample is at rest. */
+export const REST_SPEED = 0.05;
+/** Position change (m) past which a snapshot inside a rest hold's gap supersedes it. */
+const REST_HOLD_TOLERANCE_M = 0.01;
+
+type TimedSample = {
+  serverTimeUs: number;
+  position: [number, number, number];
+  held?: boolean;
+};
+
+/**
+ * Insert `sample` into `queue` (oldest first). With `snapshotIntervalUs`, a
+ * sample that follows a gap after a sample at rest (`atRest`) gets a rest
+ * hold: a copy of the resting sample one snapshot interval before it.
+ *
+ * A server that leaves out players and vehicles whose record has not changed
+ * (snapshot_builder.rs `idle_cold`) sends one again the first snapshot it
+ * moves in. Interpolating from its last resting sample, up to a cold refresh
+ * (0.5 s) back, would start it moving that long before it did; the hold keeps
+ * it where it stood until the snapshot before the one it moved in. A snapshot
+ * that turns up late inside that gap (out of order) and shows it elsewhere
+ * replaces the hold, and gets its own if it is now the first after the gap.
+ */
+function insertWithRestHold<T extends TimedSample>(
+  queue: T[],
+  sample: T,
+  snapshotIntervalUs: number,
+  atRest: (sample: T) => boolean,
+): void {
+  for (let i = queue.length - 1; i >= 0; i -= 1) {
+    const hold = queue[i];
+    if (!hold.held || hold.serverTimeUs < sample.serverTimeUs) continue;
+    if (hold.serverTimeUs === sample.serverTimeUs || distance3(hold.position, sample.position) > REST_HOLD_TOLERANCE_M) {
+      queue.splice(i, 1);
+    }
+  }
+  let at = queue.length;
+  while (at > 0 && queue[at - 1].serverTimeUs > sample.serverTimeUs) at -= 1;
+  queue.splice(at, 0, sample);
+  const previous = queue[at - 1];
+  if (
+    snapshotIntervalUs > 0
+    && previous
+    && sample.serverTimeUs - previous.serverTimeUs > 1.5 * snapshotIntervalUs
+    && atRest(previous)
+  ) {
+    queue.splice(at, 0, { ...previous, serverTimeUs: sample.serverTimeUs - snapshotIntervalUs, held: true });
+  }
+}
+
+function newestSnapshotSample<T extends TimedSample>(queue: readonly T[] | undefined): T | null {
+  if (!queue) return null;
+  for (let i = queue.length - 1; i >= 0; i -= 1) {
+    if (!queue[i].held) return queue[i];
+  }
+  return null;
+}
+
+function distance3(a: readonly number[], b: readonly number[]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+function playerAtRest(sample: PlayerSample): boolean {
+  return Math.hypot(sample.velocity[0], sample.velocity[1], sample.velocity[2]) <= REST_SPEED;
+}
+
+function vehicleAtRest(sample: VehicleSample): boolean {
+  return Math.hypot(...sample.linearVelocity) <= REST_SPEED && Math.hypot(...sample.angularVelocity) <= REST_SPEED;
+}
+
 export class VehicleInterpolator {
+  /** Optional collision-aware extrapolation, installed by the live physics runtime. */
+  extrapolate: ((id:number, sample:VehicleSample, seconds:number)=>VehicleSample) | null = null;
   private readonly byEntity = new Map<number, VehicleSample[]>();
 
   constructor(private readonly maxSamples = 32) {}
 
-  push(entityId: number, sample: VehicleSample): void {
+  /**
+   * Add a snapshot's sample. With `snapshotIntervalUs`, a vehicle that starts
+   * moving after a gap is held at rest until the snapshot before this one
+   * (`insertWithRestHold`).
+   */
+  push(entityId: number, sample: VehicleSample, snapshotIntervalUs = 0): void {
     const queue = this.byEntity.get(entityId) ?? [];
-    queue.push(sample);
-    queue.sort((a, b) => a.serverTimeUs - b.serverTimeUs);
+    insertWithRestHold(queue, sample, snapshotIntervalUs, vehicleAtRest);
     while (queue.length > this.maxSamples) {
       queue.shift();
     }
@@ -62,10 +145,15 @@ export class VehicleInterpolator {
     return [...this.byEntity.keys()];
   }
 
+  /** The newest snapshot sample of a vehicle (not a rest hold), or null. */
+  latest(entityId: number): VehicleSample | null {
+    return newestSnapshotSample(this.byEntity.get(entityId));
+  }
+
   sample(entityId: number, targetTimeUs: number): VehicleSample | null {
     const queue = this.byEntity.get(entityId);
     if (!queue || queue.length === 0) return null;
-    if (queue.length === 1 || targetTimeUs <= queue[0].serverTimeUs) {
+    if (targetTimeUs <= queue[0].serverTimeUs) {
       return { ...queue[0] };
     }
 
@@ -96,6 +184,7 @@ export class VehicleInterpolator {
       maxExtrapolateSecs,
     );
     if (extrapolateSecs <= 0) return { ...latest };
+    if (this.extrapolate) return this.extrapolate(entityId, latest, extrapolateSecs);
 
     const lv = latest.linearVelocity;
     const av = latest.angularVelocity;
@@ -159,65 +248,115 @@ export class DynamicBodyInterpolator {
   sample(entityId: number, targetTimeUs: number): DynamicBodySample | null {
     const queue = this.byEntity.get(entityId);
     if (!queue || queue.length === 0) return null;
-    if (queue.length === 1 || targetTimeUs <= queue[0].serverTimeUs) {
-      return { ...queue[0] };
-    }
-
-    for (let i = 1; i < queue.length; i += 1) {
-      const prev = queue[i - 1];
-      const next = queue[i];
-      if (targetTimeUs <= next.serverTimeUs) {
-        if (next.serverTimeUs === prev.serverTimeUs) return { ...next };
-        const alpha = clamp01((targetTimeUs - prev.serverTimeUs) / (next.serverTimeUs - prev.serverTimeUs));
-        return {
-          serverTimeUs: targetTimeUs,
-          position: lerpVec3(prev.position, next.position, alpha),
-          quaternion: slerpQuat(prev.quaternion, next.quaternion, alpha),
-          halfExtents: alpha < 0.5 ? prev.halfExtents : next.halfExtents,
-          velocity: lerpVec3(prev.velocity, next.velocity, alpha),
-          angularVelocity: lerpVec3(prev.angularVelocity, next.angularVelocity, alpha),
-          shapeType: alpha < 0.5 ? prev.shapeType : next.shapeType,
-        };
-      }
-    }
-
-    const latest = queue[queue.length - 1];
-    const maxExtrapolateSecs = 0.25;
-    const extrapolateSecs = Math.min(
-      (targetTimeUs - latest.serverTimeUs) / 1_000_000,
-      maxExtrapolateSecs,
-    );
-    if (extrapolateSecs <= 0) return { ...latest };
-
-    const lv = latest.velocity;
-    const av = latest.angularVelocity;
-    const position: [number, number, number] = [
-      latest.position[0] + lv[0] * extrapolateSecs,
-      latest.position[1] + lv[1] * extrapolateSecs,
-      latest.position[2] + lv[2] * extrapolateSecs,
-    ];
-
-    const angSpeed = Math.sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]);
-    let quaternion = latest.quaternion;
-    if (angSpeed > 0.0001) {
-      const angle = angSpeed * extrapolateSecs;
-      const ax = av[0] / angSpeed;
-      const ay = av[1] / angSpeed;
-      const az = av[2] / angSpeed;
-      const s = Math.sin(angle / 2);
-      const dq: [number, number, number, number] = [ax * s, ay * s, az * s, Math.cos(angle / 2)];
-      const [qx, qy, qz, qw] = quaternion;
-      const [dx, dy, dz, dw] = dq;
-      quaternion = [
-        dw * qx + dx * qw + dy * qz - dz * qy,
-        dw * qy - dx * qz + dy * qw + dz * qx,
-        dw * qz + dx * qy - dy * qx + dz * qw,
-        dw * qw - dx * qx - dy * qy - dz * qz,
-      ];
-    }
-
-    return { ...latest, position, quaternion };
+    return sampleDynamicBodyTrack(queue, targetTimeUs);
   }
+
+  /** The buffered snapshots of one body, oldest first (empty if none). */
+  samples(entityId: number): readonly DynamicBodySample[] {
+    return this.byEntity.get(entityId) ?? EMPTY_DYNAMIC_SAMPLES;
+  }
+}
+
+const EMPTY_DYNAMIC_SAMPLES: readonly DynamicBodySample[] = [];
+const MAX_DYNAMIC_BODY_EXTRAPOLATION_S = 0.25;
+
+/**
+ * A dynamic body's state at `targetTimeUs` from its snapshots (oldest first):
+ * interpolated between the two around it, the oldest before them, and
+ * extrapolated past the newest for at most 250 ms.
+ *
+ * The extrapolation is ballistic when the last two snapshots show the body in
+ * free fall -- vertical acceleration between 0.5 and 3 g downwards with
+ * horizontal velocity unchanged, as a thrown cannonball or falling debris is --
+ * and linear otherwise. Linear extrapolation of a falling body runs above its
+ * arc and then snaps down; gravity applied to a body resting on the ground
+ * would sink it, which is why the test is on the measured acceleration rather
+ * than on the body being airborne.
+ */
+export function sampleDynamicBodyTrack(
+  queue: readonly DynamicBodySample[],
+  targetTimeUs: number,
+): DynamicBodySample | null {
+  if (queue.length === 0) return null;
+  if (queue.length === 1 || targetTimeUs <= queue[0].serverTimeUs) {
+    return { ...queue[0] };
+  }
+
+  for (let i = 1; i < queue.length; i += 1) {
+    const prev = queue[i - 1];
+    const next = queue[i];
+    if (targetTimeUs <= next.serverTimeUs) {
+      if (next.serverTimeUs === prev.serverTimeUs) return { ...next };
+      const alpha = clamp01((targetTimeUs - prev.serverTimeUs) / (next.serverTimeUs - prev.serverTimeUs));
+      return {
+        serverTimeUs: targetTimeUs,
+        position: lerpVec3(prev.position, next.position, alpha),
+        quaternion: slerpQuat(prev.quaternion, next.quaternion, alpha),
+        halfExtents: alpha < 0.5 ? prev.halfExtents : next.halfExtents,
+        velocity: lerpVec3(prev.velocity, next.velocity, alpha),
+        angularVelocity: lerpVec3(prev.angularVelocity, next.angularVelocity, alpha),
+        shapeType: alpha < 0.5 ? prev.shapeType : next.shapeType,
+      };
+    }
+  }
+
+  const latest = queue[queue.length - 1];
+  const extrapolateSecs = Math.min(
+    (targetTimeUs - latest.serverTimeUs) / 1_000_000,
+    MAX_DYNAMIC_BODY_EXTRAPOLATION_S,
+  );
+  if (extrapolateSecs <= 0) return { ...latest };
+
+  const lv = latest.velocity;
+  const av = latest.angularVelocity;
+  const fallAccel = freeFallAcceleration(queue[queue.length - 2], latest);
+  const t = extrapolateSecs;
+  const position: [number, number, number] = [
+    latest.position[0] + lv[0] * t,
+    latest.position[1] + lv[1] * t + 0.5 * fallAccel * t * t,
+    latest.position[2] + lv[2] * t,
+  ];
+  const velocity: [number, number, number] = [lv[0], lv[1] + fallAccel * t, lv[2]];
+  return { ...latest, position, velocity, quaternion: integrateAngularVelocity(latest.quaternion, av, t) };
+}
+
+const STANDARD_GRAVITY = 9.81;
+
+/**
+ * The vertical acceleration (m/s^2, negative) between two snapshots of a body
+ * in free fall, or 0 when the pair does not look like free fall.
+ */
+export function freeFallAcceleration(prev: DynamicBodySample, next: DynamicBodySample): number {
+  const dt = (next.serverTimeUs - prev.serverTimeUs) / 1_000_000;
+  if (dt <= 0 || dt > 0.25) return 0;
+  const ay = (next.velocity[1] - prev.velocity[1]) / dt;
+  if (ay > -0.5 * STANDARD_GRAVITY || ay < -3 * STANDARD_GRAVITY) return 0;
+  const horizontalChange = Math.hypot(next.velocity[0] - prev.velocity[0], next.velocity[2] - prev.velocity[2]) / dt;
+  if (horizontalChange > 0.25 * Math.abs(ay)) return 0;
+  return ay;
+}
+
+/** `quat` turned by angular velocity `av` (rad/s) for `t` seconds. */
+export function integrateAngularVelocity(
+  quat: [number, number, number, number],
+  av: [number, number, number],
+  t: number,
+): [number, number, number, number] {
+  const angSpeed = Math.sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]);
+  if (angSpeed <= 0.0001) return quat;
+  const angle = angSpeed * t;
+  const ax = av[0] / angSpeed;
+  const ay = av[1] / angSpeed;
+  const az = av[2] / angSpeed;
+  const sn = Math.sin(angle / 2);
+  const [dx, dy, dz, dw] = [ax * sn, ay * sn, az * sn, Math.cos(angle / 2)];
+  const [qx, qy, qz, qw] = quat;
+  return [
+    dw * qx + dx * qw + dy * qz - dz * qy,
+    dw * qy - dx * qz + dy * qw + dz * qx,
+    dw * qz + dx * qy - dy * qx + dz * qw,
+    dw * qw - dx * qx - dy * qy - dz * qz,
+  ];
 }
 
 export type ProjectileSample = {
@@ -229,121 +368,276 @@ export type ProjectileSample = {
   sourceShotId: number;
 };
 
-// Minimal interface for the WASM-backed clock estimator (vibe_netcode::clock_sync).
-// Defined here as a duck-type interface so interpolation.ts stays free of WASM imports.
-interface WasmClockSyncLike {
-  observeRtt(rttMs: number): void;
-  observeServerTime(serverUs: number, localUs: number): void;
-  getClockOffsetUs(): number;
-  getJitterUs(): number;
-  getInterpolationDelayMs(): number;
-  getRttMs(): number;
-  free(): void;
-}
-
-// Registered by sharedPhysics.ts after WASM init.
-let _WasmClockSyncClass: ((simHz: number) => WasmClockSyncLike) | null = null;
+// Registered by sharedPhysics.ts after WASM init: the live client runs the
+// estimator from netcode/src/clock_sync.rs. Without it (tests, the offline tape
+// tools) the TypeScript copy in serverClockModel.ts runs, which is kept equal.
+let _WasmClockSyncClass: ((simHz: number) => ServerClockModel) | null = null;
 
 /**
  * Register the WASM WasmClockSync constructor.
  * Called once by sharedPhysics after `init()` resolves.
  */
-export function provideWasmClockSync(cls: new (simHz: number) => WasmClockSyncLike): void {
+export function provideWasmClockSync(cls: new (simHz: number) => ServerClockModel): void {
   _WasmClockSyncClass = (simHz) => new cls(simHz);
 }
 
+/**
+ * The client's estimate of server simulation time.
+ *
+ * Server time on the wire is `tick x 16.67 ms`; when the server cannot hold
+ * 60 Hz it advances slower than wall time. The model underneath
+ * (clock_sync.rs, or serverClockModel.ts without WASM) measures that rate,
+ * follows it without ever stepping backwards, and sizes the interpolation
+ * delay from snapshot arrivals. `serverNowUs` advances that model, so it is
+ * called with the client's own clock; `getOffsetUs` only reads it.
+ */
 export class ServerClockEstimator {
-  // WASM-backed estimator (adaptive α, Jacobson RTT, speed-adjustment hysteresis).
-  private wasm: WasmClockSyncLike | null = null;
-  private simHz = 20;
+  private model: ServerClockModel | null = null;
+  private simHz = 60;
+  private pendingRttMs: number[] = [];
 
-  // TypeScript fallback (used in tests / before WASM init).
-  private tsOffsetUs = 0;
-  private tsInitialized = false;
-
-  private getWasm(): WasmClockSyncLike | null {
-    if (!this.wasm && _WasmClockSyncClass) {
-      this.wasm = _WasmClockSyncClass(this.simHz);
+  private getModel(): ServerClockModel {
+    if (!this.model) {
+      this.model = _WasmClockSyncClass ? _WasmClockSyncClass(this.simHz) : new TsServerClock(this.simHz);
+      for (const rtt of this.pendingRttMs) this.model.observeRtt(rtt);
+      this.pendingRttMs = [];
     }
-    return this.wasm;
+    return this.model;
   }
 
-  /** Set the server sim tick rate so the WASM hysteresis thresholds are correct. */
+  /** Whether the WASM (live) estimator is in use rather than the TypeScript copy. */
+  get usesWasm(): boolean {
+    return !(this.getModel() instanceof TsServerClock);
+  }
+
+  /** Set the server sim tick rate. Restarts the estimator when it changes. */
   setSimHz(hz: number): void {
     if (this.simHz === hz) return;
     this.simHz = hz;
-    // Recreate WASM instance with corrected tick rate.
-    if (this.wasm) {
-      this.wasm.free();
-      this.wasm = null;
+    if (this.model) {
+      this.model.free();
+      this.model = null;
     }
   }
 
   /** Feed a smoothed RTT measurement in milliseconds. */
   observeRtt(rttMs: number): void {
-    this.getWasm()?.observeRtt(rttMs);
+    this.getModel().observeRtt(rttMs);
   }
 
   /**
-   * Update the estimated clock offset from a new server→client sample.
-   *
-   * When WASM is available: uses Lightyear's adaptive-alpha EMA with Jacobson
-   * RTT estimation, speed-adjustment hysteresis, and one-way latency correction.
-   *
-   * TypeScript fallback (tests / no WASM): symmetric α=0.1 EMA, no RTT correction.
+   * A snapshot's server time, observed at local time `localTimeUs`. With
+   * `serverWallUs` (the server's wall clock, us mod 2^32, when the snapshot
+   * carries it) the server rate is measured exactly rather than inferred
+   * from arrival times.
    */
-  observe(serverTimeUs: number, localTimeUs: number): void {
-    const wasm = this.getWasm();
-    if (wasm) {
-      wasm.observeServerTime(serverTimeUs, localTimeUs);
-      return;
+  observe(serverTimeUs: number, localTimeUs: number, serverWallUs?: number | null): void {
+    if (serverWallUs != null) {
+      this.getModel().observeServerTimeWithWall(serverTimeUs, serverWallUs, localTimeUs);
+    } else {
+      this.getModel().observeServerTime(serverTimeUs, localTimeUs);
     }
-
-    // TS fallback — simple symmetric EMA (α=0.1).
-    const sampleOffsetUs = serverTimeUs - localTimeUs;
-    if (!this.tsInitialized) {
-      this.tsOffsetUs = sampleOffsetUs;
-      this.tsInitialized = true;
-      return;
-    }
-    this.tsOffsetUs = this.tsOffsetUs * 0.9 + sampleOffsetUs * 0.1;
   }
 
+  /** Estimated server time at `localTimeUs`; never decreases as local time advances. */
   serverNowUs(localTimeUs = performance.now() * 1000): number {
-    return Math.round(localTimeUs + this.getOffsetUs());
+    return Math.round(this.getModel().serverNowUs(localTimeUs));
   }
 
+  /**
+   * `serverNowUs - interpolationDelayUs`. Monotonic only while the delay is
+   * steady: `RenderClock` is the render time that stays monotonic while the
+   * delay adapts.
+   */
   renderTimeUs(interpolationDelayUs: number, localTimeUs = performance.now() * 1000): number {
     return this.serverNowUs(localTimeUs) - interpolationDelayUs;
   }
 
+  /** server time ~ local time + offset, as of the last `serverNowUs`. Read-only. */
   getOffsetUs(): number {
-    return this.wasm?.getClockOffsetUs() ?? this.tsOffsetUs;
+    return this.model?.getClockOffsetUs() ?? 0;
   }
 
-  /** Jitter estimate in microseconds (0 when WASM not available). */
+  /** Measured server rate: sim seconds per wall second (1 until measured). */
+  getRate(): number {
+    return this.model?.getRate() ?? 1;
+  }
+
+  /** Whether the server stamps its wall clock on the snapshots in use. */
+  hasServerWallClock(): boolean {
+    return this.model?.hasWallClock() ?? false;
+  }
+
+  /** Jitter estimate in microseconds (from round trips; 0 on WebTransport). */
   getJitterUs(): number {
-    return this.wasm?.getJitterUs() ?? 0;
+    return this.model?.getJitterUs() ?? 0;
   }
 
   /**
-   * Recommended interpolation delay in milliseconds.
-   * WASM: adaptive (jitter*4 + 5 ms). TS fallback: returns 0 (caller uses welcome value).
+   * Recommended interpolation delay, ms of server time: the 95th percentile of
+   * server time that elapses between snapshot arrivals, never less than one
+   * observed snapshot interval, at most 250 ms. 0 before any snapshot.
    */
   getInterpolationDelayMs(): number {
-    return this.wasm?.getInterpolationDelayMs() ?? 0;
+    return this.model ? this.model.getInterpolationDelayMs() : 0;
   }
+
+  /** Median server-time step between snapshots, ms. */
+  getSnapshotIntervalMs(): number {
+    return this.model?.getSnapshotIntervalMs() ?? 1000 / this.simHz;
+  }
+}
+
+/**
+ * A render time that never goes backwards: the server clock minus an
+ * interpolation delay that adapts only as fast as the clock advances.
+ *
+ * `serverNow - delay` goes backwards whenever the delay grows faster than the
+ * clock -- and the clock stops altogether while the server stalls. So the
+ * delay moves towards its target by at most `DELAY_SLEW` of each step the
+ * clock takes, and the result is clamped to never fall below the last render
+ * time handed out. A local clock that jumps back by more than a second (a
+ * replay seek) starts over.
+ */
+export class RenderClock {
+  /** Growing delay may take up to this share of each clock step (render slows, to a stop at 1). */
+  static DELAY_GROW_SLEW = 0.25;
+  /** Shrinking delay may add up to this share of each clock step (render speeds up by at most this). */
+  static readonly DELAY_SLEW = 0.25;
+  private delayUs: number | null = null;
+  private targetDelayUs = 0;
+  private lastServerNowUs = 0;
+  private lastRenderUs = -Infinity;
+  private lastLocalUs = -Infinity;
+
+  setTargetDelayMs(ms: number): void {
+    this.targetDelayUs = Math.max(0, ms * 1000);
+    if (this.delayUs === null) this.delayUs = this.targetDelayUs;
+  }
+
+  /**
+   * A new target delay as of (`serverNowUs`, `localTimeUs`): the clock is
+   * first advanced to that instant under the old target. The delay slews by a
+   * share of each step of server time, so with retargets committed where they
+   * happen the render time does not depend on how often it is read.
+   */
+  retarget(ms: number, serverNowUs: number, localTimeUs: number): void {
+    if (this.lastRenderUs !== -Infinity && localTimeUs >= this.lastLocalUs - 1_000_000) {
+      this.renderTimeUs(serverNowUs, localTimeUs);
+    }
+    this.setTargetDelayMs(ms);
+  }
+
+  /** Whether the clock has handed out a render time since it (re)started. */
+  get started(): boolean {
+    return this.lastRenderUs !== -Infinity;
+  }
+
+  /** The delay the clock is moving towards, ms. */
+  get targetDelayMs(): number {
+    return this.targetDelayUs / 1000;
+  }
+
+  /** The delay in use, ms (what the render time is behind server time). */
+  get delayMs(): number {
+    return (this.delayUs ?? this.targetDelayUs) / 1000;
+  }
+
+  renderTimeUs(serverNowUs: number, localTimeUs: number): number {
+    if (this.delayUs === null) this.delayUs = this.targetDelayUs;
+    if (localTimeUs < this.lastLocalUs - 1_000_000) this.reset();
+    // Server time a second behind what was already handed out is a new time
+    // base, not a stall: a read before the first snapshot synced the server
+    // clock (it is still the local clock, e.g. 13 s after page load), or a new
+    // match. Holding the old render time froze every body's clock until the
+    // server caught up, drawing them all at the extrapolation cap ahead of
+    // their data (a meteor passed through the car it had not yet hit).
+    else if (this.lastRenderUs !== -Infinity && serverNowUs < this.lastRenderUs - 1_000_000) this.reset();
+    if (this.lastRenderUs === -Infinity) {
+      this.lastServerNowUs = serverNowUs;
+      this.delayUs = this.targetDelayUs;
+    } else {
+      const advanced = Math.max(0, serverNowUs - this.lastServerNowUs);
+      const delta = this.targetDelayUs - this.delayUs;
+      this.delayUs += delta > 0
+        ? Math.min(delta, advanced * RenderClock.DELAY_GROW_SLEW)
+        : Math.max(delta, -advanced * RenderClock.DELAY_SLEW);
+      this.lastServerNowUs = Math.max(this.lastServerNowUs, serverNowUs);
+    }
+    const render = Math.max(this.lastRenderUs, serverNowUs - this.delayUs);
+    this.lastRenderUs = render;
+    this.lastLocalUs = Math.max(this.lastLocalUs, localTimeUs);
+    return render;
+  }
+
+  reset(): void {
+    this.delayUs = this.targetDelayUs;
+    this.lastServerNowUs = 0;
+    this.lastRenderUs = -Infinity;
+    this.lastLocalUs = -Infinity;
+  }
+}
+
+/** The shared client core's interpolator (client-core interp.rs, the Unreal client's), as core/clientCore.ts gives it. */
+export type CorePlayerInterpolator = {
+  push(id: number, sample: Float64Array, snapshotIntervalUs: number): void;
+  remove(id: number): void;
+  retain_only(ids: Uint32Array): void;
+  ids(): Uint32Array;
+  latest(id: number): Float64Array | undefined;
+  sample(id: number, targetUs: number): Float64Array | undefined;
+};
+let corePlayers: ((maxSamples: number) => CorePlayerInterpolator) | null = null;
+
+/** Make player interpolators delegate to the core's (behind `?corePlayers=1`), or to this file's with null. */
+export function provideCorePlayerInterpolator(factory: ((maxSamples: number) => CorePlayerInterpolator) | null): void {
+  corePlayers = factory;
+}
+
+function fromCore(f: Float64Array | undefined): PlayerSample | null {
+  if (!f) return null;
+  const s: PlayerSample = {
+    serverTimeUs: f[0],
+    position: [f[1], f[2], f[3]],
+    velocity: [f[4], f[5], f[6]],
+    yaw: f[7],
+    pitch: f[8],
+    hp: f[9],
+    flags: f[10],
+  };
+  if (f[11] === 1) s.held = true;
+  return s;
 }
 
 export class PlayerInterpolator {
   private readonly byEntity = new Map<number, PlayerSample[]>();
+  private core: CorePlayerInterpolator | null = null;
 
-  constructor(private readonly maxSamples = 32) {}
+  constructor(private readonly maxSamples = 32) {
+    this.attachCore();
+  }
 
-  push(entityId: number, sample: PlayerSample): void {
+  /** Delegate to the core when it is provided and this interpolator holds nothing yet. */
+  private attachCore(): void {
+    if (!this.core && corePlayers && this.byEntity.size === 0) this.core = corePlayers(this.maxSamples);
+  }
+
+  /** Whether samples come from the shared core (`?corePlayers=1`). */
+  usesCore(): boolean {
+    return this.core !== null;
+  }
+
+  /** As `VehicleInterpolator.push`. */
+  push(entityId: number, sample: PlayerSample, snapshotIntervalUs = 0): void {
+    this.attachCore();
+    if (this.core) {
+      const s = sample;
+      this.core.push(entityId, Float64Array.of(s.serverTimeUs, s.position[0], s.position[1], s.position[2],
+        s.velocity[0], s.velocity[1], s.velocity[2], s.yaw, s.pitch, s.hp, s.flags), snapshotIntervalUs);
+      return;
+    }
     const queue = this.byEntity.get(entityId) ?? [];
-    queue.push(sample);
-    queue.sort((a, b) => a.serverTimeUs - b.serverTimeUs);
+    insertWithRestHold(queue, sample, snapshotIntervalUs, playerAtRest);
     while (queue.length > this.maxSamples) {
       queue.shift();
     }
@@ -351,10 +645,12 @@ export class PlayerInterpolator {
   }
 
   remove(entityId: number): void {
+    if (this.core) return this.core.remove(entityId);
     this.byEntity.delete(entityId);
   }
 
   retainOnly(activeIds: Set<number>): void {
+    if (this.core) return this.core.retain_only(Uint32Array.from(activeIds));
     for (const id of this.byEntity.keys()) {
       if (!activeIds.has(id)) {
         this.byEntity.delete(id);
@@ -363,10 +659,18 @@ export class PlayerInterpolator {
   }
 
   ids(): number[] {
+    if (this.core) return [...this.core.ids()];
     return [...this.byEntity.keys()];
   }
 
+  /** The newest snapshot sample of a player (not a rest hold), or null. */
+  latest(entityId: number): PlayerSample | null {
+    if (this.core) return fromCore(this.core.latest(entityId));
+    return newestSnapshotSample(this.byEntity.get(entityId));
+  }
+
   sample(entityId: number, targetTimeUs: number): PlayerSample | null {
+    if (this.core) return fromCore(this.core.sample(entityId, targetTimeUs));
     const queue = this.byEntity.get(entityId);
     if (!queue || queue.length === 0) {
       return null;

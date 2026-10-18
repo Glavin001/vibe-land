@@ -1,0 +1,24 @@
+# A cannonball must reach a named chunk and damage the building there.
+#
+# Every assertion here failed at some point during development: the shot
+# reached nothing, the aim pointed at open ground, or the ball was correct on
+# the server and invisible. Naming the chunk is what makes "it hit" checkable.
+
+report                    # the intact city
+
+look 0.8 0                # face the facade
+probe                     # say what is actually under the crosshair
+aim 0 5810                # now aim at that chunk by identity
+verify-aim 0 5810         # and refuse to continue if the ray misses it
+
+fire ball
+wait 120
+
+# Contact, measured at the bonds rather than at the chunk. `expect-detached
+# 0 5810` also passed while the ball was 0.6 m across and 7.1 t, and stopped
+# passing at 0.3 m and 10.65 t: the narrower ball lands its larger impulse on
+# fewer bonds, so it breaks 51 here where the wider one broke 71 and no longer
+# takes that particular chunk off. Not tunnelling -- slowing the ball to 30 and
+# 20 m/s reduced the damage to 2 bonds and then 0, which is momentum.
+expect-bonds 20
+report

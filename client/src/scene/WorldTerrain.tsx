@@ -1,5 +1,17 @@
 import { forwardRef, memo, useEffect, useMemo } from 'react';
 import type { MeshProps } from '@react-three/fiber';
+
+import { useSyncExternalStore } from 'react';
+
+import {
+  cityPbrLighting,
+  cityTextureDetail,
+  heroTilingEnabled,
+  onRenderQualityChange,
+  useShadowsEnabled,
+} from '../app/renderQuality';
+import { applyGroundTextures } from './cityMaterialShader';
+import { loadCityTextures } from './cityTextures';
 import * as THREE from 'three';
 import type { WorldDocument, WorldTerrainTile, TerrainMaterial } from '../world/worldDocument';
 import {
@@ -12,6 +24,8 @@ import {
 
 type WorldTerrainProps = Omit<MeshProps, 'geometry' | 'material'> & {
   world: WorldDocument;
+  /** Living canopy colour in city grass areas, retained beyond the blade LOD. */
+  grassCover?: boolean;
 };
 
 type TerrainTileGeometry = {
@@ -22,11 +36,22 @@ type TerrainTileGeometry = {
 };
 
 export const WorldTerrain = forwardRef<THREE.Group, WorldTerrainProps>(function WorldTerrain(
-  { world, ...meshProps },
+  { world, grassCover = false, ...meshProps },
   ref,
 ) {
   const materials = useMemo(() => getTerrainMaterials(world), [world]);
-  const material = useMemo(() => buildTerrainMaterial(materials), [materials]);
+  // The ground shares the city's texture arrays and quality knobs, so its
+  // material has to rebuild when any of them changes shader variant.
+  const groundVariant = useSyncExternalStore(
+    onRenderQualityChange,
+    terrainVariant,
+    terrainVariant,
+  );
+  const material = useMemo(
+    () => buildTerrainMaterial(materials, groundVariant, grassCover),
+    [materials, groundVariant, grassCover],
+  );
+  useEffect(loadCityTextures, []);
 
   useEffect(() => () => {
     material.dispose();
@@ -174,18 +199,31 @@ const TerrainTileMesh = memo(function TerrainTileMesh({
     geometry.dispose();
   }, [geometry]);
 
+  // Follows the shadows toggle: a 512 m receiver is pure shadow-pass cost when
+  // nothing is casting, and it was always-on even with city shadows disabled.
+  const receiveShadow = useShadowsEnabled();
+
   return (
     <mesh
       geometry={geometry}
       material={material}
-      receiveShadow
+      receiveShadow={receiveShadow}
       userData={{ terrainTileX: tile.tileX, terrainTileZ: tile.tileZ }}
       {...meshProps}
     />
   );
 });
 
-function buildTerrainMaterial(materials: TerrainMaterial[]): THREE.MeshStandardMaterial {
+/** Which terrain shader variant the current quality settings ask for. */
+function terrainVariant(): string {
+  return `${cityTextureDetail()}:${heroTilingEnabled() ? 'hero' : 'plain'}:${cityPbrLighting() ? 'pbr' : 'flat'}`;
+}
+
+function buildTerrainMaterial(
+  materials: TerrainMaterial[],
+  variant: string = terrainVariant(),
+  grassCover = false,
+): THREE.Material {
   const avgRoughness = materials.length > 0
     ? materials.reduce((sum, m) => sum + m.roughness, 0) / materials.length
     : 0.95;
@@ -193,12 +231,23 @@ function buildTerrainMaterial(materials: TerrainMaterial[]): THREE.MeshStandardM
     ? materials.reduce((sum, m) => sum + m.metalness, 0) / materials.length
     : 0.02;
 
+  const [detail, hero] = variant.split(':');
+  const textured = detail !== 'off';
   const mat = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    roughness: avgRoughness,
-    metalness: avgMetalness,
+    // With real ground textures the splat palette would double-tint them; the
+    // untextured fallback keeps the painted vertex colours it always had.
+    vertexColors: !textured,
+    // Textured roughness comes from the surface array (the constant would
+    // multiply it down); untextured keeps the palette average.
+    roughness: textured && detail === 'full' ? 1 : avgRoughness,
+    metalness: textured ? 0 : avgMetalness,
     dithering: true,
   });
+  // WebGPU: the ground's node material (no slope shade: it is a GLSL patch,
+  // and zero on the flat city ground).
+  if (__WEBGPU__) {
+    return textured ? applyGroundTextures(mat, detail === 'full' && variant.endsWith('pbr'), hero === 'hero', grassCover) : mat;
+  }
 
   mat.onBeforeCompile = (shader) => {
     shader.fragmentShader = shader.fragmentShader.replace(
@@ -211,6 +260,11 @@ function buildTerrainMaterial(materials: TerrainMaterial[]): THREE.MeshStandardM
     );
   };
   mat.customProgramCacheKey = () => 'world-terrain-splatmap-v3';
+  if (textured) {
+    // Layered ON TOP of the slope-shade injection above (applyGroundTextures
+    // chains the previous onBeforeCompile) and replaces the cache key.
+    applyGroundTextures(mat, detail === 'full' && variant.endsWith('pbr'), hero === 'hero', grassCover);
+  }
   return mat;
 }
 

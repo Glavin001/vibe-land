@@ -1,0 +1,24 @@
+{
+  "cases": [
+    {
+      "asset": "diag-library-shell",
+      "packSha256": "dd6a88cf20636b8423e6d0ae881a4ef553bfa46f853158505ed0c6f3cb26e811",
+      "binarySha256": "0ff29e654039ab3131126cc158e4be2038cf0d278cafb5fc86756122f679a530",
+      "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+      "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+      "passed": true,
+      "nativeFailure": null
+    },
+    {
+      "asset": "diag-library-shell-reflection",
+      "packSha256": "804c34921d8e1f27aa66be4f1f989351d0ac076947acb5af4e1201fdd47d825c",
+      "binarySha256": "0ff29e654039ab3131126cc158e4be2038cf0d278cafb5fc86756122f679a530",
+      "sdkRevision": "8bc7aecb0cbcb011a374b98eee5faaeb5065e78c",
+      "sdkContentHash": "9b4f20232fd11d62748fb3803907b967c09a9700b135a2b21ef8174e976ca881",
+      "passed": false,
+      "nativeFailure": "Ok(NativeStatus { frame: 1, error: 64, iterations: 16, converged: false, normal_contacts: 0, friction_anchors: 0, bond_commands: 0, broken_bonds: 0, crushed_chunks: 0, correction_passes: 0, stress_passes: 1, post_correction_broken_bonds: 0, committed_chunks: 0, committed_bonds: 0, cluster_count: 0, stress_island_count: 0, observed: false, degraded: false, missed_frames: 0 })"
+    }
+  ],
+  "sameHarness": true,
+  "sameSDK": true
+}

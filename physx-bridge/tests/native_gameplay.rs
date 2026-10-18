@@ -1,0 +1,1080 @@
+#![cfg(feature = "native-destruction")]
+
+//! End-to-end gameplay checks for PhysX's own GPU destruction stage.
+//!
+//! These run the real engine: a wall is authored, the stage is configured, and
+//! the scene is stepped while a round is fired into it. They assert what a
+//! *player* would notice -- the wall breaks, the pieces are announced once
+//! each, the ids on the wire mean what the manifest says, and rebuilding the
+//! city leaves nothing behind -- rather than that particular functions were
+//! called.
+
+#[path = "common/stage_env.rs"]
+mod stage_env;
+use vibe_land_physx_bridge::{
+    CapsulePlayerDesc, ChunkBondDesc, ChunkNodeDesc, DestructibleSettings, NativeConfig, Pose,
+    Quat, RoundDesc, StaticBoxDesc, StressMaterialDesc, Vec3, World, WorldConfig,
+};
+
+const GROUP_STATIC: u32 = 1 << 0;
+const GROUP_CHUNK: u32 = 1 << 5;
+const ALL: u32 = GROUP_STATIC | GROUP_CHUNK;
+
+/// Deliberately insufficient iterations must reject the material transaction.
+/// Weak joints ensure that a test using only unbreakably strong material cannot
+/// accidentally pass while the runtime still commits unconverged damage.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn native_unconverged_stress_rejects_weak_material_damage() {
+    for max_iterations in [1, 2048] {
+        stage_env::strict_converged(); // this test checks the strict mode
+        let mut world = World::new(WorldConfig::default()).unwrap();
+        world.native_attach().unwrap();
+        let (mut nodes, bonds) = wall(4, 1);
+        for (i, node) in nodes.iter_mut().enumerate().skip(1) {
+            node.mass = i as f32;
+        }
+        let mut material = settings();
+        material.materials[0] = StressMaterialDesc {
+            compression_elastic: 1.,
+            compression_fatal: 2.,
+            tension_elastic: 1.,
+            tension_fatal: 2.,
+            shear_elastic: 1.,
+            shear_fatal: 2.,
+            elastic_modulus: 3e10,
+            residual_area_fraction: 0.,
+        };
+        world
+            .native_create_destructible(
+                0,
+                Pose {
+                    position: Vec3::new(0., 10., 0.),
+                    rotation: Quat::IDENTITY,
+                },
+                &nodes,
+                &bonds,
+                material,
+                GROUP_CHUNK,
+                ALL,
+            )
+            .unwrap();
+        world.step().unwrap();
+        let mut config = native_config(4);
+        config.max_iterations = max_iterations;
+        world.native_configure(config).unwrap();
+        let result = world.step();
+        let status = world.native_tick().unwrap();
+        if max_iterations == 1 {
+            assert!(
+                !status.converged && status.iterations == 1,
+                "fixture did not exhaust its budget: {status:?}"
+            );
+            assert!(
+                result.is_err(),
+                "unconverged stress was accepted: {status:?}"
+            );
+            assert_ne!(
+                status.error & 4096,
+                0,
+                "missing convergence error: {status:?}"
+            );
+            assert_eq!(status.bond_commands, 0);
+            assert_eq!(status.broken_bonds, 0);
+            assert_eq!(status.crushed_chunks, 0);
+            assert_eq!(status.committed_bonds, 0);
+            assert_eq!(status.committed_chunks, 0);
+            assert!(world.native_take_broken_bonds().unwrap().is_empty());
+            assert!(!status.observed, "rejected state must not be published");
+            assert!(
+                world.native_bond_stress_rows(0).unwrap().is_empty(),
+                "first rejected step must not publish material verdicts"
+            );
+        } else {
+            result.unwrap();
+            assert!(
+                status.converged && status.error == 0,
+                "positive control did not converge: {status:?}"
+            );
+            assert!(
+                status.broken_bonds > 0 && status.committed_bonds > 0,
+                "same weak material must break with a converged solve: {status:?}"
+            );
+            assert!(!world.native_take_broken_bonds().unwrap().is_empty());
+        }
+        world.native_clear().unwrap();
+    }
+}
+
+/// A supported horizontal cantilever has shear and bending under gravity,
+/// even though its axial normal stress is nearly zero. Its readout must show
+/// the same outer-fibre overload used by the native material verdict.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn native_bond_observation_includes_bending_and_material_verdict() {
+    for fibres in [false, true] {
+        stage_env::product();
+        let mut world = World::new(WorldConfig::default()).unwrap();
+        world.native_attach().unwrap();
+        let (mut nodes, mut bonds) = wall(2, 1);
+        nodes[1].mass = 400.;
+        let mut material = settings();
+        material.materials[0] = StressMaterialDesc {
+            compression_elastic: 3e7, compression_fatal: 6e7,
+            tension_elastic: 2e7, tension_fatal: 4e7,
+            shear_elastic: 1e7, shear_fatal: 2e7,
+            elastic_modulus: 3e10, residual_area_fraction: 0.,
+        };
+        bonds[0].area = 0.92;
+        world.native_create_destructible(0,
+            Pose {position: Vec3::new(0.,10.,0.), rotation: Quat::IDENTITY},
+            &nodes, &bonds, material, GROUP_CHUNK, ALL).unwrap();
+        world.step().unwrap();
+        let mut config = native_config(2);
+        config.fibre_bending = fibres;
+        world.native_configure(config).unwrap();
+        let status = step_and_observe(&mut world);
+        assert!(status.converged);
+        let rows = world.native_bond_stress_rows(0).unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert!(row.native_verdict_available && !row.broken);
+        assert_eq!(row.damage, 0.);
+        assert_eq!(row.remaining_area, row.area);
+        assert!(row.stress_bend > 1000. && row.shear > 1000., "cantilever did not exercise bending/shear: {row:?}");
+        assert!(row.stress_normal.abs() < row.stress_bend * 0.01);
+        if fibres {
+            assert!((row.tension - row.stress_bend - row.stress_normal).abs() < 0.01);
+            assert!((row.compression - row.stress_bend + row.stress_normal).abs() < 0.01);
+        } else {
+            assert_eq!(row.compression.min(row.tension), 0.);
+            assert!((row.compression + row.tension - row.stress_normal.abs() - row.stress_bend).abs() < 0.01);
+        }
+        let expected = (row.compression / 3e7).max(row.tension / 2e7).max(row.shear / 1e7);
+        assert_eq!(row.utilisation, expected);
+        assert_eq!(world.native_stats().unwrap().bond_utilisation_max, expected);
+        world.native_clear().unwrap();
+    }
+}
+
+/// Static force balance is known independently of the stress solver: the
+/// distal joint supports the end mass, and the root supports both masses.
+/// Swapping 1 kg and 100 kg must change the distal load, not replace both
+/// authored masses with their geometric mean.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn native_bond_stress_respects_unequal_authored_masses() {
+    for masses in [[1.,100.], [100.,1.]] {
+        stage_env::product();
+        let mut world = World::new(WorldConfig::default()).unwrap();
+        world.native_attach().unwrap();
+        let (mut nodes, bonds) = wall(3, 1);
+        nodes[1].mass = masses[0]; nodes[2].mass = masses[1];
+        let mut material = settings();
+        material.materials[0] = StressMaterialDesc {
+            compression_elastic: 1e8, compression_fatal: 2e8,
+            tension_elastic: 1e8, tension_fatal: 2e8,
+            shear_elastic: 1e8, shear_fatal: 2e8,
+            elastic_modulus: 3e10, residual_area_fraction: 0.,
+        };
+        world.native_create_destructible(0,
+            Pose {position: Vec3::new(0.,10.,0.), rotation: Quat::IDENTITY},
+            &nodes, &bonds, material, GROUP_CHUNK, ALL).unwrap();
+        world.step().unwrap();
+        world.native_configure(native_config(3)).unwrap();
+        // As the game runs it: an unconverged solve carries into the next tick.
+        assert!((0..30).any(|_| step_and_observe(&mut world).converged), "never converged in 30 ticks");
+        let rows = world.native_bond_stress_rows(0).unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            let supported = if row.node0 == 0 {masses[0]+masses[1]} else {masses[1]};
+            let expected = supported * 9.81;
+            let force = row.shear * row.area;
+            assert!((force-expected).abs() <= expected * 1e-4,
+                "authored masses {masses:?}, joint {}: observed shear force {force} N, expected {expected} N",row.bond_index);
+        }
+        world.native_clear().unwrap();
+    }
+}
+
+/// A wall of 1 m cubes, `w` wide and `h` tall, standing on the ground.
+/// The bottom row is authored as support, which is what anchors it.
+fn wall(w: u32, h: u32) -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {
+    wall_of(w, h, false)
+}
+
+/// A bevelled, slightly irregular block as a convex hull in the chunk's own
+/// frame: the shape a fractured city chunk has, and the geometry the production
+/// city authors (`geom_kind` 1), unlike the cubes above.
+fn hull_block(seed: u32) -> Vec<Vec3> {
+    let (a, b) = (0.48f32, 0.36f32);
+    let jitter = |i: u32| ((seed.wrapping_mul(2654435761).wrapping_add(i * 40503) >> 16) % 100) as f32 * 0.0004;
+    let mut points = Vec::new();
+    for (i, &(x, y, z)) in [(a, b, b), (b, a, b), (b, b, a)].iter().enumerate() {
+        for sx in [-1.0f32, 1.0] {
+            for sy in [-1.0f32, 1.0] {
+                for sz in [-1.0f32, 1.0] {
+                    let d = 1.0 - jitter(i as u32 * 8 + points.len() as u32);
+                    points.push(Vec3::new(sx * x * d, sy * y * d, sz * z * d));
+                }
+            }
+        }
+    }
+    points
+}
+
+fn wall_of(w: u32, h: u32, hulls: bool) -> (Vec<ChunkNodeDesc>, Vec<ChunkBondDesc>) {
+    let mut nodes = Vec::new();
+    let mut bonds = Vec::new();
+    let index = |x: u32, y: u32| y * w + x;
+    for y in 0..h {
+        for x in 0..w {
+            nodes.push(ChunkNodeDesc {
+                node_index: index(x, y),
+                centroid: Vec3::new(x as f32 - (w as f32 - 1.0) / 2.0, y as f32 + 0.5, 0.0),
+                // Zero mass is the authoring convention for a world anchor.
+                mass: if y == 0 { 0.0 } else { 400.0 },
+                volume: 1.0,
+                geom_kind: if hulls { 1 } else { 0 },
+                half_extents: Vec3::new(0.48, 0.48, 0.48),
+                convex_points: if hulls { hull_block(index(x, y)) } else { Vec::new() },
+                material: 0,
+            });
+        }
+    }
+    let mut next = 0u32;
+    let mut push = |a: u32, b: u32, centroid: Vec3, normal: Vec3| {
+        bonds.push(ChunkBondDesc {
+            bond_index: next,
+            node0: a,
+            node1: b,
+            centroid,
+            normal,
+            area: 0.92,
+            material: 0,
+        });
+        next += 1;
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let here = index(x, y);
+            if x + 1 < w {
+                push(
+                    here,
+                    index(x + 1, y),
+                    Vec3::new(x as f32 + 0.5 - (w as f32 - 1.0) / 2.0, y as f32 + 0.5, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                );
+            }
+            if y + 1 < h {
+                push(
+                    here,
+                    index(x, y + 1),
+                    Vec3::new(x as f32 - (w as f32 - 1.0) / 2.0, y as f32 + 1.0, 0.0),
+                    Vec3::new(0.0, 1.0, 0.0),
+                );
+            }
+        }
+    }
+    (nodes, bonds)
+}
+
+fn settings() -> DestructibleSettings {
+    DestructibleSettings {
+        max_solver_iterations_per_frame: 2048,
+        graph_reduction_level: 0,
+        materials: vec![StressMaterialDesc {
+            // Ordinary brittle masonry, in Pa. Weak enough in tension that an
+            // impact breaks it, strong enough in compression that it stands.
+            compression_elastic: 250_000.0,
+            compression_fatal: 500_000.0,
+            tension_elastic: 30_000.0,
+            tension_fatal: 60_000.0,
+            shear_elastic: 80_000.0,
+            shear_fatal: 160_000.0,
+            elastic_modulus: 30.0e9,
+            residual_area_fraction: 0.0,
+        }],
+        crush: Vec::new(),
+        ductile_slip: Vec::new(),
+        impact_modulus: Vec::new(), twist_gyration: Vec::new(), twist_reach: Vec::new(), bearing_modulus: Vec::new(), bend_gyration: Vec::new(), bend_section: Vec::new(), bearing_joint: Vec::new(), shear_friction: Vec::new(), shear_capacity_limit: Vec::new(), shear_stiffness_ratio: Vec::new(), surface_static_friction: Vec::new(), surface_dynamic_friction: Vec::new(), surface_restitution: Vec::new(),
+        maximum_bodies: 0,
+        maximum_fractures_per_actor_per_tick: 0,
+        apply_excess_forces: true,
+        apply_centrifugal: true,
+        excess_force_scale: 0.012,
+        linear_damping: 0.25,
+        angular_damping: 0.35,
+    }
+}
+
+fn native_config(chunks: u32) -> NativeConfig {
+    NativeConfig {
+        max_iterations: 2048,
+        tolerance: 1.0e-5,
+        force_tolerance: 0.0,
+        warm_start: true,
+        damage_rate: 2.0,
+        bend_gain_max: 3.0,
+        fibre_bending: true,
+        reserved_contact_pairs: chunks * 3 / 2,
+        preserve_unchanged_contact_pairs: true,
+        gpu_island_repair: true,
+        verdict_sample_ticks: 1,
+    }
+}
+
+fn ground(world: &mut World) {
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 0x1000_0001,
+            user_id: 0,
+            pose: Pose {
+                position: Vec3::new(0.0, -0.5, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: Vec3::new(40.0, 0.5, 40.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL,
+        })
+        .expect("ground");
+}
+
+/// Author the wall, step once so GPU identities exist, then configure.
+fn install(world: &mut World, w: u32, h: u32) -> u32 {
+    install_wall(world, w, h, false)
+}
+
+fn install_wall(world: &mut World, w: u32, h: u32, hulls: bool) -> u32 {
+    let (nodes, bonds) = wall_of(w, h, hulls);
+    let chunks = nodes.len() as u32;
+    world.native_attach().expect("stage attach");
+    world
+        .native_create_destructible(
+            0,
+            Pose {
+                position: Vec3::new(0.0, 0.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            &nodes,
+            &bonds,
+            settings(),
+            GROUP_CHUNK,
+            ALL,
+        )
+        .expect("author wall");
+    world.step().expect("identity step");
+    let configured = world
+        .native_configure(native_config(chunks))
+        .expect("configure stage");
+    assert_eq!(configured.chunks, chunks, "stage took every authored chunk");
+    assert!(configured.bonds > 0, "stage took the bond graph");
+    chunks
+}
+
+/// Step the scene and observe, failing on any step the engine rejected.
+fn step_and_observe(world: &mut World) -> vibe_land_physx_bridge::NativeStatus {
+    world.step().expect("step");
+    let status = world.native_tick().expect("observe");
+    assert_eq!(
+        status.error, 0,
+        "engine rejected the step (error bits {})",
+        status.error
+    );
+    // One corrected pass per tick unless VIBE_CITY_NATIVE_CORRECTION_LIMIT
+    // raised the budget; never more than the budget either way.
+    let limit: u32 = std::env::var("VIBE_CITY_NATIVE_CORRECTION_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    assert!(
+        status.correction_passes <= limit,
+        "more corrected passes than the budget of {limit}: {}",
+        status.correction_passes
+    );
+    assert_eq!(
+        status.stress_passes,
+        status.correction_passes + 1,
+        "one stress evaluation per solve"
+    );
+    status
+}
+
+#[test]
+fn the_wall_stands_until_it_is_hit_and_then_comes_apart() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    install(&mut world, 6, 6);
+
+    // A wall that holds itself up must not break under its own weight. This is
+    // the check that catches a compliance or material error: a structure which
+    // demolishes itself before anyone fires is not a physics result, it is a
+    // configuration bug, and it is invisible once shooting starts.
+    for _ in 0..60 {
+        let status = step_and_observe(&mut world);
+        assert!(status.converged, "stress solve did not converge at rest");
+    }
+    let broken_at_rest = world
+        .native_take_broken_bonds()
+        .expect("drain")
+        .len();
+    assert_eq!(broken_at_rest, 0, "the wall broke while standing still");
+
+    // Now shoot it. Momentum is a real weapon's, delivered as a real body.
+    world
+        .native_fire_round(RoundDesc {
+            position: Vec3::new(0.0, 3.5, 1.2),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            momentum_ns: 3.0e5,
+            radius: 0.4,
+            speed: 20.0,
+            ttl_ticks: 20,
+        })
+        .expect("fire");
+
+    let mut broken = 0usize;
+    let mut promoted = 0usize;
+    for _ in 0..90 {
+        step_and_observe(&mut world);
+        broken += world.native_take_broken_bonds().expect("drain").len();
+        promoted += world
+            .native_take_island_events()
+            .expect("drain")
+            .iter()
+            .filter(|event| event.kind == 0)
+            .count();
+    }
+    assert!(broken > 0, "the round did not break a single bond");
+    assert!(promoted > 0, "nothing came loose from the wall");
+    assert!(
+        world.native_validate_mappings().expect("audit"),
+        "GPU ownership and the CPU mirror disagree after fracture"
+    );
+}
+
+/// Masonry's crush cone (structures/town-kit materials.mjs CRUSH), its strength
+/// cut tenfold and its comminution made instant (energy and viscosity 1: any
+/// overstress crushes within the tick), so a round is sure to crush what it
+/// strikes; `debris` of its mass survives the crush.
+fn crushable(debris: f32, pieces: u32) -> vibe_land_physx_bridge::CrushMaterialDesc {
+    let fc = 0.68e6f32;
+    vibe_land_physx_bridge::CrushMaterialDesc {
+        cap_pressure: 2.5 * fc, cohesion: fc * 0.6, friction_slope: 1.2,
+        crush_energy: 1.0, crush_viscosity: 1.0, strain_rate_exponent: 0.0, reference_strain_rate: 1.0,
+        debris_mass_fraction: debris, debris_fragment_count: pieces, impedance: 0.0,
+    }
+}
+
+/// The 6 x 6 wall made of `crush`, standing 60 ticks, then a round into it and
+/// 90 ticks more: every step must complete. Returns the world, the crush
+/// events and how many islands were retired on the wire.
+fn crush_wall(crush: Vec<vibe_land_physx_bridge::CrushMaterialDesc>) -> (World, Vec<vibe_land_physx_bridge::FfiChunkCrushEvent>, usize) {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    let (nodes, bonds) = wall_of(6, 6, false);
+    let chunks = nodes.len() as u32;
+    let mut material = settings();
+    material.crush = crush;
+    world.native_attach().expect("stage attach");
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat::IDENTITY },
+        &nodes, &bonds, material, GROUP_CHUNK, ALL).expect("author wall");
+    world.step().expect("identity step");
+    world.native_configure(native_config(chunks)).expect("configure stage");
+    for _ in 0..60 {
+        let status = step_and_observe(&mut world);
+        assert_eq!(status.crushed_chunks, 0, "the wall crushed itself standing still");
+    }
+    assert!(world.native_take_crush_events().expect("drain").is_empty());
+    world.native_fire_round(RoundDesc {
+        position: Vec3::new(0.0, 3.5, 1.2), direction: Vec3::new(0.0, 0.0, -1.0),
+        momentum_ns: 3.0e5, radius: 0.4, speed: 20.0, ttl_ticks: 20,
+    }).expect("fire");
+    let (mut crushed, mut retired) = (Vec::new(), 0usize);
+    let mut stage_crushed = 0u32;
+    for _ in 0..90 {
+        stage_crushed += step_and_observe(&mut world).crushed_chunks;
+        crushed.extend(world.native_take_crush_events().expect("drain"));
+        retired += world.native_take_island_events().expect("drain").iter().filter(|e| e.kind == 1).count();
+        world.native_take_broken_bonds().expect("drain");
+    }
+    let mut ids: Vec<u32> = crushed.iter().map(|c| c.chunk_id).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), crushed.len(), "a chunk was announced as crushed twice");
+    assert!(world.native_validate_mappings().expect("audit"), "GPU ownership and the CPU mirror disagree after crushing");
+    assert_eq!(crushed.len() as u32, stage_crushed, "the stage's crushes and the bridge's events disagree");
+    (world, crushed, retired)
+}
+
+/// A crushable wall (dust: nothing of a crushed chunk survives) stands at rest
+/// with nothing crushed, and a round crushes what it strikes. Every step
+/// completes -- the stage splits a crushed chunk off as its own body and
+/// corrects the step -- and each crushed chunk is announced once, retired from
+/// the wire and gone from the world: it cannot be aimed at.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn a_crushable_wall_crushes_where_it_is_struck() {
+    let (world, crushed, retired) = crush_wall(vec![crushable(0.0, 0)]);
+    assert!(!crushed.is_empty(), "the round crushed nothing");
+    assert!(retired >= crushed.len(), "a crushed chunk was not retired from the wire");
+    for c in &crushed {
+        assert!(c.mass > 0.0 && c.volume > 0.0 && c.material == 0 && c.debris_mass_fraction == 0.0,
+            "crush event of chunk {}: mass {} volume {} material {}", c.chunk_id, c.mass, c.volume, c.material);
+        assert!(world.native_chunk_aim(0, c.chunk_id & 0xffff).map_or(true, |a| !a.found), "a crushed chunk can still be aimed at");
+    }
+}
+
+/// Glass-like debris: the whole of a crushed chunk survives as debris in a
+/// dozen pieces. The chunk keeps a free body of its own (off the anchored
+/// wall) and goes on colliding; the events carry the debris share and count.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn crushed_debris_keeps_a_body_of_its_own() {
+    let (world, crushed, _) = crush_wall(vec![crushable(1.0, 12)]);
+    assert!(!crushed.is_empty(), "the round crushed nothing");
+    let anchored = vibe_land_physx_bridge::native_entity_id(0, 0);
+    for c in &crushed {
+        assert!(c.debris_mass_fraction == 1.0 && c.debris_fragment_count == 12, "debris share or count lost");
+        let aim = world.native_chunk_aim(0, c.chunk_id & 0xffff).expect("aim");
+        assert!(aim.found && aim.entity_id != anchored, "crushed debris is not a free body of its own");
+    }
+}
+
+/// VIBE_NATIVE_CRUSH=0 really turns an authored crush table off: the stage is
+/// given no crush properties and the same round crushes nothing.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn vibe_native_crush_off_crushes_nothing() {
+    std::env::set_var("VIBE_NATIVE_CRUSH", "0");
+    let (world, crushed, _) = crush_wall(vec![crushable(0.0, 0)]);
+    std::env::remove_var("VIBE_NATIVE_CRUSH");
+    let given = world.native_crush_material(0, 0).expect("material");
+    assert_eq!(given.cap_pressure, 0.0, "VIBE_NATIVE_CRUSH=0 still configured a crush cap");
+    assert!(crushed.is_empty(), "VIBE_NATIVE_CRUSH=0 still crushed {} chunks", crushed.len());
+}
+
+/// Every authored crush field reaches the stage unchanged, per material, and a
+/// material without crushing gets none.
+#[test]
+#[ignore = "requires real native GPU destruction SDK"]
+fn authored_crush_reaches_the_stage_unchanged() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    let (nodes, bonds) = wall_of(2, 2, false);
+    let mut material = settings();
+    material.materials.push(material.materials[0]);
+    let authored = vibe_land_physx_bridge::CrushMaterialDesc {
+        cap_pressure: 17e6, cohesion: 4.08e6, friction_slope: 1.2, crush_energy: 3.5e6, crush_viscosity: 5.9e5,
+        strain_rate_exponent: 0.02, reference_strain_rate: 30.0, debris_mass_fraction: 0.25, debris_fragment_count: 6, impedance: 0.0,
+    };
+    material.crush = vec![vibe_land_physx_bridge::CrushMaterialDesc::default(), authored];
+    world.native_attach().expect("stage attach");
+    world.native_create_destructible(0, Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat::IDENTITY },
+        &nodes, &bonds, material, GROUP_CHUNK, ALL).expect("author wall");
+    assert_eq!(world.native_crush_material(0, 1).expect("material"), authored);
+    assert_eq!(world.native_crush_material(0, 0).expect("material").cap_pressure, 0.0);
+}
+
+/// The same wall built from convex hulls, the chunk geometry the production
+/// city uses: it stands under its own weight, a round breaks it, and the GPU
+/// and CPU records of who owns which chunk still agree afterwards. Nothing in
+/// the scene may report a PhysX error -- a kernel Metal cannot build, or a
+/// hull the GPU narrowphase rejects, surfaces there first.
+#[test]
+fn a_wall_of_convex_hulls_stands_until_it_is_hit_and_then_comes_apart() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    let errors_before = world.stats().expect("stats").gpu_warning_count;
+    ground(&mut world);
+    install_wall(&mut world, 6, 6, true);
+
+    for _ in 0..60 {
+        let status = step_and_observe(&mut world);
+        assert!(status.converged, "stress solve did not converge at rest");
+    }
+    assert_eq!(
+        world.native_take_broken_bonds().expect("drain").len(),
+        0,
+        "the hull wall broke while standing still"
+    );
+
+    world
+        .native_fire_round(RoundDesc {
+            position: Vec3::new(0.0, 3.5, 1.2),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            momentum_ns: 3.0e5,
+            radius: 0.4,
+            speed: 20.0,
+            ttl_ticks: 20,
+        })
+        .expect("fire");
+    let mut broken = 0usize;
+    let mut promoted = 0usize;
+    for _ in 0..120 {
+        step_and_observe(&mut world);
+        broken += world.native_take_broken_bonds().expect("drain").len();
+        promoted += world
+            .native_take_island_events()
+            .expect("drain")
+            .iter()
+            .filter(|event| event.kind == 0)
+            .count();
+    }
+    assert!(broken > 0, "the round did not break a single hull bond");
+    assert!(promoted > 0, "nothing came loose from the hull wall");
+    assert!(
+        world.native_validate_mappings().expect("audit"),
+        "GPU ownership and the CPU mirror disagree after fracture"
+    );
+    assert_eq!(
+        world.stats().expect("stats").gpu_warning_count,
+        errors_before,
+        "PhysX reported errors while simulating the hull wall"
+    );
+}
+
+#[test]
+fn every_body_is_announced_once_and_keeps_its_identity() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    install(&mut world, 5, 5);
+
+    world
+        .native_fire_round(RoundDesc {
+            position: Vec3::new(0.0, 3.0, 1.2),
+            direction: Vec3::new(0.0, -0.2, -1.0),
+            momentum_ns: 4.0e5,
+            radius: 0.4,
+            speed: 20.0,
+            ttl_ticks: 20,
+        })
+        .expect("fire");
+
+    let mut seen: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    let mut retired: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+    for _ in 0..120 {
+        step_and_observe(&mut world);
+        for event in world.native_take_island_events().expect("drain") {
+            let key = (event.structure_id, event.island_id);
+            match event.kind {
+                0 => {
+                    // A promotion may repeat when membership changes -- the
+                    // centre-of-mass frame moved, so the client must be told
+                    // again -- but a retired id must never come back.
+                    assert!(
+                        !retired.contains(&key),
+                        "island {key:?} was promoted after being retired"
+                    );
+                    seen.insert(key);
+                }
+                1 => {
+                    assert!(seen.contains(&key), "island {key:?} retired without promotion");
+                    retired.insert(key);
+                }
+                other => panic!("unexpected island event kind {other}"),
+            }
+        }
+    }
+    assert!(!seen.is_empty(), "no island was ever promoted");
+
+    // The wire identity the client decodes must be the one the manifest
+    // describes. If these two ever disagree every body is silently renamed.
+    for (structure, serial) in [(0u32, 0u32), (0, 1), (3, 17), (63, 1_048_575), (64, 0), (254, 1_048_575)] {
+        assert_eq!(
+            vibe_land_physx_bridge::native_entity_id(structure, serial),
+            0x8000_0000 | (structure << 20) | serial,
+            "entity id layout drifted from ids.rs"
+        );
+    }
+}
+
+#[test]
+fn a_rebuilt_city_leaves_nothing_of_the_old_one() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+
+    // Three full cycles: the first found a crash in an earlier attempt at this
+    // port, where shapes released on reset were still referenced by the
+    // broadphase on the next build.
+    for cycle in 0..3 {
+        install(&mut world, 4, 4);
+        world
+            .native_fire_round(RoundDesc {
+                position: Vec3::new(0.0, 2.5, 1.2),
+                direction: Vec3::new(0.0, 0.0, -1.0),
+                momentum_ns: 4.0e5,
+                radius: 0.4,
+                speed: 20.0,
+                ttl_ticks: 20,
+            })
+            .unwrap_or_else(|e| panic!("cycle {cycle}: fire: {e}"));
+        for _ in 0..40 {
+            step_and_observe(&mut world);
+        }
+        let _ = world.native_take_broken_bonds();
+        let _ = world.native_take_island_events();
+        let _ = world.native_take_chunk_migrations();
+        world
+            .native_clear()
+            .unwrap_or_else(|e| panic!("cycle {cycle}: clear: {e}"));
+        assert!(
+            !world.native_configured().expect("configured"),
+            "cycle {cycle}: stage still configured after clear"
+        );
+        // A step on the emptied scene: anything left over from the old city
+        // would still be simulated here.
+        world.step().expect("step after clear");
+    }
+}
+
+/// A shot has to be able to *find* the city.
+///
+/// Damage starts with a scene query, and a chunk the raycast cannot see is a
+/// building that swallows every shot silently: the server reports the shot,
+/// the client draws the tracer, and nothing happens. Worth its own test because
+/// firing a round directly -- which the other tests do -- skips this entirely.
+#[test]
+fn a_raycast_finds_the_chunks_the_stage_owns() {
+    use vibe_land_physx_bridge::RaycastRequest;
+
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    install(&mut world, 6, 6);
+    world.step().expect("step");
+
+    // At a chunk CENTRE, not the wall's midline: with an even number of columns
+    // the midline runs down the 4 cm joint between two chunks, and a ray
+    // through the gap is a miss for reasons that have nothing to do with
+    // filtering.
+    let hit = world
+        .raycast(RaycastRequest {
+            origin: Vec3::new(0.5, 3.5, 6.0),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            max_distance: 40.0,
+            collision_mask: GROUP_CHUNK,
+            ignore_entity_id: 0,
+            has_ignore_entity: false,
+        })
+        .expect("raycast");
+    assert!(
+        hit.hit,
+        "the raycast passed straight through a wall of stage-owned chunks; \
+         every shot at this city would silently miss"
+    );
+    assert!(
+        hit.position.z > 0.0 && hit.position.z < 6.0,
+        "hit at an implausible place: {:?}",
+        (hit.position.x, hit.position.y, hit.position.z)
+    );
+}
+
+/// A round carrying a real shot's momentum must be a sane rigid body.
+///
+/// `/city` calibrates a round at 3e5 N*s, which at the spawn speed is a mass in
+/// the tonnes. That is fine -- the reference demo throws a 20,000 kg ball --
+/// but only if the body's inertia matches its mass. Build the inertia from a
+/// different mass than the one you then set and the result is a body with a
+/// mass-to-inertia ratio in the hundreds of thousands, which stays invisible
+/// until it touches something and then takes the process with it.
+///
+/// This fires a production-weight round into a wall and keeps stepping, which
+/// is exactly the sequence a player produces with one trigger pull.
+#[test]
+fn a_production_weight_round_does_not_destabilise_the_scene() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    install(&mut world, 8, 8);
+    for _ in 0..10 {
+        step_and_observe(&mut world);
+    }
+
+    // A player standing where a player stands when they shoot a wall: close
+    // enough that the round is spawned inside their capsule. This is the
+    // geometry a trigger pull actually produces, and a round whose inertia does
+    // not match its mass turns that overlap into an unbounded depenetration
+    // response rather than a shove.
+    world
+        .add_capsule_player(CapsulePlayerDesc {
+            entity_id: 900,
+            user_id: 900,
+            position: Vec3::new(0.5, 1.0, 1.6),
+            cylinder_height: 1.0,
+            radius: 0.4,
+            step_offset: 0.3,
+            contact_offset: 0.05,
+            slope_limit_radians: 0.785,
+            collision_group: 1 << 2,
+            collision_mask: ALL,
+        })
+        .expect("player");
+    for _ in 0..5 {
+        step_and_observe(&mut world);
+    }
+
+    // The /city calibration: 3e5 N*s at the default 20 m/s spawn speed.
+    world
+        .native_fire_round(RoundDesc {
+            position: Vec3::new(0.5, 3.5, 0.5),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            momentum_ns: 3.0e5,
+            radius: 0.4,
+            speed: 20.0,
+            ttl_ticks: 6,
+        })
+        .expect("fire");
+
+    for _ in 0..120 {
+        let status = step_and_observe(&mut world);
+        assert_eq!(status.error, 0, "the engine rejected a step after the impact");
+    }
+
+    // Everything the round touched must still be finite. A degenerate inertia
+    // shows up here as coordinates that are not numbers long before it shows up
+    // as anything a person would call a physics bug.
+    let snapshots = world.native_chunk_body_snapshots().expect("snapshots");
+    for snap in snapshots {
+        for value in [snap.position.x, snap.position.y, snap.position.z] {
+            assert!(
+                value.is_finite() && value.abs() < 1.0e6,
+                "body {} left the world at {value}",
+                snap.entity_id
+            );
+        }
+    }
+    assert!(
+        world.native_validate_mappings().expect("audit"),
+        "GPU ownership and the CPU mirror disagree after a heavy impact"
+    );
+}
+
+#[test]
+fn observing_the_same_frame_twice_reports_nothing_the_second_time() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    install(&mut world, 4, 4);
+
+    world
+        .native_fire_round(RoundDesc {
+            position: Vec3::new(0.0, 2.5, 1.2),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            momentum_ns: 4.0e5,
+            radius: 0.4,
+            speed: 20.0,
+            ttl_ticks: 20,
+        })
+        .expect("fire");
+    for _ in 0..40 {
+        world.step().expect("step");
+        let first = world.native_tick().expect("observe");
+        assert_eq!(first.error, 0);
+        // The tick loop can call this twice in a frame; the second call must
+        // not re-deliver the same events, or every break is counted twice.
+        let second = world.native_tick().expect("observe again");
+        assert!(
+            !second.observed,
+            "the same frame was observed twice (frame {})",
+            second.frame
+        );
+    }
+}
+
+/// A reset rebuilds a city that still breaks.
+///
+/// `a_rebuilt_city_leaves_nothing_of_the_old_one` proves the scene is left
+/// clean. This proves the other half, which is the half that failed in
+/// production: that the rebuilt stage actually runs.
+///
+/// The live server reset its city and the stage came up stuck at frame 0 with
+/// error bit 4 and stayed there -- 19,590 consecutive rejected ticks, every
+/// later `clearStress` refused, a city that could be neither destroyed nor
+/// reset. The cause was the ordering: `CityRuntime::reset` cleared the backend
+/// and authored the next city on the following line, and the GPU broadphase
+/// was still holding pairs against the shapes that had just been released.
+///
+/// Note that this test cannot catch that. It passed throughout, without the
+/// step, on sixteen chunks: the hazard is the size of what the broadphase
+/// holds, and it took a real building coming down to show. The step is here
+/// because it is correct, and the bridge refuses to author without it.
+#[test]
+fn a_reset_rebuilds_a_city_that_still_breaks() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    install(&mut world, 4, 4);
+    for _ in 0..10 {
+        step_and_observe(&mut world);
+    }
+
+    world.native_clear().expect("clear");
+    world.step().expect("the step the rebuild depends on");
+    install(&mut world, 4, 4);
+
+    for tick in 0..20 {
+        world.step().expect("step");
+        let status = world.native_tick().expect("observe");
+        assert_eq!(
+            status.error, 0,
+            "tick {tick} after a rebuild: stage error bits {}",
+            status.error
+        );
+    }
+
+    world
+        .native_fire_round(RoundDesc {
+            position: Vec3::new(0.0, 2.5, 1.2),
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            momentum_ns: 4.0e5,
+            radius: 0.4,
+            speed: 20.0,
+            ttl_ticks: 20,
+        })
+        .expect("fire at the rebuilt city");
+    for _ in 0..40 {
+        step_and_observe(&mut world);
+    }
+    assert!(
+        !world.native_take_broken_bonds().expect("bonds").is_empty(),
+        "the rebuilt city absorbed a round without breaking: this is the live \
+         failure, where the stage runs but does nothing"
+    );
+
+    // And it must still be clearable, or the match is stuck forever.
+    world.native_clear().expect("clear after rebuild");
+}
+
+/// Reset a city that is still coming apart, with a player standing in it.
+///
+/// `a_rebuilt_city_leaves_nothing_of_the_old_one` clears a small wall that has
+/// finished falling, in an otherwise empty scene, and passes. Production does
+/// not get to choose its moment: `/city-reset` arrives whenever a player sends
+/// it, which in a QA sweep is a few seconds after twelve cannonballs, with
+/// hundreds of stage-owned fragments still moving, rounds still alive, and one
+/// or two capsule controllers in the scene.
+///
+/// Done that way the stage dies. It comes up from the rebuild stuck at frame 0
+/// with error bit 4 and never recovers, and every later `clearStress` is
+/// refused because of that state, so the match can be neither destroyed nor
+/// reset for as long as it lives. Observed twice on the live server, 4,560 and
+/// 19,590 consecutive rejected ticks, each time on a reset that followed heavy
+/// destruction with clients connected.
+#[test]
+fn a_reset_during_a_collapse_does_not_kill_the_stage() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+
+    // A player in the scene for every cycle, as in production. The controller
+    // is not stage-owned, so it survives the clear and is still there when the
+    // new city is authored around it.
+    world
+        .add_capsule_player(CapsulePlayerDesc {
+            entity_id: 900,
+            user_id: 900,
+            position: Vec3::new(0.5, 1.0, 4.0),
+            cylinder_height: 1.0,
+            radius: 0.4,
+            step_offset: 0.3,
+            contact_offset: 0.05,
+            slope_limit_radians: 0.785,
+            collision_group: 1 << 2,
+            collision_mask: ALL,
+        })
+        .expect("player");
+
+    for cycle in 0..6 {
+        install(&mut world, 6, 6);
+        for _ in 0..5 {
+            world.step().expect("step");
+            let _ = world.native_tick().expect("observe");
+        }
+        world
+            .native_fire_round(RoundDesc {
+                position: Vec3::new(0.0, 3.5, 1.2),
+                direction: Vec3::new(0.0, 0.0, -1.0),
+                momentum_ns: 6.0e5,
+                radius: 0.4,
+                speed: 20.0,
+                // Long enough that the round is still in the scene at the clear
+                // below, which is the case production hits and the settled
+                // cycle test does not.
+                ttl_ticks: 60,
+            })
+            .unwrap_or_else(|e| panic!("cycle {cycle}: fire: {e}"));
+
+        // Mid-collapse on purpose: enough ticks for the wall to break and its
+        // fragments to be moving, nowhere near enough for anything to settle.
+        for _ in 0..8 {
+            world.step().expect("step");
+            let status = world.native_tick().expect("observe");
+            assert_eq!(status.error, 0, "cycle {cycle}: error before the reset");
+        }
+        let broken = world.native_take_broken_bonds().expect("bonds").len();
+        assert!(broken > 0, "cycle {cycle}: nothing was breaking, so this is not the case under test");
+        let _ = world.native_take_island_events();
+        let _ = world.native_take_chunk_migrations();
+
+        world
+            .native_clear()
+            .unwrap_or_else(|e| panic!("cycle {cycle}: clear during collapse: {e}"));
+        world.step().expect("step after clear");
+    }
+
+    // And the rebuilt city must still run and still break.
+    install(&mut world, 6, 6);
+    for tick in 0..20 {
+        world.step().expect("step");
+        let status = world.native_tick().expect("observe");
+        assert_eq!(status.error, 0, "tick {tick} after six reset cycles: error bits {}", status.error);
+    }
+}
+
+/// Authoring a new city before the scene has stepped is refused.
+///
+/// The refusal is the point: what it prevents is a use-after-free that the GPU
+/// broadphase turns into an illegal memory access, and CUDA does not forgive
+/// one -- every later launch in the process fails with error 700 and the match
+/// is over, with `clearStress` then refusing because of that state so it cannot
+/// even be reset. Production did exactly this and lost matches to it.
+#[test]
+fn authoring_before_the_scene_has_stepped_is_refused() {
+    stage_env::product();
+    let mut world = World::new(WorldConfig::default()).expect("GPU scene");
+    ground(&mut world);
+    install(&mut world, 4, 4);
+    for _ in 0..10 {
+        step_and_observe(&mut world);
+    }
+
+    world.native_clear().expect("clear");
+    let (nodes, bonds) = wall(4, 4);
+    let error = world
+        .native_create_destructible(
+            0,
+            Pose { position: Vec3::new(0.0, 0.0, 0.0), rotation: Quat::IDENTITY },
+            &nodes,
+            &bonds,
+            settings(),
+            GROUP_CHUNK,
+            ALL,
+        )
+        .expect_err("authoring before the broadphase has caught up must be refused");
+    assert!(
+        error.to_string().contains("step the scene once after native_clear"),
+        "unhelpful refusal: {error}"
+    );
+
+    // And the refusal is not a dead end: step, and the same authoring works.
+    world.step().expect("step");
+    install(&mut world, 4, 4);
+    for _ in 0..10 {
+        step_and_observe(&mut world);
+    }
+}

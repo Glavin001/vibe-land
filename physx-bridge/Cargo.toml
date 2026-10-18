@@ -1,0 +1,35 @@
+[package]
+name = "vibe-land-physx-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Optional in-process PhysX GPU bridge for vibe-land"
+publish = false
+
+[features]
+default = []
+gpu = ["dep:cxx", "dep:cxx-build", "dep:cc"]
+destruction = ["gpu"]
+# CUDA stress solver. Needs nvcc and a CUDA-capable GPU; the CPU solver is used
+# when this is off, and the adapter hard-fails if gpuStressSolver is requested
+# without it, so the runtime flag is gated on this feature.
+cuda-stress = ["destruction", "dep:cc"]
+# PhysX's own GPU destruction stage (physx-2), consumed through
+# `PxScene::getDestructionScene()`. Needs no Blast sources: on its own it builds
+# on a machine with only the PhysX SDK. Additive with `destruction`, so a binary
+# can carry both and select one at runtime to A/B them on one scene. Enabling it
+# links the physx-2 SDK, which `build.rs` resolves from PHYSX_DESTRUCTION_SDK.
+native-destruction = ["gpu", "dep:cc"]
+
+[dependencies]
+cxx = { version = "1", optional = true }
+
+[build-dependencies]
+cxx-build = { version = "1", optional = true }
+# Drives nvcc for the CUDA stress solver, and names the build type the vehicle
+# and native-destruction sources are added to.
+cc = { version = "1", optional = true }
+
+[dev-dependencies]
+# Only for tests/gravity_single_source.rs, which pins this crate's default
+# world gravity to the player's (MoveConfig).
+vibe-netcode = { path = "../netcode" }

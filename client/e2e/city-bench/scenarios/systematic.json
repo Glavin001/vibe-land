@@ -1,0 +1,67 @@
+{
+  "name": "systematic",
+  "description": "Destroy the whole city building by building (ring order from the spawn): walk up, cannonballs into the face, a player-fired meteor, a meteor at an exact roof point, then a demolition of the footing; the next walk is the previous collapse's settle. Then drive a car through the rubble and idle.",
+  "seed": 1,
+  "intensity": 1,
+  "warmupS": 6,
+  "tapeMarginS": 3,
+  "buildings": {
+    "order": "ring",
+    "minChunks": 20,
+    "max": 16
+  },
+  "intro": [
+    {
+      "do": "idle",
+      "slotS": 5
+    }
+  ],
+  "perBuilding": [
+    {
+      "do": "walk",
+      "slotS": 6,
+      "standoffM": 10
+    },
+    {
+      "do": "cannon",
+      "slotS": 4,
+      "shots": 3
+    },
+    {
+      "do": "meteorShot",
+      "slotS": 2,
+      "shots": 1
+    },
+    {
+      "do": "meteorAt",
+      "slotS": 1,
+      "count": 1
+    },
+    {
+      "do": "demolish",
+      "slotS": 5,
+      "rounds": 48,
+      "cutFraction": 0.3,
+      "jitter": 0.25,
+      "perTick": 8
+    }
+  ],
+  "tail": [
+    {
+      "do": "settle",
+      "phase": "settle",
+      "slotS": 6
+    },
+    {
+      "do": "drive",
+      "phase": "drive",
+      "slotS": 25,
+      "waypoints": 6
+    },
+    {
+      "do": "idle",
+      "phase": "idle-end",
+      "slotS": 10
+    }
+  ]
+}

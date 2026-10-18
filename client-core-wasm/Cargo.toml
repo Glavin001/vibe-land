@@ -1,0 +1,19 @@
+[package]
+name = "vibe-client-core-wasm"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "The web client's bindings to vibe-client-core (the Unreal client links the same core natively, through client-core-ffi)."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vibe-client-core = { path = "../client-core" }
+vibe-land-shared = { path = "../shared", default-features = false }
+vibe-land-destruction = { path = "../destruction" }
+vibe-land-perplayer = { path = "../perplayer" }
+serde_json = "1"
+wasm-bindgen = "0.2"
+glam = "0.27"

@@ -1,1 +1,1162 @@
-pub use vibe_land_shared::physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome, Vec3};
+use std::collections::HashMap;
+
+use anyhow::Result;
+use nalgebra::{DMatrix, Vector3};
+use rapier3d::prelude::ColliderHandle;
+use vibe_land_shared::{
+    physics_arena::{PhysicsArena as RapierPhysicsArena, PlayerTickResult},
+    protocol::{InputCmd, NetVehicleState},
+    world_document::{
+        EffectiveTerrainMaterial, SpawnArea, TerrainMaterialField, WorldDocumentArena,
+    },
+};
+use vibe_netcode::{movement::Vec3d, physics_backend::PhysicsBackendKind};
+
+#[cfg(feature = "physx-gpu")]
+use crate::physx_runtime::PhysxPhysicsArena;
+
+pub type Vec3 = Vector3<f32>;
+pub use vibe_land_shared::physics_arena::{MoveConfig, PlayerDamageOutcome};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PhysicsColliderHandle(u64);
+
+#[derive(Clone, Debug, Default)]
+pub struct PlayerStateSummary {
+    pub position: Vec3d,
+    pub last_input: InputCmd,
+    pub on_ground: bool,
+    pub hp: u8,
+    pub dead: bool,
+    pub energy: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlayerSupportState {
+    pub entity_id: u32,
+    pub is_vehicle: bool,
+    pub local_position: [f32; 3],
+    pub velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    pub flags: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PhysicsHealth {
+    pub gpu_active: bool,
+    pub gpu_warning_count: u32,
+    pub contact_pairs: u32,
+    pub active_dynamic_bodies: u32,
+    pub last_step_ms: f32,
+    /// Step phases. `simulate` only dispatches under GPU dynamics, so `fetch`
+    /// carries GPU compute plus the result readback.
+    pub last_controller_ms: f32,
+    pub last_simulate_ms: f32,
+    pub last_fetch_ms: f32,
+    /// The split inside `fetch`: time blocked waiting on the GPU versus the
+    /// call that copies results back. Only populated under
+    /// `VIBE_PHYSX_PROFILE_FETCH=1` (it polls, which burns a core), and it is
+    /// the number that says whether overlapping CPU work with the simulate
+    /// window would buy anything.
+    pub last_gpu_wait_ms: f32,
+    pub last_fetch_copy_ms: f32,
+    /// The rest of what `dynamics_ms` brackets, which is NOT the step:
+    /// the three FFI readbacks after it, the player refresh, and the vehicle
+    /// control loop before it. `dynamics_ms - last_step_ms` used to be a real
+    /// cost with no name attached to it.
+    pub last_readback_ms: f32,
+    pub last_refresh_players_ms: f32,
+    pub last_vehicle_control_ms: f32,
+    /// PhysX's own high-water marks for the two GPU buffers that have a fixed
+    /// capacity, with those capacities beside them. Exceeding one degrades
+    /// hard, and nothing was reporting them.
+    pub gpu_rigid_contact_high_water: u32,
+    pub gpu_rigid_patch_high_water: u32,
+    pub gpu_max_rigid_contacts: u32,
+    pub gpu_max_rigid_patches: u32,
+}
+
+/// The last physics step's phases, for the per-tick capture record. See
+/// `session_capture::PhysxPhases` for what each one covers.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StepPhases {
+    pub controller_ms: f32,
+    pub submit_ms: f32,
+    pub fetch_ms: f32,
+    pub callbacks_ms: f32,
+    /// Only on the bridge's sampled steps.
+    pub gpu_wait_ms: Option<f32>,
+    pub readback_ms: f32,
+    pub players_ms: f32,
+    pub awake_bodies: u32,
+    pub found_pairs: u32,
+    pub lost_pairs: u32,
+}
+
+enum PhysicsBackend {
+    Rapier(RapierPhysicsArena),
+    #[cfg(feature = "physx-gpu")]
+    Physx(PhysxPhysicsArena),
+}
+
+/// A vehicle's state for the per-player stream (`vehicle_stream_states`).
+pub struct VehicleStreamState {
+    pub id: u32,
+    pub position: [f32; 3],
+    pub rotation: [f32; 4],
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    /// Per wheel: travel from neutral, steer, spin angle, on road (1/0; -1 gone).
+    pub wheels: [[f32; 4]; 4],
+    pub wheel_rates: [f32; 4],
+}
+
+/// Server-owned physics facade. Engine-specific handles never leave this type.
+pub struct PhysicsArena {
+    backend: PhysicsBackend,
+    next_collider_token: u64,
+    rapier_colliders: HashMap<PhysicsColliderHandle, ColliderHandle>,
+}
+
+impl PhysicsArena {
+    /// Opt-in native destruction of a spawned prepared vehicle (garage only).
+    pub fn enable_vehicle_destruction(&mut self, id:u32, asset:&crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.enable_vehicle_destruction(id, asset),
+            _ => { let _ = (id, asset); Err("vehicle destruction requires the native PhysX destruction backend".into()) }
+        }
+    }
+
+    /// Native destruction of a spawned prepared vehicle in a stage another
+    /// owner (the city) configures and ticks. See `city_fleet`.
+    pub fn enable_external_vehicle_destruction(&mut self, id:u32, asset:&crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.enable_external_vehicle_destruction(id, asset),
+            _ => { let _ = (id, asset); Err("vehicle destruction requires the native PhysX destruction backend".into()) }
+        }
+    }
+
+    /// The external owner configured the stage: destructible vehicles are live.
+    pub fn mark_vehicle_destruction_configured(&mut self) {
+        #[cfg(feature="native-destruction")]
+        if let PhysicsBackend::Physx(arena) = &mut self.backend { arena.mark_vehicle_destruction_configured(); }
+    }
+
+    /// Take a prepared vehicle out of the world (its driver steps out first).
+    pub fn remove_prepared_vehicle(&mut self, id:u32) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.remove_vehicle(id),
+            _ => { let _ = id; Err("Customized vehicles require the PhysX GPU backend".into()) }
+        }
+    }
+
+    /// (part index, world position, world rotation) of a destructible vehicle's detached parts.
+    pub fn vehicle_detached_parts(&mut self, id:u32) -> Vec<(u16, [f32;3], [f32;4])> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_detached_parts(id).into_iter()
+                .map(|p| (p.part_index as u16, [p.position.x, p.position.y, p.position.z], [p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w])).collect(),
+            _ => { let _ = id; Vec::new() }
+        }
+    }
+
+    /// Detached parts of a destructible vehicle, with the rigid body each is
+    /// on (named by its lowest part), its centre of mass and velocities.
+    pub fn vehicle_detached_bodies(&mut self, id:u32) -> Vec<vibe_land_destruction::per_player::VehicleDetachedPart> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => {
+                let v = |p: vibe_land_physx_bridge::FfiVec3| [p.x, p.y, p.z];
+                arena.vehicle_detached_bodies(id).into_iter().map(|p| vibe_land_destruction::per_player::VehicleDetachedPart {
+                    part: p.part_index as u16, body: p.body as u16, position: v(p.position),
+                    rotation: [p.rotation.x, p.rotation.y, p.rotation.z, p.rotation.w],
+                    com: v(p.com), linear_velocity: v(p.linear_velocity), angular_velocity: v(p.angular_velocity),
+                }).collect()
+            }
+            _ => { let _ = id; Vec::new() }
+        }
+    }
+
+    /// World centre of one part of a destructible vehicle.
+    pub fn vehicle_part_center(&self, id:u32, part:u32) -> Option<[f32;3]> {
+        match &self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_part_center(id, part),
+            _ => { let _ = (id, part); None }
+        }
+    }
+
+    /// (origin, direction, clear) of a shot at one part of a destructible vehicle.
+    pub fn vehicle_clear_shot(&self, id:u32, part:u32, from:Option<Vec3>) -> Option<(Vec3, Vec3, bool)> {
+        match &self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_clear_shot(id, part, from),
+            _ => { let _ = (id, part, from); None }
+        }
+    }
+
+    /// Debug readback of a destructible vehicle's hulls, actors and bonds.
+    pub fn vehicle_destruction_debug(&mut self, id:u32) -> Result<serde_json::Value, String> {
+        match &mut self.backend {
+            #[cfg(feature="native-destruction")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_destruction_debug(id),
+            _ => { let _ = id; Err("vehicle destruction requires the native PhysX destruction backend".into()) }
+        }
+    }
+
+    /// Every vehicle's state this tick as the per-player stream takes it:
+    /// pose, velocities, and per wheel [travel, steer, angle, on road]
+    /// (`neutral_jounce` per vehicle id) with its spin rate.
+    pub fn vehicle_stream_states(&self, neutral_jounce: impl Fn(u32) -> Option<f32>) -> Vec<VehicleStreamState> {
+        match &self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_snapshots().into_iter().filter_map(|s| {
+                let rig = crate::physx_runtime::rig_from_snapshot(&s, neutral_jounce(s.user_id)?);
+                Some(VehicleStreamState {
+                    id: s.user_id,
+                    position: [s.pose.position.x, s.pose.position.y, s.pose.position.z],
+                    rotation: [s.pose.rotation.x, s.pose.rotation.y, s.pose.rotation.z, s.pose.rotation.w],
+                    linear_velocity: [s.linear_velocity.x, s.linear_velocity.y, s.linear_velocity.z],
+                    angular_velocity: [s.angular_velocity.x, s.angular_velocity.y, s.angular_velocity.z],
+                    wheels: rig,
+                    wheel_rates: s.wheel_rotation_speed,
+                })
+            }).collect(),
+            _ => { let _ = neutral_jounce; Vec::new() }
+        }
+    }
+
+    pub fn vehicle_rig(&self, id:u32, neutral_jounce:f32) -> Option<[[f32;4];4]> {
+        match &self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_rig(id, neutral_jounce),
+            _ => None,
+        }
+    }
+
+    pub fn tune_prepared_vehicle(&mut self,id:u32,tuning:&crate::vehicle_assets::PreparedDriving)->Result<(),String> {
+        match &mut self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena)=>arena.tune_vehicle(id,tuning),
+            _=>Err("Live tuning requires the PhysX GPU backend".into()),
+        }
+    }
+
+    pub fn spawn_prepared_vehicle_at(&mut self, id:u32, vehicle_type:u8, position:Vector3<f32>, rotation:[f32;4], asset:&crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.spawn_vehicle_asset(id, vehicle_type, position, rotation, Some(asset)).map_err(|e|e.to_string()),
+            _ => { let _ = (id, vehicle_type, position, rotation, asset); Err("Customized vehicles require the PhysX GPU backend".into()) }
+        }
+    }
+
+    pub fn spawn_prepared_vehicle(&mut self, id:u32, vehicle_type:u8, position:Vector3<f32>, asset:&crate::vehicle_assets::PreparedGeometry) -> Result<(), String> {
+        match &mut self.backend {
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.spawn_vehicle_asset(id, vehicle_type, position, [0.0,0.0,0.0,1.0], Some(asset)).map_err(|e|e.to_string()),
+            _ => Err("Customized vehicles require the PhysX GPU backend".into()),
+        }
+    }
+
+    pub fn new(config: MoveConfig, backend: PhysicsBackendKind) -> Result<Self> {
+        let backend = match backend {
+            PhysicsBackendKind::Rapier => PhysicsBackend::Rapier(RapierPhysicsArena::new(config)),
+            PhysicsBackendKind::PhysxGpu => {
+                #[cfg(feature = "physx-gpu")]
+                {
+                    PhysicsBackend::Physx(PhysxPhysicsArena::new(config)?)
+                }
+                #[cfg(not(feature = "physx-gpu"))]
+                {
+                    anyhow::bail!("PhysX GPU backend was not compiled into this server")
+                }
+            }
+        };
+        Ok(Self {
+            backend,
+            next_collider_token: 1,
+            rapier_colliders: HashMap::new(),
+        })
+    }
+
+    #[cfg(test)]
+    pub fn new_rapier(config: MoveConfig) -> Self {
+        Self::new(config, PhysicsBackendKind::Rapier).expect("Rapier backend is available")
+    }
+
+    pub fn config(&self) -> &MoveConfig {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.config(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.config(),
+        }
+    }
+
+    /// See `PhysxPhysicsArena::set_tolerate_rejected_steps`. A no-op on Rapier,
+    /// which has no such outcome.
+    pub fn set_tolerate_rejected_steps(&mut self, tolerate: bool) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => {}
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.set_tolerate_rejected_steps(tolerate),
+        }
+    }
+
+    #[cfg(feature = "physx-city")]
+    pub fn physx_world_mut(&mut self) -> Option<&mut vibe_land_physx_bridge::World> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            PhysicsBackend::Physx(arena) => Some(arena.world_mut()),
+        }
+    }
+
+    /// No PhysX world in this build; the city takes `Option<()>` instead.
+    #[cfg(not(feature = "physx-city"))]
+    pub fn physx_world_mut(&mut self) -> Option<()> {
+        None
+    }
+
+    pub fn set_spawn_areas(&mut self, areas: Vec<SpawnArea>) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.set_spawn_areas(areas),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.set_spawn_areas(areas),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn spawn_areas(&self) -> &[SpawnArea] {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => &arena.spawn_areas,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.spawn_areas(),
+        }
+    }
+
+    pub fn add_static_cuboid(
+        &mut self,
+        center: Vec3,
+        half_extents: Vec3,
+        user_data: u128,
+    ) -> PhysicsColliderHandle {
+        let token = PhysicsColliderHandle(self.next_collider_token);
+        self.next_collider_token = self.next_collider_token.saturating_add(1);
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => {
+                let native = arena.add_static_cuboid(center, half_extents, user_data);
+                self.rapier_colliders.insert(token, native);
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.add_runtime_static_cuboid(token.0, center, half_extents, user_data)
+            }
+        }
+        token
+    }
+
+    pub fn remove_collider(&mut self, handle: PhysicsColliderHandle) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => {
+                if let Some(native) = self.rapier_colliders.remove(&handle) {
+                    arena.remove_collider(native);
+                }
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.remove_runtime_collider(handle.0),
+        }
+    }
+
+    pub fn collider_user_data(&self, handle: PhysicsColliderHandle) -> Option<u128> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => self
+                .rapier_colliders
+                .get(&handle)
+                .and_then(|native| arena.collider_user_data(*native)),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.runtime_collider_user_data(handle.0),
+        }
+    }
+
+    pub fn wake_bodies_near(&mut self, center: Vec3, radius: f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.wake_bodies_near(center, radius),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.wake_bodies_near(center, radius),
+        }
+    }
+
+    pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.spawn_dynamic_ball(position, radius),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.spawn_dynamic_ball(position, radius),
+        }
+    }
+
+    /// Throw a visible ball; None when the backend cannot fire one.
+    ///
+    /// Only the PhysX arena can: the ball exists to load the native
+    /// destruction stage through real contacts, and the Rapier arena has no
+    /// such stage to load.
+    pub fn launch_ball(
+        &mut self,
+        position: Vec3,
+        direction: Vec3,
+        radius: f32,
+        mass: f32,
+        speed: f32,
+        ttl_ticks: u32,
+    ) -> Option<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.launch_ball(position, direction, radius, mass, speed, ttl_ticks)
+            }
+        }
+    }
+
+    pub fn launch_ball_from_muzzle(&mut self, position:Vec3, velocity:Vec3, radius:f32, mass:f32, ttl_ticks:u32) -> Option<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature="physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.launch_ball_from_muzzle(position,velocity,radius,mass,ttl_ticks),
+        }
+    }
+
+    /// Reserve the ids fired balls will use. Empty when the backend has none.
+    pub fn reserve_ball_pool(&mut self, count: usize) -> Vec<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.reserve_ball_pool(count),
+        }
+    }
+
+    /// Reserve the ids meteors will use. Empty when the backend has none.
+    pub fn reserve_meteor_pool(&mut self, count: usize) -> Vec<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.reserve_meteor_pool(count),
+        }
+    }
+
+    /// Drop a meteor at `position` with `velocity`. None on the backend that
+    /// cannot, or on a malformed launch.
+    pub fn launch_meteor(
+        &mut self,
+        position: Vec3,
+        velocity: Vec3,
+        radius: f32,
+        mass: f32,
+        ttl_ticks: u32,
+    ) -> Option<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.launch_meteor(position, velocity, radius, mass, ttl_ticks)
+            }
+        }
+    }
+
+    /// The first solid thing along a ray as a world point; see the arena's
+    /// `cast_solid_ray_point`. None on the backend that has no scene query.
+    pub fn cast_solid_ray_point(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+    ) -> Option<[f32; 3]> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.cast_solid_ray_point(origin, direction, max_distance)
+            }
+        }
+    }
+
+    /// How many times a ball was held at a surface it would have skipped.
+    pub fn balls_clamped(&self) -> u64 {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => 0,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.balls_clamped(),
+        }
+    }
+
+    /// How many fired balls are in the scene right now.
+    pub fn launched_ball_count(&self) -> usize {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => 0,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.launched_ball_count(),
+        }
+    }
+
+    pub fn spawn_player(&mut self, player_id: u32) -> Vec3d {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.spawn_player(player_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.spawn_player(player_id),
+        }
+    }
+
+    pub fn remove_player(&mut self, player_id: u32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.remove_player(player_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.remove_player(player_id),
+        }
+    }
+
+    pub fn drop_player_from_camera(&mut self, player_id: u32, cmd: &vibe_land_shared::protocol::CityCameraDropCmd) -> bool {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.drop_player_from_camera(player_id, cmd),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.drop_player_from_camera(player_id, cmd),
+        }
+    }
+
+    pub fn respawn_player(&mut self, player_id: u32) -> Option<[f32; 3]> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.respawn_player(player_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.respawn_player(player_id),
+        }
+    }
+
+    pub fn simulate_player_tick(
+        &mut self,
+        player_id: u32,
+        input: &InputCmd,
+        dt: f32,
+    ) -> Option<PlayerTickResult> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.simulate_player_tick(player_id, input, dt),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.simulate_player_tick(player_id, input, dt),
+        }
+    }
+
+    pub fn snapshot_player(
+        &self,
+        player_id: u32,
+    ) -> Option<([f32; 3], [f32; 3], f32, f32, u8, u16)> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.snapshot_player(player_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.snapshot_player(player_id),
+        }
+    }
+
+    pub fn player_state(&self, player_id: u32) -> Option<PlayerStateSummary> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => {
+                arena
+                    .players
+                    .get(&player_id)
+                    .map(|state| PlayerStateSummary {
+                        position: state.position,
+                        last_input: state.last_input.clone(),
+                        on_ground: state.on_ground,
+                        hp: state.hp,
+                        dead: state.dead,
+                        energy: state.energy,
+                    })
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.player_state(player_id),
+        }
+    }
+
+    pub fn player_ids(&self) -> Vec<u32> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.players.keys().copied().collect(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.player_ids(),
+        }
+    }
+
+    pub fn player_support(&self, player_id: u32) -> Option<PlayerSupportState> {
+        #[cfg(not(feature = "physx-gpu"))]
+        let _ = player_id;
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.player_support(player_id),
+        }
+    }
+
+    pub fn alive_player_ids(&self) -> Vec<u32> {
+        self.player_ids()
+            .into_iter()
+            .filter(|id| self.player_state(*id).is_some_and(|state| !state.dead))
+            .collect()
+    }
+
+    pub fn player_hp(&self, player_id: u32) -> u8 {
+        self.player_state(player_id).map_or(0, |state| state.hp)
+    }
+
+    pub fn player_is_dead(&self, player_id: u32) -> bool {
+        self.player_state(player_id).is_some_and(|state| state.dead)
+    }
+
+    pub fn add_player_energy(&mut self, player_id: u32, delta: f32) -> Option<f32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => {
+                let state = arena.players.get_mut(&player_id)?;
+                state.energy = (state.energy + delta).max(0.0);
+                Some(state.energy)
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.add_player_energy(player_id, delta),
+        }
+    }
+
+    pub fn player_energy(&self, player_id: u32) -> Option<f32> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.player_energy(player_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.player_energy(player_id),
+        }
+    }
+
+    pub fn set_player_dead(&mut self, player_id: u32, dead: bool) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.set_player_dead(player_id, dead),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.set_player_dead(player_id, dead),
+        }
+    }
+
+    pub fn set_player_spawn_protected(&mut self, player_id: u32, value: bool) -> bool {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.set_player_spawn_protected(player_id, value),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.set_player_spawn_protected(player_id, value),
+        }
+    }
+
+    pub fn apply_player_damage(&mut self, player_id: u32, damage: u8) -> PlayerDamageOutcome {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.apply_player_damage(player_id, damage),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.apply_player_damage(player_id, damage),
+        }
+    }
+
+    pub fn is_player_in_vehicle(&self, player_id: u32) -> bool {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.vehicle_of_player.contains_key(&player_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.is_player_in_vehicle(player_id),
+        }
+    }
+
+    pub fn player_vehicle_id(&self, player_id: u32) -> Option<u32> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.vehicle_of_player.get(&player_id).copied(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.player_vehicle_id(player_id),
+        }
+    }
+
+    pub fn vehicle_exists(&self, vehicle_id: u32) -> bool {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.vehicles.contains_key(&vehicle_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.vehicle_exists(vehicle_id),
+        }
+    }
+
+    pub fn enter_vehicle(&mut self, player_id: u32, vehicle_id: u32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.enter_vehicle(player_id, vehicle_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.enter_vehicle(player_id, vehicle_id),
+        }
+    }
+
+    pub fn exit_vehicle(&mut self, player_id: u32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.exit_vehicle(player_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.exit_vehicle(player_id),
+        }
+    }
+
+    /// The last step's phases; None on Rapier, which has none to report.
+    pub fn step_phases(&self) -> Option<StepPhases> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.step_phases(),
+        }
+    }
+
+    pub fn reduce_audio_contacts(&mut self, reducer: &mut crate::contact_audio::ContactAudioReducer, tick: u32) {
+        match &mut self.backend {
+            // Rapier currently supplies the client motion/destruction fallback.
+            PhysicsBackend::Rapier(_) => { let _ = (reducer, tick); }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.reduce_audio_contacts(reducer, tick),
+        }
+    }
+
+    pub fn step_vehicles_and_dynamics(&mut self, dt: f32) -> (f32, f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.step_vehicles_and_dynamics(dt),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.step_vehicles_and_dynamics(dt),
+        }
+    }
+
+    /// Split step, first half: scene writes then dispatch, returning while the
+    /// GPU simulates. `supports_split_step` reports whether the backend can do
+    /// it; only the PhysX GPU arena can, and a caller that gets `false` must
+    /// use `step_vehicles_and_dynamics` instead. Between the halves the scene
+    /// is mid-simulate and NO physics call is legal.
+    pub fn supports_split_step(&self) -> bool {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => false,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(_) => true,
+        }
+    }
+
+    /// Panics on a backend without split support — call `supports_split_step`
+    /// first. A silent fallback here would leave the caller's deferred work
+    /// running outside any GPU wait, which is the whole point of the split.
+    pub fn begin_dynamics(&mut self, dt: f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => {
+                let _ = dt;
+                panic!("begin_dynamics on a backend without split-step support")
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.begin_dynamics(),
+        }
+    }
+
+    pub fn finish_dynamics(&mut self) -> (f32, f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => {
+                panic!("finish_dynamics on a backend without split-step support")
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.finish_dynamics(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn step_dynamics(&mut self, dt: f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.dynamic.step_dynamics(dt),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                let _ = arena.step_vehicles_and_dynamics(dt);
+            }
+        }
+    }
+
+    /// Opt-in debris strikes on players (`VIBE_CITY_DEBRIS_DAMAGE`); none
+    /// on Rapier, which has no destruction.
+    pub fn apply_debris_player_collisions(&mut self) -> Vec<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.apply_debris_player_collisions(),
+        }
+    }
+
+    pub fn apply_vehicle_player_collisions(&mut self) -> Vec<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.apply_vehicle_player_collisions(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.apply_vehicle_player_collisions(),
+        }
+    }
+
+    pub fn snapshot_dynamic_bodies(
+        &self,
+    ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.snapshot_dynamic_bodies(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.snapshot_dynamic_bodies(),
+        }
+    }
+
+    pub fn snapshot_vehicles(&self) -> Vec<NetVehicleState> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.snapshot_vehicles(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.snapshot_vehicles(),
+        }
+    }
+
+    pub fn cast_static_world_ray(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        exclude_player: Option<u32>,
+    ) -> Option<f32> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => {
+                arena.cast_static_world_ray(origin, direction, max_distance, exclude_player)
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.cast_static_world_ray(origin, direction, max_distance, exclude_player)
+            }
+        }
+    }
+
+    /// The nearest destruction chunk on a ray; None where the backend has
+    /// no destruction (Rapier).
+    pub fn cast_chunk_ray(&self, origin: [f32; 3], direction: [f32; 3], max_distance: f32) -> Option<f32> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => {
+                let _ = (origin, direction, max_distance);
+                None
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.cast_chunk_ray(origin, direction, max_distance),
+        }
+    }
+
+    pub fn cast_dynamic_body_ray(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max_distance: f32,
+        exclude_player: Option<u32>,
+    ) -> Option<(u32, f32, [f32; 3])> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => {
+                arena.cast_dynamic_body_ray(origin, direction, max_distance, exclude_player)
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.cast_dynamic_body_ray(origin, direction, max_distance, exclude_player)
+            }
+        }
+    }
+
+    pub fn apply_dynamic_body_impulse(
+        &mut self,
+        body_id: u32,
+        impulse: [f32; 3],
+        point: [f32; 3],
+    ) -> bool {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => {
+                arena.apply_dynamic_body_impulse(body_id, impulse, point)
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.apply_dynamic_body_impulse(body_id, impulse, point)
+            }
+        }
+    }
+
+    /// Top of the lowest static surface authored into the world, if known:
+    /// what bodies going through the ground are measured against. Only the
+    /// PhysX backend tracks it.
+    pub fn lowest_ground_y(&self) -> Option<f32> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.lowest_ground_y(),
+        }
+    }
+
+    pub fn terrain_y_at(&self, x: f64, z: f64) -> f64 {
+        self.cast_static_world_ray([x as f32, 40.0, z as f32], [0.0, -1.0, 0.0], 100.0, None)
+            .map(|distance| 40.0 - distance as f64)
+            .unwrap_or(0.0)
+    }
+
+    pub fn spawn_battery(&mut self, position: Vec3d, energy: f32, radius: f32, height: f32) -> u32 {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.spawn_battery(position, energy, radius, height),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.spawn_battery(position, energy, radius, height),
+        }
+    }
+
+    pub fn collect_batteries_for_player(&mut self, player_id: u32) -> Vec<(u32, f32)> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.collect_batteries_for_player(player_id),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.collect_batteries_for_player(player_id),
+        }
+    }
+
+    pub fn snapshot_batteries(&self) -> Vec<(u32, [f32; 3], f32, f32, f32)> {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => arena.snapshot_batteries(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.snapshot_batteries(),
+        }
+    }
+
+    pub fn apply_on_foot_energy_drain(
+        &mut self,
+        player_id: u32,
+        previous_input: &InputCmd,
+        input: &InputCmd,
+        was_on_ground: bool,
+        dt: f32,
+    ) -> bool {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.apply_on_foot_energy_drain(
+                player_id,
+                previous_input,
+                input,
+                was_on_ground,
+                dt,
+            ),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.apply_on_foot_energy_drain(
+                player_id,
+                previous_input,
+                input,
+                was_on_ground,
+                dt,
+            ),
+        }
+    }
+
+    pub fn apply_vehicle_energy_drain(&mut self, dt: f32) -> Vec<u32> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => arena.apply_vehicle_energy_drain(dt),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.apply_vehicle_energy_drain(dt),
+        }
+    }
+
+    pub fn counts(&self) -> (usize, usize, usize) {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => (
+                arena.dynamic.dynamic_bodies.len(),
+                arena.vehicles.len(),
+                arena.batteries.len(),
+            ),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.counts(),
+        }
+    }
+
+    pub fn health(&self) -> PhysicsHealth {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => PhysicsHealth::default(),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => arena.health(),
+        }
+    }
+
+    /// Generic bridge spans stashed by the health() read; empty off physx.
+    #[cfg(feature = "physx-gpu")]
+    pub fn take_physics_spans(&self) -> Vec<vibe_land_physx_bridge::NamedSpan> {
+        match &self.backend {
+            PhysicsBackend::Rapier(_) => Vec::new(),
+            PhysicsBackend::Physx(arena) => arena.take_physics_spans(),
+        }
+    }
+    #[cfg(not(feature = "physx-gpu"))]
+    pub fn take_physics_spans(&self) -> Vec<vibe_land_destruction::types::NamedSpan> {
+        Vec::new()
+    }
+
+    pub fn awake_dynamic_body_counts(
+        &self,
+        player_centers: &[[f32; 3]],
+        near_radius: f32,
+    ) -> (u32, u32) {
+        match &self.backend {
+            PhysicsBackend::Rapier(arena) => {
+                let near_radius_sq = near_radius * near_radius;
+                let mut total = 0;
+                let mut near = 0;
+                for dynamic in arena.dynamic.dynamic_bodies.values() {
+                    let Some(body) = arena.dynamic.sim.rigid_bodies.get(dynamic.body_handle) else {
+                        continue;
+                    };
+                    if body.is_sleeping() {
+                        continue;
+                    }
+                    total += 1;
+                    let position = body.translation();
+                    if player_centers.iter().any(|center| {
+                        let dx = position.x - center[0];
+                        let dy = position.y - center[1];
+                        let dz = position.z - center[2];
+                        dx * dx + dy * dy + dz * dz <= near_radius_sq
+                    }) {
+                        near += 1;
+                    }
+                }
+                (total, near)
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                arena.awake_dynamic_body_counts(player_centers, near_radius)
+            }
+        }
+    }
+}
+
+impl WorldDocumentArena for PhysicsArena {
+    fn add_static_heightfield(
+        &mut self,
+        center: Vector3<f32>,
+        heights: DMatrix<f32>,
+        scale: Vector3<f32>,
+        user_data: u128,
+        material: EffectiveTerrainMaterial,
+    ) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => WorldDocumentArena::add_static_heightfield(
+                arena, center, heights, scale, user_data, material,
+            ),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => WorldDocumentArena::add_static_heightfield(
+                arena, center, heights, scale, user_data, material,
+            ),
+        }
+    }
+
+    fn add_static_cuboid(
+        &mut self,
+        center: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+        user_data: u128,
+    ) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => WorldDocumentArena::add_static_cuboid(
+                arena,
+                center,
+                rotation,
+                half_extents,
+                user_data,
+            ),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => WorldDocumentArena::add_static_cuboid(
+                arena,
+                center,
+                rotation,
+                half_extents,
+                user_data,
+            ),
+        }
+    }
+
+    fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+    ) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => WorldDocumentArena::spawn_dynamic_box_with_id(
+                arena,
+                id,
+                position,
+                rotation,
+                half_extents,
+            ),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => WorldDocumentArena::spawn_dynamic_box_with_id(
+                arena,
+                id,
+                position,
+                rotation,
+                half_extents,
+            ),
+        }
+    }
+
+    fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vector3<f32>, radius: f32) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => {
+                WorldDocumentArena::spawn_dynamic_ball_with_id(arena, id, position, radius)
+            }
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => {
+                WorldDocumentArena::spawn_dynamic_ball_with_id(arena, id, position, radius)
+            }
+        }
+    }
+
+    fn spawn_vehicle_with_id(
+        &mut self,
+        id: u32,
+        vehicle_type: u8,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+    ) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => WorldDocumentArena::spawn_vehicle_with_id(
+                arena,
+                id,
+                vehicle_type,
+                position,
+                rotation,
+            ),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => WorldDocumentArena::spawn_vehicle_with_id(
+                arena,
+                id,
+                vehicle_type,
+                position,
+                rotation,
+            ),
+        }
+    }
+
+    fn spawn_battery_with_id(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        energy: f32,
+        radius: f32,
+        height: f32,
+    ) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => WorldDocumentArena::spawn_battery_with_id(
+                arena, id, position, energy, radius, height,
+            ),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => WorldDocumentArena::spawn_battery_with_id(
+                arena, id, position, energy, radius, height,
+            ),
+        }
+    }
+
+    fn rebuild_broad_phase(&mut self) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => WorldDocumentArena::rebuild_broad_phase(arena),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => WorldDocumentArena::rebuild_broad_phase(arena),
+        }
+    }
+
+    fn set_material_field(&mut self, field: Option<TerrainMaterialField>) {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(arena) => WorldDocumentArena::set_material_field(arena, field),
+            #[cfg(feature = "physx-gpu")]
+            PhysicsBackend::Physx(arena) => WorldDocumentArena::set_material_field(arena, field),
+        }
+    }
+}

@@ -2,13 +2,21 @@ import type { GameMode } from './gameMode';
 
 export type AppRoute =
   | { kind: 'launcher' }
-  | { kind: 'game'; mode: GameMode }
+  | { kind: 'garage' }
+  | { kind: 'grassLab' }
+  | { kind: 'audioLab' }
+  | { kind: 'game'; mode: GameMode; matchFallback?: string }
   | { kind: 'sharedPractice'; id: string }
   | { kind: 'stats' }
   | { kind: 'loadtest' }
   | { kind: 'builder'; page: 'world'; publishedId?: string }
   | { kind: 'gallery' }
-  | { kind: 'ragdollLab' };
+  | { kind: 'ragdollLab' }
+  | { kind: 'moqDemo' }
+  | { kind: 'bodiesLab' }
+  | { kind: 'renderBench' }
+  | { kind: 'cityReplay' }
+  | { kind: 'structureViewer'; pack: string };
 
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === '/') {
@@ -37,10 +45,26 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
     case '/':
     case '/index.html':
       return { kind: 'launcher' };
+    case '/audio':
+      return { kind: 'audioLab' };
+    case '/garage':
+      return { kind: 'garage' };
+    case '/grass':
+      return { kind: 'grassLab' };
     case '/play':
       return { kind: 'game', mode: 'multiplayer' };
+    case '/town-kit':
+      return { kind: 'game', mode: 'multiplayer', matchFallback: 'city-town-kit' };
+    case '/city':
+      // Destructible mini-city: same multiplayer game shell, but the default
+      // match id carries the `city` prefix that makes the server build the
+      // destructible city for the match.
+      return { kind: 'game', mode: 'multiplayer', matchFallback: 'city-default' };
     case '/practice':
       return { kind: 'game', mode: 'practice' };
+    case '/structure':
+      // Standalone viewer for an authored ScenePack. No server, no manifest.
+      return { kind: 'structureViewer', pack: params.get('pack') ?? 'algedra-tower' };
     case '/stats':
       return { kind: 'stats' };
     case '/loadtest':
@@ -52,6 +76,18 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
       return { kind: 'gallery' };
     case '/ragdoll-lab':
       return { kind: 'ragdollLab' };
+    case '/moq':
+      return { kind: 'moqDemo' };
+    case '/bodies':
+      return { kind: 'bodiesLab' };
+    case '/renderbench':
+      // Reproducible render benchmark: a seeded synthetic city on the real
+      // batching path, with no server and no streamed poses.
+      return { kind: 'renderBench' };
+    case '/cityreplay':
+      // The render bench that draws what the game draws: a recorded city
+      // stream replayed into the real client and renderer, no server.
+      return { kind: 'cityReplay' };
     default:
       return { kind: 'launcher' };
   }

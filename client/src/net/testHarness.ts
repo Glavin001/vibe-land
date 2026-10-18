@@ -23,6 +23,7 @@ import {
   BTN_JUMP,
   BTN_SPRINT,
   BTN_CROUCH,
+  SERVER_TICK_US,
 } from './protocol';
 
 // Re-export button constants for convenient test authoring
@@ -442,7 +443,7 @@ export class NetcodeTestScenario {
   }
 
   private buildSnapshot(): SnapshotPacket {
-    const serverTimeUs = this.serverTick * Math.round(1_000_000 / 60);
+    const serverTimeUs = this.serverTick * SERVER_TICK_US;
     const playerStates: NetPlayerState[] = [];
 
     for (const [id, player] of this.serverPlayers) {
@@ -550,7 +551,7 @@ export function makeSnapshot(opts: {
   const serverTick = opts.serverTick ?? 1;
   return {
     type: 'snapshot',
-    serverTimeUs: serverTick * Math.round(1_000_000 / 60),
+    serverTimeUs: serverTick * SERVER_TICK_US,
     serverTick,
     ackInputSeq: opts.ackInputSeq ?? 0,
     playerStates: opts.players,

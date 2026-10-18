@@ -120,6 +120,10 @@ pub struct WasmSimWorld {
     next_collider_id: u32,
     collider_ids: HashMap<u32, ColliderHandle>,
 
+    // Caller-keyed fixed world shapes (`setStaticShapes`): a city's standing
+    // chunks, as the server's physics collides with them.
+    static_shapes: HashMap<u32, ColliderHandle>,
+
     // Dynamic body rigid bodies (server ID → Rapier RigidBodyHandle)
     dynamic_colliders: HashMap<u32, RigidBodyHandle>,
 
@@ -158,6 +162,7 @@ impl WasmSimWorld {
             pending_inputs: Vec::new(),
             next_collider_id: 1,
             collider_ids: HashMap::new(),
+            static_shapes: HashMap::new(),
             dynamic_colliders: HashMap::new(),
             ragdoll_bodies: HashMap::new(),
             ragdoll_joint_handles: HashMap::new(),
@@ -542,6 +547,120 @@ impl WasmSimWorld {
     }
 
     // ── Raycasting ───────────────────────────────────
+
+    /// Add (or replace) fixed world shapes by key: per key a pose in `poses`
+    /// (x, y, z, qx, qy, qz, qw) and, by `counts`, either a cuboid (0: three
+    /// half extents next in `data`) or a convex hull of that many points
+    /// (centroid-relative xyz in `data`). They join the next sweep without a
+    /// broad-phase rebuild. Returns how many were added.
+    #[wasm_bindgen(js_name = setStaticShapes)]
+    pub fn set_static_shapes(
+        &mut self,
+        keys: &[u32],
+        poses: &[f32],
+        counts: &[u32],
+        data: &[f32],
+    ) -> u32 {
+        let mut at = 0usize;
+        let mut added = 0u32;
+        for (i, &key) in keys.iter().enumerate() {
+            let (Some(p), Some(&n)) = (poses.get(i * 7..i * 7 + 7), counts.get(i)) else {
+                break;
+            };
+            let take = if n == 0 { 3 } else { 3 * n as usize };
+            let Some(values) = data.get(at..at + take) else {
+                break;
+            };
+            at += take;
+            let shape = if n == 0 {
+                Some(ColliderBuilder::cuboid(
+                    values[0].max(1e-4),
+                    values[1].max(1e-4),
+                    values[2].max(1e-4),
+                ))
+            } else {
+                let points: Vec<Point<f32>> = values
+                    .chunks_exact(3)
+                    .map(|v| point![v[0], v[1], v[2]])
+                    .collect();
+                ColliderBuilder::convex_hull(&points)
+            };
+            let Some(shape) = shape else { continue };
+            let q = Quaternion::new(p[6], p[3], p[4], p[5]);
+            if !p.iter().all(|v| v.is_finite()) || q.norm_squared() < 1e-6 {
+                continue;
+            }
+            let pose = Isometry::from_parts(
+                Translation::new(p[0], p[1], p[2]),
+                UnitQuaternion::new_normalize(q),
+            );
+            if let Some(old) = self.static_shapes.remove(&key) {
+                self.sim.remove_static_collider(old);
+            }
+            let handle = self.sim.insert_static_collider(shape.position(pose));
+            self.static_shapes.insert(key, handle);
+            added += 1;
+        }
+        self.sim.sync_broad_phase();
+        added
+    }
+
+    /// Remove fixed world shapes by key (`setStaticShapes`).
+    #[wasm_bindgen(js_name = removeStaticShapes)]
+    pub fn remove_static_shapes(&mut self, keys: &[u32]) {
+        for key in keys {
+            if let Some(handle) = self.static_shapes.remove(key) {
+                self.sim.remove_static_collider(handle);
+            }
+        }
+        self.sim.sync_broad_phase();
+    }
+
+    /// How many keyed fixed world shapes are loaded.
+    #[wasm_bindgen(js_name = staticShapeCount)]
+    pub fn static_shape_count(&self) -> u32 {
+        self.static_shapes.len() as u32
+    }
+
+    /// Sweep a box (radius=0) or sphere against fixed, non-sensor world geometry.
+    /// Returns [fraction, normalX, normalY, normalZ]. Never changes gameplay state.
+    #[wasm_bindgen(js_name = sweepVehicleStatic)]
+    pub fn sweep_vehicle_static(
+        &self,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        radius: f32,
+    ) -> Box<[f32]> {
+        let q = Quaternion::new(qw, qx, qy, qz);
+        if !q.coords.iter().all(|v| v.is_finite()) || q.norm_squared() < 0.0001 {
+            return Box::new([]);
+        }
+        let pose = Isometry::from_parts(
+            Translation::new(px, py, pz),
+            UnitQuaternion::new_normalize(q),
+        );
+        match crate::vehicle_presentation::sweep_static(
+            &self.sim,
+            pose,
+            vector![dx, dy, dz],
+            vector![hx, hy, hz],
+            radius,
+        ) {
+            Some(hit) => Box::new(hit),
+            None => Box::new([]),
+        }
+    }
 
     /// Cast a ray and return `[toi, nx, ny, nz]`, or empty array on miss.
     #[wasm_bindgen(js_name = castRayAndGetNormal)]
@@ -2199,13 +2318,12 @@ fn push_battery_state(out: &mut Vec<f64>, state: &NetBatteryState) {
     ]);
 }
 
-/// Clock-sync estimator exposed to JavaScript via WASM.
+/// Server-clock estimator exposed to JavaScript via WASM
+/// (`vibe_netcode::clock_sync::ServerClockEstimator`).
 ///
-/// Implements Lightyear's adaptive-alpha EMA clock offset tracking with:
-/// - Jacobson EWMA RTT estimation (α=1/12, β=1/6)
-/// - Adaptive alpha 0.02–0.10 based on jitter
-/// - Speed-adjustment hysteresis (3-state: DoNothing/SpeedAdjust/Resync)
-/// - Adaptive interpolation delay (jitter*4 + 5 ms)
+/// Measures the server's simulation rate instead of assuming it runs at wall
+/// speed, follows it with a slewed output that never goes backwards, and
+/// sizes the interpolation delay from how snapshots actually arrive.
 #[wasm_bindgen]
 pub struct WasmClockSync {
     estimator: ServerClockEstimator,
@@ -2215,7 +2333,7 @@ pub struct WasmClockSync {
 impl WasmClockSync {
     /// Create a new clock-sync estimator.
     ///
-    /// `sim_hz` — server simulation tick rate (e.g. 20).
+    /// `sim_hz` — server simulation tick rate (e.g. 60).
     #[wasm_bindgen(constructor)]
     pub fn new(sim_hz: f64) -> Self {
         Self {
@@ -2224,8 +2342,6 @@ impl WasmClockSync {
     }
 
     /// Feed a smoothed RTT measurement in milliseconds.
-    ///
-    /// Call this each time the client computes a round-trip time.
     #[wasm_bindgen(js_name = observeRtt)]
     pub fn observe_rtt(&mut self, rtt_ms: f64) {
         self.estimator.observe_rtt(rtt_ms);
@@ -2233,19 +2349,45 @@ impl WasmClockSync {
 
     /// Feed a server-time observation.
     ///
-    /// `server_us` — server monotonic timestamp (µs) from the snapshot packet.
+    /// `server_us` — server simulation timestamp (µs) from the snapshot packet.
     /// `local_us`  — local monotonic timestamp (µs) at packet receipt
     ///               (`performance.now() * 1000` is suitable).
     #[wasm_bindgen(js_name = observeServerTime)]
     pub fn observe_server_time(&mut self, server_us: f64, local_us: f64) {
-        self.estimator
-            .observe_server_time(server_us as i64, local_us as i64);
+        self.estimator.observe_server_time(server_us, local_us);
     }
 
-    /// Estimated clock offset in microseconds: `server_time ≈ local_time + offset`.
+    /// Feed a server-time observation stamped with the server's wall clock
+    /// (µs modulo 2^32) when the snapshot was produced.
+    #[wasm_bindgen(js_name = observeServerTimeWithWall)]
+    pub fn observe_server_time_with_wall(&mut self, server_us: f64, wall_us: u32, local_us: f64) {
+        self.estimator
+            .observe_server_time_with_wall(server_us, wall_us, local_us);
+    }
+
+    /// Estimated server time (µs) at `local_us`: rate-aware, slewed and
+    /// monotonic. Advances the estimator's output.
+    #[wasm_bindgen(js_name = serverNowUs)]
+    pub fn server_now_us(&mut self, local_us: f64) -> f64 {
+        self.estimator.server_now_us(local_us)
+    }
+
+    /// `server_time ≈ local_time + offset` (µs) at the last evaluated point.
     #[wasm_bindgen(js_name = getClockOffsetUs)]
     pub fn get_clock_offset_us(&self) -> f64 {
         self.estimator.clock_offset_us()
+    }
+
+    /// Measured server rate (sim µs per local µs).
+    #[wasm_bindgen(js_name = getRate)]
+    pub fn get_rate(&self) -> f64 {
+        self.estimator.rate()
+    }
+
+    /// Whether the rate comes from the server's wall-clock stamps.
+    #[wasm_bindgen(js_name = hasWallClock)]
+    pub fn has_wall_clock(&self) -> bool {
+        self.estimator.has_wall_clock()
     }
 
     /// Current jitter estimate in microseconds.
@@ -2254,10 +2396,18 @@ impl WasmClockSync {
         self.estimator.jitter_us()
     }
 
-    /// Recommended interpolation delay in milliseconds (jitter*4 + 5 ms, min 5 ms).
+    /// Recommended interpolation delay in milliseconds of sim time: the 95th
+    /// percentile of sim time elapsed between snapshot arrivals, at least one
+    /// snapshot interval, at most 250 ms.
     #[wasm_bindgen(js_name = getInterpolationDelayMs)]
     pub fn get_interpolation_delay_ms(&self) -> f64 {
         self.estimator.interpolation_delay_ms()
+    }
+
+    /// Median sim-time step between received snapshots, ms.
+    #[wasm_bindgen(js_name = getSnapshotIntervalMs)]
+    pub fn get_snapshot_interval_ms(&self) -> f64 {
+        self.estimator.snapshot_interval_us() / 1000.0
     }
 
     /// Smoothed RTT in milliseconds.
@@ -2265,4 +2415,106 @@ impl WasmClockSync {
     pub fn get_rtt_ms(&self) -> f64 {
         self.estimator.rtt_ms()
     }
+}
+
+/// A SnapshotV2 packet (kind byte included) decoded by the shared decoder the Unreal client uses
+/// (`net_client::snapshot_v2_flat`; layout there). The web builds its packet objects from it
+/// behind a flag (`client/src/net/sharedDecode.ts`).
+#[wasm_bindgen]
+pub fn decode_snapshot_v2_flat(bytes: &[u8]) -> Result<Box<[f64]>, JsValue> {
+    crate::net_client::snapshot_v2_flat(bytes)
+        .map(Vec::into_boxed_slice)
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// A reliable server packet decoded by the shared decoder (`net_client::server_packet_flat`;
+/// layout there), or `undefined` for a kind it leaves to the web's own decoder.
+#[wasm_bindgen]
+pub fn decode_server_packet_flat(bytes: &[u8]) -> Result<Option<Box<[f64]>>, JsValue> {
+    crate::net_client::server_packet_flat(bytes)
+        .map(|flat| flat.map(Vec::into_boxed_slice))
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+// The client packets, encoded by the shared encoders the Unreal client uses (net_client::encode_*_js:
+// the web's quantisation, bit for bit). client/src/net/sharedEncode.ts sends them behind a flag.
+
+#[wasm_bindgen]
+pub fn encode_input_bundle_js(frames: &[f64]) -> Result<Box<[u8]>, JsValue> {
+    crate::net_client::encode_input_bundle_js(frames)
+        .map(Vec::into_boxed_slice)
+        .map_err(JsValue::from_str)
+}
+
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn encode_fire_js(
+    seq: f64,
+    shot_id: f64,
+    weapon: f64,
+    client_fire_time_us: f64,
+    interp_ms: f64,
+    dynamic_interp_ms: f64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+) -> Box<[u8]> {
+    crate::net_client::encode_fire_js(
+        seq,
+        shot_id,
+        weapon,
+        client_fire_time_us,
+        interp_ms,
+        dynamic_interp_ms,
+        [dx, dy, dz],
+    )
+    .into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_melee_js(
+    seq: f64,
+    swing_id: f64,
+    client_time_us: f64,
+    yaw: f64,
+    pitch: f64,
+) -> Box<[u8]> {
+    crate::net_client::encode_melee_js(seq, swing_id, client_time_us, yaw, pitch).into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_client_hello_js(
+    match_id: &str,
+    protocol_version: f64,
+    movement_caps: f64,
+) -> Box<[u8]> {
+    crate::net_client::encode_client_hello_js(match_id, protocol_version, movement_caps)
+        .into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_city_camera_drop_js(x: f64, y: f64, z: f64, yaw: f64, pitch: f64) -> Box<[u8]> {
+    crate::net_client::encode_city_camera_drop(
+        [x as f32, y as f32, z as f32],
+        yaw as f32,
+        pitch as f32,
+    )
+    .into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_vehicle_enter_js(vehicle_id: f64, seat: f64) -> Box<[u8]> {
+    let seat = (crate::net_client::js_to_int32(seat) & 0xff) as u8;
+    crate::net_client::encode_vehicle_enter(crate::net_client::js_u32(vehicle_id), seat)
+        .into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_vehicle_exit_js(vehicle_id: f64) -> Box<[u8]> {
+    crate::net_client::encode_vehicle_exit(crate::net_client::js_u32(vehicle_id)).into_boxed_slice()
+}
+
+#[wasm_bindgen]
+pub fn encode_ping_js(nonce: f64) -> Box<[u8]> {
+    crate::net_client::encode_ping(crate::net_client::js_u32(nonce)).into_boxed_slice()
 }

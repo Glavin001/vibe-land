@@ -24,7 +24,17 @@ if (fs.existsSync(envPath)) {
 
 const CLIENT_PORT = Number(process.env.CLIENT_PORT) || 5555;
 const SERVER_PORT = Number(process.env.SERVER_PORT) || 4001;
-const BASE_URL = `http://localhost:${CLIENT_PORT}`;
+// The dev server switches to HTTPS whenever WT_CERT_PEM/WT_KEY_PEM are set
+// (WebTransport needs a secure context), so the scheme is not fixed.
+const BASE_URL = process.env.E2E_BASE_URL
+  || (process.env.WT_CERT_PEM && process.env.WT_KEY_PEM
+    ? `https://127.0.0.1:${CLIENT_PORT}`
+    : `http://127.0.0.1:${CLIENT_PORT}`);
+const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+
+// GPU flags shared with the netlab runner — see helpers/gpuArgs.ts for why
+// they are load-bearing for every frame-time measurement.
+import { GPU_ARGS } from './helpers/gpuArgs';
 
 // Allow skipping webServer when servers are already running externally
 const SKIP_WEB_SERVER = process.env.E2E_SKIP_WEB_SERVER === '1';
@@ -47,16 +57,14 @@ export default defineConfig({
     baseURL: BASE_URL,
     trace: 'on-first-retry',
     video: 'on-first-retry',
+    ignoreHTTPSErrors: true,
     // Use Chromium (Playwright's bundled Chrome) for WebTransport compat
     browserName: 'chromium',
     launchOptions: {
-      args: [
-        '--enable-quic',
-        '--no-sandbox',
-        // Use GPU when available for full-speed WebGL rendering.
-        // CI environments without a GPU will fall back to swiftshader automatically.
-        '--use-gl=angle',
-      ],
+      ...(CHROMIUM_EXECUTABLE_PATH
+        ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
+        : {}),
+      args: GPU_ARGS,
     },
   },
   projects: [
@@ -64,6 +72,13 @@ export default defineConfig({
       name: 'e2e',
       use: {
         browserName: 'chromium',
+        ignoreHTTPSErrors: true,
+        launchOptions: {
+          ...(CHROMIUM_EXECUTABLE_PATH
+            ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
+            : {}),
+          args: GPU_ARGS,
+        },
       },
     },
   ],

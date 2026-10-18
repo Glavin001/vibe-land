@@ -43,10 +43,16 @@ export type KeyboardBindings = {
   crouch: KeyboardCodeBinding;
   interact: KeyboardCodeBinding;
   resetVehicle: KeyboardCodeBinding;
+  /** On foot: reset the city (the same key as resetVehicle, which is in a car only). */
+  resetWorld: KeyboardCodeBinding;
   blockRemove: KeyboardCodeBinding;
   blockPlace: KeyboardCodeBinding;
   materialSlot1: KeyboardCodeBinding;
   materialSlot2: KeyboardCodeBinding;
+  /** Pick a weapon directly, as Call of Duty's 1 and 2 pick primary and secondary. */
+  weaponSlot1: KeyboardCodeBinding;
+  weaponSlot2: KeyboardCodeBinding;
+  weaponSlot3: KeyboardCodeBinding;
   handbrake: KeyboardCodeBinding;
   firePrimaryMouseButton: MouseButtonBinding;
   melee: KeyboardCodeBinding;
@@ -74,6 +80,8 @@ export type GamepadBindings = {
   materialSlot1Button: GamepadButtonBinding;
   materialSlot2Button: GamepadButtonBinding;
   meleeButton: GamepadButtonBinding;
+  /** Next weapon on foot (Call of Duty's Y / Triangle). */
+  switchWeaponButton: GamepadButtonBinding;
 };
 
 export type InputBindings = {
@@ -94,10 +102,14 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     crouch: 'KeyC',
     interact: 'KeyE',
     resetVehicle: 'KeyR',
+    resetWorld: 'KeyR',
     blockRemove: 'KeyQ',
     blockPlace: 'KeyF',
     materialSlot1: 'Digit1',
     materialSlot2: 'Digit2',
+    weaponSlot1: 'Digit1',
+    weaponSlot2: 'Digit2',
+    weaponSlot3: 'Digit3',
     handbrake: 'Space',
     firePrimaryMouseButton: 0,
     melee: 'KeyV',
@@ -124,6 +136,7 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     materialSlot1Button: 14,
     materialSlot2Button: 15,
     meleeButton: 1,
+    switchWeaponButton: 3,
   },
 };
 

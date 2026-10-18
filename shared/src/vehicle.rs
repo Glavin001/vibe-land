@@ -166,9 +166,9 @@ pub fn vehicle_definition(vehicle_type: u8) -> &'static VehicleDefinition {
         VehicleType::Cybertruck => &CYBERTRUCK_VEHICLE_DEFINITION,
     }
 }
-const VEHICLE_RESET_LIFT_M: f32 = 1.0;
+pub const VEHICLE_RESET_LIFT_M: f32 = 1.0;
 /// Nudge along preserved heading so the chassis clears nearby geometry after uprighting.
-const VEHICLE_RESET_FORWARD_M: f32 = 0.45;
+pub const VEHICLE_RESET_FORWARD_M: f32 = 0.45;
 const VEHICLE_EXIT_SIDE_OFFSET_M: f32 = 2.5;
 const VEHICLE_EXIT_UP_OFFSET_M: f32 = 1.0;
 

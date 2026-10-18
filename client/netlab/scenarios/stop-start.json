@@ -1,0 +1,45 @@
+{
+  "name": "stop-start",
+  "description": "Sprint bursts, hard stops, and jumps: the abrupt velocity changes that surface teleports/hard snaps under loss.",
+  "symptom": ["teleporting", "rubber-banding"],
+  "path": "/play?portal=true",
+  "matchId": "netlab-stopstart-{iter}",
+  "durationMs": 60000,
+  "join": "auto",
+  "clients": [
+    {
+      "role": "mover",
+      "drive": [
+        { "at": 1000, "cmd": "faceCity" },
+        { "at": 2000, "cmd": "setSprint", "args": [true] },
+        { "at": 2000, "cmd": "move", "args": { "forward": 1, "durationMs": 3000 } },
+        { "at": 5200, "cmd": "stop" },
+        { "at": 7000, "cmd": "move", "args": { "forward": -1, "durationMs": 3000 } },
+        { "at": 10200, "cmd": "stop" },
+        { "at": 12000, "cmd": "jump" },
+        { "at": 12050, "cmd": "move", "args": { "forward": 1, "durationMs": 2500 } },
+        { "at": 14700, "cmd": "stop" },
+        { "at": 16500, "cmd": "move", "args": { "strafe": 1, "durationMs": 2500 } },
+        { "at": 19200, "cmd": "stop" },
+        { "at": 21000, "cmd": "jump" },
+        { "at": 21050, "cmd": "move", "args": { "strafe": -1, "durationMs": 2500 } },
+        { "at": 23700, "cmd": "stop" },
+        { "at": 25500, "cmd": "move", "args": { "forward": 1, "durationMs": 3000 } },
+        { "at": 28700, "cmd": "stop" },
+        { "at": 30500, "cmd": "jump" },
+        { "at": 30550, "cmd": "move", "args": { "forward": -1, "durationMs": 3000 } },
+        { "at": 33700, "cmd": "stop" },
+        { "at": 35500, "cmd": "move", "args": { "strafe": 1, "durationMs": 3000 } },
+        { "at": 38700, "cmd": "stop" },
+        { "at": 40500, "cmd": "move", "args": { "forward": 1, "strafe": -1, "durationMs": 3000 } },
+        { "at": 43700, "cmd": "stop" },
+        { "at": 45500, "cmd": "jump" },
+        { "at": 45550, "cmd": "move", "args": { "forward": 1, "durationMs": 3000 } },
+        { "at": 48700, "cmd": "stop" },
+        { "at": 50500, "cmd": "move", "args": { "forward": -1, "strafe": 1, "durationMs": 3000 } },
+        { "at": 53700, "cmd": "stop" }
+      ]
+    }
+  ],
+  "iterations": 1
+}

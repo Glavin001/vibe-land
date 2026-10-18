@@ -1,0 +1,8 @@
+# The feature branches the high-fidelity profile depends on. A high run is
+# refused unless the SDK's source revision contains each PhysX branch's current
+# head, and this checkout contains each vibe-land branch's changes to what the
+# bridge and server build from (scripts/fidelity/provenance.sh).
+# repo	branch (a|b: either head counts, e.g. a branch or the merge that took it)	what it carries
+physx	clean/high-fidelity	the clean SDK (2026-10-08): section bending and rotation, Krylov carry, crush in the correction pass, the Mac ctest gate, the corrected warm start, re-bearing, Mohr-Coulomb shear, shear stiffness (off); no impact machinery
+vibe-land	perf/rotation-convergence	the bridge side of rotation convergence
+vibe-land	feat/rebearing	the bridge side of re-bearing (VIBE_REBEARING -> PX_DESTRUCTION_REBEARING)

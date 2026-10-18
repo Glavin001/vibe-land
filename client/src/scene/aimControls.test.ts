@@ -23,4 +23,8 @@ describe('canUseScopedAim', () => {
   it('allows benchmark autopilot regardless of pointer lock', () => {
     expect(canUseScopedAim('keyboardMouse', false, false, false, true)).toBe(true);
   });
+
+  it('allows agent drive regardless of pointer lock', () => {
+    expect(canUseScopedAim('keyboardMouse', false, false, false, false, true)).toBe(true);
+  });
 });

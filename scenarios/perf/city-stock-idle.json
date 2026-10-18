@@ -1,0 +1,6 @@
+{
+  "name": "city-stock-idle",
+  "why": "The city with stock cars doing nothing: the control for city-fleet-idle.",
+  "env": {"VIBE_PHYSX_PROFILE": "0", "VIBE_CITY_DESTRUCTIBLE_VEHICLES": "0"},
+  "steps": [{"idle": 15}]
+}

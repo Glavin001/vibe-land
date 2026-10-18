@@ -1,0 +1,31 @@
+[package]
+name = "vibe-client-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "vibe-land's sans-IO client core: server bytes in, render-ready scene state out. Shared by the Unreal client (natively) and the web client (WASM)."
+publish = false
+
+[dependencies]
+# Without its browser API (`wasm-api`): client-core-wasm is its own package.
+vibe-land-shared = { path = "../shared", default-features = false }
+vibe-netcode = { path = "../netcode" }
+vibe-land-perplayer = { path = "../perplayer" }
+vibe-land-destruction = { path = "../destruction" }
+glam = "0.27"
+sha2 = "0.10"
+hex = "0.4"
+# parry's convex hull for chunk meshes (geometry.rs); the same rapier the destruction crate builds.
+rapier3d = { version = "0.30", default-features = false, features = ["dim3", "f32"] }
+# The material catalog (materials.rs).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+vibe-client-transport-wt = { path = "../client-transport-wt" }
+web-fps-server = { path = "../server" }
+flate2 = "1"
+
+[[example]]
+name = "headless"
+path = "examples/headless.rs"

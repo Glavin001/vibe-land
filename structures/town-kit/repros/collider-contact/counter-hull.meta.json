@@ -1,0 +1,119 @@
+{
+  "kind": "prop",
+  "type": "counter",
+  "route": [],
+  "shots": {
+    "furniture": [
+      {
+        "from": [
+          0.48,
+          1.76,
+          -0.2
+        ],
+        "to": [
+          0.48,
+          0.91,
+          -0.2
+        ],
+        "momentum": 40000,
+        "radius": 0.35,
+        "speed": 30,
+        "tick": 0
+      }
+    ],
+    "fence": [
+      {
+        "from": [
+          0.48,
+          1.76,
+          -0.2
+        ],
+        "to": [
+          0.48,
+          0.91,
+          -0.2
+        ],
+        "momentum": 40000,
+        "radius": 0.35,
+        "speed": 30,
+        "tick": 0
+      }
+    ]
+  },
+  "shotGroups": {
+    "furniture": "prop-counter",
+    "fence": "prop-counter"
+  },
+  "validation": {
+    "passed": true,
+    "chunks": 21,
+    "bonds": 33,
+    "components": 1,
+    "shapes": 7,
+    "overlapCount": 0,
+    "errors": [],
+    "warnings": []
+  },
+  "assetSha256": "360f536c5f2f36a805e76983c6a2dcc0a83438f187b9cbd51b8d7caed6ccf0eb",
+  "provenance": {
+    "vibeRevision": "2d73a4677070747e7053bbd09a0900b7a9551dc2",
+    "authoringRevision": "a0a5af2d31ba18b0c1a8de2a8c321617727f634b",
+    "files": {
+      "../blast-stress-solver-2/blast/blast-stress-solver/scripts/export-fractured-city.mjs": "e98881f02e9f452f60713d265eabe1b54cc30106208e6c16dff0c755ef6df6bb",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/autobond.mjs": "111d12292935c6f1a66f96abdfff28bc9bf2d773c17699806cfca2d279eabba9",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/colliders.mjs": "d12efd552cdda1edbb921df8490b67bfb06c9abe78c6397960a2a7df10123742",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/contact.mjs": "c8e8758102600ff8cfdd66bcc67f3c4128fad1570480bf20c969f3da0d7dfb44",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/design.mjs": "5b2aa56e7bc531adba60f584b239bb244b60a63be1b7842d7d4cf6334c00d9ad",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/elements.mjs": "589b325537ad1c7cca273c434972559d08c98345dbba44a4267b10aec88c1d88",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/fracture-backends.mjs": "356720a3fbe16188e99d663743f4ddfa84e72db2b72ab45b62ab31404b8efb60",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/fracture.mjs": "18af599a718c6c11ed4e6c0ae5add7bee218de766e0076f5aed718d22a7060c2",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/gjk.mjs": "e85dffd15b627a3f693452ced36481d749e35f818986c57f093c78e163b466d4",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/materials.mjs": "d33eda1737932afa8cbc040565b1b490ad430f3c572f882657ebfbb636a470f9",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/pack.mjs": "bd9858ce7cb5740525431352341e8c8c509aed76ab805be27c5a09c9cfd87f18",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/shapes.mjs": "14d0c7650d0784186d0db64ff4262283d137556aabe684337f4fe8dbd4f8976e",
+      "../blast-stress-solver-2/blast/blast-stress-solver/structures/lib/sliver.mjs": "15233b720c6dd33784403d725a7204807623882c892ac6afaeb6d86b2828c1b0",
+      "client/src/city/chunkGeometry.ts": "4e17c95055f49b9fd1eb7f88c2280ab53fe41f646fedfa50a9e7837abb2c83d7",
+      "client/src/scene/cityMaterialShader.ts": "a4478e6d888d62e6a36cedf0072c67f60857ae6e254461dbe12c127b240f9ca3",
+      "client/src/scene/cityTextures.ts": "dfb87dc5ea7597c0a4e235f37a6902cdf8daa29ef6abcc8d44372ca5c3e31dc7",
+      "client/src/structures/structurePack.ts": "c170b72fc7e95ca06a1b03e354e0bedccc623ec4b0cb355240361d278d7e0777",
+      "physx-bridge/include/destruction.h": "b28432e283c8656300df9b247bec394752f316027ad5258ffaa45a52d6f2e5ab",
+      "physx-bridge/include/native_destruction.h": "0250768ddda3c0736930c6796382340c1b779f71a4998172e4b67496f41cbe46",
+      "physx-bridge/include/native_state.h": "822f2ff56242ec9894eedf9ce989af6e390468094674bdf0c0419e925097626e",
+      "physx-bridge/include/physx_bridge.h": "6cfcbc905145d740185ea8af1c7170bddaef4e420f30af3faccb0729171c051d",
+      "physx-bridge/src/destruction.cc": "3550232c6c4fe9d4a4e4ab608ca2f852490d9eed00e0f8b2d640d65bdc09a615",
+      "physx-bridge/src/lib.rs": "875b4414b4c111eb7796b240753836853eca0791f840efcf645fd09b3436148c",
+      "physx-bridge/src/native_destruction.cc": "40dd576aeaf39a647659ba8ef6154b4b42c005b5f15d2bf5341eab796167d8a5",
+      "physx-bridge/src/native_observation.cc": "e94a08a4b2c49c02293f7a592a96bd858875810f0bc2945ee7abdbc5448bf886",
+      "physx-bridge/src/physx_bridge.cc": "17989eee841c3913aec57cb820e6c11dff16caad1a859c4728ca72d51e9c0f44",
+      "structures/town-kit/native/Cargo.lock": "dcca2c34aa002ccd2b641f842b92e025c05d3ced902955c41cde15c0602d347a",
+      "structures/town-kit/native/Cargo.toml": "d6153a7c340ddff14717660e5d6af63c0694809c6041b542aa0646979a11cd25",
+      "structures/town-kit/native/src/main.rs": "5c9148e84dab52a3bbc822b816dd82a61cf1dcd3d9cbb7469685c136cd3c9bf4",
+      "structures/town-kit/preview/index.html": "a517c7501c5d05ce708e635a18c02b6748b96899809d83490de2a624433a6780",
+      "structures/town-kit/preview/main.ts": "8f5514b5f515bb822f5ada6cd8d849038d9a77357fc130ac9194500691c7727e",
+      "structures/town-kit/scripts/artifacts.mjs": "da921a11da286afdc626f5748671275dda0990aee200be5f65ee4f526675b8f7",
+      "structures/town-kit/scripts/audit-rest.mjs": "ac6dbcad9ebedc1e81f351d40d4bcc776d1cc16e400f0d7b1f92f5d2b8aa6832",
+      "structures/town-kit/scripts/build.mjs": "e9165cd4bdc5af97d11d18fc4c7b7b08b00901e08a2a486a71f1c34e26f6c774",
+      "structures/town-kit/scripts/gallery.mjs": "50648840b91b08b3d1c679f9afebd52466d5bdd90810d51d56e9d0f892bd7666",
+      "structures/town-kit/scripts/matrix.mjs": "561cd7a146dc39a787ed1c0721a52a0bfcf4f1a78f18d8f9724c541b844f22df",
+      "structures/town-kit/scripts/native-cache.mjs": "41ca86733a528be9a2b544fbc452c52b279adfab3530f430dbbcdab0021d6d3c",
+      "structures/town-kit/scripts/preview.mjs": "65e2cb52c48e5ba60a3c8931aa5f51744f0af1318ccc62f9bc142f4140f41ee5",
+      "structures/town-kit/scripts/provenance.mjs": "100148135f3d99d31378a9dd4585d8a089cd08852d58525aadba3bf58c3ab44e",
+      "structures/town-kit/scripts/record.mjs": "e3507b7f39f8faa2676873e09582ebec128797beece1512e561e255234c484ef",
+      "structures/town-kit/scripts/review.mjs": "f8045b521af685f21d028392955940e855b630369e86cb0ab05ef6fc30f9bdad",
+      "structures/town-kit/scripts/screenshots.mjs": "b7f5a22bce333dda72167f6008862922f2c5b1036e1964254ad46904560c5cb6",
+      "structures/town-kit/scripts/stage.mjs": "580621a4fee69b3465f73f35dca9de420516f3401c2c421a637c0b6ab8f471b7",
+      "structures/town-kit/scripts/summarize.mjs": "0bc5c56550727ed71f125d029ec969b9403fd4d4807566c822f21b3c75535831",
+      "structures/town-kit/src/attachments.mjs": "e11506fc003e39043999e73bbe1c83931e8e6ee2538395795acefbe9b4244697",
+      "structures/town-kit/src/dependencies.mjs": "2922ed4f7e06eeb459473b5c383bed3fa3a8591409eb885237325a3a41d2ccf8",
+      "structures/town-kit/src/geometry.mjs": "a835a61cd4f8d2263fdedd0709679d165cf08a638bc92f3fe00042d2bb26ecea",
+      "structures/town-kit/src/index.mjs": "d9bb339559f57951228fc1b64837f28fe69686adaf499e5962131b138c433d7d",
+      "structures/town-kit/src/materials.mjs": "b9c8b4f32a79f7521ecf7fa6c0970b03825dc66321d38c32485f655ead9c3a3b",
+      "structures/town-kit/src/props.mjs": "47b3ad0416a643297d554d9a78104c6c428c7554fcb7af61dc5eed13357d6383",
+      "structures/town-kit/src/stairs.mjs": "52c31fddde5ad98ab7cc9e5687790b2bd215ef24a87e93ef41f80e15df7a6df9",
+      "structures/town-kit/src/validate.mjs": "c98df99e62d8ed7807c9d3167b794817eb6aa85326db0ced58f0d8ce00832140",
+      "structures/town-kit/src/victorian.mjs": "1a59e37c71c2f77032c26b2cb2fd3008c11d24d3eb60922e09c5d6744427a2fa"
+    },
+    "contentHash": "741d9811ea49359ac48e9c1c3e4338628290083eea6514579555b7217b259e18"
+  },
+  "diagnostic": "Equivalent geometry, masses, bonds and projectile. Only box versus eight-corner convex collider representation differs."
+}

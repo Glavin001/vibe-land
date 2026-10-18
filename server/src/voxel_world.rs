@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 
-use rapier3d::prelude::ColliderHandle;
-
 use crate::{
-    movement::{PhysicsArena, Vec3},
+    movement::{PhysicsArena, PhysicsColliderHandle, Vec3},
     protocol::{
         BlockCell, BlockEditCmd, BlockEditNet, ChunkDiffPacket, ChunkFullPacket, BLOCK_ADD,
         BLOCK_REMOVE,
@@ -25,7 +23,7 @@ pub struct Chunk {
     pub version: u32,
     pub blocks: HashMap<u16, u16>,
     pub dirty_edits: Vec<BlockEditNet>,
-    pub colliders: Vec<ColliderHandle>,
+    pub colliders: Vec<PhysicsColliderHandle>,
 }
 
 pub struct VoxelWorld {
@@ -413,7 +411,7 @@ mod tests {
     use crate::protocol::{BlockEditCmd, BLOCK_ADD, BLOCK_REMOVE};
 
     fn make_arena() -> PhysicsArena {
-        PhysicsArena::new(MoveConfig::default())
+        PhysicsArena::new_rapier(MoveConfig::default())
     }
 
     // ── div_floor / mod_floor ──────────────────────
@@ -727,7 +725,7 @@ mod ball_pit_tests {
     #[test]
     fn demo_world_ground_is_large_enough_for_load_tests() {
         std::env::set_var("DEMO_GROUND_RADIUS", "96");
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         let mut world = VoxelWorld::new();
         world.seed_demo_world(&mut arena);
 
@@ -738,7 +736,7 @@ mod ball_pit_tests {
 
     #[test]
     fn ball_pit_spawns_balls() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         let mut world = VoxelWorld::new();
         world.seed_demo_world(&mut arena);
 
@@ -772,7 +770,7 @@ mod ball_pit_physics_tests {
 
     #[test]
     fn balls_dont_fall_through_ground() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         let mut world = VoxelWorld::new();
         world.seed_demo_world(&mut arena);
 

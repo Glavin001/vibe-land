@@ -1,0 +1,3 @@
+72b537f89eb1ec821f3f6ce502cebdc3fcf8166df2f3e3bd5402e05df900c772  /tmp/vehicle-anchored-authored-verification/cannon-heavy.json
+bac7e5d21030e079dcc413c270677d23206cba211757ca37464176f0aa24ceee  /tmp/vehicle-anchored-authored-verification/cannon.json
+5bcf73f6b8771858ba237d1f9c6a124434cf7fc2e280ab21ad38381721bc87da  /tmp/vehicle-anchored-authored-verification/report.json

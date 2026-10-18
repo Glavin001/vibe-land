@@ -1,0 +1,461 @@
+{
+  "date": "2026-09-26",
+  "baselineCommit": "736d99f3",
+  "device": "Apple M3 Max / ANGLE Metal",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "methodology": "Same private field, frozen time, sky IBL. Alternate baseline, optimized, identical-baseline control, one variant per display frame; 96 grass-on/off GPU pairs per variant. Full-detail tier. Shadow run includes a static 2048px PCF-soft shadow map and shadow-casting box. Negative camera distance denotes the opposite/backlit view.",
+  "retained": [
+    "Full density within 8m; dense narrow grass progressively reduces to 40% by 24m, widening retained blades to preserve projected area.",
+    "Sparse stands (<=32 tall blades/m\u00b2 averaged across the patch) and crop rows do not thin.",
+    "Species-specialized vertex shaders remove unused branches. Existing PBR, shadows, wind, contact model, LOD handoff distances and distant canopy remain."
+  ],
+  "rejected": "Per-plant frustum rejection, a depth prepass, opaque shader variants, polynomial deformation, and sky-light approximations did not provide reliable enough gains; none are retained.",
+  "units": "Timing values are milliseconds, rounded to 3 decimals.",
+  "columns": [
+    "preset",
+    "cameraZ",
+    "baselineMedian",
+    "optimizedMedian",
+    "controlMedian",
+    "baselineP95",
+    "optimizedP95"
+  ],
+  "shadowed": [
+    [
+      "vehicle",
+      3,
+      2.482,
+      2.347,
+      2.47,
+      4.705,
+      4.383
+    ],
+    [
+      "vehicle",
+      12,
+      2.483,
+      2.186,
+      2.567,
+      4.283,
+      3.851
+    ],
+    [
+      "vehicle",
+      35,
+      2.155,
+      1.689,
+      2.111,
+      4.513,
+      3.756
+    ],
+    [
+      "corn",
+      12,
+      1.159,
+      1.155,
+      1.156,
+      3.453,
+      3.548
+    ],
+    [
+      "corn",
+      35,
+      1.425,
+      1.374,
+      1.471,
+      3.095,
+      3.736
+    ],
+    [
+      "ferns",
+      12,
+      1.751,
+      1.473,
+      1.686,
+      4.048,
+      3.347
+    ],
+    [
+      "wheat",
+      12,
+      1.999,
+      1.689,
+      1.962,
+      4.171,
+      3.883
+    ],
+    [
+      "lawn",
+      12,
+      1.801,
+      1.794,
+      1.836,
+      2.845,
+      2.802
+    ],
+    [
+      "vehicle",
+      -12,
+      2.871,
+      2.238,
+      2.799,
+      4.837,
+      3.813
+    ],
+    [
+      "corn",
+      -12,
+      1.637,
+      1.3,
+      1.63,
+      3.91,
+      3.725
+    ]
+  ],
+  "budget": {
+    "targetMs": 2,
+    "shadowedMediansWithinTarget": 7,
+    "shadowedCases": 10,
+    "strictCapMet": false,
+    "note": "The heaviest close/backlit cases still exceed 2ms; p95 exceeds it too. Concurrent applications and GPU scheduling contribute variance. This is an isolated pass, not a full-city 120Hz guarantee."
+  },
+  "visual": {
+    "comparisons": 20,
+    "comparisonResolution": [
+      960,
+      540
+    ],
+    "minCoverageRatio": 0.999563,
+    "maxCoverageRatio": 1.000657,
+    "maxBrightnessRatioError": 0.00088,
+    "closeDetailChangedPixelsMax": 4,
+    "closeDetailTotalPixels": 518400,
+    "conditions": "Standing and 40m/s wind with full compaction, damage, body and impulse contacts.",
+    "lightingComparisonsPassed": 15,
+    "concealmentCasesPassed": 18,
+    "tallGrassAndCornHiddenFraction": 1,
+    "flattenedTargetPixels": {
+      "fast": 672,
+      "pretty": 673,
+      "total": 840
+    }
+  },
+  "lodSweepColumns": [
+    "preset",
+    "quality",
+    "distance",
+    "gpuMedian",
+    "gpuP95"
+  ],
+  "lodSweep": [
+    [
+      "vehicle",
+      "fast",
+      12,
+      1.596,
+      4.012
+    ],
+    [
+      "vehicle",
+      "fast",
+      35,
+      1.102,
+      2.503
+    ],
+    [
+      "vehicle",
+      "fast",
+      110,
+      0.273,
+      0.839
+    ],
+    [
+      "vehicle",
+      "pretty",
+      12,
+      2.06,
+      3.726
+    ],
+    [
+      "vehicle",
+      "pretty",
+      35,
+      1.909,
+      3.39
+    ],
+    [
+      "vehicle",
+      "pretty",
+      110,
+      2.259,
+      3.928
+    ],
+    [
+      "corn",
+      "fast",
+      12,
+      1.06,
+      3.241
+    ],
+    [
+      "corn",
+      "fast",
+      35,
+      1.034,
+      2.192
+    ],
+    [
+      "corn",
+      "fast",
+      110,
+      0.338,
+      0.754
+    ],
+    [
+      "corn",
+      "pretty",
+      12,
+      2.068,
+      4.126
+    ],
+    [
+      "corn",
+      "pretty",
+      35,
+      2.09,
+      3.711
+    ],
+    [
+      "corn",
+      "pretty",
+      110,
+      2.472,
+      3.805
+    ],
+    [
+      "wheat",
+      "fast",
+      12,
+      1.666,
+      3.47
+    ],
+    [
+      "wheat",
+      "fast",
+      35,
+      0.82,
+      1.297
+    ],
+    [
+      "wheat",
+      "fast",
+      110,
+      0.287,
+      0.673
+    ],
+    [
+      "wheat",
+      "pretty",
+      12,
+      1.95,
+      4.077
+    ],
+    [
+      "wheat",
+      "pretty",
+      35,
+      1.397,
+      3.237
+    ],
+    [
+      "wheat",
+      "pretty",
+      110,
+      1.531,
+      3.692
+    ]
+  ],
+  "cleanup": {
+    "geometriesAfterLodSweep": 0,
+    "geometriesAfterStress": {
+      "fast": 0,
+      "pretty": 0
+    }
+  },
+  "tests": 48,
+  "stress": {
+    "methodology": "Private nine-patch mixed field at 1920x1080; 240 frames per phase. GPU timings cover the whole isolated scene, not paired grass subtraction. Contact attempts: 256 per 20 Hz tick; production limits: 192 contacts and 32768 cell visits.",
+    "columns": [
+      "quality",
+      "phase",
+      "cpuUpdateMedianP95Max",
+      "contactTickMedianP95Max",
+      "sceneGpuMedianP95Max",
+      "frameIntervalMedianP95Max",
+      "residentBufferBytes"
+    ],
+    "rows": [
+      [
+        "fast",
+        "cold",
+        [
+          0.1,
+          0.9,
+          2.5
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          3.671,
+          4.513,
+          5.202
+        ],
+        [
+          8.3,
+          14.7,
+          68.6
+        ],
+        1399564
+      ],
+      [
+        "fast",
+        "travel",
+        [
+          0.1,
+          0.7,
+          1
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          1.727,
+          4.447,
+          4.873
+        ],
+        [
+          8.3,
+          36.5,
+          63.6
+        ],
+        2527382
+      ],
+      [
+        "fast",
+        "contacts",
+        [
+          0,
+          0.6,
+          0.8
+        ],
+        [
+          1.1,
+          1.7,
+          3.2
+        ],
+        [
+          3.217,
+          4.199,
+          8.506
+        ],
+        [
+          8.3,
+          10.2,
+          10.4
+        ],
+        1691446
+      ],
+      [
+        "pretty",
+        "cold",
+        [
+          0.5,
+          1.2,
+          3.3
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          2.747,
+          4.872,
+          6.828
+        ],
+        [
+          8.3,
+          26.2,
+          48.9
+        ],
+        11825550
+      ],
+      [
+        "pretty",
+        "travel",
+        [
+          0.2,
+          0.7,
+          0.8
+        ],
+        [
+          0,
+          0,
+          0
+        ],
+        [
+          2.171,
+          3.914,
+          5.883
+        ],
+        [
+          8.3,
+          46.3,
+          104.8
+        ],
+        23164311
+      ],
+      [
+        "pretty",
+        "contacts",
+        [
+          0.1,
+          0.7,
+          0.8
+        ],
+        [
+          1.1,
+          1.5,
+          1.5
+        ],
+        [
+          2.346,
+          4.204,
+          5.287
+        ],
+        [
+          8.3,
+          9.7,
+          10.4
+        ],
+        15966988
+      ]
+    ],
+    "limitation": "Median frame cadence was 8.3ms but travel spikes reached 104.8ms. This does not establish locked 120Hz or a strict 2ms foliage budget.",
+    "browserErrors": []
+  },
+  "validation": [
+    "48 focused tests passed",
+    "Client typecheck passed",
+    "Benchmark typecheck passed",
+    "Production build passed"
+  ]
+}

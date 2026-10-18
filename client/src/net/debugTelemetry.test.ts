@@ -128,7 +128,7 @@ describe('NetDebugTelemetry', () => {
 
     const snapshot = telemetry.snapshot();
     expect(snapshot.staleSnapshotsDropped).toBe(1);
-    expect(snapshot.recentEvents.some((line) => line.includes('dropped stale snapshot'))).toBe(true);
+    expect(snapshot.recentEvents.some((line) => line.includes('late snapshot tick 10'))).toBe(true);
   });
 
   it('retains detailed shot diagnostics long enough for delayed debug dumps', () => {

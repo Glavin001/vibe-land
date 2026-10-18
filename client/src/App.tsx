@@ -1,7 +1,19 @@
-import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
+import { VehicleNetLab } from './netlab/VehicleNetLab';
+import { vehicleLabEnabled } from './netlab/vehicleLab';
+import { AudioSettingsPanel } from './audio/AudioSettingsPanel';
+import {TownKitControls} from './city/TownKitControls';
+import {isTownKitPage} from './city/townKitState';
+import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode, useSyncExternalStore } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
+import {
+  getActiveSession,
+  getConnectPhase,
+  getTransportNote,
+  subscribeConnectPhase,
+} from './app/connectPhase';
 import { isTouchDevice } from './device';
-import { buildMatchHref, resolveRequestedMatchId } from './app/matchId';
+import { serverCloseReason } from './net/disconnectReason';
+import { buildMatchHref, defaultMatchIdForPath, isCityMatchId, resolveRequestedMatchId } from './app/matchId';
 import type { PlayBenchmarkPageState, PlayWorkerResult } from './benchmark/contracts';
 import {
   DEFAULT_INPUT_BINDINGS,
@@ -13,6 +25,8 @@ import {
   type KeyboardBindings,
 } from './input/bindings';
 import { usePointerLockEngagement } from './input/usePointerLockEngagement';
+import { getPointerMode, subscribePointerMode } from './input/pointerMode';
+import { getGrassSyncStatus, subscribeGrassSyncStatus } from './scene/grass/GrassLayoutSync';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
@@ -39,6 +53,10 @@ import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocumen
 import { CalibrationOverlay } from './calibration/CalibrationOverlay';
 import { FirstRunPrompt } from './calibration/FirstRunPrompt';
 import { CALIBRATION_WORLD_DOCUMENT } from './calibration/calibrationWorld';
+import { CITY_WORLD_DOCUMENT } from './world/cityWorld';
+import { useShaderWarmupPhase } from './scene/ShaderWarmup';
+import { CityStatsOverlay } from './city/CityStatsOverlay';
+import { CityFlightControls } from './city/CityFlightControls';
 import {
   getInputSettings,
   hasStoredInputSettings,
@@ -55,6 +73,7 @@ import {
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
 import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
 import { updateE2EBridgeAppState } from './e2eBridge';
+import { WeaponHud } from './ui/WeaponHud';
 import {
   MAX_FOG_INTENSITY,
   MIN_FOG_INTENSITY,
@@ -66,11 +85,17 @@ type AppProps = {
   mode: GameMode;
   worldDocument?: WorldDocument;
   overlay?: ReactNode;
+  /** Extra three.js content rendered inside the game scene. */
+  sceneExtras?: ReactNode;
   routeLabel?: string;
   autoConnect?: boolean;
   sessionKey?: number;
   hideTopNav?: boolean;
   hideStatusBanner?: boolean;
+  /** Default match id when none is in the query (e.g. 'city-default' for /city). */
+  matchFallback?: string;
+  /** Explicit private session, unaffected by a stale URL match query. */
+  matchId?: string;
 };
 
 type BenchmarkConfig = {
@@ -134,15 +159,21 @@ export function App({
   mode,
   worldDocument = DEFAULT_WORLD_DOCUMENT,
   overlay,
+  sceneExtras,
   routeLabel,
   autoConnect = false,
   sessionKey = 0,
   hideTopNav = false,
   hideStatusBanner = false,
+  matchFallback,
+  matchId,
 }: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
-  const multiplayerMatchId = resolveRequestedMatchId(window.location.search);
+  const multiplayerMatchId = matchId ?? resolveRequestedMatchId(
+    window.location.search,
+    matchFallback ?? defaultMatchIdForPath(window.location.pathname),
+  );
   const benchmarkConfig = useMemo<BenchmarkConfig | null>(() => {
     if (practiceMode) {
       return null;
@@ -191,9 +222,17 @@ export function App({
   const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [scopeActive, setScopeActive] = useState(false);
+  const [aerialMode, setAerialMode] = useState(false);
+  const [aerialSpeed, setAerialSpeed] = useState(30);
+  const [aerialDropRequest, setAerialDropRequest] = useState(0);
+  const changeAerialMode = (active: boolean) => {
+    if (aerialMode && !active) setAerialDropRequest((value) => value + 1);
+    setAerialMode(active);
+  };
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
-  const [controlsOverlayExpanded, setControlsOverlayExpanded] = useState(true);
+  const [controlsOverlayExpanded, setControlsOverlayExpanded] = useState(() => !isTownKitPage());
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [soundOpen, setSoundOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
   const [cosmeticDeathPhysicsEnabled, setCosmeticDeathPhysicsEnabled] = useState(() => {
@@ -220,10 +259,18 @@ export function App({
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const { controller: damageFeedbackController, renderState: damageOverlayState } = useDamageFeedback();
   const touchMode = isTouchDevice();
+  const grassSync = useSyncExternalStore(subscribeGrassSyncStatus, getGrassSyncStatus, getGrassSyncStatus);
+  const dragPointer = useSyncExternalStore(subscribePointerMode, getPointerMode, getPointerMode) === 'drag';
+  // Which step of joining we are on, so a stalled connect names the step it
+  // stalled on instead of just saying "Connecting..." forever.
+  const connectPhase = useSyncExternalStore(subscribeConnectPhase, getConnectPhase, getConnectPhase);
+  const transportNote = useSyncExternalStore(subscribeConnectPhase, getTransportNote, getTransportNote);
+  const activeSession = useSyncExternalStore(subscribeConnectPhase, getActiveSession, getActiveSession);
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
 
   const getGameCanvas = useCallback(
-    () => document.querySelector<HTMLCanvasElement>('canvas[data-testid="game-canvas"]'),
+    // R3F puts Canvas props on its wrapper div, not the WebGL canvas.
+    () => document.querySelector<HTMLCanvasElement>('[data-testid="game-canvas"] canvas'),
     [],
   );
   usePointerLockEngagement({
@@ -257,7 +304,17 @@ export function App({
       : worldDocument,
     [benchmarkConfig, worldDocument],
   );
-  const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : benchmarkWorldDocument;
+  // A city match runs on the server's flat world, not the Demo World. The
+  // document drives client prediction as well as rendering, so using the
+  // default here desynced movement from the server and buried the towers in
+  // terrain the server does not simulate.
+  const cityWorld = !practiceMode && isCityMatchId(multiplayerMatchId);
+  useEffect(() => { setAerialMode(false); }, [cityWorld, connected, sessionKey]);
+  const effectiveWorldDocument = calibrationOpen
+    ? CALIBRATION_WORLD_DOCUMENT
+    : cityWorld
+      ? CITY_WORLD_DOCUMENT
+      : benchmarkWorldDocument;
 
   // E2E bridge: keep App-level state in sync for snapshot reads.
   useEffect(() => {
@@ -685,7 +742,10 @@ export function App({
   }, [benchmarkConfig, modeLabel, practiceMode, publishBenchmarkState, touchMode]);
 
   const handleDisconnect = useCallback((reason?: string) => {
-    setStatus(`${practiceMode ? `${modeLabel} stopped` : 'Disconnected'} — click to rejoin`);
+    const serverReason = serverCloseReason(reason);
+    setStatus(serverReason
+      ? `Server closed the connection: ${serverReason} — click to rejoin`
+      : `${practiceMode ? `${modeLabel} stopped` : 'Disconnected'} — click to rejoin`);
     setConnected(false);
     setPlayerId(0);
     setCrosshairState('idle');
@@ -845,9 +905,31 @@ export function App({
   // practice mode so the player doesn't see it flash when the calibration
   // wizard opens or closes (which triggers a brief disconnect + reconnect).
   const clickToJoinVisible = !connected && !(practiceMode && hasEverConnectedRef.current);
+  // The city plays once every shader it can show is built (scene/ShaderWarmup.tsx).
+  const shaderWarmup = useShaderWarmupPhase();
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+      {cityWorld && connected && !clickToJoinVisible && shaderWarmup !== 'done' && (
+        <div
+          data-testid="loading-overlay"
+          role="status"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9,
+            background: '#10161d',
+          }}
+        >
+          <div style={{ textAlign: 'center' }}>
+            <h1 style={{ fontSize: 48, marginBottom: 16, fontWeight: 700 }}>vibe-land</h1>
+            <p style={{ fontSize: 18, opacity: 0.7 }}>Loading the city and preparing graphics...</p>
+          </div>
+        </div>
+      )}
       {clickToJoinVisible && (
         <div
           data-testid="join-overlay"
@@ -880,6 +962,8 @@ export function App({
           className="pointer-events-none absolute left-2 top-2 z-5 rounded bg-[rgba(0,0,0,0.6)] px-3 py-1 text-sm"
         >
           {status}
+          {connectPhase ? ` — ${connectPhase}` : ''}
+          {transportNote ? <div className="text-amber-300">{transportNote}</div> : null}
         </div>
       )}
       {!hideTopNav && (
@@ -890,6 +974,9 @@ export function App({
           <a href={practiceMode ? buildMatchHref('/play', multiplayerMatchId) : '/practice'} style={navLinkStyle}>
             {practiceMode ? 'Multiplayer' : 'Firing range'}
           </a>
+          <button type="button" onClick={() => { document.exitPointerLock(); setSoundOpen(true); }} style={navButtonStyle}>
+            Sound
+          </button>
           <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
             Controls
           </button>
@@ -905,6 +992,7 @@ export function App({
         </div>
       )}
       {overlay}
+      {vehicleLabEnabled(window.location.search) && <VehicleNetLab matchId={multiplayerMatchId} />}
       {copyNotice && (
         <div
           style={{
@@ -923,7 +1011,7 @@ export function App({
           {copyNotice}
         </div>
       )}
-      {connected && !scopeActive && (
+      {connected && !scopeActive && !aerialMode && (
         <div
           style={{
             position: 'absolute',
@@ -961,7 +1049,8 @@ export function App({
           />
         </div>
       )}
-      {connected && scopeActive && (
+      {connected && !aerialMode && <WeaponHud />}
+      {connected && scopeActive && !aerialMode && (
         <div
           data-testid="scope-overlay"
           style={{
@@ -1021,16 +1110,27 @@ export function App({
           </div>
         </div>
       )}
+      {connected && !touchMode && dragPointer && <div role="status" style={{
+        position: 'absolute', top: 58, left: '50%', transform: 'translateX(-50%)',
+        padding: '8px 12px', borderRadius: 8, background: 'rgba(7,11,16,0.78)',
+        color: 'white', fontSize: 12, zIndex: 9, pointerEvents: 'none', textAlign: 'center',
+      }}>Drag to look · Click to fire · Esc to release controls</div>}
+      {cityWorld && connected && !isTownKitPage() && grassSync.state !== 'idle' && <div role="status" style={{
+        position: 'absolute', top: dragPointer ? 98 : 58, left: '50%', transform: 'translateX(-50%)',
+        padding: '5px 10px', borderRadius: 6, background: 'rgba(7,11,16,0.78)',
+        color: grassSync.state === 'error' ? '#ffdc9c' : '#d9e8c6', fontSize: 11, zIndex: 9, pointerEvents: 'none',
+      }}>{grassSync.message}</div>}
       <ControlHintsOverlay
         bindings={inputBindings}
         state={controlHintsState}
-        visible={connected && isDesktop && !touchMode}
+        visible={connected && isDesktop && !touchMode && !aerialMode}
         expanded={controlsOverlayExpanded}
         onToggleExpanded={() => setControlsOverlayExpanded((value) => !value)}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
       />
       {connected && touchMode && <MobileHUD />}
+      <AudioSettingsPanel open={soundOpen} onClose={() => setSoundOpen(false)} />
       <ControlsSettingsPanel
         open={controlsOpen}
         bindings={inputBindings}
@@ -1093,6 +1193,20 @@ export function App({
         visible={connected}
       />
       <MeleeHUD visible={connected} />
+      {cityWorld && connected && isTownKitPage() && <TownKitControls matchId={activeSession?.matchId ?? multiplayerMatchId} baseUrl={activeSession?.statsBaseUrl ?? ''} />}
+      {cityWorld && connected && (
+        <CityFlightControls active={aerialMode} speed={aerialSpeed} onActiveChange={changeAerialMode} onSpeedChange={setAerialSpeed} bindings={inputBindings} touch={touchMode} />
+      )}
+      {cityWorld && connected && (
+        <CityStatsOverlay
+          initiallyExpanded={!isTownKitPage() && !touchMode}
+          matchId={activeSession?.matchId ?? multiplayerMatchId}
+          statsBaseUrl={activeSession ? activeSession.statsBaseUrl : ''}
+          getCityStats={() => window.__VIBE_E2E__?.snapshot().city ?? null}
+          transport={displayStats.transport}
+          pingMs={displayStats.pingMs}
+        />
+      )}
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}
@@ -1157,7 +1271,11 @@ export function App({
         <GameScene
           key={sessionKey}
           mode={mode}
+          matchId={multiplayerMatchId}
           worldDocument={effectiveWorldDocument}
+          aerialMode={cityWorld && aerialMode}
+          aerialSpeed={aerialSpeed}
+          aerialDropRequest={aerialDropRequest}
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           onAimStateChange={setCrosshairState}
@@ -1188,7 +1306,7 @@ export function App({
           windDirectionDeg={fogSettings.windDirectionDeg}
           intensity={fogSettings.intensity}
           damageFeedback={damageFeedbackController}
-          sceneExtras={calibrationSceneExtras}
+          sceneExtras={<>{calibrationSceneExtras}{sceneExtras}</>}
         />
       )}
     </div>

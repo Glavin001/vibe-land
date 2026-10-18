@@ -1,6 +1,13 @@
 /**
  * Scenario-driven WebSocket load test runner.
  *
+ * WebSocket is DISABLED as a game transport (see src/net/transportPolicy.ts),
+ * so this tool refuses to run unless VIBE_ENABLE_WEBSOCKET=1 is set -- for it
+ * AND for the game server, whose /ws/:match_id route is otherwise closed. For
+ * load on the real transport use the WebTransport bots instead:
+ *   cargo run -p web-fps-server --bin city-bots   (headless, /city)
+ *   the /loadtest page                            (browser WebTransport bots)
+ *
  * Backward-compatible usage:
  *   npm run simulate
  *   npm run simulate -- 50
@@ -25,6 +32,7 @@ import {
   WEAPON_HITSCAN,
 } from './src/net/protocol.js';
 import { stepBotBrain, createBotBrainState, type ObservedPlayer } from './src/loadtest/brain.js';
+import { websocketToolingEnabled } from './src/net/transportPolicy.js';
 import { PacketImpairment } from './src/loadtest/networkModel.js';
 import {
   DEFAULT_SCENARIO,
@@ -422,6 +430,12 @@ async function writeSummary(
 }
 
 async function main(): Promise<void> {
+  if (!websocketToolingEnabled(process.env)) {
+    throw new Error(
+      'simulate drives the WebSocket game transport, which is disabled. Use the WebTransport bots '
+        + '(city-bots, /loadtest), or set VIBE_ENABLE_WEBSOCKET=1 for this tool and the server.',
+    );
+  }
   const scenario = normalizeScenario(await parseScenarioFromArgs());
   const wsBotCount = scenario.transportMix.websocket;
   const durationLabel = scenario.durationS > 0 ? `${scenario.durationS}s` : 'until Ctrl-C';

@@ -1,0 +1,120 @@
+# Destruction dust on /city
+
+Dust and smoke for building destruction, proportional to what broke, at
+any distance the player can see, within a fixed GPU budget. Added
+2026-09-20. Modelled on the Ember VFX lab's map-scale parcel layer, not its
+WebGPU fluid solver (our client is three 0.170 / WebGL2).
+
+## Where the dust comes from
+
+No server or wire change. `PKT_CITY_TOPOLOGY` names broken bonds and born
+islands; the binary manifest carries every bond's centroid, normal, area
+and material, which `manifestBinary.ts` now keeps as views instead of
+skipping (zero extra bytes: the buffer was already pinned).
+
+- `client/src/city/destructionEvents.ts` — joins an applied topology
+  message to the manifest and ledger: fractures at the bonds (through
+  whichever chunk carries them now; a bond whose chunks stayed together
+  counts 15%), entries where the first break in a quiet cell lies along a
+  registered shot (`vfx/dustShots.ts`; spall toward the shooter), sheds at a
+  born island's centre of mass, and settle impacts as a fallback. Clustered
+  into 4 m cells, largest first, capped per message, ordinals fixed by cell
+  so a replay numbers itself the same way.
+- `client/src/city/dustImpacts.ts` — the main dust: impacts read off the
+  velocity stream (a body that lost ≥ 4 m/s in one sample hit something;
+  impulse = mass·Δv, placed on its underside along the stop, ground or
+  debris by height and direction), and collapse waves when ≥ 100,000 kg·m/s
+  lands in one 8 m cell within half a second.
+- `client/src/city/dustPolicy.ts` — sources to parcels: count `∝ m^0.5`
+  (≤ 8), radius `∝ m^⅓`, thickness from material, thrown out along the face
+  normal, 32 parcels per tick, a smoulder that keeps a broken cell puffing
+  while breaks keep arriving. Seeded by hash; never random.
+- `client/src/city/cityClient.ts` — `extractDust` after each apply (stamped
+  a playout delay into the future on wire v2 so the puff appears with the
+  crack), `drainDustSources` per frame.
+
+## How it is drawn
+
+- `client/src/vfx/dustParcelStore.ts` — the ring of immutable births;
+  centre, size and fade are pure functions of age, clamped to the room the
+  parcel was born in.
+- `client/src/vfx/dustClearance.ts` — that room: a 4 m grid of chunk boxes,
+  consulted with the ledger so fallen walls do not count; six axis
+  clearances per birth, and the policy births a fracture on the open side
+  of its face.
+- `client/src/graphics/FramePipeline.tsx` — the offscreen frame (scene →
+  beauty with depth → SSAO → stages → composite with ACES + sRGB). Replaced
+  `AmbientOcclusion.tsx`; mounted when SSAO or volumetric dust is on.
+- `client/src/vfx/DustVolumeRenderer.ts` — the pipeline stage: cull, tier,
+  stable thinning, sample budget (scale steps → demote to half-res → shed),
+  two instanced BackSide-box raymarches through one baked 128³ cloud
+  (`dustFieldBake.ts`, GPU-baked over the first eight frames), scene-depth
+  terminated, half-res layer brought up through a depth-weighted tent.
+- `client/src/vfx/dustOccupancy.ts` — the standing city as 0.5 m voxels in
+  a 96×48×96 m volume around the camera (rebuilt on a 24 m move or when
+  bonds break, ≤ 2 Hz, ~ms). The parcel march samples it per step and drops
+  density inside solids, so no parcel ever renders through a wall from any
+  angle: Ember's "density inside solid voxels is suppressed".
+- `client/src/vfx/fluid/` — the near-camera fluid bricks (lookTuning
+  `dustFluidBricks`, default 2, up to 4): Ember's stable fluids on a 2D
+  slice atlas, 16×12×16 m each, placed at distinct sources of magnitude
+  ≥ 20 within 60 m, fed by every source inside, colliding with the standing
+  city so the dust flows around walls, retired after 9 s quiet or 100 m
+  away. Parcels inside a live brick fade as it takes over.
+- `client/src/vfx/dustMovers.ts` — moving bodies push the dust, Ember's
+  vehicle demo against the city: the fastest awake islands near the camera
+  (and the cannonball, a game body) become movers each frame. The bricks
+  take them as velocity sources and displace density in their core; parcels
+  within reach are carried and shoved (bounded to 4 m/s, so a cloud parts
+  rather than vanishes); big fast bodies shed a wake parcel every 250 ms
+  born with their velocity, at most three a frame.
+- `client/src/vfx/DustSprites.tsx` — soft lit discs for FAST, touch, or a
+  GL without highp / render-to-3D.
+- `client/src/vfx/DustLayer.tsx` — the React glue, mounted after the city
+  layer in `GameWorld.tsx`.
+
+## Knobs
+
+- Render quality (`app/renderQuality.ts`, persisted, F9 panel, e2e
+  `setRenderQuality`): `dust` = off | sprites | volumetric (desktop default
+  volumetric; FAST draws volumetric as sprites); `dustFluid` = off | fast |
+  balanced (desktop default balanced, touch off; needs volumetric).
+- Data side (`city/dustSettings.ts`): `?dust=0|1`, `?dustCap=N`,
+  `?dustTick=N`, localStorage `vibe.city.dust`.
+- Live look (`graphics/lookTuning.ts`, e2e `setLook`): `dustDensity`,
+  `dustSize`, `dustLifetime`, `dustExtinction`, `dustPhaseG`,
+  `dustSunBoost`, `dustBudgetM` (the per-frame sample ceiling, 12 M).
+
+## Measuring
+
+F9 shows `dust live/drawn`, `dust samples` against the budget, and
+`dust dropped`. `renderStats` carries `dustParcelsLive/Drawn/DrawnHalf/
+SamplesEstM/CpuMs/EmitMs/Emitted/Dropped/PassSkipped/FluidActive`. The
+perf sweep has steps `dust off`, `dust sprites`, `dust fluid off`, `dust
+fluid fast`. `__VIBE_E2E__.dustBurst({x,y,z,magnitude,kind})` spawns dust
+without a server shot; `e2e/specs/city-dust.spec.ts` covers a real fracture
+and a bridge burst (E2E_CITY=1).
+
+Measured 2026-09-20 on an RTX 4090 shared with the PhysX server, 1080p,
+vsync off, 300-frame samples: base frame p50 1.8 ms; parcels at the 12 M
+budget +0.0–0.1 ms; fluid brick balanced +0.0 ms GPU, +0.1 ms CPU. The
+Apple-laptop number is still to be taken; `dustBudgetM` and `dustFluid` are
+the levers if it is over 2 ms.
+
+## Limits and notes
+
+- The player camera's far plane is 200 m and the fog is tuned to the 80 m
+  area of interest, so nothing — dust or building — is visible beyond
+  ~170 m from the player. The dust culls at the fog distance and scales to
+  the aerial camera's 4 km / thin fog; seeing a collapse at 300 m needs a
+  fog/far decision outside this feature.
+- Parcels do not flow around walls; they are confined to the axis-aligned
+  room measured at birth and masked by the occupancy volume where they
+  render. Flow around geometry is the bricks' job, and only near the camera
+  and up to the brick count. Both collide with static geometry only.
+- The half-res layer's grain is smoothed by the upsample; native parcels
+  keep the jittered march's fine grain, as SSAO does.
+- ANGLE's Vulkan backend logs "Running out of reserved outsideRenderPass
+  queueSerial" during a heavy collapse with the brick on (~20 render
+  targets a frame). It is a performance note, not an error; not measured
+  as a cost here.

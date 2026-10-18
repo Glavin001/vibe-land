@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { createPointerCaptureRequest, isInputControl, setPointerMode } from './pointerMode';
 
 // Pointer lock requires a user gesture — there's no way around it. What we
 // can do is make the gesture frictionless: listen for ANY keydown/pointerdown
@@ -12,50 +13,31 @@ type Options = {
   getCanvas: () => HTMLElement | null;
 };
 
-function isTextInputTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-  if (target.isContentEditable) return true;
-  return false;
-}
-
 export function usePointerLockEngagement({ enabled, getCanvas }: Options): void {
   useEffect(() => {
     if (!enabled) return;
     if (typeof document === 'undefined') return;
 
-    let armed = true;
-
-    const tryLock = (): void => {
-      if (!armed) return;
-      if (document.pointerLockElement !== null) return;
-      const canvas = getCanvas();
-      if (!canvas) return;
-      armed = false;
-      const result = (canvas as HTMLElement & {
-        requestPointerLock: () => Promise<void> | void;
-      }).requestPointerLock();
-      // Some browsers return a Promise; older ones return void. Either way,
-      // a failure should re-arm so the next gesture tries again.
-      if (result && typeof (result as Promise<void>).catch === 'function') {
-        (result as Promise<void>).catch(() => {
-          armed = true;
-        });
-      }
-    };
+    const tryLock = createPointerCaptureRequest();
 
     const onGesture = (event: Event): void => {
-      if (isTextInputTarget(event.target)) return;
-      tryLock();
+      if (isInputControl(event.target)) return;
+      // Read the fields, not instanceof: the native app's runtime delivers
+      // plain event objects, so instanceof never matched there and every key
+      // -- a held Escape's repeats, the Cmd of Cmd+Tab -- took the pointer back.
+      if (event.type === 'keydown') {
+        const key = event as KeyboardEvent;
+        // Escape releases the pointer; a held key repeats; Cmd or Alt starts
+        // a system shortcut (Cmd+Tab to leave), not play.
+        if (key.code === 'Escape' || key.repeat || key.metaKey || key.altKey || key.key === 'Meta' || key.key === 'Alt') return;
+      }
+      if ((event as PointerEvent).pointerType === 'touch') return;
+      const canvas = getCanvas();
+      if (canvas) tryLock(canvas);
     };
 
     const onPointerLockChange = (): void => {
-      if (document.pointerLockElement === null) {
-        // Lock lost (Escape pressed, tab switch, etc.) — re-arm so the next
-        // user gesture re-locks.
-        armed = true;
-      }
+      if (document.pointerLockElement === getCanvas()) setPointerMode('capture');
     };
 
     document.addEventListener('keydown', onGesture, true);

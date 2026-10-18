@@ -1,0 +1,135 @@
+# Suspension-to-destruction mapping (CPU reference)
+
+> **Partly superseded (2026-09-26).** The chosen design keeps rigid, rest-pose stress
+> geometry and moves only the wheel/hub colliders. The posed chunk mass, posed bonds,
+> momentum rebase, mass-preserving transform, per-solid `visuals` export and the axial
+> spring/shaft deformations below were removed on branch `vehicle/wheel-colliders`.
+> They are preserved on `vehicle/posed-geometry-archive` (`8aef12a9`). The rigid rig
+> port, its golden, joint anchoring and the impact re-qualification remain current.
+> See [vehicle-wheel-colliders](../vehicle-wheel-colliders-2026-09-26/README.md).
+
+Vehicle2 wheel state now maps to the posed actor-frame geometry of every
+fracture chunk: hull transform, mass/COM/full inertia tensor, scalar stress-node
+inertia, and bond centroid/normal. This is CPU reference data for the native
+geometry revision. **No GPU run, native change or live-runtime replacement is
+part of this checkpoint.**
+
+## What was built
+
+- `transformMassProperties` (`client/src/vehicles/mass-properties.mjs`) and its
+  Rust twin `AssetMassProperties::transformed`. Both map mass properties through
+  any affine `x' = Lx + t` while preserving mass. They go through the second
+  moment `C = ½tr(I)·1 − I → L C Lᵀ`.
+- `dune/pose-deltas.mjs` gives the physical motion of each suspension role,
+  derived from the visual rig's kinematic state:
+  - Arms rotate about their pivot lines.
+  - The upright and caliper follow the steered knuckle.
+  - Hub and wheel spin.
+  - The damper turns about its top mount, and the piston rides the shock eye.
+  - The tie rod follows its rack end.
+  - The coil spring compresses axially.
+  - The plunging CV shaft telescopes, and its rubber boot ribs telescope with it.
+  - The visual beams are not used for physics. They stretch a unit tube and choose an arbitrary twist, which is fine for rendering axisymmetric parts but not for rigid chunks.
+- `server/src/vehicle_assets/rig.rs` ports these maps to Rust, including
+  `solveCorner`. It also maps Vehicle2 wheels to source corners (`fr, fl, rr,
+  rl`, spin negated) the same way `VehicleVisual` does.
+- `server/src/vehicle_assets/posed.rs` computes posed chunk geometry and
+  `rebase_momentum`. The latter re-expresses a body on a new mass frame while
+  conserving linear momentum and angular momentum about a fixed point.
+- Preparation (recipe `vehicle-physics-posed-6`) now exports:
+  - the rig with every solid's binding and its own actor-frame mass
+  - joint names and measured centroids for anchored bonds
+
+  It also rejects any chunk whose solids cannot share one motion. The one allowed exception is the coil-over group, whose damper and seats move rigidly inside the compressing coil.
+- `origin_height` is now `f64` on the server. As `f32` it put about 1e-8 m of error into every rotated chunk (found by the golden test).
+
+## Joint anchoring (changes the stress graph)
+
+Measuring bonds across the pose sweep showed 181–196 of about 210 moving bonds per model separating by more than 5 mm, up to 35 cm. They were rest-pose contacts between relatively moving parts: CV boots against uprights, the shaft against the piston, the coil against the upper arm, and the steering column. Suspension travel alone would have torn them apart.
+
+`anchorRigJoints` (`mechanical-joints.mjs`) now handles every bond between
+differently moving chunks:
+- It keeps the bond only if it lies within `JOINT_NEIGHBOURHOOD_M = 0.08`
+  of one of these joints, then moves its centroid onto that joint:
+  - pivot lines
+  - ball joints
+  - shock eye
+  - top mount
+  - spring seat
+  - tie-rod end
+  - rack
+  - bearing axis
+  - outer/inner CV
+  - column axis
+- Otherwise it excludes the bond.
+- Area, normal and strength stay measured, and `measuredCentroid` is kept.
+
+The 11 builds lose 73–83 contacts each and all stay connected. Anchored joints
+move a median 20–35 mm, at most 79 mm. See `joint-anchoring.json`.
+
+**Consequence:** earlier full-model impact results (break counts, wheel loss)
+were measured on the old graph. They must be re-run before any claim is made
+about these assets.
+
+## Evidence
+
+| Check | Result |
+| --- | --- |
+| Tensor map vs integration of moved real solids (rigid, axial, shear) | ≤1e-9 (client test) |
+| Every chunk of 6 models × 19 poses: map vs integrated final solids | centre ≤2.1e-14 m, tensor ≤5.6e-14 |
+| Rust vs JS pose deltas | ≤6.3e-15 per element |
+| Rust posed chunk mass vs JS integrated solids | centre ≤2.1e-14 m, tensor ≤5.6e-14 |
+| Neutral pose vs authored rest assembly | ≤2.3e-15 |
+| Anchored joints (11 kinds, 6 models, 19 poses) | endpoint gap ≤1.2e-15 m |
+| Spring affine model vs regenerated visual coil | 1.08% tensor, 0 mm COM |
+| Hub rise rate vs bump rate; wheel ω vs spin rate | ≤1e-3 (bisection-limited), ≤1e-6 |
+| Momentum rebase | p and L conserved to 1e-9 |
+| Builds prepared and connected | 11/11 |
+
+Logs: `client-vehicle-tests.log` (92 passing), `server-rig-tests.log`,
+`golden-export.log`, `build-verification.log`, `posed-geometry.json`.
+
+Measured limits:
+- `solveCorner` bisects 22 times, so travel resolution is about 1e-7 m (the visual rig has the same limit).
+- Visual beams differ from physical motion by up to 162 mm. That comes from twist and from the visual piston stretching.
+- The drive shaft plunges by up to 182 mm.
+
+Reproduce:
+```sh
+node client/scripts/verify-vehicle-builds.mjs /tmp/vibe-vehicle-assets /tmp/vehicle-posed-fixtures.json
+node client/scripts/export-rig-golden.mjs /tmp/vehicle-posed-fixtures.json /tmp/rig-golden server/src/vehicle_assets/testdata/rig-golden-buggy.json
+VIBE_RIG_GOLDEN=/tmp/rig-golden/manifest.json cargo test -p web-fps-server --bin web-fps-server \
+  --features native-destruction six_model_posed -- --include-ignored --nocapture
+```
+
+## Not done here
+
+- Committing posed geometry natively: stress nodes and bonds, material geometry, `cMassLocalPose` plus inertia, collider poses and mesh scale.
+- GPU execution of PhysX `d82b4da7`.
+- Re-running impact qualification on the anchored graph.
+- Live garage destruction, fragment streaming and performance.
+- Trailer kinematics. The semi passes through unchanged and is not fracturable.
+
+## Phase E: GPU qualification of PhysX `d82b4da7` → `deb09714`
+
+The play server was stopped with the user's approval. Tests ran serially under `gpu-run.sh`, on local CuMetal FP64 (`garage-multihull` package). This is functional evidence, not CUDA or performance qualification.
+
+- `blast_stress_gpu_operator_epochs` and `..._integration` passed on the first run (`gpu-geometry-epochs.log`).
+- `blast_stress_gpu_resident_geometry` failed on its first execution: the updated solver differed from a fresh one by 5.27%. The cause was the oracle. The 4-node/6-bond graph is statically indeterminate, so its minimum-norm solution depends on the length normalization, which the update keeps at rest-pose values by design. The rewritten test (`gpu-geometry-final.log`) passes:
+  - rigid motion vs a fresh solver: error 0
+  - stretched determinate supported tree: 1.8e-6
+  - the stretched indeterminate gap (5.27%) is printed, not asserted
+- The independent support-equilibrium oracle then failed in the reversed endpoint order. A GPU experiment showed Blast's operator uses opposite-handed angular coordinates. Production already negates its angular inputs (`PxgDestructionRuntime`: `inputs.angular = -torque/inertia`), so **live loads are consistent**. The oracle was corrected, and a new regression pins the convention: a shear bond is recovered exactly from Blast-convention inputs (moment 9e-10), and not from un-negated ones (0.04 N instead of 1 N).
+- Consequence: in a redundant bond graph, how load is shared between parallel bonds is fixed by the rest-pose metric while the suspension moves.
+
+Artifact: `gpu_resident_geometry_test` sha256 `c67d5dd9…6ec2`, built from the working tree before `deb09714`. The only later change to the source is a message string.
+
+## Impact re-qualification on the anchored graph
+
+This run used the same isolated SDK (`/tmp/vehicle-drive-mask-sdk22`) and the same runtime overlay (`/tmp/vehicle-convergence-gate-libs`) as the last qualified run, with `--authored-fixtures /tmp/vehicle-posed-fixtures.json`. See `impact/`.
+
+- **Severe hits (300 kg at 120 m/s): pass on all six models.** The targeted wheel detaches on tick 0 and stays disabled. Bonds broken: 36/55/61/64/67/66 on buggy/trophy/rally/monster/derby/sprint (previously 30/48/55/56/49/44). Every step converged; there were no rejected ticks.
+- **Free-fall controls: pass on all six.** 30 ticks with no fracture.
+- **Nominal hits (30 kg at 55 m/s): the gate is still red, failing only on sprint.** Bonds broken: 2/7/6/6/2/0 (previously 0/7/6/8/2/0). The target wheel mount peaks at 20–23% of its elastic compression limit on every model. Materials and loads are unchanged; whether a nominal shot should fracture sprint is an open strength/gameplay decision.
+
+This graph still runs at the rest pose only: moving geometry is not yet committed natively.

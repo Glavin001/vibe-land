@@ -1,0 +1,931 @@
+//! The server-side topology ledger: authoritative alive-bond bitsets, live
+//! island membership, and settled poses.
+//!
+//! Fed by `FractureBatch`/`SettleEvent` streams each tick; produces the
+//! late-join/resync `BootstrapMessage`. The client keeps an equivalent ledger
+//! (client/src/city/topology.ts) reconstructed purely from the same events —
+//! this is the "ledger of globally unique objects" both sides agree on.
+
+use std::collections::HashMap;
+
+use glam::Vec3;
+
+use vibe_netcode::destruction_backend::{FractureBatch, SettleEvent};
+
+use crate::ids;
+use crate::manifest::DestructionManifest;
+use crate::types::Pose;
+use crate::wire::{BootstrapIsland, BootstrapMessage, BootstrapStructure};
+
+/// FNV-1a 32-bit, run as two independently-seeded lanes to make a 64-bit
+/// structure hash. Lane A is the standard FNV offset basis; lane B is an
+/// arbitrary distinct seed. Chosen over one 64-bit hash because the client
+/// computes the same function in JS, where u64 means BigInt and BigInt means
+/// paying for it every comparison.
+const FNV_PRIME: u32 = 16_777_619;
+const FNV_SEED_A: u32 = 0x811c_9dc5;
+const FNV_SEED_B: u32 = 0xdead_beef;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LedgerIsland {
+    /// Node indices within the structure, ascending.
+    pub nodes: Vec<u32>,
+    pub pose: Pose,
+    pub linear_velocity: Vec3,
+    pub angular_velocity: Vec3,
+    pub settled: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct LedgerStructure {
+    bond_count: u32,
+    /// Bit `i` set = bond index `i` alive.
+    alive_bonds: Vec<u8>,
+    islands: HashMap<u32, LedgerIsland>,
+    /// Per node, the islands listing it (one, unless a stream put it on
+    /// two): a promotion drains only those, not every island. Derived from
+    /// `islands`, so never serialised; rebuilt when missing.
+    #[serde(skip)]
+    holders: rustc_hash::FxHashMap<u32, Vec<u32>>,
+    #[serde(skip)]
+    indexed: bool,
+}
+
+impl LedgerStructure {
+    fn index(&mut self) {
+        if self.indexed {
+            return;
+        }
+        self.holders.clear();
+        for (&serial, island) in &self.islands {
+            for &n in &island.nodes {
+                self.holders.entry(n).or_default().push(serial);
+            }
+        }
+        self.indexed = true;
+    }
+
+    fn unlist(&mut self, node: u32, serial: u32) {
+        if let Some(list) = self.holders.get_mut(&node) {
+            if let Some(at) = list.iter().position(|&s| s == serial) {
+                list.swap_remove(at);
+            }
+            if list.is_empty() {
+                self.holders.remove(&node);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct CityLedger {
+    structures: HashMap<u32, LedgerStructure>,
+    broken_bonds_total: u64,
+}
+
+impl CityLedger {
+    pub fn from_manifest(manifest: &DestructionManifest) -> Self {
+        let structures = manifest
+            .structures
+            .iter()
+            .map(|structure| {
+                let bond_count = structure.bonds.len() as u32;
+                let mut alive_bonds = vec![0_u8; bond_count.div_ceil(8) as usize];
+                for bond in &structure.bonds {
+                    alive_bonds[(bond.bond_index / 8) as usize] |= 1 << (bond.bond_index % 8);
+                }
+                (
+                    structure.structure_id,
+                    LedgerStructure {
+                        bond_count,
+                        alive_bonds,
+                        islands: HashMap::new(),
+                        holders: Default::default(),
+                        indexed: true,
+                    },
+                )
+            })
+            .collect();
+        Self {
+            structures,
+            broken_bonds_total: 0,
+        }
+    }
+
+    pub fn broken_bonds_total(&self) -> u64 {
+        self.broken_bonds_total
+    }
+
+    pub fn live_island_count(&self) -> usize {
+        self.structures.values().map(|s| s.islands.len()).sum()
+    }
+
+    pub fn island(&self, structure_id: u32, serial: u32) -> Option<&LedgerIsland> {
+        self.structures.get(&structure_id)?.islands.get(&serial)
+    }
+
+    /// One hash per structure over what the reliable stream is supposed to
+    /// have replicated: the alive-bond bitmap and every dynamic island's
+    /// membership (serial + ascending node list). Poses and velocities are
+    /// deliberately absent -- they ride the datagram stream and heal on their
+    /// own; membership and bonds only heal through a bootstrap.
+    ///
+    /// This exists because `city_desync_repairs` sat at zero while a client
+    /// was visibly desynced: the server can only see the drops it makes
+    /// itself, so silent client-side divergence needs the server to publish
+    /// what the ledger SHOULD hash to. The client computes the same function
+    /// over its own ledger (`structureHashes` in `client/src/city/topology.ts`
+    /// -- the two must change together; `hash_vector_is_pinned` pins the
+    /// shared test vector).
+    ///
+    /// Two independent 32-bit FNV-1a lanes packed as (laneA << 32) | laneB.
+    /// JS has no cheap u64, so the client compares two u32 reads instead of
+    /// paying BigInt on a 2 Hz path.
+    pub fn structure_hashes(&self) -> Vec<(u32, u64)> {
+        let mut ids: Vec<u32> = self.structures.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .map(|structure_id| {
+                let structure = &self.structures[&structure_id];
+                let mut lane_a = FNV_SEED_A;
+                let mut lane_b = FNV_SEED_B;
+                let mut feed = |byte: u8| {
+                    lane_a = (lane_a ^ u32::from(byte)).wrapping_mul(FNV_PRIME);
+                    lane_b = (lane_b ^ u32::from(byte)).wrapping_mul(FNV_PRIME);
+                };
+                for &byte in &structure.alive_bonds {
+                    feed(byte);
+                }
+                let mut serials: Vec<u32> = structure.islands.keys().copied().collect();
+                serials.sort_unstable();
+                for serial in serials {
+                    let island = &structure.islands[&serial];
+                    for byte in serial.to_le_bytes() {
+                        feed(byte);
+                    }
+                    for byte in (island.nodes.len() as u32).to_le_bytes() {
+                        feed(byte);
+                    }
+                    // `nodes` is kept ascending by every mutation path; hash
+                    // order must not depend on mutation history.
+                    debug_assert!(island.nodes.windows(2).all(|w| w[0] < w[1]));
+                    for &node in &island.nodes {
+                        for byte in node.to_le_bytes() {
+                            feed(byte);
+                        }
+                    }
+                }
+                (structure_id, (u64::from(lane_a) << 32) | u64::from(lane_b))
+            })
+            .collect()
+    }
+
+    pub fn apply_batch(&mut self, batch: &FractureBatch) {
+        let Some(structure) = self.structures.get_mut(&batch.structure_id) else {
+            return;
+        };
+        structure.index();
+        for &bond_id in &batch.broken_bond_ids {
+            let (_, bond_index) = ids::bond_id_parts(bond_id);
+            if bond_index < structure.bond_count {
+                let byte = (bond_index / 8) as usize;
+                let bit = 1 << (bond_index % 8);
+                if structure.alive_bonds[byte] & bit != 0 {
+                    structure.alive_bonds[byte] &= !bit;
+                    self.broken_bonds_total += 1;
+                }
+            }
+        }
+        for promotion in &batch.promoted_islands {
+            let mut nodes: Vec<u32> = promotion
+                .chunks
+                .iter()
+                .map(|&chunk| ids::chunk_id_parts(chunk).1)
+                .collect();
+            nodes.sort_unstable();
+            // A node joining a new island has left its previous one. The
+            // clients drain the losing body when they apply this promotion;
+            // the ledger must do the same or its node lists go stale -- and
+            // the ledger is what bootstraps late joiners and resyncs, so a
+            // stale list here becomes corrupt membership (and a corrupt
+            // centre of mass) on every client that ever resynchronises.
+            // (Only the islands listing one of them are drained, by the
+            // holders index; membership by bitset.)
+            let words = nodes.last().map_or(0, |&n| n as usize / 64 + 1);
+            let mut joining = vec![0u64; words];
+            for &n in &nodes {
+                joining[n as usize / 64] |= 1 << (n % 64);
+            }
+            let joins = |n: u32| joining.get(n as usize / 64).is_some_and(|w| w & (1 << (n % 64)) != 0);
+            let mut drained: Vec<u32> = nodes.iter().filter_map(|n| structure.holders.get(n)).flatten().copied().collect();
+            drained.sort_unstable();
+            drained.dedup();
+            for serial in drained {
+                let Some(island) = structure.islands.get_mut(&serial) else { continue };
+                let mut left: Vec<u32> = Vec::new();
+                island.nodes.retain(|&node| {
+                    let joining = joins(node);
+                    if joining {
+                        left.push(node);
+                    }
+                    !joining
+                });
+                for node in left {
+                    structure.unlist(node, serial);
+                }
+            }
+            for &n in &nodes {
+                structure.holders.entry(n).or_default().push(promotion.island_id);
+            }
+            let replaced = structure.islands.insert(
+                promotion.island_id,
+                LedgerIsland {
+                    nodes,
+                    pose: Pose {
+                        position: Vec3::from_array(promotion.position),
+                        rotation: glam::Quat::from_array(promotion.rotation),
+                    },
+                    linear_velocity: Vec3::from_array(promotion.linear_velocity),
+                    angular_velocity: Vec3::from_array(promotion.angular_velocity),
+                    settled: false,
+                },
+            );
+            // An island the promotion's id replaces leaves its other nodes.
+            if let Some(old) = replaced {
+                for node in old.nodes {
+                    structure.unlist(node, promotion.island_id);
+                }
+            }
+        }
+        // Chunks physics moved between existing islands, with no promotion.
+        // Same staleness consequence as above if skipped -- which it was: the
+        // wire carried migrations to clients while the ledger ignored them,
+        // so every bootstrap after enough migrations described a city whose
+        // membership no client could reconcile.
+        for migration in &batch.migrations {
+            let node = ids::chunk_id_parts(migration.chunk_id).1;
+            if let Some(source) = structure.islands.get_mut(&migration.from_island_id) {
+                let before = source.nodes.len();
+                source.nodes.retain(|&existing| existing != node);
+                if source.nodes.len() != before {
+                    structure.unlist(node, migration.from_island_id);
+                }
+            }
+            if let Some(destination) = structure.islands.get_mut(&migration.to_island_id) {
+                // Keep ascending order: bootstrap gap-encodes node lists, so
+                // an out-of-order insert would corrupt the wire encoding.
+                if let Err(index) = destination.nodes.binary_search(&node) {
+                    destination.nodes.insert(index, node);
+                    structure.holders.entry(node).or_default().push(migration.to_island_id);
+                }
+            }
+        }
+        for &retired in &batch.retired_island_ids {
+            if let Some(island) = structure.islands.remove(&retired) {
+                for node in island.nodes {
+                    structure.unlist(node, retired);
+                }
+            }
+        }
+    }
+
+    pub fn apply_settle(&mut self, settle: &SettleEvent) {
+        if let Some(island) = self
+            .structures
+            .get_mut(&settle.structure_id)
+            .and_then(|s| s.islands.get_mut(&settle.island_id))
+        {
+            island.settled = true;
+            island.pose = Pose {
+                position: Vec3::from_array(settle.position),
+                rotation: glam::Quat::from_array(settle.rotation),
+            };
+            island.linear_velocity = Vec3::ZERO;
+            island.angular_velocity = Vec3::ZERO;
+        }
+    }
+
+    pub fn apply_wake(&mut self, structure_id: u32, serial: u32) {
+        if let Some(island) = self
+            .structures
+            .get_mut(&structure_id)
+            .and_then(|s| s.islands.get_mut(&serial))
+        {
+            island.settled = false;
+        }
+    }
+
+    /// Refresh a live island's pose from the kinematic stream so bootstraps
+    /// hand late joiners current state.
+    /// Motion update for a run of bodies that share a structure.
+    ///
+    /// The per-body entry point does two nested hash lookups (structure, then
+    /// island). Bodies arrive grouped by structure, so the outer one is the
+    /// same answer for long runs; this resolves it once and lets the caller
+    /// update each island directly.
+    /// Whether one of a structure's bonds is intact.
+    pub fn bond_alive(&self, structure_id: u32, bond_index: u32) -> bool {
+        self.structures.get(&structure_id).is_some_and(|s| {
+            bond_index < s.bond_count && s.alive_bonds[(bond_index / 8) as usize] & (1 << (bond_index % 8)) != 0
+        })
+    }
+
+    /// One structure's dynamic islands (serial -> island).
+    pub fn structure_islands(&self, structure_id: u32) -> Option<&HashMap<u32, LedgerIsland>> {
+        self.structures.get(&structure_id).map(|structure| &structure.islands)
+    }
+
+    pub fn structure_islands_mut(
+        &mut self,
+        structure_id: u32,
+    ) -> Option<&mut HashMap<u32, LedgerIsland>> {
+        self.structures.get_mut(&structure_id).map(|structure| {
+            // Whatever the caller changes, the index is rebuilt from it.
+            structure.indexed = false;
+            &mut structure.islands
+        })
+    }
+
+    pub fn update_island_motion(
+        &mut self,
+        body_entity: u32,
+        pose: Pose,
+        linear_velocity: Vec3,
+        angular_velocity: Vec3,
+    ) {
+        let (structure_id, serial) = ids::body_entity_parts(body_entity);
+        if let Some(island) = self
+            .structures
+            .get_mut(&structure_id)
+            .and_then(|s| s.islands.get_mut(&serial))
+        {
+            island.pose = pose;
+            island.linear_velocity = linear_velocity;
+            island.angular_velocity = angular_velocity;
+        }
+    }
+
+    /// Full-state resync for a late joiner.
+    ///
+    /// `live_motion` supplies each body's CURRENT pose and velocity. The
+    /// ledger used to carry its own copy, refreshed for every body on every
+    /// tick, and read only here -- a per-tick cost across thousands of bodies
+    /// to serve a message sent when someone joins. The caller already tracks
+    /// this state, so it is passed in instead.
+    /// TEMP DIAGNOSTIC: ledger islands with no live physics body.
+    ///
+    /// The client renders every ledger island; an island whose body no longer
+    /// exists is a phantom -- its chunks freeze at the last streamed pose,
+    /// which presents as floating shards and below-ground counts while server
+    /// physics is clean.
+    pub fn phantom_islands(&self, live_entities: &std::collections::HashSet<u32>) -> (usize, Option<(u32, u32)>) {
+        let mut count = 0;
+        let mut example = None;
+        for (&structure_id, structure) in &self.structures {
+            for (&serial, _island) in &structure.islands {
+                if serial == 0 {
+                    continue; // kinematic support is never streamed
+                }
+                let entity = crate::ids::body_entity(structure_id, serial);
+                if !live_entities.contains(&entity) {
+                    count += 1;
+                    if example.is_none() {
+                        example = Some((structure_id, serial));
+                    }
+                }
+            }
+        }
+        (count, example)
+    }
+
+    pub fn bootstrap(
+        &self,
+        sim_tick: u32,
+        manifest_hash: [u8; 32],
+        baseline_id: u16,
+        topo_seq: u32,
+        live_motion: &dyn Fn(u32, u32) -> Option<(Pose, Vec3, Vec3)>,
+    ) -> BootstrapMessage {
+        self.bootstrap_filtered(sim_tick, manifest_hash, baseline_id, topo_seq, live_motion, None)
+    }
+
+    /// A bootstrap covering only the named structures — the targeted repair a
+    /// hash mismatch drives. `None` means every structure (the full bootstrap).
+    /// The message shape is identical; the wire kind differs so the client
+    /// knows to rebuild the named structures instead of resetting the world.
+    pub fn bootstrap_filtered(
+        &self,
+        sim_tick: u32,
+        manifest_hash: [u8; 32],
+        baseline_id: u16,
+        topo_seq: u32,
+        live_motion: &dyn Fn(u32, u32) -> Option<(Pose, Vec3, Vec3)>,
+        only: Option<&[u32]>,
+    ) -> BootstrapMessage {
+        let mut structure_ids: Vec<u32> = self.structures.keys().copied().collect();
+        structure_ids.sort_unstable();
+        if let Some(only) = only {
+            structure_ids.retain(|id| only.contains(id));
+        }
+        let mut structures = Vec::new();
+        let mut islands = Vec::new();
+        for structure_id in structure_ids {
+            let structure = &self.structures[&structure_id];
+            structures.push(BootstrapStructure {
+                structure_id,
+                bond_count: structure.bond_count,
+                alive_bonds: structure.alive_bonds.clone(),
+            });
+            let mut serials: Vec<u32> = structure.islands.keys().copied().collect();
+            serials.sort_unstable();
+            for serial in serials {
+                let island = &structure.islands[&serial];
+                // A reliable rest record owns a stationary body's pose.
+                // Rooted fragments never enter the moving stream, and a
+                // frozen body's stream track may still hold an older frame.
+                let rest_motion = (island.pose, island.linear_velocity, island.angular_velocity);
+                let (pose, linear_velocity, angular_velocity) = if island.settled {
+                    rest_motion
+                } else {
+                    live_motion(structure_id, serial).unwrap_or(rest_motion)
+                };
+                islands.push(BootstrapIsland {
+                    structure_id,
+                    island_id: serial as u32,
+                    nodes: island.nodes.clone(),
+                    pose,
+                    linear_velocity,
+                    angular_velocity,
+                    settled: island.settled,
+                });
+            }
+        }
+        BootstrapMessage {
+            sim_tick,
+            manifest_hash,
+            baseline_id,
+            topo_seq,
+            structures,
+            islands,
+        }
+    }
+}
+
+/// How one structure's bodies compare with what a client could derive from
+/// the broken bonds alone (the per-player structural channel, decision D8):
+/// flood fill over intact bonds, a component touching a support chunk is the
+/// anchored structure, and every other component is one body named by its
+/// lowest chunk. The physics' own islands are the truth this is checked
+/// against.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StructureDerivation {
+    /// Dynamic components equal to exactly one physics island.
+    pub matched: u32,
+    /// Of those, islands whose serial differs from the derived id (expected:
+    /// the wire maps serial <-> lowest chunk).
+    pub renamed: u32,
+    /// Components touching a support: the anchored structure (no island).
+    pub anchored: u32,
+    /// Dynamic components with no physics island at all: chunks the physics
+    /// removed without breaking their bonds (crushed, retired at the floor).
+    /// A bonds-only stream needs an explicit event for these.
+    pub removed_components: u32,
+    pub removed_chunks: u32,
+    /// Components the physics splits into several islands, or merges with
+    /// others: membership a bonds-only client would get wrong.
+    pub split_or_merged: u32,
+    /// Physics islands holding chunks of an anchored component (a body the
+    /// client would draw as part of the standing structure).
+    pub island_in_anchored: u32,
+    /// Up to a few examples of the disagreements, for the report.
+    pub examples: Vec<String>,
+}
+
+impl StructureDerivation {
+    pub fn disagreements(&self) -> u32 {
+        self.removed_components + self.split_or_merged + self.island_in_anchored
+    }
+
+    pub fn add(&mut self, other: &StructureDerivation) {
+        self.matched += other.matched;
+        self.renamed += other.renamed;
+        self.anchored += other.anchored;
+        self.removed_components += other.removed_components;
+        self.removed_chunks += other.removed_chunks;
+        self.split_or_merged += other.split_or_merged;
+        self.island_in_anchored += other.island_in_anchored;
+        for example in &other.examples {
+            if self.examples.len() < 12 {
+                self.examples.push(example.clone());
+            }
+        }
+    }
+}
+
+impl CityLedger {
+    /// Derive `structure_id`'s bodies from its alive bonds and compare them
+    /// with the ledger's islands (see `StructureDerivation`). Nodes in no
+    /// ledger island and not anchored are "removed".
+    pub fn derive_check(&self, manifest: &DestructionManifest, structure_id: u32) -> StructureDerivation {
+        let mut out = StructureDerivation::default();
+        let (Some(structure), Some(authored)) =
+            (self.structures.get(&structure_id), manifest.structure(structure_id))
+        else {
+            return out;
+        };
+        let node_count = authored.chunks.iter().map(|c| c.node_index + 1).max().unwrap_or(0);
+        let mut uf = ChunkComponents::new(node_count);
+        for bond in &authored.bonds {
+            let alive = structure.alive_bonds[(bond.bond_index / 8) as usize] & (1 << (bond.bond_index % 8)) != 0;
+            if alive {
+                uf.union(bond.node0, bond.node1);
+            }
+        }
+        let support: std::collections::HashSet<u32> =
+            authored.chunks.iter().filter(|c| c.support).map(|c| c.node_index).collect();
+        // node -> ledger serial
+        let mut island_of: HashMap<u32, u32> = HashMap::new();
+        for (&serial, island) in &structure.islands {
+            for &node in &island.nodes {
+                island_of.insert(node, serial);
+            }
+        }
+        let mut components: Vec<(u32, Vec<u32>)> = uf.components().into_iter().collect();
+        components.sort_unstable_by_key(|(min, _)| *min);
+        let mut example = |out: &mut StructureDerivation, text: String| {
+            if out.examples.len() < 6 {
+                out.examples.push(text);
+            }
+        };
+        for (min, nodes) in components {
+            let serials: std::collections::BTreeSet<Option<u32>> =
+                nodes.iter().map(|node| island_of.get(node).copied()).collect();
+            if nodes.iter().any(|node| support.contains(node)) {
+                out.anchored += 1;
+                if serials.iter().any(Option::is_some) {
+                    out.island_in_anchored += 1;
+                    example(&mut out, format!("s{structure_id}: anchored component {min} ({} chunks) holds islands {serials:?}", nodes.len()));
+                }
+                continue;
+            }
+            match serials.iter().collect::<Vec<_>>().as_slice() {
+                [None] => {
+                    out.removed_components += 1;
+                    out.removed_chunks += nodes.len() as u32;
+                    if nodes.len() > 1 {
+                        example(&mut out, format!("s{structure_id}: {} chunks from {min} in no island", nodes.len()));
+                    }
+                }
+                [Some(serial)] if structure.islands[serial].nodes.len() == nodes.len() => {
+                    out.matched += 1;
+                    if *serial != min {
+                        out.renamed += 1;
+                    }
+                }
+                _ => {
+                    out.split_or_merged += 1;
+                    example(&mut out, format!("s{structure_id}: component {min} ({} chunks) is islands {serials:?}", nodes.len()));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Union-find over one structure's chunks, used to derive connected components
+/// from an alive-bond bitset (tests + the synthetic backend; the C++ adapter
+/// does its own island analysis in production).
+pub struct ChunkComponents {
+    parent: Vec<u32>,
+}
+
+impl ChunkComponents {
+    pub fn new(node_count: u32) -> Self {
+        Self {
+            parent: (0..node_count).collect(),
+        }
+    }
+
+    pub fn find(&mut self, node: u32) -> u32 {
+        let mut root = node;
+        while self.parent[root as usize] != root {
+            root = self.parent[root as usize];
+        }
+        let mut current = node;
+        while self.parent[current as usize] != root {
+            let next = self.parent[current as usize];
+            self.parent[current as usize] = root;
+            current = next;
+        }
+        root
+    }
+
+    pub fn union(&mut self, a: u32, b: u32) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra != rb {
+            self.parent[rb as usize] = ra;
+        }
+    }
+
+    /// Components as sorted node lists, keyed by their smallest node.
+    pub fn components(&mut self) -> HashMap<u32, Vec<u32>> {
+        let mut map: HashMap<u32, Vec<u32>> = HashMap::new();
+        for node in 0..self.parent.len() as u32 {
+            let root = self.find(node);
+            map.entry(root).or_default().push(node);
+        }
+        let mut out = HashMap::new();
+        for (_, mut nodes) in map {
+            nodes.sort_unstable();
+            out.insert(nodes[0], nodes);
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vibe_netcode::destruction_backend::IslandPromotion;
+
+    use crate::city::{build_city_scene, CitySceneDesc};
+    use crate::scene_pack::parse_scene_pack;
+
+    fn manifest() -> DestructionManifest {
+        let pack = parse_scene_pack(
+            r#"{
+            "version": 1, "title": "tiny",
+            "scenario": {
+                "nodes": [
+                    {"centroid": {"x": 0, "y": 0, "z": 0}, "mass": 0, "volume": 1},
+                    {"centroid": {"x": 0, "y": 1, "z": 0}, "mass": 10, "volume": 1},
+                    {"centroid": {"x": 0, "y": 2, "z": 0}, "mass": 10, "volume": 1}
+                ],
+                "bonds": [
+                    {"node0": 0, "node1": 1, "centroid": {"x": 0, "y": 0.5, "z": 0}, "normal": {"x": 0, "y": 1, "z": 0}, "area": 1.0},
+                    {"node0": 1, "node1": 2, "centroid": {"x": 0, "y": 1.5, "z": 0}, "normal": {"x": 0, "y": 1, "z": 0}, "area": 1.0}
+                ],
+                "nodeSizes": [
+                    {"x": 1, "y": 1, "z": 1}, {"x": 1, "y": 1, "z": 1}, {"x": 1, "y": 1, "z": 1}
+                ],
+                "nodeColliders": [
+                    {"kind": "cuboid", "halfExtents": {"x": 0.5, "y": 0.5, "z": 0.5}},
+                    {"kind": "cuboid", "halfExtents": {"x": 0.5, "y": 0.5, "z": 0.5}},
+                    {"kind": "cuboid", "halfExtents": {"x": 0.5, "y": 0.5, "z": 0.5}}
+                ]
+            }
+        }"#,
+        )
+        .expect("pack");
+        let city = build_city_scene(
+            &pack,
+            CitySceneDesc {
+                grid: 1,
+                pitch_m: 10.0,
+                varied_heights: false,
+            },
+        )
+        .expect("city");
+        DestructionManifest::from_city(&city)
+    }
+
+    /// The islands a batch leaves, as the ledger computed them before it
+    /// kept an index: every island scanned for every promoted node.
+    fn apply_by_scan(islands: &mut HashMap<u32, Vec<u32>>, batch: &FractureBatch) {
+        for promotion in &batch.promoted_islands {
+            let mut nodes: Vec<u32> = promotion.chunks.iter().map(|&c| ids::chunk_id_parts(c).1).collect();
+            nodes.sort_unstable();
+            for island in islands.values_mut() {
+                island.retain(|n| !nodes.contains(n));
+            }
+            islands.insert(promotion.island_id, nodes);
+        }
+        for migration in &batch.migrations {
+            let node = ids::chunk_id_parts(migration.chunk_id).1;
+            if let Some(source) = islands.get_mut(&migration.from_island_id) {
+                source.retain(|&n| n != node);
+            }
+            if let Some(destination) = islands.get_mut(&migration.to_island_id) {
+                if let Err(at) = destination.binary_search(&node) {
+                    destination.insert(at, node);
+                }
+            }
+        }
+        for retired in &batch.retired_island_ids {
+            islands.remove(retired);
+        }
+    }
+
+    /// Random promotions (of any chunks, reusing ids), migrations (some to
+    /// islands that do not exist) and retirements: the indexed ledger leaves
+    /// exactly the islands the full scan did, and its index lists exactly
+    /// each node's islands -- also after a round trip through serde.
+    #[test]
+    fn the_island_index_drains_what_a_full_scan_drained() {
+        use vibe_netcode::destruction_backend::ShapeMigration;
+        let manifest = manifest();
+        let mut seed = 0x0dd_ba11_5eed_u64;
+        let mut rand = move |m: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % u64::from(m.max(1))) as u32
+        };
+        for round in 0..20 {
+            let mut ledger = CityLedger::from_manifest(&manifest);
+            let mut reference: HashMap<u32, Vec<u32>> = HashMap::new();
+            for step in 0..80 {
+                let mut batch = FractureBatch { structure_id: 0, ..Default::default() };
+                for _ in 0..rand(3) {
+                    batch.promoted_islands.push(IslandPromotion {
+                        structure_id: 0,
+                        island_id: 1 + rand(12),
+                        chunks: (0..1 + rand(3)).map(|_| ids::chunk_id(0, rand(40))).collect(),
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        ..Default::default()
+                    });
+                }
+                for _ in 0..rand(3) {
+                    batch.migrations.push(ShapeMigration { chunk_id: ids::chunk_id(0, rand(40)), from_island_id: 1 + rand(12), to_island_id: 1 + rand(14) });
+                }
+                if rand(5) == 0 {
+                    batch.retired_island_ids.push(1 + rand(12));
+                }
+                ledger.apply_batch(&batch);
+                apply_by_scan(&mut reference, &batch);
+                if step % 17 == 0 {
+                    let text = serde_json::to_string(&ledger).unwrap();
+                    ledger = serde_json::from_str(&text).unwrap();
+                }
+                let structure = &ledger.structures[&0];
+                let got: HashMap<u32, Vec<u32>> = structure.islands.iter().map(|(&k, i)| (k, i.nodes.clone())).collect();
+                assert_eq!(got, reference, "round {round} step {step}");
+                if structure.indexed {
+                    let mut want: rustc_hash::FxHashMap<u32, Vec<u32>> = Default::default();
+                    for (&serial, nodes) in &reference {
+                        for &n in nodes {
+                            want.entry(n).or_default().push(serial);
+                        }
+                    }
+                    let mut have = structure.holders.clone();
+                    for list in have.values_mut().chain(want.values_mut()) {
+                        list.sort_unstable();
+                    }
+                    assert_eq!(have, want, "round {round} step {step}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batches_update_bitsets_and_islands() {
+        let manifest = manifest();
+        let mut ledger = CityLedger::from_manifest(&manifest);
+        let batch = FractureBatch {
+            structure_id: 0,
+            broken_bond_ids: vec![ids::bond_id(0, 1)],
+            migrations: Vec::new(),
+            promoted_islands: vec![IslandPromotion {
+                structure_id: 0,
+                island_id: 1,
+                chunks: vec![ids::chunk_id(0, 2)],
+                position: [0.0, 2.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                linear_velocity: [1.0, 0.0, 0.0],
+                ..Default::default()
+            }],
+            retired_island_ids: Vec::new(),
+        };
+        ledger.apply_batch(&batch);
+        assert_eq!(ledger.broken_bonds_total(), 1);
+        assert_eq!(ledger.live_island_count(), 1);
+
+        // Breaking the same bond twice does not double count.
+        ledger.apply_batch(&batch);
+        assert_eq!(ledger.broken_bonds_total(), 1);
+
+        let bootstrap = ledger.bootstrap(10, [1; 32], 0, 5, &|_, _| None);
+        assert_eq!(bootstrap.structures.len(), 1);
+        // Bond 0 alive, bond 1 broken -> bitset 0b0000_0001.
+        assert_eq!(bootstrap.structures[0].alive_bonds, vec![0b0000_0001]);
+        assert_eq!(bootstrap.islands.len(), 1);
+        assert_eq!(bootstrap.islands[0].nodes, vec![2]);
+    }
+
+    #[test]
+    fn settle_pins_pose_and_wake_reverses() {
+        let manifest = manifest();
+        let mut ledger = CityLedger::from_manifest(&manifest);
+        ledger.apply_batch(&FractureBatch {
+            structure_id: 0,
+            broken_bond_ids: vec![ids::bond_id(0, 1)],
+            promoted_islands: vec![IslandPromotion {
+                structure_id: 0,
+                island_id: 1,
+                chunks: vec![ids::chunk_id(0, 2)],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        ledger.apply_settle(&SettleEvent {
+            structure_id: 0,
+            island_id: 1,
+            position: [0.5, 0.5, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        });
+        let island = ledger.island(0, 1).expect("island");
+        assert!(island.settled);
+        assert_eq!(island.pose.position, Vec3::new(0.5, 0.5, 0.0));
+
+        ledger.apply_wake(0, 1);
+        assert!(!ledger.island(0, 1).expect("island").settled);
+    }
+
+    /// The cross-language hash vector. The client computes the same function
+    /// in `client/src/city/topology.ts` (`structureHashes`), whose test pins
+    /// these exact lane values over the same state -- if either side's
+    /// hashing changes, both tests fail together and both sides must move.
+    #[test]
+    fn hash_vector_is_pinned() {
+        let manifest = manifest();
+        let mut ledger = CityLedger::from_manifest(&manifest);
+        // Intact: alive bitmap 0b11, no islands.
+        assert_eq!(ledger.structure_hashes(), vec![(0, 0x060c_5eb2_7783_8d84)]);
+        ledger.apply_batch(&FractureBatch {
+            structure_id: 0,
+            broken_bond_ids: vec![ids::bond_id(0, 1)],
+            promoted_islands: vec![IslandPromotion {
+                structure_id: 0,
+                island_id: 1,
+                chunks: vec![ids::chunk_id(0, 2)],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        // Bond 1 broken (bitmap 0b01), island serial 1 holding node 2.
+        assert_eq!(ledger.structure_hashes(), vec![(0, 0xb97e_54fe_e243_a378)]);
+    }
+
+    #[test]
+    fn filtered_bootstrap_scopes_to_named_structures() {
+        let manifest = manifest();
+        let ledger = CityLedger::from_manifest(&manifest);
+        let all = ledger.bootstrap_filtered(10, [1; 32], 0, 5, &|_, _| None, None);
+        assert_eq!(all.structures.len(), 1);
+        let none = ledger.bootstrap_filtered(10, [1; 32], 0, 5, &|_, _| None, Some(&[7]));
+        assert!(none.structures.is_empty(), "unknown id must select nothing");
+        let scoped = ledger.bootstrap_filtered(10, [1; 32], 0, 5, &|_, _| None, Some(&[0]));
+        assert_eq!(scoped.structures.len(), 1);
+        assert_eq!(scoped.topo_seq, 5);
+    }
+
+    #[test]
+    fn union_find_components_follow_alive_bonds() {
+        let mut components = ChunkComponents::new(4);
+        components.union(0, 1);
+        components.union(2, 3);
+        let map = components.components();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&0], vec![0, 1]);
+        assert_eq!(map[&2], vec![2, 3]);
+    }
+    #[test]
+    fn full_and_scoped_bootstraps_use_reliable_rest_until_wake() {
+        let mut ledger = CityLedger::from_manifest(&manifest());
+        ledger.apply_batch(&FractureBatch {
+            structure_id: 0,
+            promoted_islands: vec![IslandPromotion {
+                structure_id: 0, island_id: 1, chunks: vec![ids::chunk_id(0, 2)],
+                position: [3.0, 4.0, 5.0], rotation: [0.0, 0.0, 0.0, 1.0],
+                ..IslandPromotion::default()
+            }],
+            ..FractureBatch::default()
+        });
+        let rest = SettleEvent { structure_id: 0, island_id: 1,
+            position: [7.0, 8.0, 9.0], rotation: [0.0, 0.0, 0.0, 1.0] };
+        ledger.apply_settle(&rest);
+        let calls = std::cell::Cell::new(0);
+        let moving = |_: u32, _: u32| {
+            calls.set(calls.get() + 1);
+            Some((Pose { position: Vec3::splat(100.0), rotation: glam::Quat::IDENTITY },
+                  Vec3::X, Vec3::Y))
+        };
+        for only in [None, Some(&[0u32][..])] {
+            let bootstrap = ledger.bootstrap_filtered(10, [0;32], 0, 1, &moving, only);
+            let island = bootstrap.islands.iter().find(|body|body.island_id==1).unwrap();
+            assert_eq!(island.pose.position, Vec3::from_array(rest.position));
+            assert_eq!(island.linear_velocity, Vec3::ZERO);
+            assert_eq!(island.angular_velocity, Vec3::ZERO);
+            assert!(island.settled);
+        }
+        assert_eq!(calls.get(), 0, "stationary bodies must not read obsolete stream tracks");
+        ledger.apply_wake(0, 1);
+        let bootstrap = ledger.bootstrap(11, [0;32], 0, 2, &moving);
+        let island = bootstrap.islands.iter().find(|body|body.island_id==1).unwrap();
+        assert_eq!(island.pose.position, Vec3::splat(100.0));
+        assert!(!island.settled);
+        assert_eq!(calls.get(), 1);
+    }
+
+}

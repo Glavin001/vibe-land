@@ -1,0 +1,7 @@
+settings set target.process.stop-on-exec false
+br s -r wait_ticket
+br command add 1
+bt 16
+continue
+DONE
+run

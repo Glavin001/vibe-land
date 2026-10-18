@@ -68,11 +68,17 @@ jobs:
         working-directory: client
         run: npm ci
 
+      # Delegates to client/package.json rather than repeating the wasm-pack
+      # invocations here. The two drifted apart once already: `build:wasm` grew
+      # a second package (research/destruction-codec -> wasm/debris-pkg) and
+      # this step did not, so the TypeScript check failed on a module that is
+      # generated, gitignored, and therefore never present in CI.
       - name: Build WASM
-        run: cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
+        working-directory: client
+        run: npm run build:wasm
 
       - name: Verify WASM output
-        run: ls -la client/src/wasm/pkg/
+        run: ls -la client/src/wasm/pkg/ client/src/wasm/debris-pkg/
 
       - name: TypeScript check
         working-directory: client
@@ -104,6 +110,32 @@ jobs:
           fi
 
   # ── E2E tests (only after both check jobs pass) ────────────────────────────
+  control-plane-check:
+    name: Control plane typecheck & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: control-plane/package-lock.json
+
+      - name: Install deps
+        working-directory: control-plane
+        run: npm ci
+
+      - name: TypeScript check
+        working-directory: control-plane
+        run: npx tsc --noEmit
+
+      # These cover the paths that cost money when they break: reaping a dead
+      # box, retrying a failed destroy, and not renting two boxes for one player.
+      - name: Unit tests
+        working-directory: control-plane
+        run: npm test
+
   e2e:
     name: E2E tests
     runs-on: ubuntu-latest
@@ -130,8 +162,14 @@ jobs:
         working-directory: client
         run: npm ci
 
+      # Delegates to client/package.json rather than repeating the wasm-pack
+      # invocations here. The two drifted apart once already: `build:wasm` grew
+      # a second package (research/destruction-codec -> wasm/debris-pkg) and
+      # this step did not, so the TypeScript check failed on a module that is
+      # generated, gitignored, and therefore never present in CI.
       - name: Build WASM
-        run: cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
+        working-directory: client
+        run: npm run build:wasm
 
       - name: Install Playwright browsers
         working-directory: client

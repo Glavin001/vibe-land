@@ -1,0 +1,439 @@
+{
+  "date": "2026-09-26",
+  "device": "ANGLE Metal Renderer: Apple M3 Max",
+  "viewport": [
+    1920,
+    1080
+  ],
+  "baselineCommit": "84903920",
+  "units": "milliseconds unless labeled bytes",
+  "precision": "Browser report values rounded to 3 decimals.",
+  "methodology": {
+    "isolatedGpu": "18 scenes: vehicle-height grass/corn/wheat, fast/pretty, 12/35/110m. Sky IBL; 96 paired grass-on/off GPU queries per scene. Baseline omits pixel readback; optimized run also checks coverage between cases.",
+    "stress": "Private mixed tall-grass/corn/fern field; 240 frames per phase/quality; cold streaming, 72m rapid travel, 256 attempted contacts per 20Hz tick (production caps apply). Final runs add non-subtracted GPU elapsed queries, 240 valid samples per phase.",
+    "limits": "Other applications were active. Browser scheduling/GPU contention and cold compilation affect wall-clock tails. These observations do not establish a guaranteed speedup or full-city 120Hz. No city geometry, shadow maps, physics, network or destruction workload.",
+    "memory": "Resident geometry attribute/index payload at phase end; includes separate GPU template buffers, excludes textures, renderer/driver overhead and other city systems."
+  },
+  "gpuColumns": [
+    "preset",
+    "quality",
+    "distanceM",
+    "baselineMedian",
+    "baselineP95",
+    "optimizedMedian",
+    "optimizedP95"
+  ],
+  "gpu": [
+    [
+      "vehicle",
+      "fast",
+      12,
+      1.89,
+      3.682,
+      1.488,
+      3.797
+    ],
+    [
+      "vehicle",
+      "fast",
+      35,
+      1.17,
+      2.174,
+      1.002,
+      2.305
+    ],
+    [
+      "vehicle",
+      "fast",
+      110,
+      0.452,
+      0.821,
+      0.472,
+      1.443
+    ],
+    [
+      "vehicle",
+      "pretty",
+      12,
+      2.853,
+      3.974,
+      2.732,
+      3.643
+    ],
+    [
+      "vehicle",
+      "pretty",
+      35,
+      2.307,
+      4.062,
+      2.107,
+      3.529
+    ],
+    [
+      "vehicle",
+      "pretty",
+      110,
+      1.543,
+      2.349,
+      1.685,
+      3.232
+    ],
+    [
+      "corn",
+      "fast",
+      12,
+      1.166,
+      3.194,
+      0.717,
+      2.111
+    ],
+    [
+      "corn",
+      "fast",
+      35,
+      0.566,
+      1.467,
+      0.836,
+      2.369
+    ],
+    [
+      "corn",
+      "fast",
+      110,
+      0.385,
+      0.785,
+      0.351,
+      1.24
+    ],
+    [
+      "corn",
+      "pretty",
+      12,
+      1.867,
+      3.244,
+      1.456,
+      3.117
+    ],
+    [
+      "corn",
+      "pretty",
+      35,
+      1.837,
+      3.305,
+      1.709,
+      3.221
+    ],
+    [
+      "corn",
+      "pretty",
+      110,
+      1.558,
+      2.586,
+      1.942,
+      3.572
+    ],
+    [
+      "wheat",
+      "fast",
+      12,
+      0.906,
+      2.634,
+      0.727,
+      2.597
+    ],
+    [
+      "wheat",
+      "fast",
+      35,
+      0.457,
+      1.214,
+      0.489,
+      1.206
+    ],
+    [
+      "wheat",
+      "fast",
+      110,
+      0.38,
+      0.701,
+      0.305,
+      1.271
+    ],
+    [
+      "wheat",
+      "pretty",
+      12,
+      1.687,
+      3.645,
+      1.209,
+      2.68
+    ],
+    [
+      "wheat",
+      "pretty",
+      35,
+      1.602,
+      2.778,
+      0.898,
+      1.638
+    ],
+    [
+      "wheat",
+      "pretty",
+      110,
+      1.509,
+      2.71,
+      1.166,
+      1.61
+    ]
+  ],
+  "stressBaseline": {
+    "columns": [
+      "quality",
+      "phase",
+      "updateP95",
+      "frameMedian",
+      "frameP95",
+      "frameMax"
+    ],
+    "rows": [
+      [
+        "fast",
+        "cold",
+        1,
+        8.3,
+        12.1,
+        80.7
+      ],
+      [
+        "fast",
+        "travel",
+        0.9,
+        8.3,
+        30.8,
+        58.1
+      ],
+      [
+        "fast",
+        "contacts",
+        0.7,
+        8.3,
+        9.2,
+        9.4
+      ],
+      [
+        "pretty",
+        "cold",
+        1.5,
+        8.3,
+        31.1,
+        57.9
+      ],
+      [
+        "pretty",
+        "travel",
+        1.7,
+        8.3,
+        55.5,
+        134.1
+      ],
+      [
+        "pretty",
+        "contacts",
+        1.1,
+        8.3,
+        9.1,
+        9.6
+      ]
+    ]
+  },
+  "intermediateObservation": "Buffer ownership/shadow/queue fixes alone did not consistently remove travel spikes: pretty travel frame p95 63ms, update p95 4.5ms. Final runs below also remove temporary typed-array views during mixed-patch installation.",
+  "stressColumns": [
+    "quality",
+    "phase",
+    "updateP95",
+    "gpuMedian",
+    "gpuP95",
+    "gpuMax",
+    "frameMedian",
+    "frameP95",
+    "frameMax",
+    "residentBufferBytes"
+  ],
+  "stressRun1": [
+    [
+      "fast",
+      "cold",
+      1.1,
+      2.605,
+      4.476,
+      7.462,
+      8.3,
+      9.2,
+      14.1,
+      1399204
+    ],
+    [
+      "fast",
+      "travel",
+      0.7,
+      1.362,
+      2.65,
+      3.464,
+      8.3,
+      9.2,
+      10,
+      2526922
+    ],
+    [
+      "fast",
+      "contacts",
+      0.6,
+      1.522,
+      3.25,
+      4.473,
+      8.3,
+      9.5,
+      11.9,
+      1691018
+    ],
+    [
+      "pretty",
+      "cold",
+      1,
+      2.438,
+      3.579,
+      4.774,
+      8.3,
+      9.3,
+      15.2,
+      11824702
+    ],
+    [
+      "pretty",
+      "travel",
+      0.8,
+      3.01,
+      3.782,
+      4.369,
+      8.3,
+      9.2,
+      9.4,
+      23163367
+    ],
+    [
+      "pretty",
+      "contacts",
+      0.6,
+      2.058,
+      2.449,
+      2.675,
+      8.3,
+      9.2,
+      9.4,
+      15966008
+    ]
+  ],
+  "stressRun2": [
+    [
+      "fast",
+      "cold",
+      1,
+      1.589,
+      4.015,
+      5.125,
+      8.9,
+      13.2,
+      44.8,
+      1399204
+    ],
+    [
+      "fast",
+      "travel",
+      1,
+      2.193,
+      4.515,
+      5.968,
+      8.9,
+      11.7,
+      13.8,
+      2526922
+    ],
+    [
+      "fast",
+      "contacts",
+      0.8,
+      2.256,
+      3.838,
+      26.356,
+      9,
+      11.3,
+      13.5,
+      1691018
+    ],
+    [
+      "pretty",
+      "cold",
+      1.2,
+      3.291,
+      5.08,
+      7.65,
+      9.5,
+      12.8,
+      47.1,
+      11824702
+    ],
+    [
+      "pretty",
+      "travel",
+      0.8,
+      4.33,
+      6.795,
+      9.35,
+      10.7,
+      13.7,
+      14.8,
+      23163367
+    ],
+    [
+      "pretty",
+      "contacts",
+      0.8,
+      3.297,
+      5.251,
+      6.714,
+      9.1,
+      12.5,
+      15.2,
+      15966008
+    ]
+  ],
+  "contactTickP95": {
+    "run1": {
+      "fast": 2.1,
+      "pretty": 1.1
+    },
+    "run2": {
+      "fast": 2.5,
+      "pretty": 1.2
+    }
+  },
+  "verification": {
+    "validGpuPairsPerCase": 96,
+    "coverageCasesPassed": 18,
+    "tallGrassAndCornHiddenFraction": 1,
+    "flattenedVisiblePixels": {
+      "fast": 673,
+      "pretty": 671
+    },
+    "flattenedTargetTotalPixels": 840,
+    "lightingComparisonsPassed": 15,
+    "skyCornFarNearRatio": 1.01694,
+    "skyTallGrassFarNearRatio": 0.98506,
+    "geometryCountAfterEveryDisposal": 0,
+    "unitTestsPassed": 46,
+    "typecheck": "Initially passed; final rerun failed in concurrent AudioLab.tsx: activityEmitters/rms absent from AudioDiagnostics. Outside grass scope; left untouched.",
+    "benchmarkTypecheck": "passed",
+    "productionBuild": "passed (existing large-chunk warning)"
+  }
+}

@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { resolveAppRoute } from './routes';
 
 describe('resolveAppRoute', () => {
+  it('routes the sound review lab without a multiplayer session', () => {
+    expect(resolveAppRoute('/audio')).toEqual({ kind: 'audioLab' });
+    expect(resolveAppRoute('/audio/')).toEqual({ kind: 'audioLab' });
+  });
+  it('uses the city simulation for the town-kit playground', () => {
+    for (const route of ['/town-kit', '/town-kit/']) {
+      expect(resolveAppRoute(route)).toEqual({ kind: 'game', mode: 'multiplayer', matchFallback: 'city-town-kit' });
+    }
+  });
   it('routes the launcher paths', () => {
     expect(resolveAppRoute('/')).toEqual({ kind: 'launcher' });
     expect(resolveAppRoute('/index.html')).toEqual({ kind: 'launcher' });

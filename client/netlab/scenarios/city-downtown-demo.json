@@ -1,0 +1,151 @@
+{
+  "name": "city-downtown-demo",
+  "description": "Demolition against the dense downtown. Street spacing is ~12 m, so a toppling tower is expected to reach its neighbours -- watch largest-island span and whether the rubble field merges into one contact island.",
+  "symptom": [
+    "jitter",
+    "freeze",
+    "bandwidth",
+    "teleporting"
+  ],
+  "path": "/city?portal=true",
+  "matchId": "city-downtown-demo-{iter}",
+  "durationMs": 75000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_GRID": "1",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "1.0"
+  },
+  "clients": [
+    {
+      "role": "mover",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 5000,
+          "cmd": "mark",
+          "args": "pre-demolition-baseline"
+        },
+        {
+          "at": 12000,
+          "cmd": "mark",
+          "args": "demolition-start"
+        },
+        {
+          "at": 12000,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 9000
+          }
+        },
+        {
+          "at": 21500,
+          "cmd": "lookAt",
+          "args": [
+            12,
+            14,
+            12
+          ]
+        },
+        {
+          "at": 22000,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 9000
+          }
+        },
+        {
+          "at": 31500,
+          "cmd": "lookAt",
+          "args": [
+            -12,
+            14,
+            12
+          ]
+        },
+        {
+          "at": 32000,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 9000
+          }
+        },
+        {
+          "at": 41500,
+          "cmd": "lookAt",
+          "args": [
+            12,
+            6,
+            -12
+          ]
+        },
+        {
+          "at": 42000,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 9000
+          }
+        },
+        {
+          "at": 51500,
+          "cmd": "lookAt",
+          "args": [
+            -12,
+            6,
+            -12
+          ]
+        },
+        {
+          "at": 52000,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 9000
+          }
+        },
+        {
+          "at": 61500,
+          "cmd": "mark",
+          "args": "demolition-end-observe-settle"
+        },
+        {
+          "at": 62000,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 64000,
+          "cmd": "move",
+          "args": {
+            "forward": 1,
+            "durationMs": 4000
+          }
+        },
+        {
+          "at": 70000,
+          "cmd": "move",
+          "args": {
+            "strafe": 1,
+            "durationMs": 4000
+          }
+        },
+        {
+          "at": 76000,
+          "cmd": "move",
+          "args": {
+            "forward": -1,
+            "durationMs": 4000
+          }
+        },
+        {
+          "at": 82000,
+          "cmd": "stop"
+        }
+      ]
+    }
+  ],
+  "iterations": 1
+}

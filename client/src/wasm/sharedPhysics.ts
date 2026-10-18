@@ -1,4 +1,5 @@
 import init, {
+  initSync,
   WasmSimWorld as RawWasmSimWorld,
   WasmClockSync,
   WasmLocalSession as RawWasmLocalSession,
@@ -6,6 +7,9 @@ import init, {
   vehicle_definitions_json as wasmVehicleDefinitionsJson,
 } from './pkg/vibe_land_shared.js';
 import { provideWasmClockSync } from '../net/interpolation';
+import { provideReliablePacketDecoder, provideSharedEncoders, provideSnapshotV2Decoder } from '../net/protocol';
+import { sharedEncoders } from '../net/sharedEncode';
+import { decodeServerPacketShared, decodeSnapshotV2Shared, sharedDecodeEnabled } from '../net/sharedDecode';
 import { installWasmSimWorldCompat } from './compat';
 import {
   DEFAULT_SHARED_VEHICLE_TYPE,
@@ -17,6 +21,8 @@ import {
   getSharedVehicleTypeByKey,
   hydrateSharedVehicleDefinitions,
 } from './sharedVehicleDefinitions';
+import { nativeFileBytes } from '../platform/nativeFiles';
+import { initClientCore } from '../core/clientCore';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
@@ -281,8 +287,14 @@ export async function initSharedPhysics(): Promise<void> {
   if (initialized) return;
   if (!initPromise) {
     initPromise = (async () => {
-      await init();
+      if (__NATIVE__) initSync({ module: await nativeFileBytes('vibe_land_shared_bg.wasm') });
+      else await Promise.all([init(), initClientCore()]);
       provideWasmClockSync(WasmClockSync);
+      if (sharedDecodeEnabled()) {
+        provideSnapshotV2Decoder(decodeSnapshotV2Shared);
+        provideReliablePacketDecoder(decodeServerPacketShared);
+        provideSharedEncoders(sharedEncoders);
+      }
       sharedPlayerNavigationProfile = readSharedPlayerNavigationProfileFromWasm();
       hydrateSharedVehicleDefinitions(wasmVehicleDefinitionsJson());
       initialized = true;

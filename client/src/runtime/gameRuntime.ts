@@ -1,8 +1,18 @@
+import { recordEvent } from '../netlab/recorder';
+import { ingestAudioContacts, resetAudioContacts } from '../audio/contactStream';
+import {VehiclePresentationPredictor, extrapolateVehicle, vehicleProxy, type VehicleProxy} from '../physics/vehiclePresentation';
+import type { CityCameraDropCmd } from '../net/protocol';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { loadVehicleMetadata, type WheelPose } from '../vehicles/vehicleStream';
+import { DetachBlend } from '../vehicles/detachBlend';
+import { CityVehicleColliders } from '../vehicles/cityColliders';
+import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
 import { NetDebugTelemetry } from '../net/debugTelemetry';
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
+import { inProcessLink } from '../net/inProcessClient';
+import { CityPoseFeed } from '../city/cityPoseFeed';
 import {
   PlayerInterpolator,
   ServerClockEstimator,
@@ -25,17 +35,44 @@ import {
   type ShotFiredPacket,
   type VehicleStateMeters,
 } from '../net/protocol';
-import { netPlayerStateToMeters } from '../net/protocol';
+import { netPlayerStateToMeters, SERVER_TICK_US } from '../net/protocol';
 import type { SemanticInputState } from '../input/types';
 import { PredictionManager } from '../physics/predictionManager';
 import { VehiclePredictionManager } from '../physics/vehiclePredictionManager';
 import { DynamicBodyPredictionManager } from '../physics/dynamicBodyPredictionManager';
 import { CosmeticPhysicsWorld } from './cosmeticPhysicsWorld';
-import type { RenderBlock } from '../world/voxelWorld';
+import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from './vehicleDebug';
 import { FixedInputBundler } from './fixedInputBundler';
+import { inputClockRate } from './inputPacing';
+import { ThinAuthoritativePredictor } from '../physics/thinAuthoritativePredictor';
+import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
+import { fetchSessionConfig, type SessionConfigResponse } from '../net/webTransportClient';
+import { decodeMatchStatsPacket } from '../net/matchStatsFrame';
+import { CityClient } from '../city/cityClient';
+import { PerPlayerCityClient, PKT_PP_BOOTSTRAP, PKT_PP_EVENTS } from '../city/perPlayerCityClient';
+import { encodePerPlayerAck } from '../city/perPlayerAck';
+import {
+  PKT_CITY_BOOTSTRAP,
+  PKT_CITY_MANIFEST,
+  PKT_CITY_MANIFEST_REQUEST,
+  PKT_MATCH_STATS,
+  PKT_METEOR_LAUNCHED,
+  PKT_AUDIO_CONTACTS,
+} from '../net/sharedConstants';
+import { decodeCityManifestPayload, fetchCityManifest } from '../city/manifest';
+import { decodeMeteorLaunched, registerMeteorFlight } from '../vfx/meteorFlights';
+import { cityTapeRecorder } from '../city/cityTape';
+import { hotspotWatch } from '../city/hotspotWatch';
+import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
+import {
+  shouldCreateGameplayWasmWorld,
+  usesThinAuthoritativeRuntime,
+} from './movementRuntimeStrategy';
 
 type MultiplayerBackend = ReturnType<typeof resolveMultiplayerBackend>;
+const THIN_PRESENTATION_PREDICTION_ENABLED =
+  import.meta.env.VITE_THIN_PRESENTATION_PREDICTION !== '0';
 
 export type RuntimeDebugStats = {
   pendingInputs: number;
@@ -96,6 +133,7 @@ export type GameRuntimeCallbacks = {
 };
 
 export interface GameRuntimeClient {
+  readonly grassLayoutUrl?: string;
   readonly usesLocalAuthority: boolean;
   readonly transport: string;
   readonly interpolator: PlayerInterpolator;
@@ -118,6 +156,9 @@ export interface GameRuntimeClient {
   connect(): Promise<void>;
   disconnect(): void;
   resetInputState(): void;
+  /** Destructible-city client, when the match is a city world (server-authoritative). */
+  getCityClient?(): CityClient | null;
+  isVehiclePredictionFrozen?(): boolean;
   submitInput(frameDeltaSec: number, input: SemanticInputState): void;
   peekNextInputSeq(): number;
   supportsBlockEditing(): boolean;
@@ -125,6 +166,7 @@ export interface GameRuntimeClient {
   syncVehicleAuthority(): void;
   sendInputs(cmds: InputCmd[]): void;
   sendFire(cmd: FireCmd): void;
+  sendCityCameraDrop(cmd: CityCameraDropCmd): boolean;
   sendMelee(cmd: MeleeCmd): void;
   sendBlockEdit(cmd: BlockEditCmd): void;
   sendVehicleEnter(vehicleId: number, seat?: number): void;
@@ -133,6 +175,14 @@ export interface GameRuntimeClient {
   getVehicleObservedAgeMs(id: number, localTimeUs?: number): number | null;
   sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null;
   getDynamicBodyRenderTimeUs(localTimeUs?: number): number;
+  /** Render time for players and vehicles; never goes backwards. */
+  getRenderTimeUs(localTimeUs?: number): number;
+  /** A dynamic body's buffered snapshots, oldest first. */
+  getDynamicBodySamples(id: number): readonly DynamicBodySample[];
+  /** Server ticks of snapshots since the body was last in one; null if unknown. */
+  getDynamicBodyTicksSinceSeen(id: number): number | null;
+  /** The lead a free-falling body is drawn at past the render time, us (net/bodyLead.ts). */
+  getDynamicBodyLeadHorizonUs(): number;
   getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null;
   recordFrameDebugMetrics(
     playerCorrectionMagnitude: number,
@@ -266,6 +316,10 @@ export interface GameRuntimeClient {
   ): void;
   reconcileVehicle(vehicleState: NetVehicleState, ackInputSeq: number): void;
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null;
+  /** The driven car's wheels drawn with its predicted pose (null: draw the server's rig). */
+  getDrivenVehicleWheels(): WheelPose[] | null;
+  /** The server tick the driven car is drawn at (its prediction), or null. */
+  getDrivenVehiclePredictedTick(): number | null;
   getDrivenVehicleId(): number | null;
   getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   isInVehicle(): boolean;
@@ -382,6 +436,7 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract syncVehicleAuthority(): void;
   abstract sendInputs(cmds: InputCmd[]): void;
   abstract sendFire(cmd: FireCmd): void;
+  sendCityCameraDrop(_cmd: CityCameraDropCmd): boolean { return false; }
   abstract sendMelee(cmd: MeleeCmd): void;
   abstract sendBlockEdit(cmd: BlockEditCmd): void;
   abstract sendVehicleEnter(vehicleId: number, seat?: number): void;
@@ -390,6 +445,10 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract getVehicleObservedAgeMs(id: number, localTimeUs?: number): number | null;
   abstract sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null;
   abstract getDynamicBodyRenderTimeUs(localTimeUs?: number): number;
+  abstract getRenderTimeUs(localTimeUs?: number): number;
+  abstract getDynamicBodySamples(id: number): readonly DynamicBodySample[];
+  abstract getDynamicBodyTicksSinceSeen(id: number): number | null;
+  abstract getDynamicBodyLeadHorizonUs(): number;
   abstract getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null;
   abstract recordFrameDebugMetrics(
     playerCorrectionMagnitude: number,
@@ -523,6 +582,12 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   ): void;
   abstract reconcileVehicle(vehicleState: NetVehicleState, ackInputSeq: number): void;
   abstract getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null;
+  getDrivenVehicleWheels(): WheelPose[] | null {
+    return null;
+  }
+  getDrivenVehiclePredictedTick(): number | null {
+    return null;
+  }
   abstract getDrivenVehicleId(): number | null;
   abstract getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   abstract isInVehicle(): boolean;
@@ -606,6 +671,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
   }
 
   async connect(): Promise<void> {
+    // Runs on every connect, including the thin-authoritative path that needs
+    // no local gameplay simulation, so the WASM module is always on the
+    // critical path to the transport.
+    setConnectPhase('building local world');
     this.cosmeticWorld = await CosmeticPhysicsWorld.create(this.worldJson);
     try {
       const client = await LocalPracticeClient.connect({
@@ -714,6 +783,22 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   getDynamicBodyRenderTimeUs(localTimeUs?: number): number {
     return this.client?.getDynamicBodyRenderTimeUs(localTimeUs) ?? 0;
+  }
+
+  getRenderTimeUs(localTimeUs?: number): number {
+    return this.serverClock.renderTimeUs(this.interpolationDelayMs * 1000, localTimeUs);
+  }
+
+  getDynamicBodySamples(_id: number): readonly DynamicBodySample[] {
+    return [];
+  }
+
+  getDynamicBodyTicksSinceSeen(_id: number): number | null {
+    return null;
+  }
+
+  getDynamicBodyLeadHorizonUs(): number {
+    return 0;
   }
 
   getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null {
@@ -967,16 +1052,242 @@ export class LocalGameRuntime extends BaseGameRuntime {
   }
 }
 
+export type MultiplayerRuntimeOptions = {
+  /**
+   * Connect metadata handed over by the control plane. Present only for
+   * matchmade sessions; when absent the runtime fetches it from the server
+   * itself, which is the direct-connect path used in local development.
+   */
+  sessionConfig?: SessionConfigResponse;
+};
+
 export class MultiplayerGameRuntime extends BaseGameRuntime {
+  readonly grassLayoutUrl?: string;
   private client: NetcodeClient | null = null;
+  private cityClient: CityClient | null = null;
+  private pendingCityPackets: Uint8Array[] = [];
+  private pushedCityManifest: Uint8Array | null = null;
+  private resolvePushedManifest: (() => void) | null = null;
+  private readonly pushedManifestArrived = new Promise<void>((resolve) => {
+    this.resolvePushedManifest = resolve;
+  });
   private sim: WasmSimWorldInstance | null = null;
   private cosmeticWorld: CosmeticPhysicsWorld | null = null;
+  /** The city's standing chunks in `cosmeticWorld` for the driven car's prediction. */
+  private cityColliders: CityVehicleColliders | null = null;
   private prediction: PredictionManager | null = null;
   private vehiclePrediction: VehiclePredictionManager | null = null;
   private dynamicBodiesPrediction: DynamicBodyPredictionManager | null = null;
   private pendingWorldPackets: ServerWorldPacket[] = [];
   private lastPredictedDynamicShot: { bodyId: number; atMs: number } | null = null;
   private readonly knownVehicleIds = new Set<number>();
+  private readonly authoritativeInputBundler = new FixedInputBundler(
+    FIXED_DT,
+    CLIENT_MAX_CATCHUP_STEPS,
+  );
+  private readonly thinPredictor = new ThinAuthoritativePredictor();
+  private readonly vehicleProxies = new Map<number,{key:string;proxy:VehicleProxy}>();
+  private readonly thinVehiclePredictor = new VehiclePresentationPredictor((p,q,d,h,r)=>
+    this.cosmeticWorld?.sweepVehicleStatic(p,q,d,h,r) ?? null, event=>{ const {type,...data}=event;recordEvent(type,data); });
+  private thinAuthoritative = false;
+  private thinPosition: [number, number, number] | null = null;
+  private thinVoxelWorld: ClientVoxelWorld | null = null;
+
+  getCityClient(): CityClient | null {
+    return this.cityClient;
+  }
+
+  /** After connect: if the session is a city world, fetch the manifest and
+   * bring up the city client, then drain any buffered city packets. */
+  /**
+   * Manifest over HTTP, and down the session only if that fails.
+   *
+   * The session copy is the only path that works on a rented box, where plain
+   * HTTP on a random port is mixed content to an HTTPS page and its self-signed
+   * origin is refused. It is also 1.8 MB on the one ordered reliable stream
+   * that carries the bootstrap and every topology update, so asking for it when
+   * it is not needed stalls the whole ledger behind it -- measured at +90 ms
+   * with 2% loss as a client that agreed with 0 of the server's 544 broken
+   * bonds for a full 45 seconds.
+   *
+   * So: fetch first, ask second, and only after the fetch has really failed.
+   * The fetch is same-origin and the response is immutable and cacheable, which
+   * is what makes the common case free.
+   */
+  private async loadCityManifest(client: NetcodeClient, manifestHash: string) {
+    if (this.pushedCityManifest) {
+      return decodeCityManifestPayload(this.pushedCityManifest, manifestHash);
+    }
+    try {
+      return await fetchCityManifest('', manifestHash);
+    } catch (error) {
+      console.info('[city] manifest fetch failed; asking for it over the session', error);
+    }
+    client.sendCityResync(new Uint8Array([PKT_CITY_MANIFEST_REQUEST]));
+    await this.pushedManifestArrived;
+    if (!this.pushedCityManifest) {
+      throw new Error('city manifest unavailable over HTTP and over the session');
+    }
+    return decodeCityManifestPayload(this.pushedCityManifest, manifestHash);
+  }
+
+  /** Wire 4: the upstream ack timer (see startPerPlayerAcks). */
+  private perPlayerAckTimer: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Wire 4: acknowledge keyframe datagrams about 30 times a second, on the
+   * same upstream path as resyncs. The server presumes a keyframe received
+   * until three acks in a row leave it out, then resends what drifted.
+   * Layout (perplayer/src/wire.rs `encode_ack`): u8 135, u32 newest LE,
+   * u64 mask LE.
+   */
+  private startPerPlayerAcks(
+    client: NetcodeClient,
+    cityClient: PerPlayerCityClient,
+  ): void {
+    this.stopPerPlayerAcks();
+    let last = '';
+    this.perPlayerAckTimer = setInterval(() => {
+      if (this.client !== client || this.cityClient !== cityClient) {
+        this.stopPerPlayerAcks();
+        return;
+      }
+      const ack = cityClient.ack();
+      if (!ack) return;
+      const missing = ack.length > 5 ? ack.subarray(5, 5 + 2 * ack[4]) : undefined;
+      const key = `${ack[0]}:${ack[1]}:${ack[2]}:${ack[3] ?? ''}`;
+      // Nothing new since the last ack (and nothing undecodable to name):
+      // the server already has it.
+      if (key === last && !missing?.length) return;
+      last = key;
+      client.sendCityResync(encodePerPlayerAck(ack[0], ack[1], ack[2], ack[3], missing));
+    }, 33);
+  }
+
+  private stopPerPlayerAcks(): void {
+    if (this.perPlayerAckTimer !== null) {
+      clearInterval(this.perPlayerAckTimer);
+      this.perPlayerAckTimer = null;
+    }
+  }
+
+  private async initCityClient(client: NetcodeClient): Promise<void> {
+    try {
+      let { cityWorld, manifestHash, wireVersion } = client.citySessionConfig();
+      if (!cityWorld) {
+        // WebSocket fallback has no cached WT session config — ask directly.
+        try {
+          const config = await fetchSessionConfig(this.matchId, this.backend.sessionConfigEndpoint);
+          cityWorld = Boolean(config.city_world && config.city_manifest_hash);
+          manifestHash = config.city_manifest_hash;
+          wireVersion = config.city_wire_version ?? wireVersion;
+        } catch {
+          /* not a city match or config unavailable */
+        }
+      }
+      if (!cityWorld || !manifestHash) {
+        this.pendingCityPackets = [];
+        return;
+      }
+      const manifest = await this.loadCityManifest(client, manifestHash);
+      console.info('[city] manifest loaded', {
+        hash: manifest.hashHex,
+        source: this.pushedCityManifest ? 'pushed over session' : 'fetched over HTTP',
+        structures: manifest.manifest.structures.length,
+        chunks: manifest.totalChunks,
+        bonds: manifest.totalBonds,
+      });
+      let v3: { decoder: import('../city/debrisWasm').DebrisDecoder } | undefined;
+      if (wireVersion === 3) {
+        // The wasm decoder must be live before the first debris datagram is
+        // dispatched; pendingCityPackets buffers everything while we await.
+        const { initDebrisWasm, fetchDebrisDictionary, createDebrisDecoder } = await import(
+          '../city/debrisWasm'
+        );
+        await initDebrisWasm();
+        const dictionary = await fetchDebrisDictionary();
+        v3 = { decoder: createDebrisDecoder(dictionary, 1 << 16, 60) };
+        console.info('[city] wire v3: debris wasm decoder ready');
+      }
+      const sendUpstream = (bytes: Uint8Array) => client.sendCityResync(bytes);
+      let cityClient: CityClient;
+      if (wireVersion === 4) {
+        // City wire 4, the per-player stream: the shared Rust core (WASM)
+        // decides what is drawn; its acks tell the server which keyframe
+        // datagrams arrived. pendingCityPackets buffers everything meanwhile.
+        const { initPerPlayerWasm, createPerPlayerCore } = await import('../city/perPlayerWasm');
+        await initPerPlayerWasm();
+        const perPlayer = new PerPlayerCityClient(manifest, sendUpstream, createPerPlayerCore(manifest, 60));
+        // Cars' broken-off parts are bodies of this stream; their cars draw them.
+        // The driven car is drawn ahead of them: its parts blend out of it.
+        // Parts already off a car when its driving starts are not blended.
+        const detachBlend = new DetachBlend();
+        let blendCar: number | null = null;
+        perPlayer.setVehicleDebrisListener((handle, parts) => {
+          if (handle !== client.getLocalDrivenVehicleId()) {
+            if (handle === blendCar) blendCar = null;
+            client.setVehicleDebris(handle, parts);
+            return;
+          }
+          const first = blendCar !== handle;
+          if (first) {
+            detachBlend.reset();
+            blendCar = handle;
+          }
+          client.setVehicleDebris(handle, detachBlend.apply(performance.now(), first ? null : this.drivenVehiclePose(false), parts));
+        });
+        // On the clock other cars are drawn at (?carClock=0: the per-player
+        // render tick, for comparison).
+        if (new URLSearchParams(globalThis.location?.search ?? '').get('carClock') !== '0') {
+          perPlayer.setVehicleClock(() => client.getRenderTimeUs() / SERVER_TICK_US);
+        }
+        // Other players' cars, pose and wheels, as the stream draws them.
+        client.setStreamedCarSource((tick) => perPlayer.carsAt(tick));
+        // Their hulls, so a part between keyframes rests on the ground as the
+        // server models it.
+        client.setVehicleAssetListener((handle, vehicle) => {
+          void loadVehicleMetadata(this.backend.httpOrigin, vehicle.geometryHash).then(m => {
+            if (Array.isArray(m?.parts)) perPlayer.setVehicleParts(handle, m.parts);
+          });
+        });
+        this.startPerPlayerAcks(client, perPlayer);
+        cityClient = perPlayer;
+        console.info('[city] wire 4: per-player core ready');
+      } else {
+        cityClient = new CityClient(manifest, sendUpstream, v3);
+      }
+      // In the native app's single-player the server is in this process: body
+      // poses come from memory every tick instead of the budgeted stream.
+      const link = inProcessLink();
+      if (link?.poses && !v3 && wireVersion !== 4) {
+        cityClient.setPoseFeed(new CityPoseFeed({ poses: (since) => link.poses!(since) }));
+        console.info('[city] body poses from the in-process pose feed');
+      }
+      this.cityClient = cityClient;
+      // The standing city as the driven car's prediction collides with it,
+      // opt-in (?cityColliders=1): measured worse than flat ground in Vibe
+      // Town, whose roadside obstacles a car breaks through
+      // (docs/vehicle-city-measurement.md).
+      if (this.cosmeticWorld && new URLSearchParams(globalThis.location?.search ?? '').get('cityColliders') === '1') {
+        const started = performance.now();
+        this.cityColliders = new CityVehicleColliders(this.cosmeticWorld, manifest.manifest, cityClient.topology);
+        this.cityColliders.sync();
+        console.info(`[city] ${this.cityColliders.count} chunk colliders for vehicle prediction in ${(performance.now() - started).toFixed(0)} ms`);
+      }
+      cityTapeRecorder.describe(
+        { matchId: this.matchId, manifestHash: manifest.hashHex, wireVersion, simHz: 60 },
+        () => cityClient.requestResync(),
+      );
+      hotspotWatch.arm(this.matchId);
+      const pending = this.pendingCityPackets.splice(0);
+      for (const bytes of pending) {
+        cityClient.handlePacket(bytes);
+      }
+    } catch (error) {
+      console.warn('[city] disabled — manifest unavailable', error);
+      this.pendingCityPackets = [];
+    }
+  }
 
   constructor(
     callbacks: GameRuntimeCallbacks,
@@ -984,8 +1295,14 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     private readonly matchId: string,
     private readonly worldJson: string | undefined,
     private readonly localRenderSmoothingEnabled: boolean,
+    private readonly options: MultiplayerRuntimeOptions = {},
   ) {
     super(callbacks);
+    // Resolve once, not in the render loop. A matchmade session may have no
+    // reachable HTTP origin; do not substitute another server's layout.
+    if (!options.sessionConfig) {
+      this.grassLayoutUrl = new URL(`/match-stats/${encodeURIComponent(matchId)}/grass`, backend.httpOrigin).href;
+    }
   }
 
   get usesLocalAuthority(): boolean {
@@ -1033,7 +1350,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   get dynamicBodyInterpolationDelayMs(): number {
-    return this.client?.dynamicBodyInterpolationDelayMs ?? NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
+    return this.client?.dynamicBodyInterpolationDelayMs ?? NetcodeClient.INITIAL_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
   }
 
   get localPlayerHp(): number {
@@ -1053,28 +1370,54 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   async connect(): Promise<void> {
-    await initSharedPhysics();
+    // A control-plane-issued session arrives pre-resolved: the box serves a
+    // self-signed certificate, so fetching `/session-config` from it directly
+    // would be blocked by the browser even though WebTransport can pin it.
+    setConnectPhase('fetching session config');
+    const sessionConfig =
+      this.options.sessionConfig ??
+      (await fetchSessionConfig(this.matchId, this.backend.sessionConfigEndpoint));
+    this.thinAuthoritative = usesThinAuthoritativeRuntime(sessionConfig);
+    // A matchmade session runs on a box this page cannot reach over HTTP, so
+    // its per-match stats are simply unavailable here.
+    setMatchStats(null);
+    setActiveSession({
+      matchId: this.matchId,
+      statsBaseUrl: this.options.sessionConfig ? null : '',
+    });
 
-    const sim = new WasmSimWorld();
-    if (this.worldJson) {
-      sim.loadWorldDocument(this.worldJson);
-    } else {
-      sim.seedDemoTerrain();
+    let sim: WasmSimWorldInstance | null = null;
+    if (shouldCreateGameplayWasmWorld(sessionConfig)) {
+      setConnectPhase('loading physics');
+      await initSharedPhysics();
+      sim = new WasmSimWorld();
+      if (this.worldJson) {
+        sim.loadWorldDocument(this.worldJson);
+      } else {
+        sim.seedDemoTerrain();
+      }
+      sim.spawnPlayer(0, 2, 0);
+      sim.rebuildBroadPhase();
+      this.sim = sim;
     }
-    sim.spawnPlayer(0, 2, 0);
-    sim.rebuildBroadPhase();
-    this.sim = sim;
     this.cosmeticWorld = await CosmeticPhysicsWorld.create(this.worldJson);
 
     try {
-      this.prediction = new PredictionManager(sim);
-      this.prediction.enableTerrainWorld();
-      this.vehiclePrediction = new VehiclePredictionManager(sim);
-      this.dynamicBodiesPrediction = new DynamicBodyPredictionManager(sim);
-      this.setRenderBlocks(this.prediction.getRenderBlocks());
+      if (sim) {
+        this.prediction = new PredictionManager(sim);
+        this.prediction.enableTerrainWorld();
+        this.vehiclePrediction = new VehiclePredictionManager(sim);
+        this.dynamicBodiesPrediction = new DynamicBodyPredictionManager(sim);
+        this.setRenderBlocks(this.prediction.getRenderBlocks());
+      } else {
+        this.authoritativeInputBundler.reset();
+        this.thinPredictor.reset();
+        this.thinVoxelWorld = new ClientVoxelWorld(null, false);
+      }
 
       const client = new NetcodeClient({
         onWelcome: (playerId) => {
+          setConnectPhase(null);
           this.syncState();
           this.callbacks.onWelcome(playerId);
         },
@@ -1091,8 +1434,15 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
             this.reconcile(ackInputSeq, state);
           }
         },
-        onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
-          this.reconcileVehicle(vehicleState, ackInputSeq);
+        onLocalVehicleSnapshot: (vehicleState, ackInputSeq, serverTimeUs) => {
+          if(this.thinAuthoritative) {
+            const meters=this.client?.vehicles.get(vehicleState.id);
+            if(meters) this.thinVehiclePredictor.observe(meters.id, {
+              serverTimeUs,position:meters.position,quaternion:meters.quaternion,
+              linearVelocity:meters.linearVelocity,angularVelocity:meters.angularVelocity,
+              wheelData:meters.wheelData,driverPlayerId:meters.driverId,flags:meters.flags,
+            },ackInputSeq,this.getVehicleProxy(meters),performance.now());
+          } else this.reconcileVehicle(vehicleState, ackInputSeq);
         },
         onWorldPacket: (packet) => {
           this.applyWorldPacket(packet);
@@ -1109,14 +1459,99 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
             this.callbacks.onSnapshot?.();
           }
         },
+        // Every inbound packet, city or not, onto the tape when one is
+        // recording (and the session-state kinds always, for the next tape's
+        // prelude); /cityreplay routes each one back through these clients.
+        onRawPacket: (bytes, channel) => cityTapeRecorder.pushRaw(bytes, channel),
+        onRttSample: (rttMs) => cityTapeRecorder.noteRtt(rttMs),
+        onCityPacket: (bytes) => {
+          if (bytes[0] === PKT_AUDIO_CONTACTS) {
+            try { ingestAudioContacts(bytes); } catch { /* Optional effect packets never interrupt gameplay. */ }
+            return;
+          }
+          if (bytes.length > 1 && bytes[0] === PKT_METEOR_LAUNCHED) {
+            // A launch, not geometry: the layer that draws meteors reads the
+            // store directly, the way the dust reads its shots.
+            const launch = decodeMeteorLaunched(bytes);
+            if (launch) {
+              registerMeteorFlight(
+                launch,
+                (serverTimeUs) => (serverTimeUs - this.serverClock.getOffsetUs()) / 1000,
+              );
+            }
+            return;
+          }
+          if (bytes.length > 1 && bytes[0] === PKT_MATCH_STATS) {
+            // A compact frame (current servers, a datagram) or the whole
+            // snapshot as JSON (older servers); the same object either way.
+            const stats = decodeMatchStatsPacket(bytes);
+            if (stats) setMatchStats(stats);
+            else console.warn('[stats] unreadable match stats packet', bytes.length);
+            return;
+          }
+          if (bytes.length > 1 && bytes[0] === PKT_CITY_MANIFEST) {
+            // The manifest describes the geometry every other city packet
+            // refers to, so it is consumed here rather than buffered.
+            this.pushedCityManifest = bytes.subarray(1);
+            this.resolvePushedManifest?.();
+            return;
+          }
+          if (this.cityClient) {
+            this.cityClient.handlePacket(bytes);
+          } else {
+            // Buffer until the manifest fetch finishes after welcome.
+            this.pendingCityPackets.push(bytes);
+            if (this.pendingCityPackets.length > 256) {
+              // Never evict the bootstrap. It is sent once, at join, and a
+              // client that loses it has no ledger and no way to notice: it
+              // renders the intact manifest forever and reports nothing
+              // wrong. Everything else here is a delta that the bootstrap or
+              // the next resync supersedes anyway, so dropping the oldest
+              // non-bootstrap packet costs nothing by comparison.
+              // Wire 4's bootstrap and events are kept too: its events are
+              // sequenced, and one evicted stalls every later one.
+              const oldest = this.pendingCityPackets.findIndex(
+                (packet) =>
+                  packet[0] !== PKT_CITY_BOOTSTRAP &&
+                  packet[0] !== PKT_PP_BOOTSTRAP &&
+                  packet[0] !== PKT_PP_EVENTS,
+              );
+              this.pendingCityPackets.splice(oldest < 0 ? 0 : oldest, 1);
+            }
+          }
+        },
       });
 
       this.client = client;
+      if(this.thinAuthoritative) client.vehicleInterpolator.extrapolate=(id,sample,seconds)=>{
+        const state=client.vehicles.get(id);
+        return state?extrapolateVehicle(sample,seconds,this.getVehicleProxy(state),
+          (p,q,d,h,r)=>this.cosmeticWorld?.sweepVehicleStatic(p,q,d,h,r)??null):sample;
+      };
       this.state.remoteInterpolator = client.interpolator;
       this.state.serverClock = client.serverClock;
       this.state.remotePlayers = client.remotePlayers;
       this.state.dynamicBodies = client.dynamicBodies;
       this.syncState();
+      cityTapeRecorder.describeSession({
+        transport: () => client.transport,
+        // What the renderer draws at, per recorded frame: the replay's own
+        // clock reconstruction is checked against it. The offset is taken
+        // from the dynamic-body render time at the frame's recorded time, so
+        // that `frame time + offset - dynDelayMs` is exactly what was drawn:
+        // the server clock no longer runs at wall rate between frames, and its
+        // last-read offset would overstate the lead.
+        clock: (nowMs) => {
+          const localUs = nowMs * 1000;
+          const renderUs = client.getDynamicBodyRenderTimeUs(localUs);
+          const dynDelayMs = client.dynamicBodyInterpolationDelayMs;
+          return {
+            offsetUs: renderUs + dynDelayMs * 1000 - localUs,
+            interpDelayMs: client.interpolationDelayMs,
+            dynDelayMs,
+          };
+        },
+      });
 
       const pendingPackets = this.pendingWorldPackets.splice(0);
       for (const packet of pendingPackets) {
@@ -1126,7 +1561,19 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       const identity = 'player-' + Math.random().toString(36).slice(2, 8);
       const token = 'mvp-token';
       const wsUrl = this.backend.createMatchWebSocketUrl(this.matchId, identity, token);
-      await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint);
+      // Covers both opening the transport and waiting to be admitted: the
+      // call now returns only once the Welcome has arrived, and `onWelcome`
+      // clears the phase.
+      setConnectPhase('waiting for server welcome');
+      await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint, {
+        // WebTransport only. The two transports differ in exactly the property
+        // the pose stream depends on -- unreliable datagrams versus an ordered
+        // reliable stream -- so WebSocket is disabled outright; the client
+        // re-enables it only for a build made with VITE_ENABLE_WEBSOCKET=1
+        // (see net/transportPolicy.ts).
+        sessionConfig: this.options.sessionConfig,
+      });
+      void this.initCityClient(client);
     } catch (error) {
       this.client?.disconnect();
       this.client = null;
@@ -1144,6 +1591,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   disconnect(): void {
+    this.stopPerPlayerAcks();
+    resetAudioContacts();
+    hotspotWatch.disarm();
+    cityTapeRecorder.describeSession(null);
     this.client?.disconnect();
     this.client = null;
     this.prediction?.dispose();
@@ -1156,6 +1607,13 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     this.cosmeticWorld = null;
     this.sim = null;
     this.knownVehicleIds.clear();
+    this.thinAuthoritative = false;
+    this.thinPosition = null;
+    this.thinPredictor.reset();
+    this.thinVehiclePredictor.reset();
+    this.vehicleProxies.clear();
+    this.authoritativeInputBundler.reset();
+    this.thinVoxelWorld = null;
   }
 
   resetInputState(): void {
@@ -1163,6 +1621,48 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   submitInput(frameDeltaSec: number, input: SemanticInputState): void {
+    if (this.thinAuthoritative) {
+      const driven=this.client?.getLocalDrivenVehicleId();
+      // Server vehicle input pacing: hold its queue at the jitter target.
+      const paced=driven!=null?this.client?.vehicleInputQueue??null:null;
+      const cmds = this.authoritativeInputBundler.produce(frameDeltaSec*inputClockRate(paced,this.client?.serverClock.getRate()??1), input);
+      if(driven!=null) {
+        this.thinVehiclePredictor.setPaced(paced!==null);
+        this.thinVehiclePredictor.record(driven,cmds);
+        this.cityColliders?.sync();
+        this.thinVehiclePredictor.update(frameDeltaSec,performance.now());
+      } else if(this.thinVehiclePredictor.vehicleId!==null) this.thinVehiclePredictor.reset();
+      if (cmds.length > 0) {
+        const redundant=driven!=null?this.thinVehiclePredictor.resendWindow(paced!==null):[];
+        this.sendInputs(redundant.length?redundant:cmds);
+      }
+      const client = this.client;
+      if (client && client.playerId !== 0) {
+        const renderTimeUs = client.getLocalPlayerRenderTimeUs();
+        const sample = client.interpolator.sample(client.playerId, renderTimeUs);
+        if (sample) {
+          // In-process (native single-player) the authoritative pose is a
+          // tick old at most: draw it as simulated, not a prediction ahead of it.
+          if (THIN_PRESENTATION_PREDICTION_ENABLED && !client.presentsImmediately) {
+            this.thinPredictor.observeAuthoritative(
+              {
+                position: sample.position,
+                velocity: sample.velocity,
+                grounded: (sample.flags & FLAG_ON_GROUND) !== 0,
+                supportVelocity: client.localSupport?.velocity,
+                inVehicle: (sample.flags & FLAG_IN_VEHICLE) !== 0,
+              },
+              frameDeltaSec,
+            );
+            this.thinPosition = this.thinPredictor.update(sample.position, frameDeltaSec, input);
+          } else {
+            this.thinPosition = sample.position;
+          }
+          this.setLocalPosition(this.thinPosition);
+        }
+      }
+      return;
+    }
     if (this.isInVehicle()) {
       this.updateVehicle(frameDeltaSec, input, (cmds) => this.sendInputs(cmds));
       return;
@@ -1171,7 +1671,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   peekNextInputSeq(): number {
-    return this.prediction?.getNextSeq() ?? 0;
+    return this.thinAuthoritative
+      ? this.authoritativeInputBundler.peekNextSeq()
+      : (this.prediction?.getNextSeq() ?? 0);
   }
 
   supportsBlockEditing(): boolean {
@@ -1211,7 +1713,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       }
     }
 
-    const remoteVehicleRenderTimeUs = this.state.serverClock.renderTimeUs(this.state.interpolationDelayMs * 1000);
+    const remoteVehicleRenderTimeUs = client.getRenderTimeUs();
     let syncedRemoteVehicles = false;
     for (const [id, vs] of serverVehicles) {
       if (this.isInVehicle() && this.getDrivenVehicleId() === id) {
@@ -1249,6 +1751,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     this.client?.sendFire(cmd);
   }
 
+  sendCityCameraDrop(cmd: CityCameraDropCmd): boolean {
+    return this.client?.sendCityCameraDrop(cmd) ?? false;
+  }
+
   sendMelee(cmd: MeleeCmd): void {
     this.client?.sendMelee(cmd);
   }
@@ -1279,6 +1785,22 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   getDynamicBodyRenderTimeUs(localTimeUs?: number): number {
     return this.client?.getDynamicBodyRenderTimeUs(localTimeUs) ?? 0;
+  }
+
+  getRenderTimeUs(localTimeUs?: number): number {
+    return this.client?.getRenderTimeUs(localTimeUs) ?? 0;
+  }
+
+  getDynamicBodySamples(id: number): readonly DynamicBodySample[] {
+    return this.client?.getDynamicBodySamples(id) ?? [];
+  }
+
+  getDynamicBodyTicksSinceSeen(id: number): number | null {
+    return this.client?.getDynamicBodyTicksSinceSeen(id) ?? null;
+  }
+
+  getDynamicBodyLeadHorizonUs(): number {
+    return this.client?.getDynamicBodyLeadHorizonUs() ?? 0;
   }
 
   getDynamicBodyObservedAgeMs(id: number, localTimeUs?: number): number | null {
@@ -1315,6 +1837,17 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   applyWorldPacket(packet: ServerWorldPacket): void {
+    if (this.thinAuthoritative) {
+      const world = this.thinVoxelWorld;
+      if (!world) return;
+      if (packet.type === 'chunkFull') {
+        world.applyFullChunk(packet);
+      } else {
+        world.applyChunkDiff(packet);
+      }
+      this.setRenderBlocks(world.getRenderBlocks());
+      return;
+    }
     const prediction = this.prediction;
     if (!prediction) {
       this.pendingWorldPackets.push(packet);
@@ -1344,6 +1877,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getPosition(): [number, number, number] | null {
+    if (this.thinAuthoritative) {
+      return this.thinPosition ?? this.state.localPosition;
+    }
     const prediction = this.prediction;
     if (!prediction) {
       return null;
@@ -1438,6 +1974,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   buildBlockEdit(cell: [number, number, number], op: number, material: number): BlockEditCmd | null {
+    if (this.thinAuthoritative) {
+      return this.thinVoxelWorld?.buildEditRequest(cell[0], cell[1], cell[2], op, material) ?? null;
+    }
     const prediction = this.prediction;
     if (!prediction || !prediction.hasEditableWorld()) {
       return null;
@@ -1446,6 +1985,13 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   applyOptimisticEdit(cmd: BlockEditCmd): void {
+    if (this.thinAuthoritative) {
+      this.thinVoxelWorld?.applyOptimisticEdit(cmd);
+      if (this.thinVoxelWorld) {
+        this.setRenderBlocks(this.thinVoxelWorld.getRenderBlocks());
+      }
+      return;
+    }
     const prediction = this.prediction;
     if (!prediction || !prediction.hasEditableWorld()) {
       return;
@@ -1455,6 +2001,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getBlockMaterial(cell: [number, number, number]): number {
+    if (this.thinAuthoritative) {
+      return this.thinVoxelWorld?.getMaterial(cell[0], cell[1], cell[2]) ?? 0;
+    }
     const prediction = this.prediction;
     if (!prediction || !prediction.hasEditableWorld()) {
       return 0;
@@ -1467,11 +2016,28 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   advanceDynamicBodies(frameDeltaSec: number, allowProxyStep: boolean): void {
-    this.dynamicBodiesPrediction?.advance(frameDeltaSec, allowProxyStep);
+    if (!this.thinAuthoritative) {
+      this.dynamicBodiesPrediction?.advance(frameDeltaSec, allowProxyStep);
+    }
     this.cosmeticWorld?.advance(frameDeltaSec);
   }
 
   getDynamicBodyRenderState(id: number): DynamicBodyStateMeters | null {
+    if (this.thinAuthoritative) {
+      const renderTimeUs = this.client?.getDynamicBodyRenderTimeUs();
+      const sample = this.client?.sampleRemoteDynamicBody(id, renderTimeUs);
+      const authoritative = this.dynamicBodies.get(id);
+      if (!authoritative) return null;
+      return sample
+        ? {
+            ...authoritative,
+            position: sample.position,
+            quaternion: sample.quaternion,
+            velocity: sample.velocity,
+            angularVelocity: sample.angularVelocity,
+          }
+        : authoritative;
+    }
     return this.dynamicBodiesPrediction?.getRenderedBodyState(id) ?? null;
   }
 
@@ -1579,19 +2145,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     if (proxyBody && this.hasRecentDynamicBodyInteraction(id)) {
       return proxyBody;
     }
-    const remoteSample = this.sampleRemoteDynamicBody(id, this.getDynamicBodyRenderTimeUs());
-    if (remoteSample) {
-      return {
-        id,
-        shapeType: remoteSample.shapeType,
-        position: remoteSample.position,
-        quaternion: remoteSample.quaternion,
-        halfExtents: remoteSample.halfExtents,
-        velocity: remoteSample.velocity,
-        angularVelocity: remoteSample.angularVelocity,
-      };
-    }
-    return this.dynamicBodies.get(id) ?? null;
+    return this.client?.getInterpolatedDynamicBodyState(id) ?? this.dynamicBodies.get(id) ?? null;
   }
 
   listDynamicBodyProxyStates(): Array<{
@@ -1634,7 +2188,31 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   getDebugStats(): RuntimeDebugStats {
     const prediction = this.prediction;
     if (!prediction) {
-      return defaultDebugStats();
+      const stats = defaultDebugStats();
+      if (this.thinAuthoritative) {
+        const vehicle=this.thinVehiclePredictor.debug(performance.now());
+        stats.vehiclePendingInputs=vehicle.pending;
+        stats.vehicleAckSeq=vehicle.ack;
+        stats.vehicleLatestLocalSeq=vehicle.latestSeq;
+        stats.vehicleAckBacklogMs=vehicle.pending*FIXED_DT*1000;
+        stats.vehicleResendWindow=Math.min(3,vehicle.pending);
+        stats.vehicleCorrectionMagnitude=vehicle.correction;
+        stats.vehicleReplayErrorM=vehicle.replayError;
+        stats.vehicleCorrectionAgeMs=vehicle.snapshotAge;
+        stats.physicsStepMs=vehicle.replayMs;
+        stats.playerCorrectionMagnitude = THIN_PRESENTATION_PREDICTION_ENABLED
+          ? this.thinPredictor.correctionMagnitude()
+          : 0;
+        const client = this.client;
+        if (client && client.playerId !== 0) {
+          const renderTimeUs = client.getLocalPlayerRenderTimeUs();
+          const sample = client.interpolator.sample(client.playerId, renderTimeUs);
+          if (sample) {
+            stats.velocity = sample.velocity;
+          }
+        }
+      }
+      return stats;
     }
     const offset = prediction.getCorrectionOffset();
     const playerPosition = prediction.getPosition();
@@ -1810,11 +2388,65 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     this.vehiclePrediction?.reconcile(vehicleState, ackInputSeq);
   }
 
+  isVehiclePredictionFrozen(): boolean { return this.thinVehiclePredictor.debug(performance.now()).stalled; }
+
+  private getVehicleProxy(state:VehicleStateMeters):VehicleProxy {
+    const key=state.customVehicle?.assetHash ?? String(state.vehicleType);
+    const existing=this.vehicleProxies.get(state.id);
+    if(existing?.key===key)return existing.proxy;
+    const proxy=vehicleProxy(state);
+    this.vehicleProxies.set(state.id,{key,proxy});
+    // Remote entities can stream in/out indefinitely during a city session.
+    if(this.vehicleProxies.size>256) for(const id of this.vehicleProxies.keys()) {
+      if(!this.client?.vehicles.has(id))this.vehicleProxies.delete(id);
+    }
+    return proxy;
+  }
+
+  override getDrivenVehiclePredictedTick(): number | null {
+    if (!this.thinAuthoritative || !this.client || this.client.presentsImmediately) return null;
+    const id = this.client.getLocalDrivenVehicleId();
+    if (id == null || this.thinVehiclePredictor.vehicleId !== id) return null;
+    const us = this.thinVehiclePredictor.predictedTimeUs(this.authoritativeInputBundler.remainderSec());
+    return us == null ? null : us / SERVER_TICK_US;
+  }
+
+  override getDrivenVehicleWheels(): WheelPose[] | null {
+    if (!this.thinAuthoritative || !this.client || this.client.presentsImmediately) return null;
+    const id = this.client.getLocalDrivenVehicleId();
+    if (id == null || this.thinVehiclePredictor.vehicleId !== id) return null;
+    const rig = this.client.getVehicleRig(id);
+    return rig ? this.thinVehiclePredictor.wheels(rig, this.authoritativeInputBundler.remainderSec()) : null;
+  }
+
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
+    return this.drivenVehiclePose(true);
+  }
+
+  /** The driven car as drawn this frame; `present` records it as presented. */
+  private drivenVehiclePose(present: boolean): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
+    if (this.thinAuthoritative) {
+      const vehicleId = this.client?.getLocalDrivenVehicleId();
+      if (vehicleId == null || !this.client) return null;
+      // In-process the driven car is drawn exactly as simulated at the newest
+      // snapshot; over a network its proxy prediction masks the round trip.
+      const predicted=this.thinVehiclePredictor.vehicleId===vehicleId&&!this.client.presentsImmediately
+        ?this.thinVehiclePredictor.pose(this.authoritativeInputBundler.remainderSec()):null;
+      if(predicted){if(present)this.thinVehiclePredictor.presented(performance.now());return predicted;}
+      // Before the first owning snapshot, use bounded collision-aware extrapolation.
+      const renderTimeUs = this.client.getDynamicBodyRenderTimeUs();
+      const sample = this.client.sampleRemoteVehicle(vehicleId, renderTimeUs);
+      return sample
+        ? { position: sample.position, quaternion: sample.quaternion }
+        : null;
+    }
     return this.vehiclePrediction?.getInterpolatedChassisPose() ?? null;
   }
 
   getDrivenVehicleId(): number | null {
+    if (this.thinAuthoritative) {
+      return this.client?.getLocalDrivenVehicleId() ?? null;
+    }
     return this.vehiclePrediction?.getVehicleId() ?? null;
   }
 
@@ -1823,6 +2455,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   isInVehicle(): boolean {
+    if (this.thinAuthoritative) {
+      return (this.localPlayerFlags & FLAG_IN_VEHICLE) !== 0;
+    }
     return this.vehiclePrediction?.isActive() ?? false;
   }
 

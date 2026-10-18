@@ -1,0 +1,75 @@
+{
+  "name": "city-monolith",
+  "description": "Cut a tower's supports to spawn a large island, then pour sustained fire into that island while tracking it as it moves. Tests whether an already-dynamic island can still be fractured.",
+  "symptom": [
+    "invulnerable",
+    "monolith",
+    "flies-away"
+  ],
+  "path": "/city?portal=true",
+  "matchId": "city-monolith-{iter}",
+  "durationMs": 120000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "fractured-highrise-10f.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_VARIED_HEIGHTS": "0",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "1.0"
+  },
+  "clients": [
+    {
+      "role": "shooter",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 6000,
+          "cmd": "mark",
+          "args": "cut-supports"
+        },
+        {
+          "at": 6000,
+          "cmd": "lookAt",
+          "args": [
+            12,
+            3,
+            12
+          ]
+        },
+        {
+          "at": 6200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 12000
+          }
+        },
+        {
+          "at": 20000,
+          "cmd": "mark",
+          "args": "sustained-fire-at-largest-island"
+        },
+        {
+          "at": 20500,
+          "cmd": "huntLargestIsland",
+          "args": {
+            "durationMs": 80000
+          }
+        },
+        {
+          "at": 105000,
+          "cmd": "mark",
+          "args": "observe-final-state"
+        },
+        {
+          "at": 105500,
+          "cmd": "faceCity"
+        }
+      ]
+    }
+  ],
+  "iterations": 1
+}

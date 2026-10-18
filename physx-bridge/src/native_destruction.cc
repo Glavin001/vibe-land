@@ -1,0 +1,1925 @@
+#include "native_state.h"
+#include "solver_iterations.h"
+#include "PxNativeVehicle.h"
+#if defined(VIBE_PHYSX_HAS_SECTION_BENDING)
+#include "bond_section.h"
+#endif
+
+#include "extensions/PxMassProperties.h"
+#include "geometry/PxGeometryQuery.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <numeric>
+#include <unordered_map>
+#include <dlfcn.h>
+
+using namespace physx;
+
+// How many corrected rigid solves the stage may run in one tick after a
+// membership-changing verdict. One is the production value: one trial
+// evaluation plus one corrected pass, so an impact breaks one bond layer per
+// tick. Two and above let the stage rewind and solve again while the
+// re-evaluated contacts keep breaking bonds, so a rock can go N layers deep in
+// one tick instead of rebounding off the second; each extra pass is a full
+// rigid solve on the frames that fracture. Zero never rewinds, the cheapest
+// setting, and turns correction off for A/B. Before SDK v17 `configureStress`
+// refused anything above one and the symptom was a city that renders and
+// cannot break, so on those SDKs the value is clamped and shouted about.
+static unsigned correction_limit() {
+  static const unsigned value = [] {
+    const char *raw = std::getenv("VIBE_CITY_NATIVE_CORRECTION_LIMIT");
+    if (raw == nullptr || *raw == '\0') return 1u;
+    char *end = nullptr;
+    const unsigned long parsed = std::strtoul(raw, &end, 10);
+    if (end == nullptr || *end != '\0') return 1u;
+#if !defined(VIBE_PHYSX_CORRECTION_LOOP)
+    if (parsed > 1) {
+      std::fprintf(stderr,
+                   "[destruction] VIBE_CITY_NATIVE_CORRECTION_LIMIT=%lu is not supported by the "
+                   "stage (0 or 1 only; configureStress rejects more); using 1\n",
+                   parsed);
+      return 1u;
+    }
+#endif
+    return unsigned(parsed);
+  }();
+  return value;
+}
+
+/// Rest-state properties for stage-owned chunks. Set once on each cluster
+/// parent; the stage copies them onto every fragment it splits off
+/// (NpDestructionBodyAllocator::observeSettings inherits damping, maxPenBias,
+/// sleep and freeze thresholds, solver iterations), so this is the one place
+/// they need to be written and nothing is ever written on a fragment.
+///
+/// ALL LEFT AT THE PHYSX DEFAULTS unless set. The Blast values --
+/// depenetration 1.0 m/s, sleep 0.05, stabilization 0.02 -- were the default
+/// for one deployment on 2026-09-21. They did put piles to sleep (fractured
+/// town: awake 9,354 -> 887 within eight seconds of the last rock), and the
+/// owner pulled them the same day: bodies froze in visibly wrong poses,
+/// mid-lean and mid-slide, because the stabilization pass stops anything
+/// under ~0.2 m/s where it is and the sleep threshold parks anything under
+/// ~0.32 m/s after 0.4 s. Measured afterwards on bayline-proven-36: the
+/// depenetration cap alone, or with sleep at 0.01, does NOT let a pile sleep
+/// (about 1,000 bodies stayed awake for a minute in both arms), so there is
+/// no gentler setting of these three that buys the sleep without the look.
+///
+/// What they were compensating for is real -- PhysX sleeps per contact
+/// island, and one popping chunk keeps thousands awake -- but the answer
+/// has to be one that does not change where things come to rest. Left as
+/// env knobs for measurement: VIBE_CITY_NATIVE_DEPEN_VELOCITY,
+/// VIBE_CITY_NATIVE_SLEEP_THRESHOLD, VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD,
+/// VIBE_CITY_NATIVE_FRAGMENT_DEPEN_VELOCITY (v18 SDKs). Solver iterations
+/// follow VIBE_PHYSX_POSITION_ITERS / VIBE_PHYSX_VELOCITY_ITERS like every
+/// other dynamic body (solver_iterations.h); raising them did not stop the
+/// rocking that kept rubble awake on 2026-09-24.
+static float native_env_f32(const char *name, float fallback) {
+  const char *raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') return fallback;
+  char *end = nullptr;
+  const float parsed = std::strtof(raw, &end);
+  if (end == nullptr || *end != '\0' || !std::isfinite(parsed)) return fallback;
+  return parsed;
+}
+
+/// VIBE_SECTION_BENDING=1 (A/B, SDKs with PX_DESTRUCTION_SECTION_BENDING): bond bending and torsion from each
+/// bond's real cross-section (bond_section.h; PxDestructionStressDesc::
+/// sectionBending) instead of the area-only gain capped by bend_gain_max.
+/// VIBE_SECTION_ROTATION=1 (A/B, SDKs with PX_DESTRUCTION_SECTION_ROTATIONAL_STIFFNESS):
+/// each bond's rotational stiffness in the stress solve from its own section
+/// (k I/A per principal axis, k I_p/A in twist, sprung at the bond face)
+/// instead of one length scale for every bond. Implies VIBE_SECTION_BENDING.
+static bool native_section_rotation() {
+  static const bool value = native_env_f32("VIBE_SECTION_ROTATION", 0.0f) != 0.0f;
+  return value;
+}
+static bool native_section_bending() {
+  static const bool value = native_env_f32("VIBE_SECTION_BENDING", 0.0f) != 0.0f || native_section_rotation();
+  return value;
+}
+/// VIBE_IMPACT_CAPACITY=1 (opt-in, SDKs with PX_DESTRUCTION_IMPACT_CAPACITY):
+/// the stage's impact capacity (PhysX docs/destruction/IMPACT_CAPACITY_DESIGN.md
+/// "E"). Where the elastic solve has a bond past its fatal limit, the tick is
+/// solved as an impact of chunks joined by joints of finite capacity: what the
+/// joints cannot carry accelerates the chunks instead of reaching the anchors;
+/// brittle joints fracture as the load builds, ductile ones (the pack's
+/// materials[].ductileSlip) yield and break past their ultimate slip.
+static bool native_impact_capacity() {
+  static const bool value = native_env_f32("VIBE_IMPACT_CAPACITY", 0.0f) != 0.0f;
+  return value;
+}
+/// VIBE_IMPACT_STEP=1 (opt-in, SDKs with PX_DESTRUCTION_IMPACT_STEP): impacts
+/// are solved by the impact step -- one implicit step over the contact
+/// duration on a local patch around each struck chunk, with an exact event
+/// ramp (PhysX docs/destruction/IMPACT_CHEAP_FORMULATION.md) -- instead of the
+/// impact solve. It uses the impact capacity's materials, contact rows and
+/// bounds, so it turns those on; the other islands keep the elastic verdict.
+static bool native_impact_step() {
+  static const bool value = native_env_f32("VIBE_IMPACT_STEP", 0.0f) != 0.0f;
+  return value;
+}
+/// VIBE_BOND_TRUE_STIFFNESS=1 (high-fidelity profile; docs/verification/
+/// FIDELITY_AUDIT.md): each bond's stress-solve stiffness is E A / L at its
+/// own area and spring length, with no floors. The default floors the area at
+/// 1e-4 m^2 and the length at 0.05 m (f34e71ba, 2026-09-18, unexplained):
+/// a sliver is then stiffened up to 1e-4 m^2 while its strength is checked
+/// at its true area, so it draws load it cannot carry, which is why authoring
+/// filters slivers out (structure_lint sliver-bonds, the vehicle preparer).
+/// Parallel members of one material and length then carry one stress, as
+/// they must. A bond of zero area, or one whose chunks share a centre with no
+/// contact length, is an authoring error and is refused.
+/// VIBE_SECTION_ROTATION=1 implies it: the bond's rotational stiffness is
+/// k I/A from its real section, so k itself must be the real E A / L too.
+static bool native_true_bond_stiffness() {
+  static const bool value = native_env_f32("VIBE_BOND_TRUE_STIFFNESS", 0.0f) != 0.0f || native_section_rotation();
+  return value;
+}
+/// VIBE_NATIVE_UNCAPPED_SPIN=1 (high-fidelity profile; docs/verification/
+/// FIDELITY_AUDIT.md): native clusters, vehicle carriers and rounds take the
+/// SDK's numeric range for angular velocity, as add_dynamic's bodies already
+/// do, instead of PhysX's default 100 rad/s clamp, which nothing here ever
+/// chose. The clamp is not physics: PxRigidBody::setMaxAngularVelocity warns
+/// that enforcing it introduces momentum error, and every fragment inherits
+/// its source's limit (PxgDestructionMotionState). A 1 m rod struck 0.4 m off
+/// centre at 100 m/s spins at ~180 rad/s (tests/fidelity_audit.rs).
+static bool native_uncapped_spin() {
+  static const bool value = native_env_f32("VIBE_NATIVE_UNCAPPED_SPIN", 0.0f) != 0.0f;
+  return value;
+}
+static constexpr float kUncappedAngularVelocity = 1.0e16f; // add_dynamic's value
+/// VIBE_REBEARING=1 (high-fidelity profile, SDKs with PX_DESTRUCTION_REBEARING): a bearing
+/// joint whose fasteners fail becomes a unilateral contact that bears in compression and
+/// lifts off in tension (FIDELITY_AUDIT C9; PhysX PxgDestructionRebearing.cuh).
+static bool native_rebearing() {
+  static const bool value = native_env_f32("VIBE_REBEARING", 0.0f) != 0.0f;
+  return value;
+}
+/// VIBE_MOHR_COULOMB_SHEAR=1 (SDKs with PX_DESTRUCTION_MOHR_COULOMB_SHEAR;
+/// FIDELITY_AUDIT C11): an intact joint's shear strength grows with the
+/// compression across it, f_v0 + mu sigma_c up to its cap (EN 1996-1-1 3.6.2:
+/// f_vk = f_vk0 + 0.4 sigma_d <= f_vlt), mu and the cap per material (the
+/// pack's shearFriction, shearCapacityLimit). Off: the authored mu is ignored.
+static bool native_mohr_coulomb_shear() {
+  static const bool value = native_env_f32("VIBE_MOHR_COULOMB_SHEAR", 0.0f) != 0.0f;
+  return value;
+}
+/// VIBE_SHEAR_STIFFNESS=1 (SDKs with PX_DESTRUCTION_SHEAR_STIFFNESS; FIDELITY_AUDIT
+/// D11): a joint is stiffer along its normal than across it, k_s = gamma k_n,
+/// gamma per material (the pack's shearStiffnessRatio: masonry G/E = 0.4, EN
+/// 1996-1-1 3.8.3). Needs VIBE_SECTION_ROTATION (without it the stage keeps every joint
+/// isotropic). Off: every joint isotropic.
+static bool native_shear_stiffness() {
+  static const bool value = native_env_f32("VIBE_SHEAR_STIFFNESS", 0.0f) != 0.0f;
+  return value;
+}
+/// VIBE_STRENGTH_SHORT_TERM=1: see append_materials.
+static bool native_short_term_strength() {
+  static const bool value = native_env_f32("VIBE_STRENGTH_SHORT_TERM", 0.0f) != 0.0f;
+  return value;
+}
+static float native_depenetration_velocity() {
+  static const float value = native_env_f32("VIBE_CITY_NATIVE_DEPEN_VELOCITY", 0.0f);
+  return value;
+}
+/// A destructible car's depenetration cap (m/s), which its pieces inherit: a
+/// fragment takes the smaller of its source body's cap and the stage's
+/// fragmentMaxDepenetrationVelocity. A thin piece wedged between the ground
+/// and something immovable (a building's base it slid into at 20 m/s, the
+/// wreck) cannot be pushed out; at the stage's 2 m/s each push only rolled it
+/// about its long axis, where its inertia is tiny, and it flipped between two
+/// orientations every tick for as long as the match ran. city_fleet_tests,
+/// ten wrecks: rocking in 7 at 2 m/s, 4 at 1, 1 at 0.5 (for 4 s), 0 at 0.25.
+/// The floor is the heightfield: a piece a shot drives under it climbs out
+/// no faster than this, and at 0.25 m/s one fell through the garage terrain
+/// (garage_vehicle_destruction_is_rigid_body_correct, "progressive on
+/// terrain"); at 0.5 a wheel driven 39 cm in is out in 0.6 s.
+/// VIBE_VEHICLE_MAX_DEPENETRATION_VELOCITY overrides it; 0 leaves the car's
+/// PhysX default.
+static float vehicle_depenetration_velocity() {
+  static const float value = native_env_f32("VIBE_VEHICLE_MAX_DEPENETRATION_VELOCITY", 0.5f);
+  return value;
+}
+static float native_sleep_threshold() {
+  static const float value = native_env_f32("VIBE_CITY_NATIVE_SLEEP_THRESHOLD", 0.0f);
+  return value;
+}
+/// Depenetration cap for free fragments only, metres per second; zero (the
+/// default) inherits the parent's unbounded PhysX clamp. Needs an SDK with
+/// PxDestructionStressDesc::fragmentMaxDepenetrationVelocity (scene v18).
+/// Measured 2026-09-22 on the house harness (docs on
+/// origin/claude/netlab-overnight, bayline-settling-resolution): fast meteor
+/// debris that tunnels a deck and lands inside other pieces settles into a
+/// PGS fixed point or a two-step 7 cm ping-pong under the unbounded clamp;
+/// 1 m/s and 0.5 m/s dissolve every stack. Applied on the GPU at fragment
+/// creation, so a projectile's trial contact with the anchored remnant keeps
+/// its unbounded impulses and fracture loads are unchanged (a whole-body cap
+/// made the cannonball bounce off the wall with a fifth of the damage).
+static float native_fragment_depenetration_velocity() {
+  static const float value =
+      native_env_f32("VIBE_CITY_NATIVE_FRAGMENT_DEPEN_VELOCITY", 0.0f);
+  return value;
+}
+/// Stabilization ("freeze") threshold for stage-owned chunks. Unset leaves
+/// the PhysX default; any value >= 0 is written, zero meaning no freezing.
+static float native_stabilization_threshold() {
+  static const float value =
+      native_env_f32("VIBE_CITY_NATIVE_STABILIZATION_THRESHOLD", -1.0f);
+  return value;
+}
+namespace vibe_land::physx_bridge {
+namespace {
+
+double now_ms() {
+  using clock = std::chrono::steady_clock;
+  return std::chrono::duration<double, std::milli>(
+             clock::now().time_since_epoch())
+      .count();
+}
+
+/// Reference stiffness for bond compliance, Pa.
+///
+/// Compliance is a *relative* quantity here: what matters is how load divides
+/// between parallel paths, so each bond is scaled by sqrt(E*A/L) and the set is
+/// then normalised by its own geometric mean. Dividing through by a fixed
+/// modulus keeps a single-material structure at unit compliance, which is what
+/// the stage's defaults are tuned against.
+constexpr float kReferenceModulusPa = 30.0e9f;
+
+} // namespace
+
+std::uint32_t NativeDestruction::entity_id(std::uint32_t structure_id,
+                                           std::uint32_t island_serial) {
+  // Mirrors ids.rs: NS_CHUNK | structure << 20 | serial.
+  native_require(structure_id < 255u,
+                 "structure id exceeds the 8-bit network field (255 structures)");
+  native_require(island_serial < (1u << 20),
+                 "island serial space exhausted for this structure");
+  return 0x80000000u | (structure_id << 20) | island_serial;
+}
+
+NativeDestruction::NativeDestruction(PxPhysics &physics, PxScene &scene,
+                                     PxMaterial &material)
+    : state_(new State(physics, scene, material)) {
+  native_require(
+      !scene.getFlags().isSet(PxSceneFlag::eENABLE_DIRECT_GPU_API),
+      "native destruction needs ordinary CPU actor access; disable the Direct "
+      "GPU API");
+  native_require(!scene.getFlags().isSet(PxSceneFlag::eENABLE_CCD),
+                 "native destruction does not support scene CCD");
+  native_require(scene.getDestructionScene() != nullptr,
+                 "this PhysX build has no GPU destruction stage; check that "
+                 "the physx-2 SDK is the one linked");
+}
+
+NativeDestruction::~NativeDestruction() {
+  try {
+    clear();
+  } catch (...) {
+    // A throwing destructor during teardown would mask the original failure.
+  }
+}
+
+bool NativeDestruction::configured() const { return state_->configured; }
+
+void NativeDestruction::clear() {
+  State &s = *state_;
+  s.release_rounds();
+  // Fragment bodies are scene-owned and destroyed here, so this has to happen
+  // before the authored parents and shapes go away.
+  const bool released = s.configured ? s.stage().clearStress() : true;
+
+  // This used to throw the moment `clearStress` refused, which left the object
+  // exactly as it was: still `configured`, so the very next
+  // `create_destructible` was rejected as "immutable once configured". The
+  // stage refuses precisely when it is in an error state, which is the state a
+  // rebuild is trying to repair -- so the one repair available could never run,
+  // and the match stayed indestructible until the process was restarted.
+  // Observed live: the automatic rebuild firing, being refused, and firing
+  // again, with 10,684 rejected ticks behind it.
+  //
+  // So the teardown finishes either way and the failure is reported at the end,
+  // with the object usable again. What is NOT done on that path is releasing
+  // the authored parents and shapes: a stage that would not let go of its
+  // topology may still hold references to them, and freeing those would trade a
+  // dead match for a crash. They leak for the life of the process, which is the
+  // right side of that trade to be on.
+  if (released) {
+    for (PxRigidDynamic *parent : s.parents) {
+      if (parent != nullptr
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+          && !s.borrowed_parents.count(parent)
+#endif
+      ) {
+        parent->release();
+      }
+    }
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+    for (const auto &extra : s.extra_shapes) extra.shape->release();
+#endif
+    for (State::Chunk &chunk : s.chunks) {
+      if (chunk.shape != nullptr) {
+        chunk.shape->release();
+      }
+    }    // After the shapes that referenced them.
+    for (auto &entry : s.surface_cache) entry.second->release();
+  }
+  PxPhysics &physics = s.physics;
+  PxScene &scene = s.scene;
+  PxMaterial &material = s.material;
+  state_.reset(new State(physics, scene, material));
+  native_require(released,
+                 "cannot clear the active native destruction topology");
+}
+
+std::uint32_t NativeDestruction::State::append_materials(std::uint32_t structure_id,
+    const FfiDestructibleSettings &settings) {
+  State &s = *this;
+  const PxU32 material_base = static_cast<PxU32>(s.materials.size());
+  s.material_base[structure_id] = material_base;
+  // Chunk crushing is opt-in per material: an empty table crushes nothing.
+  // VIBE_NATIVE_CRUSH=0 ignores an authored one (A/B against the same pack).
+  const char *crush_env = std::getenv("VIBE_NATIVE_CRUSH");
+  bool crush = !settings.crush.empty() && !(crush_env && crush_env[0] == '0');
+#if !defined(VIBE_PHYSX_HAS_CRUSH_CORRECTION)
+  // This SDK removes a crushed chunk inside the correction, refuses that step,
+  // and every step after it fails: crushing stays off rather than freezing the
+  // scene (PhysX PX_DESTRUCTION_CRUSH_CORRECTION, branch fix/crush-in-correction).
+  if (crush) {
+    static bool warned = false;
+    if (!warned) {
+      std::fprintf(stderr, "[native-destruction] chunk crushing authored but this PhysX SDK cannot correct a crush; crushing off\n");
+      warned = true;
+    }
+    crush = false;
+  }
+#endif
+  native_require(settings.crush.empty() || settings.crush.size() == settings.materials.size(),
+                 "crush table must be empty or parallel to the materials");
+  // A crushable material carries its own crush law; nothing is substituted
+  // for a missing parameter (FIDELITY_AUDIT C6: 1.0 used to stand in, a crush
+  // energy of 1 J/m^3 against concrete's ~1e6). Checked whatever the SDK.
+  for (const FfiCrushMaterial &c : settings.crush) {
+    if (c.cap_pressure <= 0.0f) continue;
+    native_require(std::isfinite(c.crush_energy) && c.crush_energy > 0.0f &&
+                       std::isfinite(c.crush_viscosity) && c.crush_viscosity > 0.0f,
+                   "a crushable material needs its crush energy and viscosity");
+    native_require(!(c.strain_rate_exponent > 0.0f) || c.reference_strain_rate > 0.0f,
+                   "a crushable material with a strain-rate exponent needs its reference strain rate");
+  }
+  std::size_t index = 0;
+  for (const FfiStressMaterial &m : settings.materials) {
+    PxDestructionMaterial out;
+    // Authored limits are already resolved to Pa by the caller, and the stage
+    // reads negative tension/shear as "inherit compression" -- the same rule
+    // the Blast materials use, so one authored table drives both backends.
+    out.compressionElasticLimit = m.compression_elastic;
+    out.compressionFatalLimit = m.compression_fatal;
+    out.tensionElasticLimit = m.tension_elastic < 0 ? -1.0f : m.tension_elastic;
+    out.tensionFatalLimit = m.tension_fatal < 0 ? -1.0f : m.tension_fatal;
+    out.shearElasticLimit = m.shear_elastic < 0 ? -1.0f : m.shear_elastic;
+    out.shearFatalLimit = m.shear_fatal < 0 ? -1.0f : m.shear_fatal;
+    out.residualAreaFraction = m.residual_area_fraction;
+    // VIBE_STRENGTH_SHORT_TERM=1 (high-fidelity profile; docs/verification/
+    // FIDELITY_AUDIT.md C1, C2): no residual-area arrest, and no sub-fatal
+    // section loss for the families whose strength does not fall over a
+    // session's minutes. By family:
+    // - timber: duration of load (Gerhards 1979; Wood Handbook FPL-GTR-282
+    //   sec. 5): failure takes exp(43.17 - 49.75 r) min at a load ratio r,
+    //   29 min at 0.8 f, so within a session it holds below f and breaks at f;
+    // - concrete: EN 1992-1-1 3.1.6 alpha_cc (0.85-1.0) is the long-term
+    //   factor on f_ck for loads held months; at seconds it is 1;
+    // - masonry: EN 1996-1-1 gives f_k no load-duration factor (creep only);
+    // - glass: static fatigue, EN 16612 k_mod = 0.663 t^(-1/16) (t in hours),
+    //   0.86 at a minute and 1 below ~10 s;
+    //   these are brittle at their fatal limit: elastic := fatal;
+    // - ductile materials (an authored ductileSlip: steel, fasteners): steel
+    //   at ambient temperature has no load-duration factor either (EN 1993-1-1
+    //   applies no k_mod), but it yields before it ruptures (EN 1993-1-1 3.2.2:
+    //   f_u/f_y >= 1.10, elongation >= 15%). They keep their authored band,
+    //   yield at the elastic limit and rupture at the fatal one; past fatal,
+    //   with VIBE_IMPACT_CAPACITY, the impact solve's ductile slip carries
+    //   capacity until the ultimate slip. Between them the stage's only static
+    //   plastic path is its section loss (a MODEL: not plastic strain).
+    // The runtime damages every family at damageRate (2 /s) above the elastic
+    // limit and arrests at residualAreaFraction, where a loaded joint can sit
+    // just under fatal forever (tests/fidelity_audit.rs sub_fatal_damage_law,
+    // steel_yields_before_it_breaks).
+    if (native_short_term_strength()) {
+      const bool ductile = index < settings.ductile_slip.size() && settings.ductile_slip[index] > 0.0f;
+      out.residualAreaFraction = 0.0f;
+      if (!ductile) {
+        out.compressionElasticLimit = out.compressionFatalLimit;
+        out.tensionElasticLimit = out.tensionFatalLimit;
+        out.shearElasticLimit = out.shearFatalLimit;
+        // A metal not declared ductile becomes brittle here: say so once.
+        static bool warned = false;
+        if (!warned && m.elastic_modulus >= 150e9f && m.tension_fatal > m.tension_elastic) {
+          std::fprintf(stderr, "[destruction] VIBE_STRENGTH_SHORT_TERM: a material with E %.0f GPa and a yield band has no "
+                               "ductileSlip, so it is brittle at its fatal limit; author ductileSlip for steel\n",
+                       m.elastic_modulus / 1e9f);
+          warned = true;
+        }
+      }
+    }
+    if (crush) {
+      const FfiCrushMaterial &c = settings.crush[index];
+      out.crush.capPressure = c.cap_pressure;
+      out.crush.cohesion = c.cohesion;
+      out.crush.frictionSlope = c.friction_slope;
+      out.crush.crushEnergy = c.crush_energy > 0.0f ? c.crush_energy : 1.0f;
+      out.crush.crushViscosity = c.crush_viscosity > 0.0f ? c.crush_viscosity : 1.0f;
+      out.crush.strainRateExponent = c.strain_rate_exponent;
+      out.crush.referenceStrainRate = c.reference_strain_rate > 0.0f ? c.reference_strain_rate : 1.0f;
+      out.crush.debrisMassFraction = c.debris_mass_fraction;
+      out.crush.debrisFragmentCount = c.debris_fragment_count;
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+      out.impactImpedance = std::max(0.0f, c.impedance);
+#endif
+    }
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+    native_require(settings.ductile_slip.empty() || settings.ductile_slip.size() == settings.materials.size(),
+                   "ductile slip table must be empty or parallel to the materials");
+    out.ductileSlip = settings.ductile_slip.empty() ? 0.0f : std::max(0.0f, settings.ductile_slip[index]);
+    // A ratio here, made a stiffness per structure once its bonds' weights are
+    // normalised (append_bonds): the impact solve's modulus over the solve's,
+    // where the material's own is a gravity-sharing concession (a wall tie).
+    native_require(settings.impact_modulus.empty() || settings.impact_modulus.size() == settings.materials.size(),
+                   "impact modulus table must be empty or parallel to the materials");
+    {
+      const float solve = m.elastic_modulus > 0.0f ? m.elastic_modulus : kReferenceModulusPa;
+      const float impact = settings.impact_modulus.empty() ? 0.0f : settings.impact_modulus[index];
+      out.impactStiffness = impact > 0.0f ? impact / solve : 1.0f;
+    }
+#endif
+    native_require(settings.twist_gyration.empty() || (settings.twist_gyration.size() == settings.materials.size() &&
+                                                        settings.twist_reach.size() == settings.materials.size()),
+                   "twist tables must be empty or parallel to the materials");
+    s.twist_gyration.push_back(settings.twist_gyration.empty() ? 0.0f : std::max(0.0f, settings.twist_gyration[index]));
+    s.twist_reach.push_back(settings.twist_reach.empty() ? 0.0f : std::max(0.0f, settings.twist_reach[index]));
+    native_require(settings.bearing_modulus.empty() || (settings.bearing_modulus.size() == settings.materials.size() &&
+                                                         settings.bend_gyration.size() == settings.materials.size() &&
+                                                         settings.bend_section.size() == settings.materials.size()),
+                   "bearing tables must be empty or parallel to the materials");
+    s.bend_gyration.push_back(settings.bend_gyration.empty() ? 0.0f : std::max(0.0f, settings.bend_gyration[index]));
+    s.bend_section.push_back(settings.bend_section.empty() ? 0.0f : std::max(0.0f, settings.bend_section[index]));
+    native_require(settings.bearing_joint.empty() || settings.bearing_joint.size() == settings.materials.size(),
+                   "bearing joint table must be empty or parallel to the materials");
+    s.bearing_joint.push_back(settings.bearing_joint.empty() ? 0.0f : settings.bearing_joint[index]);
+    native_require(settings.shear_friction.empty() || (settings.shear_friction.size() == settings.materials.size() &&
+                                                        settings.shear_capacity_limit.size() == settings.materials.size()),
+                   "shear friction tables must be empty or parallel to the materials");
+#if defined(VIBE_PHYSX_HAS_MOHR_COULOMB_SHEAR)
+    // Mohr-Coulomb joint shear (the stage zeroes mu unless its switch is on).
+    out.shearFriction = settings.shear_friction.empty() ? 0.0f : std::max(0.0f, settings.shear_friction[index]);
+    out.shearCapacityLimit = settings.shear_capacity_limit.empty() ? 0.0f : std::max(0.0f, settings.shear_capacity_limit[index]);
+#endif
+    native_require(settings.shear_stiffness_ratio.empty() || settings.shear_stiffness_ratio.size() == settings.materials.size(),
+                   "shear stiffness table must be empty or parallel to the materials");
+#if defined(VIBE_PHYSX_HAS_SHEAR_STIFFNESS)
+    // Shear stiffness apart from normal (the stage ignores it unless its switch is on).
+    out.shearStiffnessRatio = settings.shear_stiffness_ratio.empty() ? 0.0f : std::max(0.0f, settings.shear_stiffness_ratio[index]);
+#endif
+    // The surface (VIBE_SURFACE_MATERIALS=1): a standard PxMaterial per distinct
+    // (static friction, dynamic friction, restitution), PhysX's own combine
+    // rules between two surfaces (average by default). Off, or untabulated:
+    // the world's material.
+    native_require(settings.surface_static_friction.empty() ||
+                       (settings.surface_static_friction.size() == settings.materials.size() &&
+                        settings.surface_dynamic_friction.size() == settings.materials.size() &&
+                        settings.surface_restitution.size() == settings.materials.size()),
+                   "surface tables must be empty or parallel to the materials");
+    {
+      static const bool surfaces_on = [] { const char *v = std::getenv("VIBE_SURFACE_MATERIALS"); return v && v[0] == '1'; }();
+      PxMaterial *surface = nullptr;
+      if (surfaces_on && !settings.surface_static_friction.empty()) {
+        const std::array<float, 3> key{settings.surface_static_friction[index], settings.surface_dynamic_friction[index],
+                                       settings.surface_restitution[index]};
+        native_require(std::isfinite(key[0]) && key[0] >= 0.0f && std::isfinite(key[1]) && key[1] >= 0.0f &&
+                           std::isfinite(key[2]) && key[2] >= 0.0f && key[2] <= 1.0f,
+                       "surface friction must be finite and non-negative, restitution in [0, 1]");
+        auto found = s.surface_cache.find(key);
+        if (found == s.surface_cache.end()) {
+          PxMaterial *created = s.physics.createMaterial(key[0], key[1], key[2]);
+          native_require(created != nullptr, "surface material allocation failed");
+          found = s.surface_cache.emplace(key, created).first;
+        }
+        surface = found->second;
+      }
+      s.surfaces.push_back(surface);
+    }
+    ++index;
+    s.materials.push_back(out);
+  }
+  return material_base;
+}
+
+#if defined(VIBE_PHYSX_HAS_SECTION_BENDING)
+/// Sections for the bonds appended since `bond_base`, from the chunks' shapes
+/// (a vehicle part's extra hulls included). A bond whose chunks' faces do not
+/// overlap in its plane gets none -- the stage then uses the square patch of its area.
+void NativeDestruction::State::append_sections(std::uint32_t structure_id, std::uint32_t base,
+                                               std::size_t bond_base) {
+  State &s = *this;
+  s.sections.resize(s.bonds.size());
+  if (!native_section_bending()) return;
+  std::map<PxU32, std::vector<const PxShape *>> extra;
+  for (const auto &e : s.extra_shapes) extra[e.chunk].push_back(e.shape);
+  std::map<PxU32, std::vector<vibe_bond_section::P3>> vertices;
+  const auto chunk_vertices = [&](PxU32 chunk) -> const std::vector<vibe_bond_section::P3> & {
+    auto it = vertices.find(chunk);
+    if (it != vertices.end()) return it->second;
+    std::vector<vibe_bond_section::P3> v;
+    if (s.chunks[chunk].shape) vibe_bond_section::append_vertices(*s.chunks[chunk].shape, v);
+    if (auto e = extra.find(chunk); e != extra.end())
+      for (const PxShape *shape : e->second) vibe_bond_section::append_vertices(*shape, v);
+    return vertices.emplace(chunk, std::move(v)).first->second;
+  };
+  std::size_t found = 0, fastened = 0, bearing = 0;
+  std::vector<double> depths, ratios;
+  for (std::size_t i = bond_base; i < s.bonds.size(); ++i) {
+    const auto &b = s.bonds[i];
+    const auto r = vibe_bond_section::section(chunk_vertices(b.chunk0), chunk_vertices(b.chunk1), b.centroid,
+                                              b.normal, b.area);
+    s.sections[i] = r.section;
+#if defined(VIBE_PHYSX_HAS_SECTION_ROTATION)
+    // A joint of a few discrete fasteners twists on them (town-kit
+    // materials.mjs fastenerRow): rotational stiffness K_ser sum r^2, the most
+    // loaded fastener at the reach, F = T reach / sum r^2 -- as a stress over
+    // the joint's area (its capacity is spread there), tau = T A^-1 reach / r_g^2.
+    if (native_section_rotation() && r.found && b.material < s.twist_gyration.size() &&
+        s.twist_gyration[b.material] > 0.0f && s.twist_reach[b.material] > 0.0f) {
+      const float g = s.twist_gyration[b.material], reach = s.twist_reach[b.material];
+      s.sections[i].polarGyration = g;
+      s.sections[i].twistModulus = b.area * g * g / reach;
+      ++fastened;
+    }
+    // A compressed bearing joint (town-kit materials.mjs restBearing) bends on
+    // its fasteners: a pin, K_ser sum r^2 (the stiffness radius at the joint's
+    // bearing stiffness), graded at the most loaded fastener, S = A g^2 / reach.
+    if (native_section_rotation() && r.found && b.material < s.bend_gyration.size() &&
+        s.bend_gyration[b.material] > 0.0f && s.bend_section[b.material] > 0.0f) {
+      s.sections[i].gyration0 = s.sections[i].gyration1 = s.bend_gyration[b.material];
+      s.sections[i].bendModulus0 = s.sections[i].bendModulus1 = b.area * s.bend_section[b.material];
+    }
+#endif
+#if defined(VIBE_PHYSX_HAS_BEARING_JOINTS)
+    // A fastened joint whose members bear on each other (town-kit
+    // bearingJoint): graded by its fasteners once the contact opens at the
+    // patch's half-depths, T = M0/d0 + M1/d1 - C (PX_DESTRUCTION_BEARING_JOINTS).
+    if (r.found && b.material < s.bearing_joint.size() && s.bearing_joint[b.material] > 0.0f) {
+      s.sections[i].bearingDepth0 = float(r.reach_about_axis);
+      s.sections[i].bearingDepth1 = float(r.reach_about_axis1);
+      ++bearing;
+    }
+#endif
+    if (r.found) {
+      ++found;
+      depths.push_back(r.depth);
+      ratios.push_back(r.geometric_area / b.area);
+    }
+  }
+  const auto pct = [](std::vector<double> &v, double q) {
+    if (v.empty()) return 0.0;
+    std::nth_element(v.begin(), v.begin() + std::ptrdiff_t(q * double(v.size() - 1)), v.end());
+    return v[std::size_t(q * double(v.size() - 1))];
+  };
+  std::fprintf(stderr,
+               "[destruction] sections: structure %u (base %u): %zu of %zu bonds from chunk geometry, "
+               "the rest a square patch of their area; shallow depth p10 %.3f median %.3f m; "
+               "geometric/authored area p10 %.2f median %.2f p90 %.2f; %zu twist on their fasteners, "
+               "%zu bearing joints\n",
+               structure_id, base, found, s.bonds.size() - bond_base, pct(depths, 0.1), pct(depths, 0.5),
+               pct(ratios, 0.1), pct(ratios, 0.5), pct(ratios, 0.9), fastened, bearing);
+}
+#endif
+
+void NativeDestruction::State::append_bonds(std::uint32_t structure_id, std::uint32_t base,
+    rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings, bool vehicle) {
+  State &s = *this;
+  const PxU32 material_base = s.material_base.at(structure_id);
+  const std::size_t bond_base = s.bonds.size();
+  double log_weight = 0.0;
+  for (const FfiChunkBondDesc &b : bonds) {
+    // Bond normals are authored per pair; the stage wants them oriented from
+    // the lower chunk index to the higher, so flip when the authored order is
+    // reversed rather than trusting the sign.
+    const PxVec3 normal = native_px(b.normal) * (b.node0 < b.node1 ? 1.0f : -1.0f);
+    native_require(normal.isFinite() && normal.magnitudeSquared() > 1e-8f,
+                   "invalid bond normal");
+    const float distance = (s.nodes[base + b.node0].position -
+                            s.nodes[base + b.node1].position)
+                               .magnitude();
+    // Section rotation: a compressed bearing joint is as stiff as the wood it
+    // bears on (town-kit materials.mjs restBearing), not as its nails' slip.
+    const float modulus = native_section_rotation() && !settings.bearing_modulus.empty() &&
+                                  settings.bearing_modulus[b.material] > 0.0f
+                              ? settings.bearing_modulus[b.material]
+                              : settings.materials[b.material].elastic_modulus;
+    // Diagnostic (vehicle lab): VIBE_TEST_BOND_WEIGHT=modulus|area|length|all
+    // flattens that term of the stiffness weight, to tell a conditioning
+    // problem from anything else. Flattening all four left a monster truck's
+    // road-load solve exactly as unconverged (0/1200 ticks, 2026-09-30).
+    static const std::string flat=std::getenv("VIBE_TEST_BOND_WEIGHT")?std::getenv("VIBE_TEST_BOND_WEIGHT"):"";
+    const bool fm=flat=="modulus"||flat=="all",fa=flat=="area"||flat=="all",fl=flat=="length"||flat=="all";
+    // Contact length: the bond's length is at least the patch's own size,
+    // sqrt(area). A flat elastic contact's stiffness goes as E*sqrt(A) whatever
+    // the chunks' centres of mass do; two overlapping parts (a panel on its
+    // brace, 2 cm between centres) otherwise read as a bond hundreds of times
+    // stiffer than its neighbours. Moved load sharing by 1% median, 4% p90 on
+    // two fleet cars (compare-bond-loads.py, 2026-10-01). Vehicles: on
+    // (VIBE_VEHICLE_BOND_CONTACT_LENGTH=0 off); other structures:
+    // VIBE_BOND_CONTACT_LENGTH=1.
+    static const bool contact_length_vehicle = native_env_f32("VIBE_VEHICLE_BOND_CONTACT_LENGTH", 1.0f) != 0.0f;
+    static const bool contact_length_other = native_env_f32("VIBE_BOND_CONTACT_LENGTH", 0.0f) != 0.0f;
+    // VIBE_SECTION_ROTATION=1: the contact length for every structure, the
+    // physical lower bound in place of the default's 0.05 m floor (a flat
+    // contact is E sqrt(A) stiff: rigid flat punch, k = 2 a E*, K. L. Johnson,
+    // Contact Mechanics, 1985, sec. 3.8).
+    const bool contact_length = native_section_rotation() || (vehicle ? contact_length_vehicle : contact_length_other);
+    // The default's floors (see native_true_bond_stiffness); the high-fidelity
+    // profile takes the bond as it is.
+    const bool exact = native_true_bond_stiffness();
+    native_require(!exact || (std::isfinite(b.area) && b.area > 0.0f),
+                   "VIBE_BOND_TRUE_STIFFNESS: a bond has no area (an authoring error)");
+    const float stiff_area = exact ? b.area : std::max(b.area, 1e-4f);
+    // VIBE_SECTION_ROTATION=1: the material a bond strains lies across its
+    // interface, so its spring length is the centres' separation along the
+    // bond normal, not their distance: a wide block hung from three equal
+    // hangers otherwise gives the outer two (0.42 m centre to centre) a
+    // longer spring than the middle one (0.30 m) and the sliver between them
+    // 1.18x their stress, against the textbook's equal stress (W / sum A).
+    const float spring_distance = native_section_rotation()
+        ? std::abs(normal.getNormalized().dot(s.nodes[base + b.node1].position - s.nodes[base + b.node0].position))
+        : distance;
+    const float length = contact_length ? std::max(spring_distance, std::sqrt(stiff_area)) : spring_distance;
+    native_require(!exact || length > 0.0f,
+                   "VIBE_BOND_TRUE_STIFFNESS: a bond's chunks share a centre and it has no contact length");
+    const float stiff_length = exact ? length : std::max(length, 0.05f);
+    // Stiffness exponent (A/B): weight^p compresses the spread of bond
+    // stiffness (1 physical, 0 every bond equal). Measured on the fleet,
+    // 2026-10-01 (vehicle lab, compare-bond-loads.py): at 0.5 a car's rough-
+    // course solves converge at 64 iterations (~2% -> 88%), but load sharing
+    // moves 23-30% (median), 80-98% (p90), and an impact breaks bonds 2-3 m
+    // from the ball first (garage_vehicle_destruction_is_rigid_body_correct).
+    // Too dear: vehicles stay physical (1); VIBE_VEHICLE_BOND_STIFFNESS_EXPONENT
+    // and VIBE_BOND_STIFFNESS_EXPONENT (other structures) remain for A/B.
+    static const float exponent_vehicle = native_env_f32("VIBE_VEHICLE_BOND_STIFFNESS_EXPONENT", 1.0f);
+    static const float exponent_other = native_env_f32("VIBE_BOND_STIFFNESS_EXPONENT", 1.0f);
+    const float exponent = vehicle ? exponent_vehicle : exponent_other;
+    const float weight = std::pow(
+        std::sqrt((fm ? 1.0f : modulus > 0.0f ? modulus / kReferenceModulusPa : 1.0f) *
+                  (fa ? 1e-3f : stiff_area) / (fl ? 0.3f : stiff_length)), exponent);
+    log_weight += std::log(weight);
+
+    PxDestructionStressBond bond{};
+    bond.chunk0 = base + std::min(b.node0, b.node1);
+    bond.chunk1 = base + std::max(b.node0, b.node1);
+    bond.centroid = native_px(b.centroid);
+    bond.normal = normal.getNormalized();
+    bond.area = b.area;
+    // Native material health is remaining bonded area (m²), not a 0..1
+    // fraction. Starting every interface at 1 m² inflated small weld strength.
+    bond.health = b.area;
+    bond.complianceScale = weight;
+    bond.material = material_base + b.material;
+    s.bonds.push_back(bond);
+    s.bond_ids.emplace_back(structure_id, b.bond_index);
+  }
+#if defined(VIBE_PHYSX_HAS_SECTION_BENDING)
+  append_sections(structure_id, base, bond_base);
+#endif
+  if (!bonds.empty()) {
+    const float mean =
+        std::exp(static_cast<float>(log_weight / static_cast<double>(bonds.size())));
+    // VIBE_BOND_STIFFNESS_CLAMP=C (A/B): normalised weights held within
+    // [1/C, C] of the structure's geometric mean -- only the outliers move.
+    static const float clamp = native_env_f32("VIBE_BOND_STIFFNESS_CLAMP", 0.0f);
+    for (std::size_t i = bond_base; i < s.bonds.size(); ++i) {
+      s.bonds[i].complianceScale /= mean;
+      if (clamp > 1.0f) s.bonds[i].complianceScale = std::clamp(s.bonds[i].complianceScale, 1.0f / clamp, clamp);
+    }
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+    // The weights are sqrt(E/E_ref A/L) over their geometric mean, so a bond's
+    // stiffness E A / L is E_ref mean^2 complianceScale^2: the structure's
+    // materials (appended just before its bonds) carry that modulus.
+    for (std::size_t m = material_base; m < s.materials.size(); ++m)
+      s.materials[m].impactStiffness *= kReferenceModulusPa * mean * mean;
+#endif
+  }
+}
+
+void NativeDestruction::create_destructible(
+    std::uint32_t structure_id, const FfiPose &pose,
+    rust::Slice<const FfiChunkNodeDesc> nodes,
+    rust::Slice<const FfiChunkBondDesc> bonds,
+    const FfiDestructibleSettings &settings, std::uint32_t collision_group,
+    std::uint32_t collision_mask) {
+  State &s = *state_;
+  native_require(!s.configured,
+                 "the native topology is immutable once configured; rebuild "
+                 "the city to change it");
+  native_require(structure_id < 255u && s.next_serial.count(structure_id) == 0,
+                 "duplicate or out-of-range structure id");
+  native_require(!nodes.empty() && nodes.size() <= 65536,
+                 "a structure must have 1..65536 authored nodes");
+  native_require(!settings.materials.empty(),
+                 "a structure with no material has no strength to solve for");
+
+  const PxU32 base = static_cast<PxU32>(s.nodes.size());
+  const PxU32 material_base = s.append_materials(structure_id, settings);
+
+  // Connected components of the authored bond graph. The stage requires the
+  // initial cluster bindings to match them exactly, so this is the partition
+  // that decides how many rigid bodies the intact structure starts as.
+  std::vector<PxU32> roots(nodes.size());
+  std::iota(roots.begin(), roots.end(), 0u);
+  const auto find = [&](PxU32 v) {
+    while (roots[v] != v) {
+      roots[v] = roots[roots[v]];
+      v = roots[v];
+    }
+    return v;
+  };
+  for (const FfiChunkBondDesc &b : bonds) {
+    native_require(b.node0 < nodes.size() && b.node1 < nodes.size() &&
+                       b.node0 != b.node1 &&
+                       b.material < settings.materials.size() && b.area > 0.0f &&
+                       b.bond_index < (1u << 20),
+                   "invalid authored bond");
+    const PxU32 a = find(b.node0);
+    const PxU32 c = find(b.node1);
+    roots[std::max(a, c)] = std::min(a, c);
+  }
+  std::map<PxU32, std::vector<PxU32>> components;
+  for (PxU32 i = 0; i < nodes.size(); ++i) {
+    components[find(i)].push_back(i);
+  }
+
+  // Support nodes carry zero mass by authoring convention, so they cannot
+  // supply a density. Derive one from the structure's own massive chunks and
+  // give the supports a physically consistent mass for the rigid body they
+  // belong to; the stage still treats them as anchors through `supported`.
+  double dynamic_mass = 0.0;
+  double dynamic_volume = 0.0;
+  for (const FfiChunkNodeDesc &n : nodes) {
+    if (n.mass > 0.0f && n.volume > 0.0f) {
+      dynamic_mass += n.mass;
+      dynamic_volume += n.volume;
+    }
+  }
+  native_require(dynamic_volume > 0.0,
+                 "structure has no chunk with positive mass and volume");
+  const float density = static_cast<float>(dynamic_mass / dynamic_volume);
+
+  // Rounds filter exactly like a chunk, so a shot collides with the city on the
+  // same terms its own debris does. Left at zero these would collide with
+  // nothing at all -- the filter shader suppresses a pair whose groups do not
+  // intersect -- and a shot would silently pass through the building.
+  if (s.round_mask == 0) {
+    s.round_group = collision_group;
+    s.round_mask = collision_mask;
+  }
+
+  s.next_serial[structure_id] = 1; // 0 is the anchored support body.
+  s.chunks.resize(base + nodes.size());
+  s.nodes.resize(base + nodes.size());
+  s.properties.resize(base + nodes.size());
+
+  const PxTransform world(native_px(pose.position),
+                          PxQuat(pose.rotation.x, pose.rotation.y,
+                                 pose.rotation.z, pose.rotation.w));
+  std::size_t hulls = 0, cpu_hulls = 0;
+  for (const auto &component : components) {
+    PxRigidDynamic *actor = s.physics.createRigidDynamic(world);
+    native_require(actor != nullptr, "native parent body allocation failed");
+    s.parents.push_back(actor);
+    const PxU32 cluster = static_cast<PxU32>(s.clusters.size());
+
+    bool supported = false;
+    std::vector<float> masses;
+    masses.reserve(component.second.size());
+    for (const PxU32 i : component.second) {
+      const FfiChunkNodeDesc &n = nodes[i];
+      native_require(n.node_index == i && n.volume > 0.0f,
+                     "nodes must be authored in contiguous order with "
+                     "positive volume");
+      PxShape *shape = nullptr;
+      if (n.geom_kind == 0) {
+        shape = s.physics.createShape(PxBoxGeometry(native_px(n.half_extents)),
+                                      s.surface(material_base + n.material), true);
+      } else if (n.geom_kind == 1) {
+        std::vector<PxVec3> points;
+        points.reserve(n.convex_points.size());
+        for (const FfiVec3 &p : n.convex_points) {
+          points.push_back(native_px(p));
+        }
+        PxConvexMeshDesc desc;
+        desc.points.count = static_cast<PxU32>(points.size());
+        desc.points.stride = sizeof(PxVec3);
+        desc.points.data = points.data();
+        desc.flags = PxConvexFlag::eCOMPUTE_CONVEX;
+        desc.vertexLimit = 64;
+        PxCookingParams params(s.physics.getTolerancesScale());
+        // Without GPU data the hull falls back to CPU narrowphase, which for a
+        // city of these is the difference between a GPU scene and a mostly-CPU
+        // one -- and it shows up only as an unexplained tick cost.
+        params.buildGPUData = true;
+        PxConvexMesh *mesh = PxCreateConvexMesh(
+            params, desc, s.physics.getPhysicsInsertionCallback());
+        native_require(mesh != nullptr, "native convex cooking failed");
+        ++hulls;
+        if (!mesh->isGpuCompatible()) ++cpu_hulls;
+        shape = s.physics.createShape(PxConvexMeshGeometry(mesh),
+                                      s.surface(material_base + n.material), true);
+        mesh->release();
+      }
+      native_require(shape != nullptr, "invalid or failed chunk geometry");
+      shape->setLocalPose(PxTransform(native_px(n.centroid)));
+      // word3's top bit marks this as a stage-owned chunk: the filter shader
+      // drops contact notifications for those pairs, because the stage reads
+      // the impulses on the GPU and the CPU callback has nothing to add.
+      shape->setSimulationFilterData(
+          PxFilterData(collision_group, collision_mask,
+                       entity_id(structure_id, 0), kNativeChunkFilterBit));
+      shape->setQueryFilterData(
+          PxFilterData(collision_group, entity_id(structure_id, 0), 0, 0));
+      native_require(actor->attachShape(*shape),
+                     "persistent chunk shape attach failed");
+
+      supported |= n.mass == 0.0f;
+      const float mass = n.mass > 0.0f ? n.mass : density * n.volume;
+      masses.push_back(mass);
+
+      PxMassProperties props(shape->getGeometry());
+      props = props * (mass / props.mass);
+      const PxVec3 center = native_px(n.centroid) + props.centerOfMass;
+      PxDestructionChunkMassProperties p{};
+      p.mass = mass;
+      p.supported = n.mass == 0.0f ? 1u : 0u;
+      for (unsigned k = 0; k < 3; ++k) {
+        p.center[k] = center[k];
+        p.inertia[k] = props.inertiaTensor[k][k];
+      }
+      p.inertia[3] = props.inertiaTensor[1][0];
+      p.inertia[4] = props.inertiaTensor[2][0];
+      p.inertia[5] = props.inertiaTensor[2][1];
+
+      s.chunks[base + i] = State::Chunk{shape, structure_id, i, 0,
+                                        PX_INVALID_U32, 0};
+      s.properties[base + i] = p;
+
+      PxDestructionStressChunk node{};
+      node.position = center;
+      node.mass = n.mass;
+      node.inertia =
+          n.mass > 0.0f ? (props.inertiaTensor[0][0] + props.inertiaTensor[1][1] +
+                           props.inertiaTensor[2][2]) /
+                              3.0f
+                        : 0.0f;
+      node.cluster = cluster;
+      node.contactIndex = PX_INVALID_U32; // bound in configure().
+      node.volume = n.volume;
+      // The chunk's own material: what it crushes as (bonds carry their own).
+      native_require(n.material < settings.materials.size(), "chunk material out of range");
+      node.material = material_base + n.material;
+      s.nodes[base + i] = node;
+    }
+
+    native_require(PxRigidBodyExt::setMassAndUpdateInertia(
+                       *actor, masses.data(),
+                       static_cast<PxU32>(masses.size())),
+                   "native parent mass/inertia failed");
+    // A component holding an authored support is world-anchored, which is a
+    // kinematic body here. The stage releases fragments from it as its bonds
+    // break; the remnant stays kinematic for as long as it keeps an anchor.
+    actor->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, supported);
+    actor->setSolverIterationCounts(dynamic_solver_position_iterations(),
+                                    dynamic_solver_velocity_iterations());
+    actor->setLinearDamping(settings.linear_damping);
+    actor->setAngularDamping(settings.angular_damping);
+    if (native_uncapped_spin()) actor->setMaxAngularVelocity(kUncappedAngularVelocity);
+    // Inherited by every fragment of this cluster; see the helpers above.
+    if (native_depenetration_velocity() > 0.0f) {
+      actor->setMaxDepenetrationVelocity(native_depenetration_velocity());
+    }
+    if (native_sleep_threshold() > 0.0f) {
+      actor->setSleepThreshold(native_sleep_threshold());
+    }
+    if (native_stabilization_threshold() >= 0.0f) {
+      actor->setStabilizationThreshold(native_stabilization_threshold());
+    }
+    actor->userData = reinterpret_cast<void *>(
+        static_cast<std::uintptr_t>(entity_id(structure_id, 0)) + 1u);
+    s.scene.addActor(*actor);
+    s.clusters.push_back(
+        PxDestructionStressCluster{actor->getGPUIndex(),
+                                   actor->getCMassLocalPose().p});
+  }
+
+  if (cpu_hulls != 0) {
+    // PhysX takes these silently to CPU contact generation. Say so once per
+    // structure: it is the difference between a GPU scene and a partly-CPU one.
+    std::fprintf(stderr,
+                 "native destruction: structure %u has %zu of %zu convex chunks "
+                 "that are not GPU compatible (CPU contact generation)\n",
+                 structure_id, cpu_hulls, hulls);
+  }
+
+  s.append_bonds(structure_id, base, bonds, settings, false);
+}
+
+void NativeDestruction::register_vehicle(physx::native::NativeVehicle &vehicle,
+    std::uint32_t structure_id, rust::Slice<const FfiVehicleFracturePart> parts,
+    rust::Slice<const FfiChunkBondDesc> bonds, const FfiDestructibleSettings &settings) {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s = *state_;
+  native_require(!s.configured, "vehicle registration must precede native configure");
+  native_require(structure_id < 255 && !s.next_serial.count(structure_id), "invalid or duplicate vehicle structure");
+  native_require(!parts.empty() && parts.size() <= 65536 && !settings.materials.empty(), "invalid vehicle fracture asset");
+  auto *actor = vehicle.actor();
+  native_require(actor && actor->getScene() == &s.scene && !owns_vehicle(&vehicle), "invalid vehicle actor ownership");
+  std::vector<std::vector<PxShape *>> hulls(parts.size());
+  std::vector<PxShape *> shapes(actor->getNbShapes());actor->getShapes(shapes.data(), PxU32(shapes.size()));
+  for (auto *shape : shapes) if (shape->userData) {
+    const auto part = reinterpret_cast<std::uintptr_t>(shape->userData) - 1;
+    native_require(part < parts.size(), "vehicle hull names unknown fracture part");
+    hulls[part].push_back(shape);
+  }
+  State::VehicleBinding binding{};binding.vehicle=&vehicle;
+  binding.base=PxU32(s.nodes.size());binding.count=PxU32(parts.size());
+  std::vector<PxMassProperties> physical;
+  std::vector<PxTransform> transforms(parts.size(), PxTransform(PxIdentity));
+  for (PxU32 i=0; i<parts.size(); ++i) {
+    const auto &part=parts[i];
+    const PxVec3 diagonal=native_px(part.inertia_diagonal), products=native_px(part.inertia_products);
+    const PxVec3 center=native_px(part.center);
+    native_require(part.part_index==i && !hulls[i].empty() && PxIsFinite(part.mass) && part.mass>0 &&
+        PxIsFinite(part.volume) && part.volume>0 && center.isFinite() && diagonal.isFinite() && products.isFinite(),
+        "invalid vehicle part mass or collider mapping");
+    const PxMat33 tensor(PxVec3(diagonal.x,products.x,products.y),
+        PxVec3(products.x,diagonal.y,products.z),PxVec3(products.y,products.z,diagonal.z));
+    PxQuat axes;const PxVec3 moments=PxMassProperties::getMassSpaceInertia(tensor, axes);
+    native_require(moments.minElement()>0 && 2*moments.maxElement()<=moments.x+moments.y+moments.z+1e-4f,
+        "vehicle inertia tensor is not physically realizable");
+    physical.emplace_back(part.mass,tensor,center);
+    if (part.wheel<4) binding.wheels[part.wheel].push_back(binding.base+i);
+    else native_require(part.wheel==255,"invalid wheel identity");
+    if (part.drive_wheel<4) {
+#if defined(PX_NATIVE_VEHICLE_DRIVE_MASK_VERSION)
+      binding.drives[part.drive_wheel].push_back(binding.base+i);
+#else
+      native_require(false,"authored axles require a Vehicle2 SDK with drive connectivity masks");
+#endif
+    } else native_require(part.drive_wheel==255,"invalid drive wheel identity");
+    if (part.engine) binding.engines.push_back(binding.base+i);
+  }
+  native_require(parts[0].wheel==255,"vehicle chunk zero must be retained chassis");
+  for (auto &wheel : binding.wheels) native_require(wheel.size()==1,
+      "native vehicle requires one simple collider group per wheel");
+  std::vector<PxU32> roots(parts.size());std::iota(roots.begin(),roots.end(),0u);
+  const auto find=[&](PxU32 v){while(roots[v]!=v){roots[v]=roots[roots[v]];v=roots[v];}return v;};
+  for (const auto &bond:bonds) {
+    native_require(bond.node0<parts.size() && bond.node1<parts.size() && bond.node0!=bond.node1 &&
+        bond.material<settings.materials.size() && PxIsFinite(bond.area) && bond.area>0 &&
+        native_px(bond.centroid).isFinite() && native_px(bond.normal).isFinite() &&
+        native_px(bond.normal).magnitudeSquared()>1e-8f,"invalid vehicle bond");
+    const auto a=find(bond.node0),b=find(bond.node1);roots[PxMax(a,b)]=PxMin(a,b);
+  }
+  for (PxU32 i=0;i<parts.size();++i) native_require(find(i)==find(0),"vehicle bond graph is disconnected");
+  const PxMassProperties aggregate=PxMassProperties::sum(physical.data(),transforms.data(),PxU32(physical.size()));
+  PxQuat axes;const PxVec3 moments=PxMassProperties::getMassSpaceInertia(aggregate.inertiaTensor,axes);
+  actor->setMass(aggregate.mass);actor->setMassSpaceInertiaTensor(moments);
+  actor->setCMassLocalPose(PxTransform(aggregate.centerOfMass,axes));
+  if(vehicle_depenetration_velocity()>0.0f) actor->setMaxDepenetrationVelocity(vehicle_depenetration_velocity());
+  if(native_uncapped_spin()) actor->setMaxAngularVelocity(kUncappedAngularVelocity);
+  const PxU32 material=s.append_materials(structure_id,settings),cluster=PxU32(s.clusters.size());
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+  {
+    // A vehicle's front gives way before it crushes what it hits: EN 1991-1-7
+    // Annex C, F = v sqrt(k m) (k = 300 kN/m, the equivalent stiffness of a
+    // road vehicle's front), over its frontal area (the actor-frame bounds'
+    // width x height, forward is z). As an impedance, per m/s:
+    // sqrt(k m) / A. The impact-pressure crush reads it for any of its parts.
+    PxBounds3 bounds=PxBounds3::empty();
+    for (auto *shape : shapes) {PxBounds3 b;if (PxGeometryQuery::computeGeomBounds(b, shape->getGeometry(), shape->getLocalPose())) bounds.include(b);}
+    const float area=(bounds.maximum.x-bounds.minimum.x)*(bounds.maximum.y-bounds.minimum.y);
+    const float front=area>0.0f?std::sqrt(300e3f*aggregate.mass)/area:0.0f;
+    for (std::size_t m=material;m<s.materials.size();++m) s.materials[m].impactImpedance=front;
+  }
+#endif
+  s.next_serial[structure_id]=1;
+  if(!s.round_mask) {
+    const auto filter=hulls[0][0]->getSimulationFilterData();
+    s.round_group=filter.word0;s.round_mask=filter.word1;
+  }
+  s.parents.push_back(actor);s.borrowed_parents.insert(actor);
+  s.clusters.push_back({actor->getGPUIndex(),aggregate.centerOfMass});
+  for (PxU32 i=0;i<parts.size();++i) {
+    const auto &part=parts[i];const auto &props=physical[i];
+    s.nodes.push_back({props.centerOfMass,props.mass,
+        (props.inertiaTensor[0][0]+props.inertiaTensor[1][1]+props.inertiaTensor[2][2])/3,
+        cluster,PX_INVALID_U32,part.volume,material});
+    PxDestructionChunkMassProperties mass{};mass.mass=props.mass;
+    for (PxU32 k=0;k<3;++k) {mass.center[k]=props.centerOfMass[k];mass.inertia[k]=props.inertiaTensor[k][k];}
+    mass.inertia[3]=props.inertiaTensor[1][0];mass.inertia[4]=props.inertiaTensor[2][0];mass.inertia[5]=props.inertiaTensor[2][1];
+    s.properties.push_back(mass);
+    s.chunks.push_back({hulls[i][0],structure_id,i,0,PX_INVALID_U32,0});
+    for (PxU32 h=0;h<hulls[i].size();++h) {
+      auto *shape=hulls[i][h];shape->acquireReference();
+      auto filter=shape->getSimulationFilterData();filter.word3|=kNativeChunkFilterBit;shape->setSimulationFilterData(filter);
+      binding.hulls.push_back({shape,i,shape->getLocalPose(),filter});
+      if(h) s.extra_shapes.push_back({shape,binding.base+i});
+    }
+  }
+  s.append_bonds(structure_id,binding.base,bonds,settings,true);
+  for (PxU32 w=0;w<4;++w) {
+    auto *constraint=vehicle.wheelConstraint(w);native_require(constraint,"vehicle has no corner constraint");
+    s.constraints.push_back({constraint,binding.wheels[w][0],true,PxVec3(0),true,binding.base});
+  }
+  s.vehicles.push_back(std::move(binding));
+#else
+  PX_UNUSED(vehicle);PX_UNUSED(structure_id);PX_UNUSED(parts);PX_UNUSED(bonds);PX_UNUSED(settings);
+  throw std::runtime_error("vehicle destruction requires the matching PhysX ABI 22 SDK");
+#endif
+}
+
+bool NativeDestruction::owns_vehicle(const physx::native::NativeVehicle *vehicle) const {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  for (const auto &binding:state_->vehicles) if(binding.vehicle==vehicle) return true;
+#else
+  PX_UNUSED(vehicle);
+#endif
+  return false;
+}
+
+std::uint32_t NativeDestruction::pose_vehicle_parts(physx::native::NativeVehicle &vehicle,
+    rust::Slice<const FfiVehiclePartPose> poses, std::uint32_t exclude_mask) {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s=*state_;
+  auto binding=std::find_if(s.vehicles.begin(),s.vehicles.end(),[&](const State::VehicleBinding &b){return b.vehicle==&vehicle;});
+  native_require(binding!=s.vehicles.end(),"vehicle is not registered for native destruction");
+  std::vector<PxTransform> deltas(binding->count);std::vector<bool> posed(binding->count,false);
+  for(const auto &pose:poses) {
+    native_require(pose.part_index<binding->count && !posed[pose.part_index],"invalid or duplicate vehicle part pose");
+    const PxQuat q(pose.rotation.x,pose.rotation.y,pose.rotation.z,pose.rotation.w);
+    const PxTransform delta(native_px(pose.position),q);
+    native_require(delta.isSane(),"vehicle part pose must be a finite rigid transform");
+    deltas[pose.part_index]=delta;posed[pose.part_index]=true;
+  }
+  auto *carrier=vehicle.actor();std::uint32_t moved=0;
+  for(auto &hull:binding->hulls) {
+    if(!posed[hull.part] || hull.shape->getActor()!=carrier) continue; // fragments keep their frames
+    hull.shape->setLocalPose(deltas[hull.part]*hull.rest);
+    PxFilterData filter=hull.filter;filter.word1&=~exclude_mask;
+    if(!(filter==hull.shape->getSimulationFilterData())) refilter(*hull.shape,filter);
+    ++moved;
+  }
+  return moved;
+#else
+  PX_UNUSED(vehicle);PX_UNUSED(poses);PX_UNUSED(exclude_mask);
+  throw std::runtime_error("vehicle part poses require the matching PhysX ABI 22 SDK");
+#endif
+}
+
+rust::Vec<FfiVehiclePartPose> NativeDestruction::detached_vehicle_parts(
+    const physx::native::NativeVehicle &vehicle) const {
+  rust::Vec<FfiVehiclePartPose> out;
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  const State &s=*state_;
+  auto binding=std::find_if(s.vehicles.begin(),s.vehicles.end(),[&](const State::VehicleBinding &b){return b.vehicle==&vehicle;});
+  native_require(binding!=s.vehicles.end(),"vehicle is not registered for native destruction");
+  const auto *carrier=vehicle.actor();
+  std::vector<bool> seen(binding->count,false);
+  for(const auto &hull:binding->hulls) {
+    if(seen[hull.part]) continue;
+    seen[hull.part]=true; // the first hull of a part stands for its rigid chunk
+    const auto *actor=hull.shape->getActor();
+    if(!actor || actor==carrier) continue;
+    const PxTransform world=actor->getGlobalPose()*hull.shape->getLocalPose()*hull.rest.getInverse();
+    out.push_back(FfiVehiclePartPose{hull.part,native_ffi(world.p),FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w}});
+  }
+#else
+  PX_UNUSED(vehicle);
+#endif
+  return out;
+}
+
+rust::Vec<FfiVehicleDetachedBody> NativeDestruction::detached_vehicle_bodies(
+    const physx::native::NativeVehicle &vehicle) const {
+  rust::Vec<FfiVehicleDetachedBody> out;
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  const State &s=*state_;
+  auto binding=std::find_if(s.vehicles.begin(),s.vehicles.end(),[&](const State::VehicleBinding &b){return b.vehicle==&vehicle;});
+  native_require(binding!=s.vehicles.end(),"vehicle is not registered for native destruction");
+  const auto *carrier=vehicle.actor();
+  std::vector<bool> seen(binding->count,false);
+  std::vector<const PxRigidActor *> actors;
+  for(const auto &hull:binding->hulls) {
+    if(seen[hull.part]) continue;
+    seen[hull.part]=true; // the first hull of a part stands for its rigid chunk
+    const auto *actor=hull.shape->getActor();
+    if(!actor || actor==carrier) continue;
+    const PxTransform pose=actor->getGlobalPose();
+    const PxTransform world=pose*hull.shape->getLocalPose()*hull.rest.getInverse();
+    PxVec3 com=pose.p,linear(0.0f),angular(0.0f);
+    if(const auto *body=actor->is<PxRigidBody>()) {
+      com=pose.transform(body->getCMassLocalPose().p);
+      linear=body->getLinearVelocity();
+      angular=body->getAngularVelocity();
+    }
+    actors.push_back(actor);
+    out.push_back(FfiVehicleDetachedBody{hull.part,hull.part,native_ffi(world.p),
+        FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w},native_ffi(com),native_ffi(linear),native_ffi(angular)});
+  }
+  // A body is named by the lowest part on it.
+  std::unordered_map<const PxRigidActor *,std::uint32_t> lowest;
+  for(std::size_t i=0;i<out.size();++i) {
+    auto [it,fresh]=lowest.emplace(actors[i],out[i].part_index);
+    if(!fresh && out[i].part_index<it->second) it->second=out[i].part_index;
+  }
+  for(std::size_t i=0;i<out.size();++i) out[i].body=lowest[actors[i]];
+#else
+  PX_UNUSED(vehicle);
+#endif
+  return out;
+}
+
+FfiVehicleDebug NativeDestruction::vehicle_debug(const physx::native::NativeVehicle &vehicle) const {
+  FfiVehicleDebug out{};
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  const State &s=*state_;
+  auto binding=std::find_if(s.vehicles.begin(),s.vehicles.end(),[&](const State::VehicleBinding &b){return b.vehicle==&vehicle;});
+  native_require(binding!=s.vehicles.end(),"vehicle is not registered for native destruction");
+  out.wheel_mask=binding->wheel_mask;out.drive_mask=binding->drive_mask;out.engine_connected=binding->engine_connected;
+  const PxRigidActor *carrier=vehicle.actor();
+  std::vector<const PxRigidActor *> actors{carrier};
+  std::vector<std::uint32_t> ordinals(binding->count,0);
+  for(const auto &hull:binding->hulls) {
+    const PxRigidActor *actor=hull.shape->getActor();
+    std::uint32_t key=0;
+    if(actor) {
+      auto found=std::find(actors.begin(),actors.end(),actor);
+      key=static_cast<std::uint32_t>(found-actors.begin());
+      if(found==actors.end()) actors.push_back(actor);
+    }
+    const PxTransform world=actor?actor->getGlobalPose()*hull.shape->getLocalPose():hull.shape->getLocalPose();
+    const PxFilterData filter=hull.shape->getSimulationFilterData();
+    out.hulls.push_back(FfiVehicleHullDebug{hull.part,ordinals[hull.part]++,actor?key:0xffffffffu,native_ffi(hull.rest.p),
+      native_ffi(hull.rest.q),native_ffi(world.p),FfiQuat{world.q.x,world.q.y,world.q.z,world.q.w},filter.word0,filter.word1,hull.filter.word1});
+  }
+  for(std::uint32_t key=0;key<actors.size();++key) {
+    const PxRigidActor *actor=actors[key];
+    const PxTransform pose=actor->getGlobalPose();
+    FfiVehicleActorDebug row{};
+    row.actor=key;row.position=native_ffi(pose.p);row.rotation=FfiQuat{pose.q.x,pose.q.y,pose.q.z,pose.q.w};
+    row.center_of_mass=native_ffi(pose.p);row.shapes=actor->getNbShapes();
+    row.gravity_disabled=actor->getActorFlags().isSet(PxActorFlag::eDISABLE_GRAVITY);
+    if(const PxRigidBody *body=actor->is<PxRigidBody>()) {
+      row.center_of_mass=native_ffi(pose.transform(body->getCMassLocalPose().p));
+      row.mass=body->getMass();
+      row.linear_velocity=native_ffi(body->getLinearVelocity());
+      row.angular_velocity=native_ffi(body->getAngularVelocity());
+      row.kinematic=body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
+    }
+    if(const PxRigidDynamic *dynamic=actor->is<PxRigidDynamic>()) row.sleeping=dynamic->isSleeping();
+    out.actors.push_back(row);
+  }
+  for(std::uint32_t w=0;w<4;++w) if(binding->loads[w].submitted) {
+    PxVec3 force(0),torque(0);
+    if(PxConstraint *c=vehicle.wheelConstraint(w)) c->getForce(force,torque);
+    out.wheel_loads.push_back(FfiVehicleWheelLoad{w,native_ffi(binding->loads[w].suspension),native_ffi(binding->loads[w].tire),native_ffi(binding->loads[w].couple),native_ffi(force)});
+  }
+#else
+  PX_UNUSED(vehicle);
+#endif
+  return out;
+}
+
+void NativeDestruction::restore_detached_hull_filters() {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s=*state_;if(!s.configured) return;
+  // A hull that left the carrier collides as authored again (e.g. a loose
+  // wheel must meet the road that the intact wheel's Vehicle2 query owned).
+  // Run right after the step that split it and again before the next one.
+  for(auto &binding:s.vehicles) {
+    const auto *carrier=binding.vehicle->actor();
+    // Loose pieces are often thin (brackets, tie rods); with the compound's
+    // 2 mm offset one falling at a few m/s passes a heightfield, which has
+    // no thickness, between ticks. Only pieces off the car get the larger
+    // offset, so the car's own contacts and fracture loads are unchanged.
+    // 0.01-0.04 m stop a falling bracket and leave shot results unchanged;
+    // 0.06 m let a separating tyre load its hub (5 -> 37 bonds broken).
+    // A fast piece gets an offset that covers its travel in one step (a
+    // flung harness clip moved 13 cm per tick and left the world), updated
+    // only when it changes by more than a quarter.
+    static const float loose=native_env_f32("VIBE_VEHICLE_LOOSE_CONTACT_OFFSET",0.02f);
+    // The car's own hulls keep their offset: scaling them too (measured)
+    // multiplied the bonds a shot breaks and still left a thin axle sunk.
+    // One offset per actor: a piece's world bounds walk every vertex of every
+    // hull it owns, and computing them once per hull made this quadratic in a
+    // big loose piece (~10 ms a tick after a meteor split, sampled).
+    std::vector<std::pair<const PxRigidActor *,float>> offsets;
+    for(auto &hull:binding.hulls) {
+      auto *owner=hull.shape->getActor();
+      if(owner==carrier) continue;
+      float offset=loose;
+      auto known=std::find_if(offsets.begin(),offsets.end(),[&](const auto &o){return o.first==owner;});
+      if(known!=offsets.end()) offset=known->second;
+      else if(const auto *body=owner?owner->is<PxRigidDynamic>():nullptr) {
+        // Only motion toward the ground can carry a piece through it (the
+        // terrain is below): downward speed plus what spin sweeps. Scaling by
+        // total speed inflated every piece of a fresh debris cloud flying out
+        // and up, ~24k contact pairs and a 100 ms tick after a meteor strike.
+        static const bool downward=native_env_f32("VIBE_VEHICLE_LOOSE_OFFSET_TOTAL_SPEED",0.0f)==0.0f;
+        const PxVec3 v=body->getLinearVelocity();
+        const float linear=downward?PxMax(0.0f,-v.y):v.magnitude();
+        // Downward speed only. With spin in the reach (what the piece's
+        // extent sweeps as it turns) the offset fed back on a piece rocking
+        // on the ground: a big speculative contact reversed its spin, which
+        // kept the offset big, and it flipped between two orientations every
+        // tick -- drawn in two places at once (derby body-0958 x30 at 26 deg,
+        // garage_loose_pieces_do_not_flip_flop; the 2026-09-29 city report).
+        // VIBE_VEHICLE_LOOSE_OFFSET_SPIN=1 restores the old reach.
+        static const bool spin_term=native_env_f32("VIBE_VEHICLE_LOOSE_OFFSET_SPIN",0.0f)!=0.0f;
+        const float spin=spin_term?body->getAngularVelocity().magnitude():0.0f;
+        const float reach=linear+(spin>0.0f?spin*owner->getWorldBounds().getExtents().magnitude():0.0f);
+        static const float cap=native_env_f32("VIBE_VEHICLE_LOOSE_CONTACT_OFFSET_MAX",0.5f);
+        offset=PxClamp(reach*(1.25f/60.0f),offset,PxMax(offset,cap));
+        offsets.emplace_back(owner,offset);
+      }
+      const float current=hull.shape->getContactOffset();
+      if(offset>current*1.25f || offset<current*0.75f) hull.shape->setContactOffset(offset);
+      if(!(hull.shape->getSimulationFilterData()==hull.filter)) refilter(*hull.shape,hull.filter);
+    }
+  }
+#endif
+}
+
+void NativeDestruction::refilter(physx::PxShape &shape, const physx::PxFilterData &filter) {
+  shape.setSimulationFilterData(filter);
+  // Re-run filtering for pairs that already overlap: a hull that was kept out
+  // of terrain contacts while it rested in it must meet it now, not only once
+  // its bounds leave and re-enter the terrain's.
+  if(auto *actor=shape.getActor()) {
+    physx::PxShape *shapes[]={&shape};
+    if(!state_->scene.resetFiltering(*actor,shapes,1)) {
+      static int reported=0;
+      if(reported++<20) std::fprintf(stderr,"[destruction] resetFiltering refused for hull of %s actor (scene %p)\n",
+          actor->getScene()?"an in-scene":"an out-of-scene",static_cast<void*>(actor->getScene()));
+    }
+  }
+}
+
+void NativeDestruction::prepare_vehicles() {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s=*state_;if(!s.configured) return;
+  restore_detached_hull_filters();
+  for(auto &binding:s.vehicles) {
+    auto *carrier=s.chunks[binding.base].shape->getActor();
+    native_require(carrier==binding.vehicle->actor(),"native vehicle carrier changed actor unexpectedly");
+    PxU32 mask=0,driveMask=15;bool engine=true;
+    // A crushed chunk is on no body.
+    const auto on=[&](PxU32 chunk){return !s.chunks[chunk].destroyed && s.chunks[chunk].shape->getActor()==carrier;};
+    for(PxU32 w=0;w<4;++w) if(on(binding.wheels[w][0])) mask|=1u<<w;
+    for(PxU32 w=0;w<4;++w) for(PxU32 chunk:binding.drives[w])
+      if(!on(chunk)) driveMask &= ~(1u<<w);
+    for(PxU32 chunk:binding.engines) engine &= on(chunk);
+    if(mask!=binding.wheel_mask || engine!=binding.engine_connected) {
+      native_require(binding.vehicle->setFunctionalState(mask,engine),"vehicle functional state rejected");
+      binding.wheel_mask=mask;binding.engine_connected=engine;
+    }
+#if defined(PX_NATIVE_VEHICLE_DRIVE_MASK_VERSION)
+    if(driveMask!=binding.drive_mask) {
+      native_require(binding.vehicle->setDriveConnectionMask(driveMask),"vehicle drive connectivity rejected");
+      binding.drive_mask=driveMask;
+    }
+#endif
+  }
+#endif
+}
+
+void NativeDestruction::submit_vehicle_loads(float dt) {
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  State &s=*state_;if(!s.configured || s.vehicles.empty())return;
+  std::fill(s.loads.begin(),s.loads.end(),PxDestructionChunkLoad{});
+  for(auto &binding:s.vehicles) {
+    auto *actor=binding.vehicle->actor();const auto command=binding.vehicle->stepLoads();
+    for(auto &load:binding.loads) load=State::VehicleBinding::WheelLoad{};
+    native_require(command.available,"Vehicle2 has no native command observer");
+    const auto com=actor->getGlobalPose()*actor->getCMassLocalPose();
+    const PxMat33 rotation(com.q);
+    const PxMat33 inertia=rotation*PxMat33::createDiagonal(actor->getMassSpaceInertiaTensor())*rotation.getTranspose();
+    std::set<PxRigidDynamic *> gravityBodies;
+    for(PxU32 i=binding.base;i<binding.base+binding.count;++i) {
+      if(s.chunks[i].destroyed) continue; // crushed: no body, no load
+      auto *owner=s.chunks[i].shape->getActor()->is<PxRigidDynamic>();native_require(owner,"vehicle chunk lost rigid owner");
+      // Fragments may inherit disabled gravity from Vehicle2, or the SDK may
+      // enable ordinary gravity. Describe only commands actually submitted.
+      if(owner->getActorFlags().isSet(PxActorFlag::eDISABLE_GRAVITY) &&
+          (owner==actor ? command.substeps>0 : !owner->isSleeping())) {
+        s.loads[i].impulse=s.scene.getGravity()*(s.properties[i].mass*dt);
+        if(owner!=actor && gravityBodies.insert(owner).second)
+          owner->addForce(s.scene.getGravity(),PxForceMode::eACCELERATION);
+      }
+    }
+    native_require(command.externalImpulse.magnitudeSquared()<1e-12f && command.externalAngularImpulse.magnitudeSquared()<1e-12f,
+        "vehicle external command has no authored application chunk");
+    for(PxU32 w=0;w<4;++w) if(binding.wheel_mask&(1u<<w)) {
+      const PxU32 chunk=binding.wheels[w][0];const auto &wheel=command.wheels[w];
+      const PxVec3 impulse=wheel.suspensionImpulse+wheel.tireImpulse;
+      const PxVec3 center=actor->getGlobalPose().transform(s.nodes[chunk].position);
+      const PxVec3 couple=inertia*wheel.angularVelocityChange-(center-com.p).cross(impulse);
+      s.loads[chunk].impulse+=impulse;
+      s.loads[chunk].angularImpulse+=couple;
+      binding.loads[w]={wheel.suspensionImpulse/dt,wheel.tireImpulse/dt,couple/dt,true};
+    }
+  }
+  native_require(s.stage().setChunkLoads(s.loads.data(),PxU32(s.loads.size())),"native vehicle command submission rejected");
+#else
+  PX_UNUSED(dt);
+#endif
+}
+
+FfiNativeConfigured NativeDestruction::configure(const FfiNativeConfig &config) {
+  State &s = *state_;
+  native_require(!s.configured, "the native stage is already configured");
+  native_require(!s.nodes.empty(), "no structure has been authored");
+
+  PxDestructionScene &api = s.stage();
+  for (PxU32 i = 0; i < s.nodes.size(); ++i) {
+    s.nodes[i].contactIndex = api.getShapeContactIndex(*s.chunks[i].shape);
+    native_require(s.nodes[i].contactIndex != PX_INVALID_U32,
+                   "chunk collision identity is not allocated yet; the scene "
+                   "must complete one step after the chunks are added");
+  }
+  for (PxU32 i = 0; i < s.parents.size(); ++i) {
+    s.clusters[i].body = s.parents[i]->getGPUIndex();
+  }
+
+  PxDestructionStressDesc desc;
+  desc.chunks = s.nodes.data();
+  desc.chunkCount = static_cast<PxU32>(s.nodes.size());
+  desc.bonds = s.bonds.data();
+  desc.bondCount = static_cast<PxU32>(s.bonds.size());
+  desc.clusters = s.clusters.data();
+  desc.clusterCount = static_cast<PxU32>(s.clusters.size());
+  desc.chunkMassProperties = s.properties.data();
+  desc.materials = s.materials.data();
+  desc.materialCount = static_cast<PxU32>(s.materials.size());
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  std::vector<PxDestructionStressShape> extras;
+  for (const auto &extra : s.extra_shapes) {
+    const auto identity = api.getShapeContactIndex(*extra.shape);
+    native_require(identity != PX_INVALID_U32, "extra vehicle hull identity not allocated");
+    extras.push_back({extra.chunk, identity});
+  }
+  desc.additionalShapes = extras.data();
+  desc.additionalShapeCount = static_cast<PxU32>(extras.size());
+  desc.constraints = s.constraints.data();
+  desc.constraintCount = static_cast<PxU32>(s.constraints.size());
+  desc.enableChunkLoads = !s.vehicles.empty();
+  s.loads.resize(s.nodes.size());
+#endif
+  desc.maxIterations = config.max_iterations;
+  desc.tolerance = config.tolerance;
+#if defined(VIBE_PHYSX_HAS_FORCE_TOLERANCE)
+  desc.forceTolerance = config.force_tolerance;
+#else
+  native_require(config.force_tolerance == 0.0f,
+                 "force_tolerance needs a PhysX SDK with PxDestructionStressDesc::forceTolerance (v24)");
+#endif
+  desc.warmStart = config.warm_start;
+  desc.damageRate = config.damage_rate;
+  desc.bendGainMax = config.bend_gain_max;
+  desc.fibreBending = config.fibre_bending;
+#if defined(VIBE_PHYSX_HAS_SECTION_ROTATION)
+  desc.sectionRotationalStiffness = native_section_rotation();
+  if (desc.sectionRotationalStiffness)
+    std::fprintf(stderr, "[destruction] section rotational stiffness: on (each bond's rotation from its section)\n");
+#else
+  native_require(!native_section_rotation(),
+                 "VIBE_SECTION_ROTATION needs a PhysX SDK with PX_DESTRUCTION_SECTION_ROTATIONAL_STIFFNESS "
+                 "(PhysX feat/section-rotational-stiffness)");
+#endif
+#if defined(VIBE_PHYSX_HAS_SECTION_BENDING)
+  desc.sectionBending = native_section_bending();
+  desc.bondSections = desc.sectionBending && s.sections.size() == s.bonds.size() ? s.sections.data() : nullptr;
+  if (desc.sectionBending)
+    std::fprintf(stderr, "[destruction] section bending: on (bend_gain_max unused)\n");
+#else
+  native_require(native_env_f32("VIBE_SECTION_BENDING", 0.0f) == 0.0f,
+                 "VIBE_SECTION_BENDING needs a PhysX SDK with PX_DESTRUCTION_SECTION_BENDING (PhysX feat/real-section-bending)");
+#endif
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+  desc.impactCapacity = native_impact_capacity() || native_impact_step();
+#if defined(VIBE_PHYSX_HAS_IMPACT_STEP)
+  desc.impactStep = native_impact_step();
+  if (desc.impactStep)
+    std::fprintf(stderr, "[destruction] impact step: on (an implicit step over the contact duration on a local patch)\n");
+#else
+  native_require(!native_impact_step(), "VIBE_IMPACT_STEP needs a PhysX SDK with PX_DESTRUCTION_IMPACT_STEP (PhysX feat/impact-capacity)");
+#endif
+  // Ci, the impact-pressure crush, goes with it where crushing is authored
+  // (VIBE_IMPACT_CRUSH=0 keeps the virial crush, for A/B).
+  bool crushAuthored = false;
+  for (const auto &m : s.materials) crushAuthored = crushAuthored || m.crush.capPressure > 0.0f;
+  desc.impactCrush = desc.impactCapacity && crushAuthored && native_env_f32("VIBE_IMPACT_CRUSH", 1.0f) != 0.0f;
+  if (desc.impactCrush)
+    std::fprintf(stderr, "[destruction] impact-pressure crush: on (Z1 Z2/(Z1+Z2) v at each contact)\n");
+  if (desc.impactCapacity && !native_impact_step())
+    std::fprintf(stderr, "[destruction] impact capacity: on (joint capacity and inertia on impact ticks)\n");
+#else
+  native_require(!native_impact_capacity(),
+                 "VIBE_IMPACT_CAPACITY needs a PhysX SDK with PX_DESTRUCTION_IMPACT_CAPACITY (PhysX feat/impact-capacity)");
+#endif
+#if defined(VIBE_PHYSX_HAS_REBEARING)
+  // The stage reads its switch at configuration.
+  if (native_rebearing()) {
+    setenv("PX_DESTRUCTION_REBEARING", "1", 1);
+    std::fprintf(stderr, "[destruction] re-bearing: on (a bearing joint whose fasteners fail bears in compression as a contact)\n");
+  }
+#else
+  native_require(!native_rebearing(), "VIBE_REBEARING needs a PhysX SDK with PX_DESTRUCTION_REBEARING (PhysX feat/rebearing)");
+#endif
+#if defined(VIBE_PHYSX_HAS_MOHR_COULOMB_SHEAR)
+  // The stage reads its switch at configuration.
+  if (native_mohr_coulomb_shear()) {
+    setenv("PX_DESTRUCTION_MOHR_COULOMB_SHEAR", "1", 1);
+    std::fprintf(stderr, "[destruction] Mohr-Coulomb shear: on (an intact joint resists f_v0 + mu sigma_c)\n");
+  }
+#else
+  native_require(!native_mohr_coulomb_shear(),
+                 "VIBE_MOHR_COULOMB_SHEAR needs a PhysX SDK with PX_DESTRUCTION_MOHR_COULOMB_SHEAR (PhysX feat/mohr-coulomb-shear)");
+#endif
+#if defined(VIBE_PHYSX_HAS_SHEAR_STIFFNESS)
+  // The stage reads its switch at configuration (with the section's rotational stiffness).
+  // Without the section's rotational stiffness the stage leaves every joint
+  // isotropic (it says so): the shear rows extend the rotation's bond rows.
+  if (native_shear_stiffness()) {
+    setenv("PX_DESTRUCTION_SHEAR_STIFFNESS", "1", 1);
+    std::fprintf(stderr, native_section_rotation() ? "[destruction] shear stiffness: on (a joint k_s = gamma k_n per material)\n"
+                                                   : "[destruction] shear stiffness: requested without VIBE_SECTION_ROTATION; the stage keeps joints isotropic\n");
+  }
+#else
+  native_require(!native_shear_stiffness(),
+                 "VIBE_SHEAR_STIFFNESS needs a PhysX SDK with PX_DESTRUCTION_SHEAR_STIFFNESS (PhysX feat/shear-stiffness)");
+#endif
+  // One trial evaluation plus one corrected rigid pass. Zero would leave the
+  // stage in its diagnostic mode, where any membership-changing verdict is
+  // rejected -- that is, a city that can never actually break.
+  desc.internalCorrectionLimit = correction_limit();
+#if PX_DESTRUCTION_SCENE_VERSION >= 22 && !defined(VIBE_PHYSX_HAS_CHUNK_LOADS_CORRECTION_LOOP)
+  // Destructible vehicles submit per-chunk commands (enableChunkLoads). SDKs
+  // without PX_DESTRUCTION_CHUNK_LOADS_CORRECTION_LOOP apportion them on the
+  // first corrected pass only and refuse any deeper loop in configureStress;
+  // say so here instead of failing configuration without a reason.
+  native_require(s.vehicles.empty() || desc.internalCorrectionLimit <= 1,
+                 "VIBE_CITY_NATIVE_CORRECTION_LIMIT above 1 with destructible vehicles needs a "
+                 "PhysX SDK with PX_DESTRUCTION_CHUNK_LOADS_CORRECTION_LOOP (PhysX branch "
+                 "feat/chunk-loads-correction-loop); use 1 or rebuild the SDK");
+#endif
+  desc.preserveUnchangedContactPairs = config.preserve_unchanged_contact_pairs;
+  std::fprintf(stderr, "[destruction] native internalCorrectionLimit=%u\n",
+               unsigned(desc.internalCorrectionLimit));
+#if defined(VIBE_PHYSX_HAS_RESERVED_CONTACT_PAIRS)
+  // Pre-touching contact-pair storage is an optional field. Without it the first
+  // impact pages this memory in on the simulation thread, which shows up as one
+  // unexplained spike at the moment of first contact and nowhere else.
+  desc.reservedContactPairs = config.reserved_contact_pairs;
+#endif
+  desc.gpuIslandRepair = config.gpu_island_repair;
+#if defined(VIBE_PHYSX_HAS_FRAGMENT_GRAVITY)
+  // Vehicle2 carriers are weightless (Vehicle2 integrates their gravity) and
+  // fragments inherit their source's settings on the GPU, so without this a
+  // part broken off a car floats. Structures with gravity are unaffected.
+  // VIBE_NATIVE_FRAGMENT_GRAVITY=0 reproduces the weightless-debris bug, so
+  // the destruction tests can show they catch it.
+  desc.fragmentGravity = !s.vehicles.empty() && native_env_f32("VIBE_NATIVE_FRAGMENT_GRAVITY", 1.0f) != 0.0f;
+#elif PX_DESTRUCTION_SCENE_VERSION >= 22
+  native_require(s.vehicles.empty(),
+                 "destructible vehicles need an SDK with fragmentGravity: their "
+                 "fragments would inherit the Vehicle2 carrier's disabled gravity");
+#endif
+#if defined(VIBE_PHYSX_HAS_FRAGMENT_DEPENETRATION)
+  desc.fragmentMaxDepenetrationVelocity = native_fragment_depenetration_velocity();
+#if PX_DESTRUCTION_SCENE_VERSION >= 22
+  // A car's pieces start inside each other's contact range and sometimes part
+  // under the heightfield; pushed out unbounded, a tyre left at 196 m/s with
+  // 8x the meteor's energy (vehicle destruction tests). 2 m/s bounds it.
+  if (desc.fragmentMaxDepenetrationVelocity <= 0.0f && !s.vehicles.empty())
+    desc.fragmentMaxDepenetrationVelocity = 2.0f;
+#endif
+  if (desc.fragmentMaxDepenetrationVelocity > 0.0f) {
+    std::fprintf(stderr, "[destruction] fragment depenetration cap %.3g m/s\n",
+                 double(desc.fragmentMaxDepenetrationVelocity));
+  }
+#else
+  native_require(native_fragment_depenetration_velocity() <= 0.0f,
+                 "VIBE_CITY_NATIVE_FRAGMENT_DEPEN_VELOCITY needs an SDK with "
+                 "fragmentMaxDepenetrationVelocity (PxDestructionScene v18)");
+#endif
+
+  native_require(api.configureStress(desc),
+                 "native destruction configuration was rejected");
+  s.configured = true;
+  s.fibre_bending = config.fibre_bending;
+  s.verdict_sample_interval = std::max(1u, config.verdict_sample_ticks);
+
+  FfiNativeConfigured out{};
+  out.chunks = static_cast<std::uint32_t>(s.nodes.size());
+  out.bonds = static_cast<std::uint32_t>(s.bonds.size());
+  out.clusters = static_cast<std::uint32_t>(s.clusters.size());
+  out.materials = static_cast<std::uint32_t>(s.materials.size());
+#if defined(VIBE_PHYSX_HAS_RESERVED_CONTACT_PAIRS)
+  out.reserved_pairs = config.reserved_contact_pairs;
+#else
+  // Reported as zero rather than as what we asked for: this SDK cannot reserve.
+  out.reserved_pairs = 0;
+#endif
+  return out;
+}
+
+FfiNativeStatus NativeDestruction::tick() {
+  State &s = *state_;
+  FfiNativeStatus out{};
+  if (!s.configured) {
+    return out;
+  }
+  const double started = now_ms();
+  s.tick_index += 1;
+  restore_detached_hull_filters();
+
+  const double status_started = now_ms();
+  s.last = s.stage().getLastStatus();
+  s.status_read_ms = now_ms() - status_started;
+
+  out.frame = s.last.frame;
+  out.error = s.last.error;
+  // Preserve the solver's specific reason instead of collapsing every native
+  // graph/operator failure into scene bit 64. Healthy frames add no readback.
+  if ((s.last.error & 64u) != 0) {
+    const auto view = s.stage().getDeviceView();
+    if (view.stressTopology) {
+      NativeReadback read(s.scene, view.readyEvent);
+      out.stress_topology_error = read.read(view.stressTopology, 1).front().error;
+    }
+  }
+  out.iterations = s.last.iterations;
+  out.converged = s.last.converged != 0;
+  out.normal_contacts = s.last.normalContacts;
+  out.friction_anchors = s.last.frictionAnchors;
+  out.bond_commands = s.last.bondCommands;
+  out.broken_bonds = s.last.brokenBonds;
+  out.crushed_chunks = s.last.crushedChunks;
+  out.correction_passes = s.last.correctionPasses;
+  out.stress_passes = s.last.stressPasses;
+  out.post_correction_broken_bonds = s.last.postCorrectionBrokenBonds;
+
+  s.stress_iterations_peak =
+      std::max(s.stress_iterations_peak, s.last.iterations);
+
+  // Count exhausted solves even when native error 4096 rejects the step.
+  // A partial iterate cannot authorize material or topology changes.
+  if (s.last.converged == 0) {
+    s.unconverged_frames += 1;
+  }
+
+  // The stage publishes nothing for a step it could not complete, and a
+  // rejected step is not a world anyone may be shown. Bit 8192 says the scene
+  // cannot continue at all; everything else leaves the previous accepted state
+  // standing and is reported, never smoothed over.
+  if (s.last.error != 0) {
+    s.error_frames += 1;
+    s.error_bits_last = s.last.error;
+    if ((s.last.error & 8192u) != 0) {
+      s.degraded = true;
+    }
+    out.observed = false;
+    out.degraded = s.degraded;
+    s.tick_ms = now_ms() - started;
+    return out;
+  }
+
+  if (s.last.frame == s.observed_frame) {
+    // Already observed this frame (a second tick inside one step, or a step
+    // that did not run). Reporting it again would double-count events.
+    out.observed = false;
+    out.degraded = s.degraded;
+    s.tick_ms = now_ms() - started;
+    return out;
+  }
+
+  s.observed_chunks = 0;
+  s.observed_bonds = 0;
+  s.observation_bytes = 0;
+  const std::uint64_t expected = s.observed_frame + 1;
+  const bool gap = s.observed_frame != 0 && s.last.frame != expected;
+  if (gap) {
+    s.missed_frames += s.last.frame - expected;
+  }
+
+  {
+    const PxDestructionDeviceView view = s.stage().getDeviceView();
+    NativeReadback read(s.scene, view.readyEvent);
+    const double observe_started = now_ms();
+    if (gap) {
+      // The delta stream is only valid frame to frame. After a gap the only
+      // honest recovery is a full re-read of accepted topology.
+      s.rebuild_from_accepted_topology(view);
+      s.full_reobservations += 1;
+    } else {
+      s.observe_topology(view);
+    }
+    // Crushed chunks: a crush event each, dust out of the world. A gap may
+    // have hidden one, so a re-read checks every chunk too.
+    if (s.last.crushedChunks != 0 || gap) {
+      s.observe_crushes(view);
+    }
+    s.observe_ms = now_ms() - observe_started;
+
+    s.verdict_sample_age += 1;
+    if (s.verdict_sample_age >= s.verdict_sample_interval) {
+      const double verdict_started = now_ms();
+      s.sample_bond_verdicts(view);
+      s.verdict_ms = now_ms() - verdict_started;
+      s.verdict_sample_age = 0;
+    } else {
+      s.verdict_ms = 0.0;
+    }
+  }
+
+  s.corrections_total += s.last.correctionPasses;
+  s.completed_updates += s.last.stressPasses;
+  s.crush_yield_nodes += s.last.crushedChunks;
+  if (s.last.iterations > 0) {
+    s.active_island_updates += s.stress_islands;
+  }
+  s.observed_frame = s.last.frame;
+
+  const double rounds_started = now_ms();
+  s.expire_rounds();
+  s.rounds_ms = now_ms() - rounds_started;
+
+  const double snapshot_started = now_ms();
+  s.refresh_snapshots();
+  s.snapshot_ms = now_ms() - snapshot_started;
+
+  out.committed_chunks = s.observed_chunks;
+  out.committed_bonds = s.observed_bonds;
+  out.cluster_count = static_cast<std::uint32_t>(s.bodies.size());
+  out.stress_island_count = s.stress_islands;
+  out.observed = true;
+  out.degraded = s.degraded;
+  out.missed_frames = static_cast<std::uint32_t>(s.missed_frames);
+  s.tick_ms = now_ms() - started;
+  return out;
+}
+
+FfiNativeStatus NativeDestruction::last_status() const {
+  State &s = *state_;
+  FfiNativeStatus out{};
+  if (!s.configured) {
+    return out;
+  }
+  const PxDestructionStageStatus status = s.stage().getLastStatus();
+  out.frame = status.frame;
+  out.error = status.error;
+  out.iterations = status.iterations;
+  out.converged = status.converged != 0;
+  out.normal_contacts = status.normalContacts;
+  out.friction_anchors = status.frictionAnchors;
+  out.bond_commands = status.bondCommands;
+  out.broken_bonds = status.brokenBonds;
+  out.crushed_chunks = status.crushedChunks;
+  out.correction_passes = status.correctionPasses;
+  out.stress_passes = status.stressPasses;
+  out.post_correction_broken_bonds = status.postCorrectionBrokenBonds;
+  out.cluster_count = static_cast<std::uint32_t>(s.bodies.size());
+  out.stress_island_count = s.stress_islands;
+  out.degraded = s.degraded;
+  return out;
+}
+
+FfiChunkAim NativeDestruction::chunk_aim(std::uint32_t structure_id,
+                                         std::uint32_t node_index) const {
+  FfiChunkAim out{};
+  const State &s = *state_;
+  for (const auto &chunk : s.chunks) {
+    if (chunk.structure != structure_id || chunk.authored != node_index) {
+      continue;
+    }
+    if (chunk.shape == nullptr || chunk.destroyed) {
+      break; // destroyed; report not found rather than a stale position
+    }
+    PxRigidActor *actor = chunk.shape->getActor();
+    if (actor == nullptr) {
+      break;
+    }
+    const PxTransform pose = actor->getGlobalPose();
+    out.found = true;
+    out.chunk_id = native_chunk_id(structure_id, node_index);
+    out.structure_id = structure_id;
+    out.entity_id = entity_id(chunk.structure, chunk.serial);
+    // The shape's local pose is the chunk's centroid in the body frame, which
+    // is the point to aim at: the body origin can be metres away once a
+    // fragment carries several chunks.
+    out.center = native_ffi(pose.transform(chunk.shape->getLocalPose().p));
+    PxRigidDynamic *dynamic = actor->is<PxRigidDynamic>();
+    out.sleeping = dynamic != nullptr && dynamic->isSleeping();
+    break;
+  }
+  return out;
+}
+
+FfiChunkRayHit NativeDestruction::raycast_chunk(const FfiVec3 &origin,
+                                                const FfiVec3 &direction,
+                                                float max_distance) const {
+  FfiChunkRayHit out{};
+  const State &s = *state_;
+  native_require(std::isfinite(max_distance) && max_distance > 0.0f,
+                 "chunk raycast distance must be finite and positive");
+  PxVec3 ray = native_px(direction);
+  const float magnitude = ray.magnitude();
+  native_require(magnitude > 1.0e-6f, "chunk raycast direction has zero length");
+  ray /= magnitude;
+
+  PxRaycastBuffer buffer;
+  // Unfiltered by group on purpose: a shot that is stopped by the ground or by
+  // a fragment in front of the intended chunk has NOT reached it, and a test
+  // that filters those away would call that a hit.
+  if (!s.scene.raycast(native_px(origin), ray, max_distance, buffer,
+                       PxHitFlag::ePOSITION | PxHitFlag::eNORMAL) ||
+      !buffer.hasBlock) {
+    return out;
+  }
+  out.distance = buffer.block.distance;
+  out.position = native_ffi(buffer.block.position);
+  out.normal = native_ffi(buffer.block.normal);
+  out.chunk_id = ~0u;
+  for (const auto &chunk : s.chunks) {
+    if (chunk.shape != buffer.block.shape) {
+      continue;
+    }
+    out.hit = true;
+    out.chunk_id = native_chunk_id(chunk.structure, chunk.authored);
+    out.structure_id = chunk.structure;
+    out.entity_id = entity_id(chunk.structure, chunk.serial);
+    break;
+  }
+  return out;
+}
+
+std::uint32_t NativeDestruction::fire_round(const FfiRoundDesc &desc) {
+  State &s = *state_;
+  native_require(s.configured, "no native city to shoot at");
+  native_require(desc.speed > 0.0f && desc.radius > 0.0f &&
+                     desc.momentum_ns > 0.0f,
+                 "a round needs positive speed, radius and momentum");
+  const PxVec3 direction = native_px(desc.direction).getNormalized();
+  native_require(direction.isFinite() && direction.magnitudeSquared() > 0.0f,
+                 "a round needs a direction");
+
+  // The stage takes loads only from PhysX's own solved contacts, so a shot is
+  // delivered by a real body carrying the round's momentum. Mass follows from
+  // momentum and speed rather than being invented: p = m*v.
+  const float mass = desc.momentum_ns / desc.speed;
+  const PxVec3 origin =
+      native_px(desc.position) - direction * (desc.radius + 0.05f);
+
+  PxRigidDynamic *body = s.physics.createRigidDynamic(PxTransform(origin));
+  native_require(body != nullptr, "round body allocation failed");
+  PxShape *shape = s.physics.createShape(PxSphereGeometry(desc.radius),
+                                         s.material, true);
+  native_require(shape != nullptr, "round shape allocation failed");
+  // Collides with the world and the city; invisible to scene queries (query
+  // word0 zero) so a round can never be mistaken for a shootable entity, and
+  // carries the native-chunk notify suppression so it adds no callback cost.
+  shape->setSimulationFilterData(PxFilterData(s.round_group, s.round_mask, 0,
+                                              kNativeChunkFilterBit));
+  shape->setQueryFilterData(PxFilterData(0, 0, 0, 0));
+  body->attachShape(*shape);
+  shape->release();
+  // Mass and inertia have to describe the SAME body. Computing the inertia at
+  // some convenient density and then overwriting the mass leaves a body whose
+  // mass-to-inertia ratio is whatever the two happened to disagree by -- here a
+  // factor of ~10^6 for a production-weight round -- and a solver handed that
+  // produces angular responses wildly out of scale with the collision. Solid
+  // sphere: I = 2/5 m r^2, the same expression the reference demo uses for its
+  // projectiles.
+  const PxReal inertia = 0.4f * mass * desc.radius * desc.radius;
+  native_require(std::isfinite(mass) && mass > 0.0f && std::isfinite(inertia) &&
+                     inertia > 0.0f,
+                 "round mass and inertia must be finite and positive");
+  body->setMass(mass);
+  body->setMassSpaceInertiaTensor(PxVec3(inertia));
+  body->setLinearDamping(0.0f);
+  body->setAngularDamping(0.0f);
+  if (native_uncapped_spin()) body->setMaxAngularVelocity(kUncappedAngularVelocity);
+  body->setLinearVelocity(direction * desc.speed);
+  s.scene.addActor(*body);
+
+  // A bounded pool: a round is spent within a few ticks, so an unbounded
+  // population would be a leak, and silently dropping the oldest without
+  // saying so would hide it. The eviction is counted and published.
+  constexpr std::size_t kMaxLiveRounds = 64;
+  if (s.rounds.size() >= kMaxLiveRounds) {
+    NativeRound oldest = s.rounds.front();
+    s.rounds.erase(s.rounds.begin());
+    if (oldest.actor != nullptr) {
+      s.scene.removeActor(*oldest.actor);
+      oldest.actor->release();
+    }
+    s.rounds_evicted += 1;
+  }
+  s.rounds.push_back(
+      NativeRound{body, s.tick_index + std::max<std::uint32_t>(desc.ttl_ticks, 1u)});
+  s.rounds_fired += 1;
+  return static_cast<std::uint32_t>(s.rounds.size());
+}
+
+void NativeDestruction::set_impactor_impedance(std::uint32_t gpu_index, float impedance) {
+  State &s = *state_;
+  native_require(std::isfinite(impedance) && impedance >= 0.0f, "impactor impedance must be finite and non-negative");
+  if (impedance > 0.0f) s.impactors[gpu_index] = impedance; else s.impactors.erase(gpu_index);
+#if defined(VIBE_PHYSX_HAS_IMPACT_CAPACITY)
+  std::vector<PxRigidDynamicGPUIndex> bodies;std::vector<PxReal> values;
+  for (const auto &[body, z] : s.impactors) {bodies.push_back(body);values.push_back(z);}
+  native_require(s.stage().setImpactorImpedance(bodies.data(), values.data(), PxU32(bodies.size())),
+                 "the stage refused the impactor impedance table");
+#endif
+}
+
+void NativeDestruction::State::expire_rounds() {
+  auto it = rounds.begin();
+  while (it != rounds.end()) {
+    if (tick_index >= it->expires_tick) {
+      if (it->actor != nullptr) {
+        scene.removeActor(*it->actor);
+        it->actor->release();
+      }
+      it = rounds.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void NativeDestruction::State::release_rounds() {
+  for (NativeRound &round : rounds) {
+    if (round.actor != nullptr) {
+      scene.removeActor(*round.actor);
+      round.actor->release();
+    }
+  }
+  rounds.clear();
+}
+
+// Resolve only the already loaded runtime. Older SDKs still support cold
+// scenes; requesting an unsupported warm extension fails explicitly.
+static void* warm_entry(const char* name) {
+#ifdef __APPLE__
+  void* handle = dlopen("libPhysXDestructionGpuRuntime_64.dylib", RTLD_NOW | RTLD_NOLOAD);
+#else
+  void* handle = dlopen("libPhysXDestructionGpuRuntime_64.so", RTLD_NOW | RTLD_NOLOAD);
+#endif
+  native_require(handle != nullptr, "native warm-start runtime is not loaded");
+  void* entry = dlsym(handle, name);
+  dlclose(handle);
+  native_require(entry != nullptr, "loaded SDK does not support warm-start v1");
+  return entry;
+}
+rust::String NativeDestruction::warm_runtime_path() {
+  void* entry = warm_entry("PxDestructionImportWarmStartV1");
+  Dl_info info{};
+  native_require(dladdr(entry, &info) != 0 && info.dli_fname != nullptr,
+                 "cannot identify loaded warm-start runtime");
+  return rust::String(info.dli_fname);
+}
+rust::Vec<float> NativeDestruction::export_warm_start() {
+  auto& s = *state_;
+  native_require(s.configured && s.bonds.size() <= UINT32_MAX / 6,
+                 "warm export requires configured bonds");
+  rust::Vec<float> values; values.reserve(s.bonds.size()*6);
+  for (size_t i=0;i<s.bonds.size()*6;++i) values.push_back(0);
+  using Fn = bool (*)(PxDestructionScene*, float*, PxU32);
+  auto fn = reinterpret_cast<Fn>(warm_entry("PxDestructionExportWarmStartV1"));
+  native_require(fn(&s.stage(), values.data(), static_cast<PxU32>(values.size())),
+                 "warm export requires observed pristine convergence");
+  return values;
+}
+void NativeDestruction::import_warm_start(rust::Slice<const float> values) {
+  auto& s = *state_;
+  native_require(s.configured && s.bonds.size() <= UINT32_MAX / 6
+                 && values.size() == s.bonds.size()*6, "warm bond count mismatch");
+  for (float v : values) native_require(std::isfinite(v), "non-finite warm value");
+  using Fn = bool (*)(PxDestructionScene*, const float*, PxU32);
+  auto fn = reinterpret_cast<Fn>(warm_entry("PxDestructionImportWarmStartV1"));
+  native_require(fn(&s.stage(), values.data(), static_cast<PxU32>(values.size())),
+                 "warm import requires a fresh configured native scene");
+}
+
+} // namespace vibe_land::physx_bridge

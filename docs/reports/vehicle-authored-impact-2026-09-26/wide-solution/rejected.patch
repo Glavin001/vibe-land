@@ -1,0 +1,129 @@
+diff --git a/blast/source/sdk/extensions/stressgpu/detail/StressNativeHierarchy.cuh b/blast/source/sdk/extensions/stressgpu/detail/StressNativeHierarchy.cuh
+index c22fb8a6..6d8de682 100644
+--- a/blast/source/sdk/extensions/stressgpu/detail/StressNativeHierarchy.cuh
++++ b/blast/source/sdk/extensions/stressgpu/detail/StressNativeHierarchy.cuh
+@@ -1,11 +1,13 @@
+ // Native ownership bridge: immutable/operator data are borrowed, never copied.
+ #ifdef PHYSX_RESIDENT_DESTRUCTION
+ #include "StressNativeSettled.cuh"
++#include "StressNativeSolutionVector.cuh"
+ struct NativeStressCycleView {
+     NativeSettledCache settled{};
+     StressHierarchy::CycleDeviceView cycle{};
+     StressHierarchy::MotionModeView modes{};
+-    StressHierarchy::Vector *rhs=nullptr,*result=nullptr,*solution=nullptr;
++    StressHierarchy::Vector *rhs=nullptr,*result=nullptr;
++    NativeStressSolutionMath::Vector *solution=nullptr;
+     AngLin *g=nullptr;
+     float *gamma=nullptr,*previous=nullptr;
+     StressReal* normalizer=nullptr;
+diff --git a/blast/source/sdk/extensions/stressgpu/detail/StressNativeSolution.cuh b/blast/source/sdk/extensions/stressgpu/detail/StressNativeSolution.cuh
+index eb69a81d..011d5e57 100644
+--- a/blast/source/sdk/extensions/stressgpu/detail/StressNativeSolution.cuh
++++ b/blast/source/sdk/extensions/stressgpu/detail/StressNativeSolution.cuh
+@@ -16,22 +16,22 @@ __device__ __forceinline__ void updateNativeStressSolution(const PersistentStres
+     if(iteration>a.maxIterations || !a.m_islandActive[id])return;
+     const float denominator=a.m_projectedDirectionSquared[id];if(!(denominator>0) || !isfinite(denominator))return;
+     const float alpha=a.hierarchy.gamma[id]/denominator;const auto p=a.m_nsPi[node],q=a.m_nsQ[node];auto& u=a.hierarchy.solution[node];
+-    u.angular.x=fma(StressReal(alpha),StressReal(p.angular.x),u.angular.x);u.angular.y=fma(StressReal(alpha),StressReal(p.angular.y),u.angular.y);u.angular.z=fma(StressReal(alpha),StressReal(p.angular.z),u.angular.z);
+-    u.linear.x=fma(StressReal(alpha),StressReal(p.linear.x),u.linear.x);u.linear.y=fma(StressReal(alpha),StressReal(p.linear.y),u.linear.y);u.linear.z=fma(StressReal(alpha),StressReal(p.linear.z),u.linear.z);
++    u.angular.x=fma(double(alpha),double(p.angular.x),u.angular.x);u.angular.y=fma(double(alpha),double(p.angular.y),u.angular.y);u.angular.z=fma(double(alpha),double(p.angular.z),u.angular.z);
++    u.linear.x=fma(double(alpha),double(p.linear.x),u.linear.x);u.linear.y=fma(double(alpha),double(p.linear.y),u.linear.y);u.linear.z=fma(double(alpha),double(p.linear.z),u.linear.z);
+     a.m_residual[node].angular=sub(a.m_residual[node].angular,mul(q.angular,alpha));
+     a.m_residual[node].linear=sub(a.m_residual[node].linear,mul(q.linear,alpha));
+ }
+-__global__ void applyNativeStressSolution(AngLin* impulses,const StressHierarchy::Vector* solution,const Inertia* inertia,
++__global__ void applyNativeStressSolution(AngLin* impulses,const NativeStressSolutionMath::Vector* solution,const Inertia* inertia,
+     const unsigned* node0,const unsigned* node1,const Vec4* offset0,const Vec4* offset1,const float* health,const float* scale,
+     const unsigned* bondIsland,const unsigned* islandSkip,const unsigned* activeBonds,const unsigned* activeCounts){
+     const unsigned slot=blockIdx.x*blockDim.x+threadIdx.x;if(slot>=activeCounts[0])return;const unsigned edge=activeBonds[slot];
+     if(bondSettled(islandSkip,bondIsland[edge]))return;if(health[edge]<=0){impulses[edge]={};return;}
+     const unsigned a=node0[edge],b=node1[edge];const auto r0=offset0[edge],r1=offset1[edge];
+-    const auto x=StressHierarchy::scaledValue(solution[a],make_float2(inertia[a].angular,inertia[a].linear));
+-    const auto y=StressHierarchy::scaledValue(solution[b],make_float2(inertia[b].angular,inertia[b].linear));
+-    const auto delta=StressHierarchy::mul(StressHierarchy::sub(
+-        StressHierarchy::couple(x,makeStressReal3(r0.x,r0.y,r0.z)),StressHierarchy::couple(y,makeStressReal3(r1.x,r1.y,r1.z))),StressReal(scale[edge]));
++    const auto x=NativeStressSolutionMath::scaledValue(solution[a],make_float2(inertia[a].angular,inertia[a].linear));
++    const auto y=NativeStressSolutionMath::scaledValue(solution[b],make_float2(inertia[b].angular,inertia[b].linear));
++    const auto delta=NativeStressSolutionMath::mul(NativeStressSolutionMath::sub(
++        NativeStressSolutionMath::couple(x,make_double3(r0.x,r0.y,r0.z)),NativeStressSolutionMath::couple(y,make_double3(r1.x,r1.y,r1.z))),double(scale[edge]));
+     auto& f=impulses[edge];
+-    f.angular={float(StressReal(f.angular.x)+delta.angular.x),float(StressReal(f.angular.y)+delta.angular.y),float(StressReal(f.angular.z)+delta.angular.z),0};
+-    f.linear={float(StressReal(f.linear.x)+delta.linear.x),float(StressReal(f.linear.y)+delta.linear.y),float(StressReal(f.linear.z)+delta.linear.z),0};
++    f.angular={float(double(f.angular.x)+delta.angular.x),float(double(f.angular.y)+delta.angular.y),float(double(f.angular.z)+delta.angular.z),0};
++    f.linear={float(double(f.linear.x)+delta.linear.x),float(double(f.linear.y)+delta.linear.y),float(double(f.linear.z)+delta.linear.z),0};
+ }
+diff --git a/blast/source/sdk/extensions/stressgpu/detail/StressReliableResidual.cuh b/blast/source/sdk/extensions/stressgpu/detail/StressReliableResidual.cuh
+index e4f54b95..4be3ffac 100644
+--- a/blast/source/sdk/extensions/stressgpu/detail/StressReliableResidual.cuh
++++ b/blast/source/sdk/extensions/stressgpu/detail/StressReliableResidual.cuh
+@@ -2,22 +2,22 @@
+ // recursive FP32 update alone can drift while a poorly conditioned component
+ // accumulates a large displacement potential. This changes no physical load,
+ // bond equation, requested tolerance or iteration cap.
+-__device__ __forceinline__ StressHierarchy::Vector nativeWarmBondSolution(const PersistentStressArgs& a,unsigned edge){
++__device__ __forceinline__ NativeStressSolutionMath::Vector nativeWarmBondSolution(const PersistentStressArgs& a,unsigned edge){
+     const auto warm=a.impulses[edge];
+     return {{warm.angular.x,warm.angular.y,warm.angular.z},{warm.linear.x,warm.linear.y,warm.linear.z}};
+ }
+-__device__ __forceinline__ StressHierarchy::Vector nativeBondSolution(const PersistentStressArgs& a,unsigned edge){
+-    using namespace StressHierarchy;
++__device__ __forceinline__ NativeStressSolutionMath::Vector nativeBondSolution(const PersistentStressArgs& a,unsigned edge){
++    using namespace NativeStressSolutionMath;
+     const unsigned first=a.m_node0[edge],second=a.m_node1[edge];
+     const auto x=scaledValue(a.hierarchy.solution[first],make_float2(a.m_inertia[first].angular,a.m_inertia[first].linear));
+     const auto y=scaledValue(a.hierarchy.solution[second],make_float2(a.m_inertia[second].angular,a.m_inertia[second].linear));
+     const auto u=a.m_offset0[edge],v=a.m_offset1[edge];
+-    const auto delta=mul(sub(couple(x,makeStressReal3(u.x,u.y,u.z)),couple(y,makeStressReal3(v.x,v.y,v.z))),StressReal(a.m_colScales[edge]));
++    const auto delta=mul(sub(couple(x,make_double3(u.x,u.y,u.z)),couple(y,make_double3(v.x,v.y,v.z))),double(a.m_colScales[edge]));
+     return add(nativeWarmBondSolution(a,edge),delta);
+ }
+ template<bool Accumulated=true>
+ __device__ __forceinline__ void rebuildNativeResidualNode(const PersistentStressArgs& a,unsigned node){
+-    using namespace StressHierarchy;
++    using namespace NativeStressSolutionMath;
+     Vector response{};
+     for(unsigned slot=a.m_nodeBondBegin[node];slot<a.m_nodeBondBegin[node+1];++slot){
+         const unsigned ref=a.m_nodeBondRef[slot];if(ref==kDeadBondRef)continue;
+@@ -26,13 +26,13 @@ __device__ __forceinline__ void rebuildNativeResidualNode(const PersistentStress
+         Vector impulse;
+         if constexpr(Accumulated)impulse=nativeBondSolution(a,edge);
+         else impulse=nativeWarmBondSolution(a,edge);
+-        const auto force=mul(impulse,StressReal(a.m_colScales[edge])*(second?StressReal(-1):StressReal(1)));
+-        response=add(response,transposeCouple(force,makeStressReal3(offset.x,offset.y,offset.z)));
++        const auto force=mul(impulse,double(a.m_colScales[edge])*(second?double(-1):double(1)));
++        response=add(response,transposeCouple(force,make_double3(offset.x,offset.y,offset.z)));
+     }
+     const auto d=a.m_inertia[node];response=scaledValue(response,make_float2(d.angular,d.linear));
+     const auto b=a.originalRhs[node];
+-    a.m_residual[node]={{float(StressReal(b.angular.x)-response.angular.x),float(StressReal(b.angular.y)-response.angular.y),float(StressReal(b.angular.z)-response.angular.z),0},
+-                       {float(StressReal(b.linear.x)-response.linear.x),float(StressReal(b.linear.y)-response.linear.y),float(StressReal(b.linear.z)-response.linear.z),0}};
++    a.m_residual[node]={{float(double(b.angular.x)-response.angular.x),float(double(b.angular.y)-response.angular.y),float(double(b.angular.z)-response.angular.z),0},
++                       {float(double(b.linear.x)-response.linear.x),float(double(b.linear.y)-response.linear.y),float(double(b.linear.z)-response.linear.z),0}};
+ }
+ // Initialize from the same physical residual used for final verification.
+ // No accumulated node correction exists yet, so its zero products and loads
+diff --git a/blast/source/sdk/extensions/stressgpu/detail/StressNativeSolutionVector.cuh b/blast/source/sdk/extensions/stressgpu/detail/StressNativeSolutionVector.cuh
+new file mode 100644
+index 00000000..f31e5e1b
+--- /dev/null
++++ b/blast/source/sdk/extensions/stressgpu/detail/StressNativeSolutionVector.cuh
+@@ -0,0 +1,18 @@
++// The accumulated displacement potential can be much larger than its useful
++// increments. Keep that state and the physical residual verification in double
++// precision while the iteration directions and hierarchy retain their chosen
++// working precision. No load, material law or stopping tolerance changes.
++#pragma once
++namespace NativeStressSolutionMath {
++using StressHierarchy::add;
++using StressHierarchy::sub;
++using StressHierarchy::mul;
++using StressHierarchy::cross;
++struct Vector {double3 angular,linear;};
++__device__ __forceinline__ Vector add(Vector a,Vector b){return {add(a.angular,b.angular),add(a.linear,b.linear)};}
++__device__ __forceinline__ Vector sub(Vector a,Vector b){return {sub(a.angular,b.angular),sub(a.linear,b.linear)};}
++__device__ __forceinline__ Vector mul(Vector a,double b){return {mul(a.angular,b),mul(a.linear,b)};}
++__device__ __forceinline__ Vector scaledValue(Vector v,float2 d){return {mul(v.angular,double(d.x)),mul(v.linear,double(d.y))};}
++__device__ __forceinline__ Vector couple(Vector v,double3 r){return {v.angular,add(v.linear,cross(r,v.angular))};}
++__device__ __forceinline__ Vector transposeCouple(Vector v,double3 r){return {sub(v.angular,cross(r,v.linear)),v.linear};}
++}

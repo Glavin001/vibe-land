@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vibe-land-control-plane",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  "durable_objects": {
+    "bindings": [{ "name": "FLEET", "class_name": "FleetDO" }]
+  },
+  // SQLite-backed Durable Objects: required on the free plan, and the storage
+  // this whole system relies on -- every fact about the fleet lives in the DO,
+  // so an evicted DO or a Worker redeploy loses nothing.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["FleetDO"] }],
+
+  "vars": {
+    // Overridden at deploy time with the immutable image tag CI just pushed.
+    "SERVER_IMAGE": "ghcr.io/glavin001/vibe-land-server:dev",
+    "VAST_API_BASE": "https://console.vast.ai",
+    "MATCHES_PER_BOX": "6",
+    "MAX_PLAYERS_PER_MATCH": "16",
+    "IDLE_SHUTDOWN_MIN": "10",
+    "MAX_INSTANCE_UPTIME_H": "6",
+    "MAX_INSTANCE_SPEND_USD": "5",
+    "BOOT_TIMEOUT_MIN": "7",
+    "HEARTBEAT_TIMEOUT_SEC": "90",
+    "MAX_PROVISION_ATTEMPTS": "5",
+    "INSTANCE_DISK_GB": "30",
+    "CONTROL_PLANE_URL": ""
+  }
+
+  // Secrets (never here -- `wrangler secret put`):
+  //   VAST_API_KEY, HEARTBEAT_TOKEN, ADMIN_TOKEN, GHCR_PULL_TOKEN, GHCR_PULL_USER
+}

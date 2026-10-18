@@ -1,0 +1,391 @@
+# Bayline town kit
+
+The [outdoor destruction kit](OUTDOOR-KIT.md) adds trees, street props, collapsible
+structures, three racing/combat encounters and a separate dressed Bayline scene.
+Use `npm run build:outdoor` and open `?asset=outdoor-gallery` in the independent preview.
+
+An independent Victorian corner café, furnished apartments and reusable town props. This directory owns its generated assets, native Cargo workspace, preview service and review recordings. The playable `/town-kit` route reuses `/city`'s client, server, WebTransport and native stress destruction.
+
+## Walk and shoot: live playground
+
+From the repository root:
+
+```sh
+npm --prefix structures/town-kit run play
+```
+
+Open **http://127.0.0.1:6180/town-kit?portal=true**. Click the scene, use WASD to
+walk, drag/move the mouse to aim, and click to fire. Aim above the rooted stump
+to fracture the trunk. N switches to the existing fly camera. Escape releases
+the mouse; **Reset playground** rebuilds every exhibit.
+
+The current playground has **24 labelled exhibits**: native-stable shade,
+street and ornamental trees, all 20 outdoor props, and a furnished Juniper
+porch house. The other 12 tree variants remain available in the authoring
+viewer but are excluded here because their native stress topology fails at
+startup. This is a live test range, not a release qualification for every impact.
+
+Cannonballs use the real server's 500 kg, 25 m/s physical projectile. Fracture
+comes from contact loads and the native stress solver; foliage follows the
+authoritative chunk transforms, including separated branches and reset poses.
+The visuals endpoint verifies the exact physics-pack SHA and manifest before
+serving the attachment data.
+
+Outdoor mortar, timber seams, welds and mounting joints are calibrated for
+this cannon. Bulk chunk strength, mass and stiffness are preserved; the damage
+still comes from the native stress solver. Shoot solid brickwork or a panel,
+or knock out a structure's supports. The street tree and house wall can need
+three hits; firing through a gap does not damage the surrounding structure.
+
+To repeat the cannon qualification, stop the playground, rebuild the native
+review harness for the installed SDK, then run `npm run check:playground:cannon`
+from this directory. It checks all 24 exhibits with the same weapon and stress
+settings as the live launcher. Every case must remain intact before firing,
+break at least one bond, and move a fractured chunk by more than 10 cm, without
+native errors or invalid chunk ownership. Recordings and a complete pass/fail
+matrix are written to `out/cannon-qualification/current/`. The final measured
+run for this change is in `out/cannon-qualification/final/`.
+
+This command builds the server with `native-destruction` into
+`target/town-kit-live`, then runs under the shared GPU lock. It requires the
+same PhysX SDK and prebuilt client WASM as local `/city`; see
+[`run-locally`](../../.claude/skills/run-locally/SKILL.md). It uses dedicated
+ports **6180 / 6181 / 6182** and refuses occupied ports. `TOWN_KIT_PORT` changes
+the client port; HTTP and WebTransport use the next two. Ctrl-C stops only this
+instance. Logs and owned process IDs are under `out/playground/`. Use
+`TOWN_KIT_LIVE_RELOAD=1` to opt into client hot reload while developing; it is
+off for the playable review so unrelated saves do not restart your session.
+Restart the launcher to pick up edits with live reload disabled. Use
+`npm --prefix structures/town-kit run play -- --no-build` only while the SDK and
+server sources are unchanged.
+
+**Release status:** work in review; see [measured blockers](REVIEW-NOTES.md). A generated pack is not an accepted asset. See `out/reviews/matrix.json`, each native `report.json`, and the visual contact sheets. Failed, stale or missing reviews must not be treated as passes. Assets are staged for later import only after every acceptance gate passes.
+
+## Author and preview
+
+Run from this directory, using the existing client dependencies and local physx-2 SDK:
+
+```sh
+npm run build
+npm run build -- --props
+npm run preview
+npm run screenshots -- victorian-corner
+```
+
+The independent preview listens on **http://127.0.0.1:6174**. Set `TOWN_KIT_PORT` to change it; it fails if that port is occupied. It never stops another service. Its own PID and port are recorded in `out/preview-service.json`. Drag to orbit, use saved room/exterior cameras, or choose a native recording and scrub its timeline. “Frame fragments” locates displaced debris; “Track fragments” follows its mass centre while preserving your camera angle. Prop damage captures automatically frame the settled fragments, and prop videos follow their motion. Screenshots wait for the application's material textures and fail on browser errors. Individual images are 1600 × 1000; each capture produces a contact sheet.
+
+```js
+import {buildVictorianCorner, buildTable, buildCounter, composeScene} from './src/index.mjs';
+const {pack, metadata} = buildVictorianCorner({
+  storeys: 3, mirrored: false, palette: 'sage', furnished: true, fence: true,
+});
+const sink = buildCounter({variant: 'sink'}); // counter, sink or hob
+const scene = composeScene([
+  {pack, position: [0,0,0], yaw: 0},
+  {pack, position: [30,0,0], yaw: 90},
+]);
+```
+
+`buildProp(type, options)` also builds `table`, `chair`, `counter`, `sink`, `hob`, `cabinet`, `shelf`, `refrigerator`, `bed`, `sofa`, `toilet`, `bathtub`, `fence`, and `gate`. Named builders are exported for common pieces. Builders return `{pack, metadata}`. `composeScene` returns a standard ScenePack v2, remapping materials, shape references, pieces, nodes and bonds. Quarter turns are 0/90/180/270 degrees; `mirror: true` reflects local X before rotation. Placement offsets use metres. Authoring room labels, routes, cameras and shot plans remain in the separate metadata file.
+
+```sh
+npm run build -- --storeys 2 --mirror --palette blue --name victorian-blue
+npm run build -- --empty --no-fence --name shell
+npm test
+node scripts/matrix.mjs --geometry-only
+```
+
+Palettes are sage, blue, ochre, cream, rose and slate. Table legs split in two and tabletops into four. Door leaves and courtyard gates are open. Only buried foundations have zero mass. Freestanding furniture rests through contact; fitted counters, cabinets and shelving bond to real touching construction faces. Finish panels, glass, roofs, rails and furnishings are physical chunks. There are no hidden intact collision sheets, artificial anchors above ground or cosmetic-only architectural meshes. Counters and bathtubs use equivalent eight-corner convex colliders following native contact tests; other assets retain their reviewed box/prism representation. The comparison snapshots are in `repros/collider-contact/`.
+
+The ~12 × 16 m building has a café, preparation room and store, then one apartment per upper floor. Each apartment has living/dining, bedroom, kitchen and bathroom spaces. Stairs are 1.25 m wide with 1.35 m clear turning landings. The return flight stops ahead of the landing, and each floor has a real opening. The route begins outside, visits rooms, climbs every flight and returns to the street.
+
+## Native review
+
+```sh
+npm run review -- victorian-corner stability
+npm run review -- victorian-corner traverse glazing wall furniture fence collapse
+node scripts/matrix.mjs
+npm run screenshots -- victorian-corner wall
+node scripts/record.mjs victorian-corner traverse
+node scripts/record.mjs victorian-corner collapse
+# Inspect an explicitly failed diagnostic without presenting it as accepted:
+node scripts/record.mjs victorian-corner collapse --diagnostic
+```
+
+GPU reviews run sequentially. The review command owns `out/native-review.lock`; do not launch direct harness cases alongside it. A terminated process can leave a stale lock; inspect its PID before removing that kit-local file. The harness uses its own `native/target/` and reads the existing bridge and SDK. Locked Cargo package sources and their index entries are copied from the existing cache into `out/cargo-home`; builds run offline using only that kit-owned cache. `PHYSX_DESTRUCTION_SDK` and `TOWN_KIT_AUTHORING_ROOT` override their discovered sibling paths. CUDA defaults to `/usr/local/cuda-12.8`.
+
+The default stress budget is the application's current **16 iterations**, tolerance 1e-5, warm start, damage rate 2, fibre bending and bend gain 3. `TOWN_KIT_ITERATIONS` is recorded when explicitly changed. Larger budgets have caused divergent free-prop solves in this SDK; diagnostic runs are retained, not relabelled as successful. No solver code is changed by this kit.
+
+The intact gate requires observed native steps at 9.81 m/s², zero spontaneous breaks/crushing, solver convergence, physical sleep and 30 further simulated seconds of equilibrium. A separate pose audit rejects furniture that tips over or drifts instead of remaining near its authored placement. Run `node scripts/audit-rest.mjs` after refreshing stability recordings; the matrix command also runs it. Nonconverged startup ticks cannot count toward equilibrium; an interrupted, rejected, degraded or timed-out run fails. The actual game capsule follows the route with grounded gravity, no jumping or teleporting; upward raycasts additionally check 2.1 m headroom. Damage starts from a passing intact state, records transient solver work, then must reach observed convergence and physical rest. Local target bonds must break. Collapse must lower upper construction and upper-floor furniture.
+
+Each run records the asset SHA-256, dependency revisions and content hashes, SDK revision/library hashes, GPU/driver snapshot, solver settings, counts and timings. This is a shared GPU: timing results explicitly say `exclusiveGpu: false`. Browser captures and native recordings reject asset-hash mismatches. Native recordings are streamed directly to lossless `recording.json.gz` files; completed historical recordings can additionally use lossless Brotli (`.json.br`). The preview and review tools read all three representations, including older uncompressed JSON. Acceptance hashes always cover the decompressed JSON bytes. Recordings retain chunk-to-body membership, body poses and velocities, bond breaks, island events and actual player positions. Videos are derived from those recordings, not animation substitutes.
+
+## Visual acceptance and import
+
+Review the actual contact sheet and full images after changes. Check front/rear/both street elevations, corners, roof, bays, every furnished room and every landing. Then inspect the intact, locally damaged and collapsed recordings from movable cameras. A contact sheet alone does not establish destructibility or walkability.
+
+Run `node scripts/gallery.mjs` and open `http://127.0.0.1:6174/?asset=props-gallery` to inspect the reusable prop collection.
+
+`out/` contains generated review output; prior native runs and intact screenshot passes are archived under `out/reviews/history/`. Native recordings and review/revision asset snapshots are stored losslessly as `.json.gz` or `.json.br`; the preview serves them transparently. Current reusable exports in `out/*.json` remain standard uncompressed ScenePack v2 files. Run `npm run stage` to populate `staged/` with accepted assets and their acceptance manifest. This command refuses failed, stale or absent evidence. Import into Fractured Town is a later task; nothing here registers a scene or changes runtime/network formats.
+
+The supplied `bayline-source.zip` provided San Francisco/Victorian palette and town-layout inspiration. Its low-fidelity application is not executed or installed. Geometry/contact helpers, material texture rendering and physx-2 APIs are reused read-only from the existing workspace.
+
+## Storage and local processes
+
+Native review checks for at least 512 MiB free before building or starting a case. This is a snapshot, not a reservation against concurrent work. Completed review recordings are retained as evidence. A `.json.gz.tmp` file from an interrupted recording is incomplete; after confirming that its review process has exited and its report is marked interrupted, it can be removed. Do not delete completed reports or recordings to make a failing gate disappear.
+
+The September 20 storage audit measured the entire kit at approximately 1.2 GiB: reviews 874 MiB (including history 479 MiB), native build outputs 124 MiB, private Cargo cache 58 MiB, and revision snapshots 32 MiB. Values grow with subsequent reviews. The only persistent kit process at that audit was its local preview, PID 2280882 on port 6174. It uses existing client dependencies; no external hosted session was created. The ownership file is a historical record, so verify the PID's working directory and command before stopping it.
+
+Contact diagnostics are opt-in: `TOWN_KIT_CONTACT_ITERATIONS=16,4` sets the rigid-body position/velocity iteration counts through the harness-owned public PhysX scene before its first step. This is separate from the 16-iteration native stress budget. `TOWN_KIT_CONTACT_OFFSET=0.005` changes contact generation distance, not rest offsets or rendered/collision surfaces. Each setting is recorded in provenance; neither changes shared runtime code, sleep settings or gravity. Local wall damage passes with higher contact iterations, but full-collapse acceptance remains unresolved. These diagnostic passes do not certify the default asset for import.
+
+## Additional town buildings
+
+Three separate builders now share foundations, stairs, landings, guardrails, roofs, opening-aware walls and props without changing the café or registering a `/city` scene:
+
+- `buildPorchHouse(options)`: 10 × 12 m, two storeys, covered veranda, picket garden fence, living/dining room, kitchen, study, bedroom and bathroom.
+- `buildCornerGrocery(options)`: 12 × 10 m brick shop, striped awning, stockroom and rear delivery door, separate street stair entrance, furnished flat with living, bedroom, kitchen and bathroom.
+- `buildWorkshop(options)`: 14 × 12 m workshop with an open vehicle bay, office, rear workbench and supported partial loft with storage and a work table.
+
+All export from `src/index.mjs`, return `{pack, metadata}`, and accept `furnished`, `mirrored` and `palette` options. The house additionally accepts `fence`. These are fixed two-storey layouts with distinct circulation and roof silhouettes, not resized café copies.
+
+```sh
+node scripts/build-town.mjs
+node scripts/build-town.mjs porch-house --mirror
+node scripts/review-town.mjs stability traverse glazing wall furniture collapse
+node scripts/screenshots.mjs porch-house
+node scripts/screenshots.mjs corner-grocery
+node scripts/screenshots.mjs workshop
+```
+
+`out/{porch-house,corner-grocery,workshop}.json` are independent standard ScenePack v2 exports; corresponding `.meta.json` files hold room labels, actual capsule routes, open entrances and saved cameras. Select a building with the preview URL `/?asset=porch-house` (or its own name). Review scripts run GPU cases sequentially and retain failed outcomes. The separate `out/reviews/town-review.json` reports only the modes requested in that invocation and does not grant staging or visual approval. These assets remain review candidates until their own full acceptance gates pass.
+
+
+For the expanded kit, use `npm run build:town:variants` for mirrored and repeated
+quarter-turn candidates, `npm run audit:town` for upright pose checks,
+`npm run status:town` for a current-hash native gate inventory, and
+`npm run stage:town` for the complete import gate. An older numerical wall-impact
+pass does not certify a breach: new town wall cases now require 30 unobstructed
+native rays through a 1 m wide, 2.1 m high opening. Visual inspection remains
+required. Severe destruction is still under review; the new buildings are not
+approved for `/city` integration.
+
+`npm run capture:town` records all saved views of each new building and its
+mirror, then local damage/collapse screenshots, capsule walkthrough videos,
+and destruction videos. It runs sequentially after native review; failed
+physics recordings remain visibly marked as diagnostics. Use
+`npm run capture:town -- --intact-only` for a shorter visual iteration.
+
+The `passed` field in `town-captures.json` means capture jobs completed without
+rendering errors, not that the filmed physics passed. The native inventory and
+staging gate remain the acceptance authorities.
+
+Run `npm run audit:town:captures` after capture to verify current asset,
+metadata, recording, and video hashes; completeness of saved intact cameras;
+and matching native PASS/FAIL labels. It validates diagnostic evidence without
+turning failed physics into acceptance.
+
+
+### Breach and finish review follow-up
+
+Wall review now records the 1 m rectangular ray grid as a diagnostic and drives
+the real gameplay capsule through the damaged wall. It requires normal gravity,
+no jumping or teleporting, at least 2.1 m overhead clearance, no new structural
+damage from walking, and a return to converged physical rest. Low loose rubble
+can be stepped over; a ray touching it alone does not prove the opening unusable.
+The workshop's six repeated impacts pass this test on the base and rotated
+reuse scenes. `node scripts/record.mjs workshop wall` shows both the impact and
+the resulting capsule walk.
+
+The private preview now uses the reviewed `fine` finish preset from
+`preview/finishes.ts`: finer texture scale and gentler normal/large-scale texture
+variation, through the existing city material API. The asset physics and shared
+renderer source are unchanged. `?finish=city` restores the previous appearance;
+`?finish=town` selects the intermediate comparison. The comparison is reproduced
+by `node scripts/finish-review.mjs`; its images and provenance are under
+`out/reviews/finish-study/`. Screenshots and videos record the preset. Applying
+this renderer preset in the main city remains part of later integration.
+
+## Brick-veneer timber-frame houses
+
+`src/veneer-houses.mjs` (`buildVeneerBungalow`, `buildVeneerTwoStorey`): a
+10 x 7.8 m house built the way a brick-veneer house is, so that how it breaks
+follows from how it stands. Not in Vibe Town yet.
+
+- **Frame (carries everything):** slab on grade (the anchor); 90 x 45 EN 338
+  C24 bottom plates on M12 anchor bolts; studs at 600 mm, king and jack studs,
+  lintels built up to the doubled top plate, sill trimmers and cripples; 140 x
+  45 ceiling joists that tie the rafter feet with a bolted heel; 190 x 45
+  rafters on birdsmouth seats with tie-downs; a 240 x 45 ridge board; gable-end
+  frames. Two-storey: a doubled rim and 240 x 45 joists under 22 mm flooring.
+  A stud, rafter or plate length is two chunks; members break into two or three
+  pieces.
+- **Skin (carries nothing):** a 90 mm brick veneer of tie-cell panels (600 x
+  405 mm, running bond, steel-angle lintel courses) in mortar on the slab, 50 mm
+  clear of the studs, one wall tie per panel; 13 mm gypsum board screwed to the
+  studs and joists.
+- **Connections** are their fasteners (`materials.mjs` CONNECTIONS, WALL_TIE,
+  C24, GYPSUM): IRC R602.3(1) / AS 1684 schedules, EN 1995-1-1 capacities and
+  K_ser slip stiffness, elastic at k_mod 0.6 of characteristic. Every value has
+  its source beside it.
+
+```sh
+node structures/town-kit/scripts/build-veneer-houses.mjs      # packs + variants, validated, graph numbers
+node structures/town-kit/scripts/qualify-veneer-houses.mjs    # GPU: as built PASS, skin off PASS, front studs out falls
+uv run structures/town-kit/scripts/stress-share.py PACK [--force X Y Z --at NODE]   # CPU: where a load goes
+```
+
+Qualified alone at rest (city cap 16, FP32; 2026-10-06): bungalow PASS (1.7%
+unconverged, 0 broken), its frame alone PASS (1.7%, 0), front studs out 5.3%
+broken; two-storey PASS (6.4%, 0.02%), frame PASS (8.0%, 0.10%), front studs
+out on both storeys 54.7% (ground floor's alone: 3.5%, the upper storey hangs on
+as a deep beam over the gap). `VIBE_QUALIFY_BOND_ROWS=path` on `city_structures_qualify` dumps every
+bond's stress and the tick it broke.
+
+### Stairs
+
+Every multi-storey building needs a stair the player can walk up and down,
+with a landing. `src/stairs-timber.mjs` is the reusable house stair:
+
+- `planStair({y0, y1, origin, direction, across, layout})` lays out a
+  `switchback` (U), `l` (quarter turn) or `straight` stair, always broken by a
+  landing, from the building code: IRC R311.7 (risers <= 196 mm and equal;
+  going >= 254 mm with a 19-32 mm nosing; clear width >= 914 mm; headroom
+  2032 mm; landing >= the stair's width in the direction of travel), the DIN
+  18065 step rule (2R + T 590-650 mm) and IBC 1011.8 (3.66 m a flight).
+  `checkStair` checks it against the code and the player's controller
+  (`netcode/src/movement.rs` MoveConfig: 0.55 m step, 0.2 m step width, 45
+  degree slope, the 0.7 x 1.6 m capsule). `requiredVoid` is the floor
+  opening headroom needs; `checkHeadroom` measures what was framed.
+- `buildTimberStair` builds it in timber: two housed 38 x 286 stringers a
+  flight, 38 mm treads and 18 mm risers housed into them, each flight's head
+  in a stair-stringer hanger, a framed landing (rims, joists, deck) on posts in
+  post bases. `frameFloorOpening` trims the floor's joists around the opening:
+  doubled trimmers and header, tails in joist hangers (IRC R502.10).
+  `STAIR_CONNECTIONS` rates every joint by its fasteners.
+
+The two-storey's stair is a switchback by the front door: 15 risers of
+186.5 mm, 270 mm going, 7 + 8 either side of a half landing. Headroom as
+framed is 2.494 m or more. With the stair, the house qualifies at rest as it
+did without one: PASS, 6.4% unconverged, and one bond broken, the same
+cripple-stud drywall screw as before. The stair's busiest joints at rest are
+the upper flight's stringer feet, at 0.58 utilisation.
+
+The walk test (`scripts/perf/walk_route.py PACK [--snap]`;
+`structure_qualification.rs route_walk`) runs on the GPU stage under the
+app's stress settings. The server's own player walks the pack metadata's
+`route` on walking input only. The test fails on:
+
+- a point not reached while on the ground;
+- a teleport;
+- a fall of more than one code riser;
+- headroom under 2032 mm;
+- any bond broken.
+
+The PhysX player does not snap to ground by default. At the game's 6 m/s it
+leaves the treads going down a stair, falling up to 0.82 m at a time, which
+fails the test. `VIBE_PLAYER_SNAP_TO_GROUND=1` (`--snap`) gives it Rapier's
+`snap_to_ground` of 0.2 m. With it, the two-storey's walk passes: hall, up,
+upper floor, down, 17 points in 2.7 s, grounded every tick, least headroom
+2.346 m.
+
+```sh
+VIBE_GPU_SHARED=1 python3 scripts/perf/walk_route.py structures/town-kit/out/veneer-houses/veneer-house.json --snap
+VIBE_PLAYER_SNAP_TO_GROUND=1 VENEER_REEL=stairs FILM_FPS=60 FILM_SIZE=1920x1080 \
+  scripts/native-mac.sh film veneer-stairs --scene veneer     # the walk, filmed in the app
+```
+
+The other multi-storey kit buildings already have stairs: porch house,
+corner grocery, workshop, fire station and the Victorian café (2 or 3
+storeys). Each uses `src/stairs.mjs` `townStaircase`, a dogleg with a 1.35 m
+half landing, risers of 178-189 mm and a 290 mm going. Those stairs are
+monolithic waist-profile pieces, not stringers and treads, and the masonry
+buildings do not yet have a concrete stair.
+
+The reel (`scripts/veneer-reel.sh`, 1080p60, in the app on `--scene veneer`,
+`client/native/films/veneer-houses.mjs`): each house as built and frame only,
+orbited; its collapse with the front studs out, from the first tick; the city
+cannonball and meteor. Captions carry the measured bonds broken and the front
+roof tiles' mean height before and after.
+
+**Known limit: a vehicle or a cannonball takes the whole house.** The stage's
+trial solve reads a contact as a static load on an anchored structure. A
+monster truck stopping against the wall is MN-scale. `stress-share.py`, which
+matches the GPU's at-rest stresses to ~0.9x, shows that 650 kN on one stud
+already exceeds nailed joints across the whole frame (744 bonds past fatal).
+The masonry houses localise damage only because their joints are ~100x
+stronger. Tried and set aside: OSB bracing (no change), and the roof as a body
+resting on separately anchored walls (the walls broke at rest under its
+contact impulses). The truck still gets through the front wall (lab trial
+framed-house).
+
+### Impact study: what a hit should break (2026-10-06)
+
+`scripts/impact-study.py`, a Python study / test oracle (like
+`scripts/stress/oracle.py`; never a runtime path: the engine is the native GPU
+stage only), runs four stress models on the bungalow, the same graph and hits
+as the lab; `impact-study-report.py` tables them and
+`impact-study-stills.py` draws them (target/native-video/impact-study-*.png):
+
+- **A**, the engine today: static min-norm bond forces, the trial's
+  infinite-mass contact (`M v / dt`: 6.5 MN for the truck, 38 MN for the
+  cannonball); every bond past fatal breaks.
+- **C**, A plus the native crush law on each chunk's virial.
+- **E**, joint capacity and inertia: one tick as an impact of rigid chunks
+  joined by joints that cannot carry more than their strength (Moreau:
+  post-tick kinetic energy minimised over capacity cones from the solver's own
+  stress formula; brittle joints fracture at capacity as the tick's impulse
+  builds, ductile fasteners yield and break past 15 mm of slip). Whatever the
+  joints cannot carry accelerates the chunks instead of reaching the anchors.
+- **Ci**, crush by the impact's own contact stress (`Z1 Z2 / (Z1 + Z2) v`,
+  capped by what the impactor's structure delivers), not the trial's virial.
+
+First contact tick and settling (bonds broken / frame bonds / roof held):
+truck A 46% / 560 / 0%, E 7% / 21 / 100%; corner A 58% / 625 / 5%, E 12% /
+25 / 100%; cannonball A 91% / 820 / 0%, E 8% / 23 / 100%, Ci+E 4% / 19 /
+100%; meteor A 98% / 875 / 0%, E 19% / 126 / 79%, Ci+E 11% / 56 / 88%; a
+100 kg ball between studs A 5% (stopped in the skin), E or Ci+E 0.3-0.5%, no
+frame, through. C changes no bond verdict (it only removes chunks, for the
+meteor 305 of them all over the house). Contact force swept on the truck tick:
+A's breaks beyond 4 m grow 0 / 39 / 124 / 421 at 0.25 / 0.84 / 2 / 6.5 MN, E's
+stay 3-8. The design for E and Ci, in the native GPU stage only, is PhysX
+`docs/destruction/IMPACT_CAPACITY_DESIGN.md`.
+
+Chunk crushing is wired through end to end and opt-in. `VIBE_CRUSH=1` builds
+packs whose masonry, concrete, gypsum and glass materials carry `crush` blocks
+(`materials.mjs` CRUSH and `crushFor`, every number cited): the lab
+(`vehicle-lab-crush`), Vibe Town (`vibe-town-crush`), these houses
+(`out/veneer-houses-crush/`), any `composeScene` pack. The city passes them to
+the stage; `VIBE_NATIVE_CRUSH=0` ignores them. It needs PhysX
+`PX_DESTRUCTION_CRUSH_CORRECTION` (branch fix/crush-in-correction): a crushed
+chunk splits off as a body of its own and its step completes (before, one crush
+froze the scene); the bridge refuses crush properties to an SDK without it.
+Dust (`debrisMassFraction` 0) leaves the world the tick it crushes -- its hull
+out of simulation and queries, its island retired on the wire -- and the client
+makes it a `crush` dust source; debris keeps its body. With crushing on: the
+lab's house and wall trials run with 0 failed steps (cannonball into the
+veneer house: 72-89 chunks crushed, the client counting every one), Vibe Town
+qualifies at rest 273 of 273 with nothing crushed, the bungalow and its frame
+pass, and the impact steps cost what they did without it (within run-to-run
+noise, 1-2 ms). It does not make a hit local (see above): that is E.
+
+## Composed town scenes
+
+See [DISTRICT.md](DISTRICT.md) for the new 24-building Bayline District (four times the initial scene area), its reusable variants, preview, native reviews and isolated launch workflow. The earlier six-building `bayline-town` remains separate.
+
+The expanded target is now the [64-building small town](SMALL-TOWN.md), with separate residential, shopping, civic and workshop areas and a maximum of three storeys. Earlier 6- and 24-building exports remain available independently.
+
+## Civic buildings
+
+The [civic additions](CIVIC-BUILDINGS.md) provide a columned neighborhood library,
+an Art Deco cinema with upholstered seats, and a two-storey brick fire station,
+plus reusable loose book stacks and cinema chairs. Each has its own builder,
+compressed ScenePack, mirrored variant, furnished rooms and review workflow.
+They remain independent candidates while native acceptance is pending.
+
+
+## Binary town export
+
+Use `npm run build:binary` to generate the reusable-template `.vlsp` server asset
+directly from the town recipe, without a flattened JSON intermediate.
+`npm run test:binary` checks JavaScript/Rust equivalence and load measurements.
+See [BINARY-SCENES.md](BINARY-SCENES.md).

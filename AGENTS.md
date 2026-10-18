@@ -1,3 +1,143 @@
+## Already on Vast.ai: deploy or verify `/city`
+
+Read [.claude/skills/vastai-deploy/SKILL.md](.claude/skills/vastai-deploy/SKILL.md).
+From this checkout, `python3 scripts/vast-city.py status` discovers the URL and
+listeners; `python3 scripts/vast-city.py up --browser --public` builds, deploys,
+and verifies. Use `verify --browser --public` instead of `up` when only checking
+a running deployment. Keep the user's current branches. Do not begin with fleet
+rental, Docker, a repo-wide skill dump, or hand-written PID/port discovery.
+
+## Stress solve not converging, or fracturing under ordinary load
+
+Check the authored graph before touching the solver. Read
+[.claude/skills/stress-convergence/SKILL.md](.claude/skills/stress-convergence/SKILL.md).
+The product runs in float (FP32). Double precision, extra iterations or a looser
+tolerance are diagnostics, never fixes.
+
+## Destruction performance: never trade away fracture re-simulation
+
+When a fracture splits a body, the native stage must apply it and re-simulate
+the step (the internal correction pass, `internalCorrectionLimit >= 1`). That is
+on by default and stays on. Do not propose or implement "apply the split at end
+of tick without re-solving", correction limit 0, or anything that defers or
+skips the corrected solve to save time. Make the correction pass fast instead.
+
+The stress iteration cap with the destructible fleet is 64 per tick, and the
+owner accepts it. Do not lower it to save time; make the 64 iterations fast.
+Unconverged solves continue next tick (`PX_DESTRUCTION_ALLOW_UNCONVERGED=1`).
+
+## GPU destruction: goal, architecture and what counts as a valid change
+
+**Goal.** Destruction that a structural engineer or demolition expert would
+recognise as physically correct, running in real time at city scale (hundreds
+of thousands of chunks and joints, all on the GPU). This is an engineering
+project that implements known, standard mathematics. It is not physics research.
+
+**The architecture (fixed).**
+
+1. PhysX GPU does all rigid-body simulation. Motion, gravity, contacts,
+   friction, restitution and collision detection are PhysX's alone. We never
+   re-implement or override them.
+2. An intact structure is one PhysX rigid body made of many chunk shapes.
+   Chunks are never connected by PhysX joints, springs or any other constraints.
+3. The stress solver decides fracture, and nothing else.
+   - Inputs: the loads on the structure (gravity, and the contact impulses
+     PhysX reports) and the bodies' states.
+   - Output: which joints between chunks break, which gives the new
+     chunk-to-body hierarchy.
+4. PhysX applies the new hierarchy and re-simulates the step natively, through
+   the corrected pass with correction limit 1. Whatever PhysX produces is the
+   answer.
+5. If the solver breaks nothing, the structure holds as one rigid body. That is
+   correct behaviour, not a bug.
+
+**Valid changes.**
+
+- Making the stress solver's decision more accurate, using standard, cited
+  engineering models:
+  - section capacities;
+  - shear that grows with compression;
+  - shear versus normal stiffness;
+  - re-bearing;
+  - ductility;
+  - accounting for inertia over an impact's duration, as part of the solve.
+- Making the solver faster or more converged, without changing its answer.
+- Correcting the inputs the solver reads, such as the loads PhysX reports, as
+  long as PhysX's behaviour isn't changed.
+- Authoring with cited real-world values:
+  - geometry;
+  - materials (strength, stiffness, crush laws);
+  - per-material PhysX friction and restitution, as standard `PxMaterial`s
+    (one material per surface type, never one value for the whole world).
+- Choosing standard PhysX representations, for example static ground as one
+  plane or mesh rather than chunks.
+- Tests, diagnostics and tooling.
+
+**Invalid changes.** Reject these, even if they fix a symptom.
+
+- Any dynamics, contact detection, narrowphase or collision geometry of our
+  own, outside PhysX.
+- Writing velocities, positions or impulses into PhysX bodies from the solver.
+- Modifying PhysX's contact solver: impulse caps, dropped contact pairs,
+  depenetration rules, contact correction.
+- Any constant without a physical derivation or a citation:
+  - caps;
+  - clamps;
+  - tolerances;
+  - "allowances";
+  - thresholds;
+  - global tuning knobs standing in for a material property.
+- Heuristics: ordering failures by guesswork, damage-falloff fudges, "break the
+  most overloaded first".
+- Anything non-standard or invented. If you can't cite who does it this way (a
+  textbook, a design code or an established engine), it's out.
+- Anything that can't plausibly run in real time at city scale.
+
+**Deciding whether a change is in scope.** All four answers must be "yes":
+
+1. Standard: is it a known method, citable to a textbook, a design code or an
+   established engine?
+2. Correct: is it physically accurate for rigid bodies and fracture?
+3. Architecture: does it stay inside the stress solver's job (loads in, broken
+   joints out), with PhysX doing all the dynamics?
+4. Scale: can it run in real time for a whole city?
+
+If any answer is "no" or "unsure", stop and ask the owner before building
+anything.
+
+**Process.**
+
+- Tests first: reproduce every bug with a failing test, and use the same test to
+  prove the fix.
+- Physics-derived gates: pass/fail criteria come from energy, momentum,
+  capacity, closed-form answers or cited references, never from guessed
+  percentages.
+- Flags: every capability sits behind a flag. The shipping (runtime) profile
+  must not change.
+- Fixed engine settings: single precision (FP32), correction limit 1, stress
+  iterations fixed (64 in the product).
+- No stale runs: every run uses a current SDK.
+
+## Native macOS app (single-player /city)
+
+`scripts/native-mac.sh` builds and runs it: three.js WebGPU (`vite build
+--mode native`, client/src/native) on mystralnative (V8 + Dawn on Metal,
+`MYSTRAL_ROOT`, default `../mystralnative`, branch `vibe-land`), with the city
+server's match loop in-process (`sim-native`, `server/src/local_session.rs`).
+`run` plays it, `smoke` is the automated check (load, shoot, expect broken
+bonds), `debug` prints module-evaluation errors (mystral shows none), and `app`
+packages `target/native-app/out/vibe-land.app`. Films: `scripts/native-mac.sh film
+NAME --scene S` plays client/native/NAME.mjs (client/native/film/: spline shots,
+named places) in lockstep film mode and records it headless, so every frame is
+kept however slow it renders (FILM_SIZE, FILM_FPS, FILM_SEED). Iterate before a
+full take: FILM_PREVIEW=1 (a still per shot, no sim), FILM_CHECK=1 (every frame
+simulated, 2 stills a second, no video: about a minute), FILM_SHOTS=a,b (only
+those shots, after a pre-roll). Lockstep takes repeat but for GPU physics.
+The WebGL web client is
+unchanged: WebGPU code sits behind `__WEBGPU__`, and the webgpu builds use their
+own three (`three-webgpu`). The mystralnative fork takes only generic,
+upstreamable changes, one feature branch each.
+
 ## Cursor Cloud specific instructions
 
 ### Overview
@@ -43,7 +183,7 @@ make server
 ```
 
 - Config is loaded from `.env` in the repo root.
-- Listens on TCP `SERVER_PORT` (default 4001) for WebSocket and UDP `WT_BIND_ADDR` (default 4002) for WebTransport.
+- Listens on TCP `SERVER_PORT` (default 4001) for HTTP (session config, stats, `/ws/stats`) and UDP `WT_BIND_ADDR` (default 4002) for WebTransport. The WebSocket game route `/ws/:match_id` answers 403 unless the server is started with `VIBE_ENABLE_WEBSOCKET=1`.
 - `WT_PUBLIC_URL` optionally overrides the WebTransport URL advertised by `/session-config`; use it when the public host/port differs from the local bind address.
 - Health check: `curl http://localhost:4001/healthz`
 - Session config (WT URL + cert hash): `curl http://localhost:4001/session-config?match_id=default`
@@ -104,7 +244,7 @@ See `infra/WEBTRANSPORT_SETUP.md` for the full Hetzner VPS setup guide (DNS, fir
 
 ### WebTransport transport
 
-The client prefers WebTransport (QUIC/UDP) and falls back to WebSocket (TCP) automatically.
+The game is WebTransport-only (QUIC/UDP). **WebSocket is disabled**: the client never selects it or falls back to it -- when WebTransport fails the join fails with "WebTransport unavailable; WebSocket transport is disabled" -- and the server refuses `/ws/:match_id`. Re-enabling it takes two explicit opt-ins, both off by default: `VITE_ENABLE_WEBSOCKET=1` at client build/dev-server time (then WebSocket is used only after WebTransport fails; there is no URL/localStorage switch) and `VIBE_ENABLE_WEBSOCKET=1` for the server. The WebSocket-only tools (`npm run simulate`, benchmark WebSocket bots) also require `VIBE_ENABLE_WEBSOCKET=1`. See `client/src/net/transportPolicy.ts`.
 
 **Dev (self-signed cert):** Leave `WT_CERT_PEM`/`WT_KEY_PEM` unset. The server generates a self-signed cert and exposes its hash via `/session-config`. The client pins the hash via `serverCertificateHashes`. Only Chrome/Edge support this; the 14-day cert limit means it regenerates on each server restart.
 
@@ -235,6 +375,49 @@ DNS / reverse proxy requirements:
 - The simplest production layout is: website on whatever host you want, WebTransport advertised explicitly via `WT_PUBLIC_URL=https://your-host:4002`.
 - Using UDP `443` is valid, but if `TCP 443` is served by a different process or reverse proxy, an explicit WebTransport port such as `4002` is easier to reason about and debug.
 - The certificate loaded by `WT_CERT_PEM` / `WT_KEY_PEM` must be valid for the hostname advertised in `WT_PUBLIC_URL`.
+
+### MoQ world-state demo (`moq/`)
+
+Proof of concept for streaming game world state over Cloudflare's Media over
+QUIC relays. Full details in `moq/README.md`.
+
+| Piece | Path |
+| --- | --- |
+| Rust publisher (sim + MoQ publish) | `moq/publisher/` |
+| Browser MoQ draft-16 subscriber | `client/src/moq/` |
+| Demo page, route `/moq` | `client/src/pages/MoqDemo.tsx` |
+| End-to-end check | `moq/e2e/verify-local.mjs` |
+
+```bash
+make moq-publisher                     # build
+make moq-check                         # clippy + cargo test
+MOQ_RELAY_URL=https://... make moq-publish
+make moq-e2e                           # relay + publisher + headless Chromium
+```
+
+- `moq/publisher` is a **standalone Cargo workspace**, deliberately excluded from
+  the root workspace so its QUIC dependency tree stays out of `make check`. It is
+  not covered by `cargo check` at the root — run `make moq-check` for it.
+- It pins `moq-transport` / `moq-native-ietf` to a `cloudflare/moq-rs` commit, so
+  the first build fetches from GitHub. The draft is still moving; re-test when
+  bumping the pin.
+- Relay tokens live in the URL path. The production design keeps publisher and
+  browser credentials separate, and only a **subscribe-only** token may go in a
+  `VITE_` variable because those are compiled into the browser bundle. The
+  temporary `cf-relay.sh hosted-demo` workaround is the explicit exception: it
+  gives both local processes one short-lived publish+subscribe token to work
+  around Cloudflare's hosted cross-token scope bug, then revokes it on exit.
+- `moq/scripts/cf-relay.sh` wraps the Cloudflare relay API (needs `CF_ACCOUNT_ID`
+  and `CF_API_TOKEN`). Token secrets are returned by the API only at mint time
+  and cannot be read back, so `publish` mints an ephemeral token and revokes it
+  on exit, `env <uid>` mints a fresh subscribe-only token for the build, and
+  `hosted-demo <uid>` runs publisher + Vite with the shared workaround token.
+- The e2e check needs `moq-relay-ietf` built from `github.com/cloudflare/moq-rs`;
+  point `MOQ_RELAY_BIN` at the binary. It binds IPv4 explicitly because sandboxes
+  without an IPv6 stack fail on moq-rs's `[::]` default.
+- The browser client is dependency-free and implements draft-16 itself. The
+  published JS MoQ libraries are all WebCodecs media players, and the one
+  draft-16 TypeScript library on npm targets an older version constant.
 
 ### Non-obvious notes
 

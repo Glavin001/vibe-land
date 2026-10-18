@@ -1,0 +1,6 @@
+{
+  "name": "city-fleet-idle",
+  "why": "The city with the destructible fleet doing nothing: what the fleet's +12 ms idle tick is made of.",
+  "env": {"VIBE_PHYSX_PROFILE": "0"},
+  "steps": [{"idle": 15}]
+}

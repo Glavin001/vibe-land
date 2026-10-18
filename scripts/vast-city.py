@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+"""Deploy this checkout on an existing Vast host. No rental, checkout, or Docker.
+
+python3 scripts/vast-city.py status
+python3 scripts/vast-city.py up [--blast-root PATH] [--rebuild]
+python3 scripts/vast-city.py verify [--browser] [--public]
+
+State and logs: .certs/vast-city/. Existing checkout-owned servers and Caddy
+configs are discovered automatically. Fresh hosts use free mapped ports.
+"""
+import argparse
+import concurrent.futures
+import fcntl
+import gzip
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import socket
+import ssl
+import subprocess as sp
+import sys
+import time
+import tomllib
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+STATE = ROOT / '.certs/vast-city'
+TLS = ssl._create_unverified_context()  # This deployment deliberately pins self-signed TLS.
+
+
+def run(args, **kw):
+    return sp.check_output(args, **kw).decode().strip()
+
+
+def proc_env(pid):
+    return dict(x.decode().split('=', 1) for x in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0') if b'=' in x)
+
+
+def fetch(url):
+    with urllib.request.urlopen(url, context=TLS, timeout=8) as r:
+        body = r.read()
+        if r.headers.get('Content-Encoding') == 'gzip':
+            body = gzip.decompress(body)
+        return body, dict(r.headers)
+
+
+def health(port):
+    return json.loads(fetch(f'http://127.0.0.1:{port}/healthz')[0])
+
+
+def mappings(env):
+    result = {'TCP': {}, 'UDP': {}}
+    for k, v in env.items():
+        m = re.fullmatch(r'VAST_(TCP|UDP)_PORT_(\d+)', k)
+        if m and 0 < int(m[2]) < 65536 and v.isdigit() and 0 < int(v) < 65536:
+            result[m[1]][int(m[2])] = int(v)
+    return result
+
+
+def free_port(port, udp=False):
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM if udp else socket.SOCK_STREAM) as s:
+        try:
+            s.bind(('0.0.0.0', port))
+            return True
+        except OSError:
+            return False
+
+
+def process_identity(pid):
+    p = Path(f'/proc/{pid}')
+    return [str((p / 'exe').resolve()), (p / 'stat').read_text().rsplit(')', 1)[1].split()[19]]
+
+
+def discover():
+    host = proc_env(1)
+    ports = mappings(host)
+    ip = os.environ.get('VIBE_PUBLIC_IP') or host.get('PUBLIC_IPADDR')
+    if not ip:
+        raise RuntimeError('Public IP absent; set VIBE_PUBLIC_IP. Do not guess from old docs.')
+    ipaddress.IPv4Address(ip)
+    servers, proxies, supervisors = [], [], []
+    for p in Path('/proc').glob('[0-9]*'):
+        try:
+            cmd = (p / 'cmdline').read_bytes().decode().split('\0')
+            if (p / 'cwd').resolve() == ROOT and len(cmd) > 1:
+                script = Path(cmd[1])
+                script = script if script.is_absolute() else ROOT / script
+                legacy = script.resolve() == ROOT / 'scripts/run-vl4-server.sh' and Path(cmd[0]).name in ('bash', 'sh')
+                managed = script.resolve() == Path(__file__).resolve() and len(cmd) > 2 and cmd[2] == '_serve'
+                if legacy or managed:
+                    supervisors.append((int(p.name), process_identity(int(p.name))))
+            if 'web-fps-server' in Path(cmd[0]).name and (p / 'cwd').resolve() == ROOT:
+                e = proc_env(p.name)
+                if 'BIND_ADDR' in e and 'WT_BIND_ADDR' in e:
+                    servers.append((int(p.name), e))
+            if Path(cmd[0]).name == 'caddy' and '--config' in cmd:
+                config = Path(cmd[cmd.index('--config') + 1])
+                if not config.is_absolute():
+                    config = (p / 'cwd').resolve() / config
+                text = config.read_text()
+                if str(ROOT / 'client/dist') in text:
+                    proxies.append((int(p.name), str(config), text))
+        except (OSError, ValueError, IndexError, UnicodeError):
+            continue
+    if len(servers) > 1 or len(proxies) > 1:
+        raise RuntimeError('Multiple deployments belong to this checkout; resolve ambiguity before restarting.')
+    saved = json.loads((STATE / 'deployment.json').read_text()) if (STATE / 'deployment.json').exists() else {}
+    env = servers[0][1] if servers else saved.get('env', {})
+    api = int(env.get('BIND_ADDR', '127.0.0.1:4005').rsplit(':', 1)[1])
+    udp = int(env['WT_BIND_ADDR'].rsplit(':', 1)[1]) if env else next((p for p in sorted(ports['UDP']) if free_port(p, True)), None)
+    proxy = proxies[0] if proxies else None
+    if proxy:
+        listeners = re.findall(r'^\s*:(\d+)\s*\{', proxy[2], re.M)
+        if len(listeners) != 1 or f'127.0.0.1:{api}' not in proxy[2]:
+            raise RuntimeError('Existing Caddy configuration is not a single matching city listener.')
+        web = int(listeners[0])
+    elif servers and env.get('WEB_BIND_ADDR'):
+        web = int(env['WEB_BIND_ADDR'].rsplit(':', 1)[1])
+    else:
+        web = saved.get('web') or next((p for p in sorted(ports['TCP']) if p != 22 and free_port(p)), None)
+    if not servers:
+        while not free_port(api):
+            api += 1
+    if web not in ports['TCP'] or udp not in ports['UDP']:
+        raise RuntimeError('No suitable mapped TCP/UDP ports; inspect PID-1 mappings or free a deployment-owned port.')
+    return dict(ip=ip, web=web, udp=udp, api=api, public_web=ports['TCP'][web],
+                public_udp=ports["UDP"][udp], env=env,
+                server=servers[0][0] if servers else None,
+                proxy=proxy, supervisors=supervisors, server_identity=process_identity(servers[0][0]) if servers else None,
+                proxy_identity=process_identity(proxy[0]) if proxy else None, url=f'https://{ip}:{ports["TCP"][web]}/city')
+
+
+def source_hash(repo, paths):
+    # Content, including dirty/untracked source; not merely HEAD or timestamps.
+    names = run(['git', '-C', str(repo), 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', *paths]).split('\0')
+    h = hashlib.sha256()
+    for name in sorted(set(names)):
+        p = repo / name
+        if name and p.is_file():
+            h.update(name.encode()); h.update(b'\0'); h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def artifact_hash(artifact, kind):
+    if not artifact.exists():
+        return None
+    if kind == 'server':
+        return hashlib.sha256(artifact.read_bytes()).hexdigest()
+    h = hashlib.sha256()
+    for p in sorted(artifact.parent.rglob('*')):
+        if p.is_file():
+            h.update(str(p.relative_to(artifact.parent)).encode()); h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def build(blast, rebuild):
+    # A git dependency is pinned by Cargo.lock; only a path dependency can
+    # disagree with BLAST_ROOT.
+    dependency = tomllib.loads((ROOT / 'destruction/Cargo.toml').read_text())['dependencies']['blast-stress-solver'].get('path')
+    if dependency and (ROOT / 'destruction' / dependency).resolve() != (blast / 'blast-stress-solver-rs').resolve():
+        raise RuntimeError('BLAST_ROOT differs from destruction/Cargo.toml: align the Rust and native dependency paths first')
+    cachefile = STATE / 'build.json'
+    cache = json.loads(cachefile.read_text()) if cachefile.exists() else {}
+    fingerprint = {
+        'server': source_hash(ROOT, ['Cargo*', 'server', 'shared', 'destruction', 'physx-bridge', 'netcode', 'research', 'worlds', '.cargo']) + source_hash(blast.parent, ['blast']) + str(blast),
+        'client': source_hash(ROOT, ['Cargo*', 'client', 'shared', 'research/destruction-codec', 'scripts', 'worlds', 'destruction/assets', '.cargo']),
+    }
+    # Toolchain/build configuration also affects generated artifacts. Never serialize secrets.
+    config = run(['rustc', '--version']) + run(['node', '--version']) + repr([(k, os.environ.get(k)) for k in ('PHYSX_ROOT', 'VIBE_CUDA_ARCH', 'RUSTFLAGS', 'CC', 'CXX')])
+    envfiles = b''.join(p.read_bytes() for p in sorted(ROOT.glob('.env*')) if p.is_file())
+    for key in fingerprint:
+        fingerprint[key] = hashlib.sha256((fingerprint[key] + config).encode() + envfiles).hexdigest()
+    env = dict(os.environ, BLAST_ROOT=str(blast))
+    # Pin the same CUDA toolkit the server is RUN with (see serve()).
+    #
+    # Architecture 89 is qualified on 12.8, and physx-bridge/build.rs refuses to
+    # build against a toolkit that differs from the one recorded in the SDK's
+    # sdk-artifacts.json. Only the run environment set this, so a rebuild
+    # inherited whatever /usr/local/cuda points at -- 13.2 on this host -- and
+    # failed with a toolkit mismatch that reads like an SDK problem.
+    env['CUDA_HOME'] = os.environ.get('CUDA_HOME', '/usr/local/cuda-12.8')
+    env['PATH'] = f'{env["CUDA_HOME"]}/bin:{env.get("PATH", "")}'
+    env.pop('CARGO_TARGET_DIR', None)  # Artifact location is explicitly this checkout's target/.
+    jobs = []
+    binary = ROOT / 'target/release/web-fps-server'
+    artifacts = {'server': binary, 'client': STATE / 'client/index.html'}
+    def worker(kind):
+        log = STATE / f'build-{kind}.log'
+        with log.open('w') as out:
+            if kind == 'server':
+                commands = [['cargo', 'build', '--release', '-p', 'web-fps-server', '--bin', 'web-fps-server', '--features', 'blast-core,cuda-stress,native-destruction']]
+                cwd = ROOT
+            else:
+                lockhash = hashlib.sha256((ROOT / 'client/package-lock.json').read_bytes()).hexdigest()
+                commands = []
+                if not (ROOT / 'client/node_modules/.package-lock.json').exists() or cache.get('npm_lock') != lockhash:
+                    commands.append(['npm', 'ci', '--no-audit', '--no-fund'])
+                commands.append(['npm', 'run', 'build', '--', '--outDir', str(STATE / 'client'), '--emptyOutDir'])
+                cwd = ROOT / 'client'
+            for command in commands:
+                sp.run(command, cwd=cwd, env=env, stdout=out, stderr=sp.STDOUT, check=True)
+        return kind
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        for kind, artifact in artifacts.items():
+            digest = artifact_hash(artifact, kind)
+            if rebuild or cache.get(kind) != fingerprint[kind] or digest != cache.get(kind + '_artifact'):
+                print(f'Building {kind}; log: {STATE}/build-{kind}.log', flush=True)
+                jobs.append(pool.submit(worker, kind))
+        for job in jobs:
+            job.result()
+    for kind, artifact in artifacts.items():
+        fingerprint[kind + '_artifact'] = artifact_hash(artifact, kind)
+    fingerprint['npm_lock'] = hashlib.sha256((ROOT / 'client/package-lock.json').read_bytes()).hexdigest()
+    cachefile.write_text(json.dumps(fingerprint))
+    return binary
+
+
+def stop(pid, identity):
+    try:
+        current = process_identity(pid)
+    except FileNotFoundError:
+        return
+    if current != identity:
+        raise RuntimeError('PID identity changed; refusing to stop a different process')
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(100):
+        try:
+            if process_identity(pid) != identity:
+                return
+        except FileNotFoundError:
+            return
+        time.sleep(.1)
+    raise RuntimeError(f'PID {pid} did not stop; no broad pkill or forced kill attempted')
+
+
+def start(binary, env, logfile):
+    # The supervisor's OWN output goes to its own small file, never to the log
+    # it rotates.
+    #
+    # It used to inherit an open fd on server.log. Rotation renames that file,
+    # so the supervisor kept writing into the renamed -- then deleted -- inode,
+    # whose space the filesystem could not reclaim while the fd lived. Worse,
+    # an inherited fd keeps its offset across a truncation: after server.log
+    # was truncated from 10 GB, the next write from the retained fd landed at
+    # its old offset and recreated the file sparse, back out past 10 GB. It
+    # reached 17.5 GB and filled the disk to 319 MB free.
+    supervisor_log = logfile.with_name('supervisor.log')
+    rotate_log(supervisor_log, 16 * 1024 * 1024)
+    with supervisor_log.open('ab') as log:
+        return sp.Popen([sys.executable, str(Path(__file__).resolve()), '_serve', str(binary)], cwd=ROOT, env=env, stdin=sp.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+
+
+def ready(process, port):
+    for _ in range(100):
+        if process.poll() is not None:
+            raise RuntimeError('New server exited; see server.log')
+        try:
+            if health(port)['status'] == 'ok':
+                return
+        except Exception:
+            pass
+        time.sleep(.2)
+    raise RuntimeError('New server did not become healthy within 20 seconds')
+
+
+# Knobs that identify which city is being served. These persist across a bare
+# redeploy; everything else comes from the invoking environment only.
+STICKY = ('VIBE_CITY_SCENE', 'VIBE_CITY_GRID', 'VIBE_CITY_DESTRUCTION',
+          'PHYSX_DESTRUCTION_RUNTIME_DIR')
+
+
+def deploy(d, binary, force=False):
+    oldenv = d['env']
+    env = dict(os.environ, **oldenv)
+    # Which city runs is sticky: scene, grid and backend survive a bare redeploy
+    # (handled below). Every other knob is exactly what this command was invoked
+    # with. Both the running process and the saved deployment record a fully
+    # resolved environment, so a tuning value set once was inherited forward and
+    # could never be dropped -- the deployment kept running a number nobody had
+    # asked for while the logs showed the new default.
+    for name in [k for k in env
+                 if k.startswith(('VIBE_', 'BLAST_', 'PHYSX_')) and k not in STICKY]:
+        if name in os.environ:
+            env[name] = os.environ[name]
+        else:
+            del env[name]
+    cert, key = STATE / 'cert.pem', STATE / 'key.pem'
+    renew = not cert.exists() or sp.run(['openssl', 'x509', '-in', str(cert), '-checkend', '172800', '-noout'], stdout=sp.DEVNULL, stderr=sp.DEVNULL).returncode != 0
+    if cert.exists() and not renew:
+        renew = sp.run(['openssl', 'x509', '-in', str(cert), '-checkip', d['ip'], '-noout'], stdout=sp.DEVNULL, stderr=sp.DEVNULL).returncode != 0
+    desired = dict(BIND_ADDR=f'127.0.0.1:{d["api"]}', WT_BIND_ADDR=f'0.0.0.0:{d["udp"]}',
+                   WT_PUBLIC_URL=f'https://{d["ip"]}:{d["public_udp"]}')
+    if renew:
+        sp.run(['openssl', 'ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', str(key)], check=True)
+        key.chmod(0o600)
+        sp.run(['openssl', 'req', '-new', '-x509', '-key', str(key), '-out', str(cert), '-days', '12', '-subj', f'/CN={d["ip"]}', '-addext', f'subjectAltName=IP:{d["ip"]},IP:127.0.0.1'], check=True)
+    env.update(desired, WT_CERT_PEM=str(cert), WT_KEY_PEM=str(key), RUST_LOG='info')
+    env.setdefault('VIBE_PHYSICS_BACKEND', 'physx_gpu')
+    # An explicit environment override wins over the saved deployment, so a
+    # redeploy can change scene or backend. Without this the saved value always
+    # won and the deployment quietly kept serving the previous city.
+    for name, fallback in (('VIBE_CITY_SCENE', 'skyline-stable.json'), ('VIBE_CITY_GRID', '1')):
+        if name in os.environ:
+            env[name] = os.environ[name]
+        else:
+            env.setdefault(name, fallback)
+    # Built from scratch, never appended to what is already there. This used to
+    # extend the inherited value, and since the inherited value came from the
+    # running server -- which had itself inherited and extended -- every deploy
+    # added another copy. The FIRST entry wins at load time, so the path kept
+    # pointing at whichever engine was deployed first and silently ran that one
+    # no matter which SDK was built, verified and asked for.
+    env.pop('LD_LIBRARY_PATH', None)
+    # Which destruction engine this deployment runs. The PhysX library path has
+    # to match it: the Blast paths load the upstream install and the native path
+    # loads physx-2's, both ship identical library names, and LD_LIBRARY_PATH
+    # beats the binary's own rpath -- so a mismatch here silently runs a
+    # different engine than the one that was built and verified.
+    if 'VIBE_CITY_DESTRUCTION' in os.environ:
+        env['VIBE_CITY_DESTRUCTION'] = os.environ['VIBE_CITY_DESTRUCTION']
+    backend = env.setdefault('VIBE_CITY_DESTRUCTION', 'blast')
+    if backend == 'native':
+        sdk = os.environ.get('PHYSX_DESTRUCTION_SDK', '/root/workspace/physx-2')
+        env['PHYSX_DESTRUCTION_SDK'] = sdk
+        libdir = next((c for c in (f'{sdk}/bin/linux.x86_64/release',
+                                   f'{sdk}/physx/bin/linux.x86_64/release',
+                                   f'{sdk}/out/install/lib')
+                       if Path(c, 'libPhysXGpuActivity_64.so').is_file()), None)
+        if not libdir:
+            raise RuntimeError(f'No PhysX GPU module below PHYSX_DESTRUCTION_SDK={sdk}')
+        # Architecture 89 is qualified on CUDA 12.8; see the destruction
+        # runtime's CMakeLists in physx-2.
+        env['CUDA_HOME'] = os.environ.get('CUDA_HOME', '/usr/local/cuda-12.8')
+        runtime_dir = os.environ.get('PHYSX_DESTRUCTION_RUNTIME_DIR',
+                                     env.get('PHYSX_DESTRUCTION_RUNTIME_DIR'))
+        if runtime_dir:
+            runtime_dir = str(Path(runtime_dir).resolve())
+            if not Path(runtime_dir, 'libPhysXDestructionGpuRuntime_64.so').is_file():
+                raise RuntimeError(f'No native destruction runtime in {runtime_dir}')
+            env['PHYSX_DESTRUCTION_RUNTIME_DIR'] = runtime_dir
+        env['LD_LIBRARY_PATH'] = ':'.join(p for p in
+            (runtime_dir, f'{env["CUDA_HOME"]}/lib64', libdir) if p)
+    else:
+        env['LD_LIBRARY_PATH'] = '/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release'
+    # Restart unless the running process already has this exact configuration.
+    # This check used to run before the environment was resolved and compared
+    # only the bind addresses, so changing a tuning knob -- or dropping one --
+    # left the old process in place while the deploy reported success.
+    signature = {k for k in list(env) + list(oldenv)
+                 if k.startswith(('VIBE_', 'PHYSX_', 'BLAST_', 'CUDA_'))
+                 or k in ('LD_LIBRARY_PATH', 'BIND_ADDR', 'WT_BIND_ADDR', 'WT_PUBLIC_URL', 'WT_CERT_PEM', 'WT_KEY_PEM')}
+    same_binary = d['server'] and hashlib.sha256(Path(f'/proc/{d["server"]}/exe').read_bytes()).digest() == hashlib.sha256(binary.read_bytes()).digest()
+    if same_binary and d.get('supervisors') and not renew and all(env.get(k) == oldenv.get(k) for k in signature):
+        print('Server already current; no restart.', flush=True)
+        return
+    identity = (d.get('server_identity') or process_identity(d['server'])) if d['server'] else None
+    if d['server'] and health(d['api']).get('players') != 0:
+        if not force:
+            raise RuntimeError(
+                'Players are connected; builds are ready. Retry up once the match is empty, '
+                'or pass --force to replace the server and drop them.')
+        print('--force: replacing the server while players are connected; they will be '
+              'disconnected and must rejoin.', flush=True)
+    if not d['proxy']:
+        if not d['server'] and not free_port(d['web']):
+            raise RuntimeError('Selected web port became occupied')
+        env.update(WEB_BIND_ADDR=f'0.0.0.0:{d["web"]}', VIBE_WEB_DIR=str(ROOT / 'client/dist'))
+    if not d['server'] and (not free_port(d['api']) or not free_port(d['udp'], True)):
+        raise RuntimeError('Selected server ports became occupied')
+    proxytext = None
+    if d['proxy']:
+        proxytext = d['proxy'][2].replace(oldenv['WT_CERT_PEM'], str(cert)).replace(oldenv['WT_KEY_PEM'], str(key))
+        proxyconfig = STATE / f'Caddyfile-{time.time_ns()}'
+        proxyconfig.write_text(proxytext)
+        sp.run(['caddy', 'validate', '--config', str(proxyconfig), '--adapter', 'caddyfile'], check=True, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
+    previous = STATE / 'web-fps-server-previous'
+    if d['server']:
+        if process_identity(d['server']) != identity:
+            raise RuntimeError('Serving process changed; retry deployment')
+        # After a rollback the serving process IS `previous`; copying a file
+        # onto itself fails, so stage the copy and replace atomically.
+        staged = previous.with_name(previous.name + '.staging')
+        shutil.copyfile(f'/proc/{d["server"]}/exe', staged)
+        staged.chmod(0o700)
+        os.replace(staged, previous)
+    for supervisor, stamp in d.get('supervisors', []):
+        stop(supervisor, stamp)
+    if d['server']:
+        stop(d['server'], identity)
+    active = STATE / f'web-fps-server-{time.time_ns()}'
+    shutil.copy2(binary, active)
+    process = start(active, env, STATE / 'server.log')
+    try:
+        ready(process, d['api'])
+    except Exception:
+        if process.poll() is None:
+            stop(process.pid, process_identity(process.pid))
+        if d['server']:
+            rollback = start(previous, oldenv, STATE / 'rollback.log')
+            ready(rollback, d['api'])
+        raise
+    if proxytext:
+        proxyid = d['proxy_identity']
+        stop(d['proxy'][0], proxyid)
+        with (STATE / 'caddy.log').open('ab') as log:
+            proxy = sp.Popen(['caddy', 'run', '--config', str(proxyconfig), '--adapter', 'caddyfile'], cwd=ROOT, stdin=sp.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        time.sleep(.5)
+        if proxy.poll() is not None:
+            with (STATE / 'caddy.log').open('ab') as log:
+                sp.Popen(['caddy', 'run', '--config', d['proxy'][1], '--adapter', 'caddyfile'], stdin=sp.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+            raise RuntimeError('Caddy failed; attempted to restore its original config. See caddy.log.')
+    (STATE / 'deployment.json').write_text(json.dumps(dict(env=env, web=d['web'])))
+    print(f'Started server PID {process.pid}', flush=True)
+
+
+def verify(d, browser=False, public=False):
+    origin = f'https://127.0.0.1:{d["web"]}'
+    body, headers = fetch(origin + '/city')
+    headers = {k.lower(): v for k, v in headers.items()}
+    if b'<html' not in body.lower() or headers.get('cross-origin-opener-policy') != 'same-origin' or headers.get('cross-origin-embedder-policy') not in ('require-corp', 'credentialless'):
+        raise RuntimeError('SPA or cross-origin isolation headers missing')
+    h = json.loads(fetch(origin + '/healthz')[0])
+    if h.get('status') != 'ok' or h.get('physics_backend') != 'physx_gpu':
+        raise RuntimeError('GPU server is not healthy')
+    session = json.loads(fetch(origin + '/session-config?match_id=city-default')[0])
+    expected = f'https://{d["ip"]}:{d["public_udp"]}/game'
+    if session['url'] != expected:
+        raise RuntimeError(f'Advertised URL mismatch: {session["url"]} != {expected}')
+    certpath = d['env'].get('WT_CERT_PEM')
+    if not certpath:
+        raise RuntimeError('Running certificate path unknown; run status/up first')
+    der = sp.check_output(['openssl', 'x509', '-in', certpath, '-outform', 'der'])
+    if hashlib.sha256(der).hexdigest() != session['server_certificate_hash_hex']:
+        raise RuntimeError('Certificate pin mismatch')
+    certtext = run(['openssl', 'x509', '-in', certpath, '-noout', '-text'])
+    if 'prime256v1' not in certtext:
+        raise RuntimeError('WebTransport certificate is not P-256')
+    dates = ssl._ssl._test_decode_cert(certpath)
+    before, after = [ssl.cert_time_to_seconds(dates[k]) for k in ('notBefore', 'notAfter')]
+    if not before <= time.time() < after or after - before > 14 * 86400:
+        raise RuntimeError('Certificate expired, not yet valid, or exceeds 14 days')
+    sp.run(['openssl', 'x509', '-in', certpath, '-checkip', d['ip'], '-noout'], check=True, stdout=sp.DEVNULL)
+    manifest, _ = fetch(origin + '/city-manifest/' + session['city_manifest_hash'])
+    if manifest[:4] != b'VLCM':
+        raise RuntimeError('City manifest is not binary VLCM')
+    report = dict(url=d['url'], health=h, manifest_bytes=len(manifest), certificate_expires=dates['notAfter'],
+                  local_http='passed', public_https='not_checked', public_udp='not_verified', browser='not_requested')
+    if public:
+        # Explicit opt-in: a third party fetches the public health endpoint only.
+        try:
+            text = fetch('https://r.jina.ai/' + d['url'].replace('/city', '/healthz'))[0].decode()
+            report['public_https'] = 'passed' if '"status":"ok"' in text and '"physics_backend":"physx_gpu"' in text else 'inconclusive'
+        except Exception as e:
+            report['public_https'] = 'inconclusive: ' + str(e)
+    if browser:
+        sp.run(['node', str(ROOT / 'scripts/vast-city-verify.mjs'), origin, str(d['udp']), str(STATE / 'browser.json')], cwd=ROOT / 'client', check=True, timeout=100)
+        report['browser'] = json.loads((STATE / 'browser.json').read_text())
+    (STATE / 'verification.json').write_text(json.dumps(report, indent=2))
+    return report
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('action', choices=['status', 'up', 'verify'], nargs='?', default='status')
+    parser.add_argument('--blast-root', type=Path, default=Path(os.environ.get('BLAST_ROOT', ROOT.parent / 'blast-stress-solver-2/blast')))
+    parser.add_argument('--rebuild', action='store_true')
+    parser.add_argument('--force', action='store_true',
+                        help='Replace the server even with players connected, disconnecting them')
+    parser.add_argument('--browser', action='store_true', help='Bounded, low-resolution render/WT smoke test; does not shoot')
+    parser.add_argument('--public', action='store_true', help='Ask r.jina.ai to fetch the public /healthz endpoint')
+    args = parser.parse_args()
+    os.umask(0o077)
+    STATE.mkdir(parents=True, exist_ok=True)
+    with (STATE / 'lock').open('w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        d = discover()
+        if args.action == 'status':
+            print(json.dumps({k: d[k] for k in ('url', 'server', 'web', 'udp', 'api', 'public_udp')}, indent=2))
+            return
+        if args.action == 'up':
+            blast = args.blast_root.resolve()
+            if not (blast / 'source').is_dir():
+                raise RuntimeError(f'Invalid BLAST_ROOT: {blast}')
+            binary = build(blast, args.rebuild)
+            d = discover()  # A reset or another deployment may finish while builds run.
+            staged = STATE / 'client'
+            if not d['server']:
+                shutil.copytree(staged, ROOT / 'client/dist', dirs_exist_ok=True)
+            deploy(d, binary, args.force)
+            if staged.exists():
+                # Keep old content-addressed assets for already open browser tabs.
+                shutil.copytree(staged, ROOT / 'client/dist', dirs_exist_ok=True)
+            d = discover()
+        print(json.dumps(verify(d, args.browser, args.public), indent=2))
+
+
+# Keep at most this much server log, in one live file plus one previous.
+#
+# It was append-only and unbounded, and reached 10.1 GB on a 128 GB disk with
+# 9 GB free -- one more bad night from taking the host down. 968,102 of the
+# lines in the last 200 MB were a single PhysX message repeated: once the
+# scene's CUDA context is gone, every tick calls fetchResults() illegally and
+# says so.
+MAX_LOG_BYTES = 512 * 1024 * 1024
+
+
+def rotate_log(path, cap=None):
+    """Move the log aside if it is over the cap. Keeps exactly one previous.
+
+    Rename only, never truncate: truncating a file another process holds open
+    does not free its space and leaves that process writing at a stale offset,
+    which recreates the file sparse at its old size.
+    """
+    cap = MAX_LOG_BYTES if cap is None else cap
+    try:
+        if path.exists() and path.stat().st_size > cap:
+            previous = path.with_name(path.name + '.1')
+            if previous.exists():
+                previous.unlink()
+            path.rename(previous)
+    except OSError:
+        pass  # Logging must never be the reason the server stops.
+
+
+def pump(stream, path):
+    """Copy the child's output to `path`, rotating, collapsing repeats.
+
+    Identical consecutive lines are counted rather than written. A wedged
+    PhysX scene emits the same line every tick for as long as it is left
+    running, and a million copies of it carry exactly as much information as
+    one copy and a number -- while costing gigabytes and burying the lines
+    that matter.
+    """
+    previous = None
+    repeats = 0
+    written = 0
+    handle = path.open('ab')
+    try:
+        for line in stream:
+            if line == previous:
+                repeats += 1
+                continue
+            if repeats:
+                note = f'[vast-city supervisor] last line repeated {repeats} times\n'
+                handle.write(note.encode())
+                written += len(note)
+                repeats = 0
+            handle.write(line)
+            written += len(line)
+            previous = line
+            # Flushed per line: a crash must not take the last words with it.
+            handle.flush()
+            if written > (1 << 20):
+                written = 0
+                if path.exists() and path.stat().st_size > MAX_LOG_BYTES:
+                    handle.close()
+                    rotate_log(path)
+                    handle = path.open('ab')
+    finally:
+        if repeats:
+            handle.write(
+                f'[vast-city supervisor] last line repeated {repeats} times\n'.encode())
+        handle.close()
+
+
+def note(path, line):
+    """One line into the server log, holding no fd between calls."""
+    try:
+        with path.open('ab') as handle:
+            handle.write((line + '\n').encode())
+    except OSError:
+        pass  # Logging must never be the reason the server stops.
+
+
+def serve(binary):
+    # Keep the server available after /city-reset or an unexpected exit. The
+    # parent handles SIGTERM and terminates only its own child on replacement.
+    stopping = False
+    child = None
+    def shutdown(signum, frame):
+        nonlocal stopping
+        stopping = True
+        if child is not None and child.poll() is None:
+            child.terminate()
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    logfile = STATE / 'server.log'
+    while not stopping:
+        rotate_log(logfile)
+        # Through a pipe rather than the inherited stdout, so the supervisor
+        # can bound what one child writes. Rotating only between restarts does
+        # not help: the 968k repeated lines were all from a single lifetime.
+        child = sp.Popen([binary], stdout=sp.PIPE, stderr=sp.STDOUT)
+        pump(child.stdout, logfile)
+        code = child.wait()
+        # Appended with a short-lived handle, so the supervisor never holds an
+        # fd on the file it rotates -- and the restart still shows up in the
+        # server log, where it is needed to read a crash in context.
+        note(logfile, f'[vast-city supervisor] server exited {code}')
+        for _ in range(30):
+            if stopping:
+                break
+            time.sleep(.1)
+
+
+if __name__ == '__main__':
+    try:
+        if len(sys.argv) == 3 and sys.argv[1] == '_serve':
+            serve(sys.argv[2])
+        else:
+            main()
+    except Exception as error:
+        print(f'ERROR: {error}\nLogs/state: {STATE}', file=sys.stderr)
+        sys.exit(1)

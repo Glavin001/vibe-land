@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { initSync, WasmLocalSession, WasmSimWorld as RawWasmSimWorld } from './pkg/vibe_land_shared.js';
+import { initSync as initCoreSync } from './core-pkg/vibe_client_core_wasm.js';
 import { installWasmSimWorldCompat } from './compat';
 
 let initialized = false;
@@ -26,6 +27,8 @@ export function initWasmForTests(): void {
   const wasmPath = join(dir, 'pkg', 'vibe_land_shared_bg.wasm');
   const wasmBytes = readFileSync(wasmPath);
   initSync({ module: wasmBytes });
+  // The shared client core loads beside it (its flags are on by default: core/coreFlags.ts).
+  initCoreSync({ module: readFileSync(join(dir, 'core-pkg', 'vibe_client_core_wasm_bg.wasm')) });
   initialized = true;
 }
 

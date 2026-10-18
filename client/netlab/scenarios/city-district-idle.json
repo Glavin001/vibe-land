@@ -1,0 +1,33 @@
+{
+  "name": "city-district-idle",
+  "description": "The mixed-archetype district pack (15,918 chunks, 289x273 m, wall/slab/column) standing under its own weight with no shots fired. Proves the bigger scene holds itself up before anything is aimed at it.",
+  "symptom": [
+    "jitter",
+    "freeze",
+    "bandwidth",
+    "teleporting"
+  ],
+  "path": "/city?portal=true",
+  "matchId": "city-district-idle-{iter}",
+  "durationMs": 60000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "fractured-district.json",
+    "VIBE_CITY_GRID": "1",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "1.0"
+  },
+  "clients": [
+    {
+      "role": "observer",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        }
+      ]
+    }
+  ],
+  "iterations": 1
+}

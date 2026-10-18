@@ -1,0 +1,157 @@
+# Rebuild the toolchain image (CUDA + PhysX + Blast).
+#
+# It runs automatically when its own inputs change -- the Dockerfile or this
+# workflow -- because the previous manual-dispatch-only gate is the reason the
+# image had never been built at all. Everyday deploys still reuse whatever tag
+# `BUILDER_IMAGE_TAG` points at; this only publishes a new one.
+name: builder-image
+
+on:
+  push:
+    paths:
+      - 'docker/Dockerfile.builder'
+      - 'docker/vibe-clone'
+      - 'docker/vibe-up'
+      - 'docker/vibe-autostart'
+      - 'docker/vibe-motd.sh'
+      - 'docker/dev-README.md'
+      # The verify job runs this. Without it here, a fix to the smoke test
+      # cannot be exercised until something else happens to touch the image --
+      # which is exactly what happened to 1d9524e.
+      - 'scripts/smoke-dev-image.sh'
+      - '.github/workflows/builder-image.yml'
+  workflow_dispatch:
+    inputs:
+      physx_ref:
+        description: PhysX git ref to build
+        default: ovphysx-0.5.10
+      blast_ref:
+        description: blast-stress-solver git ref
+        default: feature/physx-gpu-destruction
+      tag:
+        description: Tag for the resulting builder image
+        default: cuda12.8-physx-ovphysx-5.5.1
+
+# Two of these at once would race for the same tag and thrash the GHA cache.
+concurrency:
+  group: builder-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The CUDA devel base plus a PhysX build needs far more than the ~14 GB a
+      # standard runner has free.
+      - name: Reclaim disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          large-packages: true
+          docker-images: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A push-triggered run has no inputs, so the defaults live here rather
+      # than only in the dispatch form.
+      - id: meta
+        run: |
+          # OCI repository names must be lowercase and the GitHub owner is not
+          # (Glavin001), so this cannot be interpolated straight into a tag.
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          tag="${{ inputs.tag || 'cuda12.8-physx-ovphysx-5.5.1' }}"
+          {
+            echo "physx_ref=${{ inputs.physx_ref || 'ovphysx-0.5.10' }}"
+            echo "blast_ref=${{ inputs.blast_ref || 'feature/physx-gpu-destruction' }}"
+            echo "tag=${tag}"
+            echo "image=ghcr.io/${owner}/vibe-land-builder:${tag}"
+            echo "cache=ghcr.io/${owner}/vibe-land-builder:buildcache"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push builder image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.builder
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          build-args: |
+            PHYSX_REF=${{ steps.meta.outputs.physx_ref }}
+            BLAST_REF=${{ steps.meta.outputs.blast_ref }}
+          # Registry cache, NOT type=gha. GitHub's Actions cache is capped at
+          # 10 GB per repository and this image is roughly twice that, so a gha
+          # cache would evict itself and be worse than none -- which is why this
+          # workflow previously had no cache at all, and why every run rebuilt
+          # the ~15-minute PhysX build from scratch even when the change was
+          # five lines at the bottom of the Dockerfile. Two runs did exactly
+          # that (235fd6e, 3eb946d: 17m02s and 16m03s to widen VIBE_CUDA_ARCH).
+          # GHCR has no such cap. The first run after this lands still pays full
+          # price -- there is nothing to restore from yet.
+          cache-from: type=registry,ref=${{ steps.meta.outputs.cache }}
+          cache-to: type=registry,ref=${{ steps.meta.outputs.cache }},mode=max
+
+      - name: Report the tag to set
+        run: |
+          image="${{ steps.meta.outputs.image }}"
+          {
+            echo "### Builder image published"
+            echo
+            echo '```'
+            echo "$image"
+            echo '```'
+            echo
+            echo "PhysX: \`${{ steps.meta.outputs.physx_ref }}\`  "
+            echo "Blast: \`${{ steps.meta.outputs.blast_ref }}\`"
+            echo
+            echo "\`server-image\` uses this tag by default. To compile against"
+            echo "a different toolchain, set the repository variable"
+            echo "\`BUILDER_IMAGE_TAG\` to that tag instead."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The build-time RUN assertions in Dockerfile.builder prove the pieces exist.
+  # This proves the image is usable as a rented dev box, which is a different
+  # question -- most importantly that a real sshd will accept a login, which no
+  # build-time check can establish and which broke the first box a human tried.
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image is ~19 GB and a standard runner has ~14 GB free.
+      - name: Reclaim disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Smoke the dev image
+        # --ref is the commit being built, not the default branch. vibe-clone
+        # defaults to the default branch, so without this the smoke test
+        # exercises whatever is on main rather than the change that produced
+        # this image -- green while proving nothing.
+        run: ./scripts/smoke-dev-image.sh --ref "${{ github.sha }}" "${{ needs.build.outputs.image }}"

@@ -1,4 +1,7 @@
+import { lazy, Suspense } from 'react';
 import './index.css';
+// Per-build renderer setup: empty in the WebGL client (see vite.config.ts).
+import '@render-backend/install';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { resolveAppRoute } from './app/routes';
@@ -9,12 +12,28 @@ import { GodModePage } from './pages/GodMode';
 import { GalleryPage } from './pages/Gallery';
 import { SharedPracticePage } from './pages/SharedPractice';
 import { RagdollLabPage } from './pages/RagdollLab';
+import { MoqDemoPage } from './pages/MoqDemo';
+import { BodiesTransportLabPage } from './pages/BodiesTransportLab';
+import { RenderBenchPage } from './pages/RenderBench';
+import { CityReplayPage } from './pages/CityReplay';
+import StructureViewerPage from './pages/StructureViewer';
 
 // E2E bridge: always-on read-only introspection for Playwright tests.
 // Importing the module installs window.__VIBE_E2E__ immediately.
 import './e2eBridge';
+import { installPoseTrace } from './city/poseTrace';
+// Agent drive: mutating look/move/shoot surface for browser agents.
+import './agentDrive';
+
+const AudioLabPage = lazy(() => import('./pages/AudioLab').then(m => ({ default: m.AudioLabPage })));
+const GaragePage = lazy(() => import('./pages/Garage').then(m => ({default: m.GaragePage})));
+const GrassLabPage = lazy(() => import('./pages/GrassLab').then(m => ({ default: m.GrassLabPage })));
 
 const root = createRoot(document.getElementById('root')!);
+// The entry module can be replaced while tuning audio. Release old component
+// effects first so their animation frames and sound loops cannot keep running
+// behind a newly mounted review page.
+import.meta.hot?.dispose(() => root.unmount());
 
 // Backwards-compat: silently rewrite /godmode to /builder/world so the URL
 // matches the new canonical path. Do this before resolving the route so the
@@ -40,6 +59,15 @@ if (
 const route = resolveAppRoute(window.location.pathname, window.location.search);
 
 switch (route.kind) {
+  case 'audioLab':
+    root.render(<Suspense fallback={<div>Opening sound studio…</div>}><AudioLabPage /></Suspense>);
+    break;
+  case 'grassLab':
+    root.render(<Suspense fallback={<div>Opening grass preview…</div>}><GrassLabPage /></Suspense>);
+    break;
+  case 'garage':
+    root.render(<Suspense fallback={<div>Opening garage…</div>}><GaragePage /></Suspense>);
+    break;
   case 'stats':
     root.render(<ServerStats />);
     break;
@@ -47,7 +75,7 @@ switch (route.kind) {
     root.render(<LoadTestPage />);
     break;
   case 'game':
-    root.render(<App mode={route.mode} />);
+    root.render(<App mode={route.mode} matchFallback={route.matchFallback} />);
     break;
   case 'sharedPractice':
     root.render(<SharedPracticePage id={route.id} />);
@@ -61,7 +89,25 @@ switch (route.kind) {
   case 'ragdollLab':
     root.render(<RagdollLabPage />);
     break;
+  case 'moqDemo':
+    root.render(<MoqDemoPage />);
+    break;
+  case 'bodiesLab':
+    root.render(<BodiesTransportLabPage />);
+    break;
+  case 'renderBench':
+    root.render(<RenderBenchPage />);
+    break;
+  case 'cityReplay':
+    root.render(<CityReplayPage />);
+    break;
+  case 'structureViewer':
+    root.render(<StructureViewerPage pack={route.pack} />);
+    break;
   case 'launcher':
   default:
     root.render(<HomePage />);
 }
+
+// Harness-only: a per-frame trace of where chosen chunks were DRAWN.
+installPoseTrace();

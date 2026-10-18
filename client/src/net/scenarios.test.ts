@@ -118,27 +118,59 @@ describe('Category A: Happy Path', () => {
     expect(divergence).toBeLessThan(0.5);
   });
 
+  // Bounded, not small. A predicting client is SUPPOSED to be ahead of the
+  // server by whatever it has sent and not yet had acknowledged; that gap is
+  // prediction working, not drift. This used to assert the gap was under two
+  // metres, which prediction makes false by construction, so three of the four
+  // cases failed permanently: the steady state here is 31 unacknowledged
+  // inputs, which is 2.88 m of walking, plus 0.56 m of standing height where
+  // the client's capsule differs from the server's pure-math body.
+  //
+  // Two frames, twice, because 120 frames is not steady state. All four
+  // latencies converge on the same 2.90 m at 31 pending inputs, but the 10 ms
+  // case is still filling its queue at frame 120 and reads 1.51 m there -- a
+  // baseline taken then looks like growth later. That is how the old threshold
+  // came to pass at 10 ms and nowhere else.
+  //
+  // Note also what the loop cannot be testing: it delivers every other frame
+  // whatever the latency is, so all four settle identically. The parameter is
+  // left because the scenario is worth running at each setting, but no
+  // conclusion about latency can be drawn from it.
   it.each([10, 50, 100, 200])(
     'A2: steady-state at %dms RTT stays bounded',
     (latencyMs) => {
       const s = createScenario({ latencyMs: latencyMs / 2 }); // one-way
 
-      // Run 120 frames (2 seconds) of forward movement
-      for (let i = 0; i < 120; i++) {
-        s.runClientFrames(1, { buttons: BTN_FORWARD });
-        s.runServerTicks(1);
-
-        // Advance clocks to simulate latency
-        if (i % 2 === 0) {
-          s.clientClock.advance(latencyMs);
-          s.serverClock.advance(latencyMs / 2);
-          s.deliverServerToClient();
+      const run = (frames: number) => {
+        for (let i = 0; i < frames; i++) {
+          s.runClientFrames(1, { buttons: BTN_FORWARD });
+          s.runServerTicks(1);
+          // Advance clocks to simulate latency
+          if (i % 2 === 0) {
+            s.clientClock.advance(latencyMs);
+            s.serverClock.advance(latencyMs / 2);
+            s.deliverServerToClient();
+          }
         }
-      }
+      };
 
-      // Server and client should be reasonably close
-      const divergence = s.getClientServerDivergence();
-      expect(divergence).toBeLessThan(2.0);
+      run(240);
+      const settled = s.getClientServerDivergence();
+      expect(s.getPendingInputCount()).toBeGreaterThan(0);
+
+      // Steady state: another four seconds of the same input must not widen the
+      // gap. A client that is merely ahead stays the same distance ahead; one
+      // that is drifting keeps going, and that is the failure worth catching.
+      run(240);
+      const later = s.getClientServerDivergence();
+      expect(later).toBeLessThan(settled + 0.5);
+
+      // And the gap has to be accounted for, not merely stable: everything the
+      // client leads by should be inputs the server has not run yet, at a
+      // walking pace, plus the height difference between the two bodies. Twice
+      // that is generous and still catches real drift.
+      const walked = (s.getPendingInputCount() / 60) * 6.0;
+      expect(later).toBeLessThan(2 * (walked + 1.0));
     },
   );
 });
@@ -945,23 +977,25 @@ describe('Category G: Interpolation Edge Cases', () => {
     expect(snapshot).toBeDefined();
   });
 
-  it('G24: server clock jump — offset converges via EMA', () => {
+  it('G24: server clock jump — followed forwards without stepping back', () => {
     const clock = new ServerClockEstimator();
+    const tick = Math.round(1_000_000 / 60);
 
-    // Normal observation
-    clock.observe(1_000_000, 900_000); // offset = +100_000
+    clock.observe(1_000_000, 900_000);
     expect(clock.getOffsetUs()).toBe(100_000);
+    let last = clock.serverNowUs(900_000);
 
-    // Server time jumps forward (clock correction)
-    clock.observe(1_500_000, 950_000); // sample offset = +550_000
-    // Symmetric EMA: 100_000 * 0.9 + 550_000 * 0.1 = 145_000
-    expect(clock.getOffsetUs()).toBe(145_000);
-
-    // After many observations at the new offset, it converges
-    for (let i = 0; i < 100; i++) {
-      clock.observe(1_500_000 + i * 33_333, 950_000 + i * 33_333);
+    // Server time jumps forward by 450 ms (a resync), then runs at 60 Hz.
+    for (let i = 0; i < 180; i++) {
+      const local = 916_667 + i * tick;
+      clock.observe(1_500_000 + i * tick, local);
+      const now = clock.serverNowUs(local);
+      expect(now).toBeGreaterThanOrEqual(last);
+      last = now;
     }
-    expect(clock.getOffsetUs()).toBeCloseTo(550_000, -4);
+    // Converged: tracking the new stream within a tick.
+    const local = 916_667 + 179 * tick;
+    expect(Math.abs(clock.serverNowUs(local) - (1_500_000 + 179 * tick))).toBeLessThan(tick);
   });
 
   it('G25: interpolation delay too short — holds at latest sample', () => {

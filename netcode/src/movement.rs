@@ -30,8 +30,17 @@ impl Default for MoveConfig {
             ground_accel: 80.0,
             air_accel: 18.0,
             friction: 10.0,
-            gravity: 20.0,
-            jump_speed: 6.5,
+            gravity: GRAVITY,
+            // 4.55, not 6.5, so the jump keeps the HEIGHT it had.
+            //
+            // Jump height is v^2/2g, so halving gravity without touching this
+            // would have doubled it: 1.06 m becomes 2.15 m. Solving for the
+            // same 1.06 m at 9.81 gives 4.55. Airtime does stretch, 0.65 s to
+            // 0.93 s, and that is the real cost of Earth gravity -- a longer
+            // committed, un-steerable arc. It is a feel judgement rather than a
+            // structural one and is the first thing to re-tune if the jump
+            // reads as floaty.
+            jump_speed: 4.55,
             capsule_half_segment: 0.45,
             capsule_radius: 0.35,
             collision_offset: 0.01,
@@ -42,6 +51,47 @@ impl Default for MoveConfig {
             min_slide_radians: 30_f32.to_radians(),
         }
     }
+}
+
+/// Standard gravity, m/s^2: the one value for the whole world. Players, the
+/// PhysX scene (physx-bridge DEFAULT_WORLD_GRAVITY, asserted equal), the stress
+/// loads, the vehicles and the encoder all take it from here
+/// (physx-bridge/tests/gravity_single_source.rs).
+pub const GRAVITY: f64 = 9.81;
+
+/// The world's gravity vector, in m/s^2, taken from the same constant the
+/// player falls by.
+///
+/// One world, one gravity, and it is Earth's.
+///
+/// This ran at 20 m/s^2 for a long time -- roughly 2x Earth, almost exactly the
+/// Source engine's `sv_gravity 800` that Half-Life and Counter-Strike ship --
+/// because falling at 9.81 read as floaty: an 84 m drop took 4.1 s instead of
+/// 2.9. Removing linear damping fixed that on its own, which took away the
+/// reason.
+///
+/// What doubling it cost was the buildings. Every structure in this project is
+/// designed for 9.81 -- the flexural check `sigma = 0.75*rho*g*L^2/t` returns
+/// the parking garage's authored 300 mm slab and 8.0 m bay EXACTLY at Earth
+/// gravity, which is not a coincidence anyone arranged. At 20 the same deck
+/// sits at 99% of its cracking stress with no safety factor, so realistic
+/// concrete could not be used at all: it cracked under its own weight. Seven
+/// buildings would have needed redesigning to keep a number that existed to fix
+/// a problem already solved elsewhere.
+///
+/// What is *not* conventional is applying it to only some of the world. Source
+/// applies `sv_gravity` to players, props and ragdolls alike; a barrel in
+/// Half-Life 2 falls at 20.3 m/s^2 too. Running the player at 20 and debris at
+/// 9.81 leaves the player as the only reference frame the eye has, and
+/// everything else reads as falling in slow motion -- an 84 m drop takes 2.9 s
+/// at the player's gravity and 4.1 s at Earth's.
+pub fn world_gravity(cfg: &MoveConfig) -> [f32; 3] {
+    [0.0, -(cfg.gravity as f32), 0.0]
+}
+
+/// The default world gravity, for call sites with no config to hand.
+pub fn default_world_gravity() -> [f32; 3] {
+    world_gravity(&MoveConfig::default())
 }
 
 /// Apply ground friction to horizontal velocity.

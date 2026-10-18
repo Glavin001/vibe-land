@@ -29,7 +29,15 @@ export function resolveMultiplayerBackend(
   env: RuntimeEnv = import.meta.env as RuntimeEnv,
   locationLike: LocationLike = window.location,
 ): MultiplayerBackend {
-  const httpOrigin = normalizeOrigin(env.VITE_MULTIPLAYER_HTTP_ORIGIN, locationLike.origin);
+  return backendFromOrigin(normalizeOrigin(env.VITE_MULTIPLAYER_HTTP_ORIGIN, locationLike.origin));
+}
+
+/**
+ * Same backend shape, but for a server whose address was discovered at runtime
+ * (the control plane hands one out per match) rather than baked in at build.
+ */
+export function backendFromOrigin(origin: string): MultiplayerBackend {
+  const httpOrigin = new URL(origin).origin;
   const wsProtocol = httpOrigin.startsWith('https:') ? 'wss:' : 'ws:';
   const wsOrigin = `${wsProtocol}//${new URL(httpOrigin).host}`;
 

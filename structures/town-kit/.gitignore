@@ -1,0 +1,5 @@
+out/
+native/target/
+node_modules/
+.vite/
+__pycache__/

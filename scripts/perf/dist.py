@@ -1,0 +1,479 @@
+#!/usr/bin/env python3
+"""Distributions, not point estimates, from a record-city-trace CSV.
+
+Every wrong performance conclusion on this project came from a point
+estimate standing in for a distribution:
+
+  - a 541 ms tick was attributed to the wrong phase because the columns it
+    was decomposed against were 16-sample ring means, so the spike tick
+    reported its neighbours' average;
+  - a gather was called slower than a scatter on unbalanced arms (2 reps
+    against 1), and balancing halved the delta;
+  - a residual read 0.295 ms and IDENTICAL across five different scenes,
+    because the mean included ring warm-up;
+  - the contact callback's worst tick was found to have FEWER pairs than a
+    normal tick and 64x the cost per pair -- visible only once cost was
+    normalised per unit of work.
+
+None of those were reasoning failures. They were all "I looked at a mean".
+So this prints, for every timing column: n, min, p50, p95, p99, p99.9, max,
+mean, sd, sum, share of total, and max/p50. A tail that matters cannot hide
+behind a median, and a phase that spikes is ranked by how far it spikes.
+
+Usage:
+  dist.py TRACE.csv [--warmup N] [--by awake|pairs|none] [--spikes K]
+  dist.py A.csv B.csv --ab            compare two arms, matched by bucket
+
+Warm-up is EXCLUDED BY DEFAULT and the exclusion is printed, because the
+one time it was applied ad hoc it was forgotten on the next run.
+"""
+import argparse
+import csv
+import math
+import statistics
+import sys
+
+# Columns that are wall time in ms. Everything else is a counter or a state
+# variable and is summarised separately.
+TIME_HINTS = ("_ms", "step", "solve", "begin", "end", "readback", "events",
+              "filters", "ccd", "support", "shape", "slot", "bond_sample",
+              "gpu_wait", "fetch", "callback", "gravity", "contact_proc",
+              "frac_", "cb_", "gpu_host", "cascade", "ingest",
+              "sim", "tick_ffi", "drain", "settle", "stats_ffi", "resim")
+NOT_TIME = {"tick", "bodies", "awake", "frozen", "sleeping", "bonds", "pairs",
+            "contacts_q", "islands_skip", "islands_tot", "quiet", "freeze",
+            "unfreeze", "contact_wakes", "min_y", "pose_quiet", "overstressed",
+            "patch_hw", "escaped", "resim_passes", "cp_found", "cp_persists", "cp_points",
+            "cp_supp", "node_mm", "node_ck", "sup_calls", "sup_kin", "sup_fy",
+            "sup_exist", "sup_new", "sup_staged", "sup_unch", "sup_rows"}
+
+
+# Columns that are NOT per-tick: sampled (1 tick in 16) or smoothed over a
+# ring. They are legitimate for a 1 Hz report and WRONG for anything
+# per-tick, and the difference is invisible in the name alone -- which is how
+# a 541 ms spike came to be decomposed against its neighbours' average, and
+# how this tool's own first per-unit table reported 1.23 us/pair max on a
+# tick that actually cost 44.9. Listed here so they are marked in the table
+# and refused as denominators or spike evidence.
+DERIVED = {
+    "gpu_wait": "sampled 1-in-16",
+    "fetch_copy": "sampled fetch call, includes callbacks",
+    "result_copy": "sampled fetch call minus callbacks",
+    "callback": "16-sample ring mean",
+    "fetch_total": "16-sample ring mean",
+    "fetch_resid": "16-sample ring mean",
+}
+# The per-tick truth for each derived column, where one exists.
+PER_TICK = {"callback": "cb_tick", "fetch_total": "fetch_tick"}
+
+
+def is_time(col):
+    if col in NOT_TIME:
+        return False
+    return any(h in col for h in TIME_HINTS)
+
+
+def quant(sorted_vals, q):
+    """Nearest-rank quantile. No interpolation: with a heavy tail the
+    interpolated p99 is a number that never occurred, and the question here
+    is always 'how bad does a real tick get'."""
+    if not sorted_vals:
+        return float("nan")
+    i = min(len(sorted_vals) - 1, max(0, int(math.ceil(q * len(sorted_vals))) - 1))
+    return sorted_vals[i]
+
+
+class Dist:
+    def __init__(self, values):
+        self.v = sorted(values)
+        self.n = len(self.v)
+
+    def row(self):
+        if not self.n:
+            return None
+        v = self.v
+        mean = sum(v) / self.n
+        sd = statistics.pstdev(v) if self.n > 1 else 0.0
+        # Occurrence stats. A phase that fires on 16% of ticks at 1.4 ms each
+        # has an unconditional mean of 0.22 ms, which reads as negligible and
+        # is not -- it is a 1.4 ms spike six times a second. `hits` and
+        # `hit_mean` are what separate "cheap" from "rare but expensive", and
+        # a mean alone cannot tell you which you are looking at.
+        hits = [x for x in v if x > 0]
+        return dict(
+            n=self.n, min=v[0], p50=quant(v, 0.50), p95=quant(v, 0.95),
+            p99=quant(v, 0.99), p999=quant(v, 0.999), max=v[-1],
+            mean=mean, sd=sd, total=sum(v),
+            hits=len(hits), hit_rate=len(hits) / self.n,
+            hit_mean=(sum(hits) / len(hits)) if hits else 0.0,
+            hit_max=(hits[-1] if hits else 0.0),
+            cv=(sd / mean) if mean > 0 else 0.0,
+            ratio=(v[-1] / v[self.n // 2]) if v[self.n // 2] > 0 else float("inf"),
+        )
+
+
+def load(path, warmup):
+    with open(path) as fh:
+        rows = [r for r in csv.DictReader(fh)]
+    for row in rows:
+        if "fetch_copy" in row and "cb_tick" in row and "result_copy" not in row:
+            # fetch_copy is the whole successful fetchResults call, including
+            # callbacks. Its name previously caused callbacks to be counted
+            # again as a sibling in the tree. Unsampled copies remain zero.
+            row["result_copy"] = max(0.0, float(row["fetch_copy"]) - float(row["cb_tick"]))
+    kept = [r for r in rows if float(r["tick"]) > warmup]
+    return rows, kept
+
+
+def buckets(rows, key):
+    if key == "none":
+        return [("all", rows)]
+    edges = [(0, 500), (500, 1500), (1500, 3000), (3000, 6000), (6000, 10**9)]
+    out = []
+    for lo, hi in edges:
+        sel = [r for r in rows if lo <= float(r[key]) < hi]
+        if len(sel) >= 20:      # below this a quantile is theatre
+            out.append((f"{lo}-{hi if hi < 10**8 else '+'}", sel))
+    return out
+
+
+def tick_total(row):
+    """Measured simulation wall time, falling back to older disjoint brackets."""
+    if "sim" in row:
+        return float(row["sim"])
+    return (float(row["physx_step"]) + float(row["stress_solve"])
+            + float(row.get("post_step", 0)) + float(row.get("resim", 0)))
+
+
+def report(path, warmup, by, spikes):
+    allrows, rows = load(path, warmup)
+    print(f"== {path}")
+    print(f"   {len(allrows)} ticks, {len(allrows) - len(rows)} excluded as warm-up "
+          f"(tick <= {warmup}), {len(rows)} analysed")
+    if not rows:
+        return
+    cols = [c for c in rows[0] if is_time(c)]
+
+    for label, sel in buckets(rows, by):
+        # Match the tree budget, including post-step work and fracture replay.
+        tot = [tick_total(r) for r in sel]
+        grand = sum(tot)
+        print(f"\n-- bucket {by}={label}  ({len(sel)} ticks)  "
+              f"total p50 {quant(sorted(tot), .5):.2f} ms, "
+              f"p99 {quant(sorted(tot), .99):.2f} ms, max {max(tot):.2f} ms")
+        print(f"{'column':<20}{'n':>6}{'min':>8}{'p50':>8}{'p95':>8}{'p99':>8}"
+              f"{'p99.9':>8}{'max':>9}{'mean':>8}{'sd':>8}{'share':>7}{'max/p50':>9}")
+        stats = [("TOTAL", Dist(tot).row())]
+        for c in cols:
+            d = Dist([float(r[c]) for r in sel]).row()
+            if d and d["total"] > 0:
+                stats.append((c, d))
+        # Ranked by total time owned, so the list reads as a budget.
+        for c, d in sorted(stats, key=lambda kv: -kv[1]["total"]):
+            mark = " ~" if c in DERIVED else ""
+            print(f"{c+mark:<20}{d['n']:>6}{d['min']:>8.2f}{d['p50']:>8.2f}{d['p95']:>8.2f}"
+                  f"{d['p99']:>8.2f}{d['p999']:>8.2f}{d['max']:>9.2f}{d['mean']:>8.2f}"
+                  f"{d['sd']:>8.2f}{100 * d['total'] / max(grand, 1e-9):>6.1f}%"
+                  f"{d['ratio']:>8.1f}x")
+        if any(c in DERIVED for c, _ in stats):
+            print("   ~ = sampled or ring-smoothed; per-tick truth: "
+                  + ", ".join(f"{k}->{v}" for k, v in PER_TICK.items())
+                  + ". Not usable for spikes or per-unit.")
+
+        # Cost per unit of work. This is what exposed a spike tick with FEWER
+        # pairs than normal and 64x the cost each -- invisible in absolute ms.
+        print(f"\n   per-unit (us): {'':<10}{'p50':>10}{'p99':>10}{'max':>10}")
+        for tcol, ucol, name in (("cb_tick", "__pairs", "us/contact pair"),
+                                 ("cb_tick", "cp_points", "us/contact point"),
+                                 ("support", "pairs", "us/support pair"),
+                                 ("stress_solve", "awake", "us/awake body"),
+                                 ("physx_step", "awake", "us/awake body")):
+            if tcol in DERIVED:
+                raise AssertionError(
+                    f"{tcol} is {DERIVED[tcol]}; a per-unit cost built on it is "
+                    f"meaningless. Use {PER_TICK.get(tcol, 'a per-tick column')}.")
+            per = []
+            for r in sel:
+                if ucol == "__pairs":
+                    u = float(r.get("cp_found", 0)) + float(r.get("cp_persists", 0))
+                else:
+                    u = float(r.get(ucol, 0))
+                if u > 0:
+                    per.append(1000.0 * float(r[tcol]) / u)
+            if per:
+                s = sorted(per)
+                print(f"   {tcol:<12}{name:<18}{quant(s,.5):>10.2f}"
+                      f"{quant(s,.99):>10.2f}{s[-1]:>10.2f}")
+
+    if spikes:
+        print(f"\n-- {spikes} worst ticks by total, fully decomposed")
+        ranked = sorted(rows, key=lambda r: -tick_total(r))
+        idx = {r["tick"]: i for i, r in enumerate(rows)}
+        for r in ranked[:spikes]:
+            t = tick_total(r)
+            i = idx[r["tick"]]
+            prev = rows[i - 1] if i > 0 else r
+            pairs = float(r.get("cp_found", 0)) + float(r.get("cp_persists", 0))
+            print(f"   tick {float(r['tick']):>7.0f} total {t:>8.2f}  "
+                  f"physx {float(r['physx_step']):>7.2f} (sim {float(r.get('physx_sim',0)):>5.2f} "
+                  f"fetch {float(r.get('fetch_tick',0)):>7.2f} cb {float(r.get('cb_tick',0)):>7.2f})  "
+                  f"blast {float(r['stress_solve']):>6.2f} "
+                  f"post {float(r.get('post_step', 0)):>6.2f} "
+                  f"replay {float(r.get('resim', 0)):>6.2f}  "
+                  f"awake {float(r['awake']):>6.0f} pairs {pairs:>6.0f} "
+                  f"dBody {float(r['bodies'])-float(prev['bodies']):>5.0f} "
+                  f"dBond {float(r['bonds'])-float(prev['bonds']):>5.0f}")
+
+
+def ab(path_a, path_b, warmup, by):
+    """Matched-bucket comparison with equal n, because unbalanced arms once
+    reported -24.7% where the balanced answer was -11.7%."""
+    _, A = load(path_a, warmup)
+    _, B = load(path_b, warmup)
+    print(f"== A/B  A={path_a} ({len(A)} ticks)  B={path_b} ({len(B)} ticks)")
+    if not A or not B:
+        print("   no comparison: an arm has no ticks after warm-up")
+        return
+    cols = ["TOTAL"] + [c for c in A[0] if is_time(c) and c in B[0]]
+    b_buckets = dict(buckets(B, by))
+    for label, sa in buckets(A, by):
+        sb = b_buckets.get(label, [])
+        n = min(len(sa), len(sb))
+        if n < 20:
+            continue
+        print(f"\n-- {by}={label}   n={n} per arm (truncated to match)")
+        print(f"{'column':<20}{'A p50':>9}{'B p50':>9}{'d p50':>9}"
+              f"{'A p99':>9}{'B p99':>9}{'d p99':>9}")
+        for c in cols:
+            value = tick_total if c == "TOTAL" else lambda r: float(r[c])
+            va, vb = sorted(value(r) for r in sa[:n]), sorted(value(r) for r in sb[:n])
+            a50, b50 = quant(va, .5), quant(vb, .5)
+            a99, b99 = quant(va, .99), quant(vb, .99)
+            if max(a50, b50) < 0.05:
+                continue
+            d50 = 100 * (a50 - b50) / b50 if b50 else float("nan")
+            d99 = 100 * (a99 - b99) / b99 if b99 else float("nan")
+            print(f"{c:<20}{a50:>9.2f}{b50:>9.2f}{d50:>8.1f}%"
+                  f"{a99:>9.2f}{b99:>9.2f}{d99:>8.1f}%")
+
+
+# Parent -> children, verified against live data: stress_solve closes to
+# +0.001 ms against this child set, and physx_step to 0.00.
+#
+# blast phases like contact_proc/gravity/frac_* are NOT here because they are
+# nested INSIDE begin/solve/end, and listing them as siblings would double
+# count. They appear in the flat table instead.
+# Phases whose parent is WALL CLOCK of a parallel fan-out while their
+# children are SUMS across the concurrent slots.
+#
+# destruction.cc runs solveTick across live_slots_ on the stress pool and
+# brackets the whole fan-out; every adapter-side timer inside is accumulated
+# per slot and summed. Subtracting the sum from the wall is not a residual,
+# it is the concurrency factor -- which is how solve appeared to have 3.09 ms
+# (46%) unattributed for several rounds. There was never anything missing.
+#
+# For these, children are shown as a share of the SUM of children, and the
+# speedup is printed instead of an [unattributed] row.
+# cb_tick belongs here for the same reason as solve, arrived at from the other
+# direction: the cb_* timers accumulate inside PhysX contact callbacks, which
+# run on PhysX's worker threads, while cb_tick is the wall bracket around the
+# whole fan-out. Treating them as disjoint children printed cb_queue at 151%
+# of its parent and an [unattributed] row of -204%, which is not a residual --
+# it is thread concurrency wearing a residual's clothes.
+# cb_tick stays here: onContact is invoked from PhysX's worker threads, so its
+# children are thread-summed against a wall parent. cb_drain is NOT parallel --
+# it is a serial loop on the main thread, which is exactly why its children now
+# sum cleanly to 83% of it instead of needing an invented concurrency factor.
+# cb_tick is NOT here. It was, while it wrongly held process_extracted_pair's
+# timers; once those moved to cb_drain its remaining children (cb_entity,
+# cb_capture) sum BELOW it, and a parallel node with children under its parent
+# prints a meaningless "0.54x concurrency" where an honest residual belongs.
+# The residual is real: the per-pair loop, the removed-shape and zero-contact
+# skips, and the flag checks, none of which are timed.
+PARALLEL = {"solve"}
+
+TREE = {
+    # TOTAL uses the measured simulation wall time when present. Its children
+    # are disjoint brackets; any gap is exposed instead of defining it away.
+    # Older traces fall back to the sum of their available brackets.
+    "TOTAL": ["physx_step", "stress_solve", "post_step", "resim"],
+    "post_step": ["drain", "sup_ingest", "cascade", "readback_host", "settle",
+                  "stats_ffi"],
+    "resim": ["resim_capture", "resim_restore", "resim_step", "resim_tick"],
+    # cb_drain is the deferred-contact drain: runs inside end_step but after
+    # the fetch split is recorded, so it is a sibling of fetch, not a child.
+    "physx_step": ["physx_sim", "fetch_tick", "cb_drain"],
+    "fetch_tick": ["gpu_wait", "cb_tick", "result_copy"],
+    # Correct parenting, established 2026-09-01 by reading the code rather
+    # than the names. With VIBE_PHYSX_DEFER_CONTACTS on (the default),
+    # onContact only CAPTURES -- entity ids, extractContacts, push -- and
+    # process_extracted_pair runs later, inside drain_deferred_contacts.
+    # So resolve/queue/events/pairld/wake/census are children of CB_DRAIN.
+    #
+    # Parenting them under cb_tick made the tree report "2.65x concurrency"
+    # on a 1.73 ms parent holding 4.59 ms of children. That factor was not
+    # real: it was a 4.4 ms block attributed to the wrong phase. Under
+    # cb_drain (5.29 ms, serial on the main thread) the same children sum to
+    # 83% with no concurrency needed.
+    "cb_tick": ["cb_entity", "cb_capture", "cb_extract", "cb_resize"],
+    "cb_drain": ["cb_resolve", "cb_queue", "cb_events", "cb_pairld",
+                 "cb_wake", "cb_census"],
+    "stress_solve": ["begin", "solve", "end", "readback", "events", "filters",
+                     "ccd", "support", "shape", "slot", "bond_sample"],
+    # gpu_solve is DEVICE time and runs concurrently with gpu_host_blocked --
+    # the host is blocked precisely because the kernel is executing. Listing it
+    # as a sibling double counts and shrinks the apparent remainder. It is
+    # annotated separately below instead.
+    "solve": ["st_init", "st_graph", "st_err", "st_drain"],
+    "st_graph": ["hw_in", "gpu_host_work", "gpu_host_blocked", "st_copy",
+                 "hw_reset", "hw_bond", "hw_node"],
+}
+
+
+def tree(path, warmup, by):
+    """Hierarchical budget where the percentages actually add up.
+
+    Shares are computed from SUMS, never from quantiles. A p99 is the 99th
+    worst tick FOR THAT COLUMN, and different columns peak on different
+    ticks -- so a parent's max is not its children's maxes added, and
+    subtracting them to find 'what is missing' finds a number that describes
+    no tick that ever ran. Sums are the only statistic that decomposes, so
+    the % column is the honest one and the quantiles beside it are shape.
+    """
+    _, rows = load(path, warmup)
+    print(f"== {path}   {len(rows)} ticks analysed (warm-up tick <= {warmup} excluded)")
+    if not rows:
+        return
+    for label, sel in buckets(rows, by):
+        col = lambda c: [float(r[c]) for r in sel] if c in sel[0] else None
+        totv = [tick_total(r) for r in sel]
+        grand = sum(totv)
+        print(f"\n-- bucket {by}={label}  ({len(sel)} ticks)")
+        print(f"{'phase':<24}{'wall':>7}{'%par':>7}{'%tot':>7}"
+              f"{'raw':>7}{'min':>7}{'p50':>7}{'p95':>7}{'p99':>7}{'max':>7}"
+              f"{'hit%':>6}{'/hit':>7}{'calls':>7}")
+
+        def emit(name, values, parent_sum, depth, wall_scale=1.0):
+            """wall_scale converts a slot-summed child into its wall share.
+
+            Children of a PARALLEL node are accumulated per slot and summed, so
+            their raw mean is thread-time, not wall time, and adding them up
+            overshoots the parent -- which is exactly how `solve` once appeared
+            to have 46% unattributed. Scaling by parent_wall/children_sum gives
+            a WALL column that decomposes correctly at every depth, so the wall
+            column always sums to its parent and ultimately to TOTAL. `raw` is
+            kept beside it so the thread-time is still visible.
+            """
+            d = Dist(values).row()
+            if not d:
+                return
+            pad = "  " * depth
+            mark = " ~" if name in DERIVED else ""
+            wall = d["mean"] * wall_scale
+            raw = d["mean"]
+            print(f"{pad + name + mark:<24}{wall:>7.2f}"
+                  f"{100 * d['total'] / max(parent_sum, 1e-9):>6.1f}%"
+                  f"{100 * d['total'] / max(grand, 1e-9):>6.1f}%"
+                  f"{raw:>7.2f}{d['min']:>7.2f}"
+                  f"{d['p50']:>7.2f}{d['p95']:>7.2f}{d['p99']:>7.2f}{d['max']:>7.2f}"
+                  f"{100.0 * d['hit_rate']:>5.0f}%{d['hit_mean']:>7.2f}"
+                  f"{d['hits']:>7d}")
+
+        holes = []          # (node, signed residual sum, derived-limited?)
+
+        def walk(node, values, depth, wall_scale=1.0):
+            vsum = sum(values)
+            kids = TREE.get(node, [])
+            present = [k for k in kids if k in sel[0]]
+            acc = None
+            denom = vsum
+            kid_scale = wall_scale
+            if node in PARALLEL:
+                denom = sum(sum(col(k)) for k in present)
+                # The parent's WALL is vsum * wall_scale; the children carry
+                # `denom` of thread-time between them. This ratio is what makes
+                # the wall column add up through a concurrent fan-out.
+                kid_scale = (vsum * wall_scale / denom) if denom else wall_scale
+            for k in present:
+                kv = col(k)
+                emit(k, kv, denom, depth, kid_scale)
+                acc = kv if acc is None else [a + b for a, b in zip(acc, kv)]
+                if k in TREE:
+                    walk(k, kv, depth + 1, kid_scale)
+            if present and acc is not None:
+                if node in PARALLEL:
+                    ssum = sum(acc)
+                    speedup = ssum / max(vsum, 1e-9)
+                    print(f"{'  ' * depth}[parallel over slots]      "
+                          f"children sum {ssum / len(values):8.2f} ms/tick vs "
+                          f"{vsum / len(values):.2f} ms wall -> {speedup:.2f}x "
+                          f"concurrency. Shares above are of the SUM, not the "
+                          f"wall; the difference is NOT unattributed time.")
+                else:
+                    resid = [a - b for a, b in zip(values, acc)]
+                    # A residual under a node with SAMPLED children cannot be
+                    # closed: the children are 1-in-16 estimates, so the gap is
+                    # estimator error, not missing work. Flagged, not counted
+                    # as a coverage failure -- and it is the only reason this
+                    # tree is not exactly 100%.
+                    approx = any(k in DERIVED for k in present)
+                    holes.append((node, sum(resid), approx))
+                    emit("[unattributed]" + (" ~est" if approx else ""),
+                         resid, vsum, depth, wall_scale)
+
+        emit("TOTAL", totv, grand, 0)
+        walk("TOTAL", totv, 1, 1.0)
+        if "gpu_solve" in sel[0]:
+            g = Dist(col("gpu_solve")).row()
+            print(f"   [concurrent] gpu_solve device {g['mean']:.2f} ms mean, "
+                  f"p50 {g['p50']:.2f}, max {g['max']:.2f} -- overlaps "
+                  f"gpu_host_blocked, NOT a disjoint child of solve.")
+        exact = sum(abs(h[1]) for h in holes if not h[2])
+        est = sum(abs(h[1]) for h in holes if h[2])
+        print(f"   COVERAGE  attributed {100 * (1 - (exact + est) / grand):.2f}%"
+              f"  |  unattributed {100 * exact / grand:.2f}% exact"
+              f" + {100 * est / grand:.2f}% sampling error")
+        if exact / grand > 0.001:
+            worst = max((h for h in holes if not h[2]),
+                        key=lambda h: abs(h[1]), default=None)
+            if worst:
+                print(f"   COVERAGE WARNING  >0.1% unexplained; largest hole is "
+                      f"under '{worst[0]}' ({100 * abs(worst[1]) / grand:.2f}% "
+                      f"of total). A phase is missing a span.")
+        print("   wall = WALL ms/tick, decomposes at every level (children sum "
+              "to parent).\n   raw = as measured; for rows under a [parallel] "
+              "node that is SLOT-SUMMED\n   thread time, which is why raw can "
+              "exceed its parent and wall cannot.\n   hit% = ticks where the "
+              "phase ran; /hit = mean WHEN it ran; calls = tick count.")
+        print("   %par = share of the row above it, by SUM. Quantiles do not "
+              "decompose:\n   a parent's max and its children's maxes are "
+              "different ticks. n>0 = ticks where the phase ran at all.")
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("traces", nargs="+")
+    parser.add_argument("--warmup", type=int, default=600)
+    parser.add_argument("--by", default="awake")
+    parser.add_argument("--spikes", type=int, default=8)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--tree", action="store_true")
+    mode.add_argument("--ab", action="store_true")
+    options = parser.parse_args(argv[1:])
+    if options.warmup < 0 or options.spikes < 0:
+        parser.error("--warmup and --spikes must be non-negative")
+    if options.ab and len(options.traces) != 2:
+        parser.error("--ab requires exactly two traces")
+    if options.tree:
+        for path in options.traces:
+            tree(path, options.warmup, options.by)
+    elif options.ab:
+        ab(*options.traces, options.warmup, options.by)
+    else:
+        for path in options.traces:
+            report(path, options.warmup, options.by, options.spikes)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

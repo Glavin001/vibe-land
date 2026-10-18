@@ -1,0 +1,12 @@
+import {spawn} from 'node:child_process';
+import {mkdir,open} from 'node:fs/promises';
+import path from 'node:path';
+import {KIT} from '../src/dependencies.mjs';
+import {GARDENS_MARKET_KEY as key} from '../src/bayline-gardens-market.mjs';
+const out=path.join(KIT,'out/reviews',`${key}-cannon`);await mkdir(out,{recursive:true});
+const sdk=process.env.PHYSX_DESTRUCTION_SDK??path.resolve(KIT,'../../../PhysX');
+const log=await open(path.join(out,'native.log'),'w');
+const env={...process.env,TOWN_KIT_STRESS_TOLERANCE:'.001',TOWN_KIT_ITERATIONS:'16',TOWN_KIT_COMPACT_GPU:'1',TOWN_KIT_PRESERVE_CONTACTS:'1',TOWN_KIT_GPU_ISLAND_REPAIR:'1',...(process.platform==='darwin'?{DYLD_LIBRARY_PATH:path.join(sdk,'out/install/macos-cumetal/release/lib')}:{})};
+const code=await new Promise((resolve,reject)=>{const p=spawn(path.join(KIT,'native/target/release/town-kit-review'),[path.join(KIT,'out',`${key}.json`),'cannon',out],{env,stdio:['ignore',log.fd,log.fd]});p.on('error',reject);p.on('exit',resolve);});
+await log.close();if(code!==0)throw Error(`Native review failed; see ${out}/native.log`);
+await import('./check-gardens-market-tour.mjs');

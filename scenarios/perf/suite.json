@@ -1,0 +1,8 @@
+{
+  "why": "The performance regression suite: every scenario here runs with --reps, its budgets checked, results kept in bench-results/history.jsonl.",
+  "reps": 3,
+  "scenarios": [
+    "city-fleet-meteors-noprof",
+    "city-stock-meteors-noprof"
+  ]
+}

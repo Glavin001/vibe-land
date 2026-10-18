@@ -1,0 +1,5 @@
+# Build-only PhysX branches sdk-follow.sh also merges into integration/high-fidelity.
+# They change how the SDK is built, not what the engine computes, so their absence
+# does not make an SDK stale (scripts/fidelity/branches.tsv lists those that do).
+# repo	branch	what it carries
+physx	perf/cumetal-depfiles	per-source header dependencies for CuMetal kernels (a one-header edit rebuilds only its kernels)

@@ -1,0 +1,28 @@
+diff --git a/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu b/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu
+index 93bc870c..ef6b38a5 100644
+--- a/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu
++++ b/blast/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu
+@@ -3690,6 +3690,23 @@ private:
+         }
+         const float reciprocalLength = 1.0f / m_lengthScale;
+ #ifdef PHYSX_RESIDENT_DESTRUCTION
++        // Native inputs are each chunk's actual acceleration (force / mass),
++        // not an equal-mass surrogate. W=M^-1/2 in B=W*C and rhs=-W^-1*a
++        // must use the same authored mass/inertia. Otherwise a heavy wheel's
++        // contact force is effectively scaled by meanMass / wheelMass, and
++        // light trim can carry the same gravity reaction as an engine block.
++        // Retain the shared conditioning scales; they cancel on force export.
++        const double inertiaScale=double(m_massScale)*m_lengthScale*m_lengthScale;
++        for(unsigned i=0;i<m_nodeCount;++i) {
++            m_hostInertia[i]={
++                nodes[i].inertia>0 ? float(std::sqrt(inertiaScale/nodes[i].inertia)) : 0.0f,
++                nodes[i].mass>0 ? float(std::sqrt(double(m_massScale)/nodes[i].mass)) : 0.0f};
++            const auto weight=m_hostInertia[i];
++            if(!std::isfinite(weight.angular) || !std::isfinite(weight.linear)
++                || (nodes[i].inertia>0 && !(weight.angular>0))
++                || (nodes[i].mass>0 && !(weight.linear>0)))
++                throw std::runtime_error("Native stress mass normalization is not representable");
++        }
+         for(unsigned i=0;i<m_nodeCount;++i)m_hostPositions[i]=make_float4(nodes[i].position[0]*reciprocalLength,nodes[i].position[1]*reciprocalLength,nodes[i].position[2]*reciprocalLength,0);
+ #endif
+         for (std::uint32_t i = 0; i < m_bondCount; ++i)

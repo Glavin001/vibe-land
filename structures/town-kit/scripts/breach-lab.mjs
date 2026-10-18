@@ -1,0 +1,17 @@
+import {mkdir,writeFile} from 'node:fs/promises';
+import {Builder} from '../src/geometry.mjs';
+import {createEnvelope} from '../src/parts/envelope.mjs';
+import {M} from '../src/materials.mjs';
+import {validate} from '../src/index.mjs';
+import {KIT} from '../src/dependencies.mjs';
+import {sha,sourceProvenance} from './provenance.mjs';
+process.chdir(KIT);
+const key=process.argv[2]??'lab-timber-breach',momentum=Number(process.argv[3]??200000),radius=Number(process.argv[4]??.4);
+if(!/^[a-z0-9-]+$/.test(key)||!Number.isFinite(momentum)||momentum<=0||!Number.isFinite(radius)||radius<=0)throw Error('Invalid diagnostic inputs');
+const b=new Builder(key,{palette:'blue'}),e=createEnvelope(b,{floorBounds:[-1.8,1.8,-.5,.5]});
+b.box({min:[-1.8,-.35,-.2],max:[1.8,0,.4],fixed:true,material:M.footing,type:'foundation'});e.slab(.18);e.facade('z',[0,.18],-1.8,1.8,.18,3.2,[]);
+const pack=b.build(),bytes=JSON.stringify(pack),shots=[];
+for(const y of [.6,1.4,2.2])for(const x of [-.3,.3])shots.push({from:[x,y,1.2],to:[x,y,.1],momentum,radius,speed:30,tick:shots.length*60});
+const metadata={kind:'building',buildingType:'wall-laboratory',options:{furnished:false},assetSha256:sha(bytes),validation:validate(pack),provenance:await sourceProvenance(),rooms:[],route:[],entrances:[],cameras:{hero:{position:[5,3,6],target:[0,1.5,0]},front:{position:[0,1.6,7],target:[0,1.6,0]},rear:{position:[-4,3,-5],target:[0,1,0]},aerial:{position:[4,7,5],target:[0,1,0]}},shots:{wall:shots},shotGroups:{wall:'building'},diagnostic:'Small wall using unchanged town-kit materials, physical contacts, and fragmentation. Six impacts; all above-ground pieces dynamic.'};
+if(!metadata.validation.passed)throw Error(JSON.stringify(metadata.validation));
+await mkdir('out',{recursive:true});await writeFile(`out/${key}.json`,bytes);await writeFile(`out/${key}.meta.json`,JSON.stringify(metadata,null,2));console.log(key,metadata.validation);

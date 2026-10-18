@@ -5,6 +5,27 @@ use crate::constants::{FLAG_DEAD, FLAG_IN_VEHICLE, FLAG_ON_GROUND, FLAG_SPAWN_PR
 use crate::protocol::InputCmd;
 
 impl PhysicsArena {
+    /// Reposition only this living player; health/energy remain unchanged.
+    /// Clearing grounded state and velocity lets the normal motor apply gravity.
+    pub fn drop_player_from_camera(&mut self, player_id: u32, cmd: &crate::protocol::CityCameraDropCmd) -> bool {
+        if !cmd.is_valid() || self.players.get(&player_id).map_or(true, |p| p.dead) {
+            return false;
+        }
+        self.detach_player_from_vehicles(player_id);
+        let state = self.players.get_mut(&player_id).expect("checked player");
+        state.position = super::Vec3d::new(cmd.position[0] as f64, cmd.position[1] as f64, cmd.position[2] as f64);
+        state.velocity = super::Vec3d::zeros();
+        state.on_ground = false;
+        state.yaw = f64::from(cmd.yaw);
+        state.pitch = f64::from(cmd.pitch);
+        state.last_input = InputCmd { yaw: cmd.yaw, pitch: cmd.pitch, ..InputCmd::default() };
+        if let Some(collider) = self.dynamic.sim.colliders.get_mut(state.collider) {
+            collider.set_collision_groups(vibe_netcode::sim_world::SimWorld::player_capsule_groups());
+        }
+        self.dynamic.sim.sync_player_collider(state.collider, &state.position);
+        true
+    }
+
     pub fn simulate_player_tick(
         &mut self,
         player_id: u32,
@@ -307,5 +328,63 @@ mod tests {
 
         let (_, _, _, _, _, flags) = arena.snapshot_player(7).expect("player should exist");
         assert_ne!(flags & FLAG_SPAWN_PROTECTED, 0);
+    }
+}
+
+#[cfg(test)]
+mod camera_drop_tests {
+    use super::*;
+    use crate::{movement::MoveConfig, protocol::CityCameraDropCmd};
+
+    fn drop() -> CityCameraDropCmd { CityCameraDropCmd { position: [12.0, 40.0, -8.0], yaw: 1.0, pitch: -0.4 } }
+
+    #[test]
+    fn camera_drop_preserves_player_and_resumes_gravity() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.spawn_player(1);
+        arena.spawn_player(2);
+        let other = arena.snapshot_player(2).unwrap().0;
+        arena.apply_player_damage(1, 25);
+        let energy = arena.players[&1].energy;
+        arena.players.get_mut(&1).unwrap().velocity = super::super::Vec3d::new(8.0, 9.0, 10.0);
+        assert!(arena.drop_player_from_camera(1, &drop()));
+        let state = &arena.players[&1];
+        assert_eq!([state.position.x, state.position.y, state.position.z], [12.0, 40.0, -8.0]);
+        assert_eq!(state.velocity.norm(), 0.0);
+        assert!(!state.on_ground);
+        assert_eq!(state.hp, 75);
+        assert_eq!(state.energy, energy);
+        assert_eq!(arena.snapshot_player(2).unwrap().0, other);
+        arena.simulate_player_tick(1, &InputCmd::default(), 1.0 / 60.0);
+        assert!(arena.players[&1].position.y < 40.0);
+        assert!(arena.players[&1].velocity.y < 0.0);
+    }
+
+    #[test]
+    fn camera_drop_rejects_invalid_or_dead_players() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.spawn_player(1);
+        let original = arena.snapshot_player(1).unwrap().0;
+        let mut cmd = drop(); cmd.position[0] = f32::NAN;
+        assert!(!arena.drop_player_from_camera(1, &cmd));
+        assert_eq!(arena.snapshot_player(1).unwrap().0, original);
+        assert!(!arena.drop_player_from_camera(999, &drop()));
+        arena.set_player_dead(1, true);
+        assert!(!arena.drop_player_from_camera(1, &drop()));
+    }
+
+    #[test]
+    fn camera_drop_exits_the_vehicle_before_falling() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.spawn_player(1);
+        let vehicle = arena.spawn_vehicle(0, na::Vector3::new(0.0, 2.0, 0.0));
+        arena.enter_vehicle(1, vehicle);
+        assert!(arena.vehicle_of_player.contains_key(&1));
+        assert!(arena.drop_player_from_camera(1, &drop()));
+        assert!(!arena.vehicle_of_player.contains_key(&1));
+        assert_eq!(arena.snapshot_vehicles()[0].driver_id, 0);
+        let collider = arena.players[&1].collider;
+        assert_eq!(arena.dynamic.sim.colliders[collider].collision_groups(),
+            vibe_netcode::sim_world::SimWorld::player_capsule_groups());
     }
 }

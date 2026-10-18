@@ -1,0 +1,2687 @@
+{
+ "label": "run",
+ "tier": "standard",
+ "reps": 3,
+ "created": "2026-10-08 19:07:55",
+ "fingerprint": {
+  "git": "d374ebaf8a34de8bb596fe8c614009d22b73cf7f",
+  "dirty": true,
+  "branch": "clean/high-fidelity",
+  "sdk": {
+   "runtime": {
+    "sdk": "/Users/glavin/Development/PhysX/out/install/garage-roof",
+    "revision": "0e0aba8a0e19e6cb6d5988c5cbbffc7c548e3f27",
+    "dirty": false,
+    "libraries": "246d57c8776e42a1"
+   },
+   "high": {
+    "sdk": "/Users/glavin/Development/PhysX/.claude/worktrees/clean/out/install/garage-clean",
+    "revision": "95cf7c3005d488e0e849a3ee4a4d93b73c45c980",
+    "dirty": false,
+    "libraries": "151d5a04b663f474"
+   }
+  },
+  "binary": {
+   "runtime": {
+    "path": "/Users/glavin/Development/vibe-land/.claude/worktrees/clean/target/perf-suite/cargo-garage-roof/release/deps/web_fps_server-712d732085fa9dcf",
+    "mtime": 1791496765.3736267
+   },
+   "high": {
+    "path": "/Users/glavin/Development/vibe-land/.claude/worktrees/clean/target/perf-suite/cargo-garage-clean/release/deps/web_fps_server-712d732085fa9dcf",
+    "mtime": 1791496859.2864318
+   }
+  },
+  "packs": {
+   "runtime": {
+    "town": "a06b3eb71c23e0a3",
+    "lab-truck": "3a3324278a5876dd",
+    "lab-cannonball": "3a3324278a5876dd",
+    "lab-meteor": "3a3324278a5876dd",
+    "calib-demolition": "1c859cd021063d79"
+   },
+   "high": {
+    "town": "4c6946ea5d31f94e",
+    "lab-truck": "f2b4cba44aa0308a",
+    "lab-cannonball": "f2b4cba44aa0308a",
+    "lab-meteor": "f2b4cba44aa0308a",
+    "calib-demolition": "2d18727936eb1b02"
+   }
+  },
+  "packs_frozen": true,
+  "captures": {
+   "truck-house": "e7094d454f0fefa7",
+   "cannonball-house": "0f809f5eb734f19d",
+   "meteor-house": "e72e845f8552c0da"
+  },
+  "replay_binary": null,
+  "env": {
+   "runtime": {},
+   "high": {}
+  },
+  "host": "Glavins-MacBook-Pro.local"
+ },
+ "headline": "high",
+ "wall_seconds": 114.5130455493927,
+ "warmup_seconds": 19.044410705566406,
+ "lock_wait_seconds": 0.5984547138214111,
+ "shared_gpu": false,
+ "jobs": [
+  {
+   "job": "warmup-runtime",
+   "rc": 0,
+   "seconds": 8.008780717849731,
+   "waited": 0.02603602409362793
+  },
+  {
+   "job": "warmup-high",
+   "rc": 0,
+   "seconds": 11.035629987716675,
+   "waited": 0.033255815505981445
+  },
+  {
+   "job": "rep0-runtime-town",
+   "rc": 0,
+   "seconds": 9.73910903930664,
+   "waited": 0.017501115798950195
+  },
+  {
+   "job": "rep0-runtime-lab-truck",
+   "rc": 0,
+   "seconds": 2.1716039180755615,
+   "waited": 0.017254114151000977
+  },
+  {
+   "job": "rep0-runtime-lab-cannonball",
+   "rc": 0,
+   "seconds": 1.55485200881958,
+   "waited": 0.015858888626098633
+  },
+  {
+   "job": "rep0-runtime-lab-meteor",
+   "rc": 0,
+   "seconds": 1.6077289581298828,
+   "waited": 0.016817092895507812
+  },
+  {
+   "job": "rep0-runtime-calib-demolition",
+   "rc": 0,
+   "seconds": 1.57045578956604,
+   "waited": 0.015324115753173828
+  },
+  {
+   "job": "rep0-high-town",
+   "rc": 0,
+   "seconds": 13.57934284210205,
+   "waited": 0.0154571533203125
+  },
+  {
+   "job": "rep0-high-lab-truck",
+   "rc": 0,
+   "seconds": 2.677013874053955,
+   "waited": 0.017508268356323242
+  },
+  {
+   "job": "rep0-high-lab-cannonball",
+   "rc": 0,
+   "seconds": 1.897885799407959,
+   "waited": 0.02015995979309082
+  },
+  {
+   "job": "rep0-high-lab-meteor",
+   "rc": 0,
+   "seconds": 1.9492831230163574,
+   "waited": 0.0182039737701416
+  },
+  {
+   "job": "rep0-high-calib-demolition",
+   "rc": 0,
+   "seconds": 1.474168062210083,
+   "waited": 0.01603102684020996
+  },
+  {
+   "job": "rep1-high-town",
+   "rc": 0,
+   "seconds": 13.466931819915771,
+   "waited": 0.019231081008911133
+  },
+  {
+   "job": "rep1-high-lab-truck",
+   "rc": 0,
+   "seconds": 2.6781859397888184,
+   "waited": 0.023472070693969727
+  },
+  {
+   "job": "rep1-high-lab-cannonball",
+   "rc": 0,
+   "seconds": 1.9289069175720215,
+   "waited": 0.019733905792236328
+  },
+  {
+   "job": "rep1-high-lab-meteor",
+   "rc": 0,
+   "seconds": 2.0021190643310547,
+   "waited": 0.01917409896850586
+  },
+  {
+   "job": "rep1-high-calib-demolition",
+   "rc": 0,
+   "seconds": 1.4464609622955322,
+   "waited": 0.018232107162475586
+  },
+  {
+   "job": "rep1-runtime-town",
+   "rc": 0,
+   "seconds": 9.660177946090698,
+   "waited": 0.015835046768188477
+  },
+  {
+   "job": "rep1-runtime-lab-truck",
+   "rc": 0,
+   "seconds": 2.17797589302063,
+   "waited": 0.01636505126953125
+  },
+  {
+   "job": "rep1-runtime-lab-cannonball",
+   "rc": 0,
+   "seconds": 1.5776889324188232,
+   "waited": 0.015653133392333984
+  },
+  {
+   "job": "rep1-runtime-lab-meteor",
+   "rc": 0,
+   "seconds": 1.6179518699645996,
+   "waited": 0.021600008010864258
+  },
+  {
+   "job": "rep1-runtime-calib-demolition",
+   "rc": 0,
+   "seconds": 1.5977931022644043,
+   "waited": 0.014977693557739258
+  },
+  {
+   "job": "rep2-runtime-town",
+   "rc": 0,
+   "seconds": 9.725100994110107,
+   "waited": 0.016730308532714844
+  },
+  {
+   "job": "rep2-runtime-lab-truck",
+   "rc": 0,
+   "seconds": 2.2023377418518066,
+   "waited": 0.017450332641601562
+  },
+  {
+   "job": "rep2-runtime-lab-cannonball",
+   "rc": 0,
+   "seconds": 1.5819509029388428,
+   "waited": 0.021872997283935547
+  },
+  {
+   "job": "rep2-runtime-lab-meteor",
+   "rc": 0,
+   "seconds": 1.643705129623413,
+   "waited": 0.0195920467376709
+  },
+  {
+   "job": "rep2-runtime-calib-demolition",
+   "rc": 0,
+   "seconds": 1.5880780220031738,
+   "waited": 0.016707181930541992
+  },
+  {
+   "job": "rep2-high-town",
+   "rc": 0,
+   "seconds": 13.412635087966919,
+   "waited": 0.016208887100219727
+  },
+  {
+   "job": "rep2-high-lab-truck",
+   "rc": 0,
+   "seconds": 2.690084934234619,
+   "waited": 0.017458200454711914
+  },
+  {
+   "job": "rep2-high-lab-cannonball",
+   "rc": 0,
+   "seconds": 1.8798019886016846,
+   "waited": 0.02382493019104004
+  },
+  {
+   "job": "rep2-high-lab-meteor",
+   "rc": 0,
+   "seconds": 1.983246088027954,
+   "waited": 0.015291929244995117
+  },
+  {
+   "job": "rep2-high-calib-demolition",
+   "rc": 0,
+   "seconds": 1.4304687976837158,
+   "waited": 0.019636154174804688
+  }
+ ],
+ "problems": [],
+ "profiles": {
+  "runtime": {
+   "scenarios": {
+    "town-idle": {
+     "kind": "live",
+     "values": [
+      10.53354263305664,
+      10.415499687194824,
+      10.500540733337402
+     ],
+     "value": 10.500540733337402,
+     "cv": 0.005809608912066727,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 8.402228832244873,
+        "p95": 10.53354263305664,
+        "max": 17.71791648864746,
+        "mean": 9.113359769185385
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 7.085708141326904,
+        "city": 0.29902100563049316
+       },
+       "fetch_ms": {
+        "median": 5.840500116348267,
+        "p95": 6.857749938964844,
+        "sum": 375.66204500198364
+       },
+       "gpu_wait_ms": {
+        "median": 5.573500156402588,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 586,
+        "iterations_per_tick": 9.766666666666667,
+        "iterations_max": 16,
+        "unconverged_ticks": 23,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 24,
+        "contacts_max": 137
+       },
+       "score_value": 10.53354263305664,
+       "setup_ms": 6408.250167,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 8.604833126068115,
+        "p95": 10.415499687194824,
+        "max": 17.37958335876465,
+        "mean": 9.169974295298259
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 7.170562505722046,
+        "city": 0.32120850682258606
+       },
+       "fetch_ms": {
+        "median": 5.863916397094727,
+        "p95": 6.731500148773193,
+        "sum": 375.7075004577637
+       },
+       "gpu_wait_ms": {
+        "median": 5.715896129608154,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 586,
+        "iterations_per_tick": 9.766666666666667,
+        "iterations_max": 16,
+        "unconverged_ticks": 23,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 24,
+        "contacts_max": 137
+       },
+       "score_value": 10.415499687194824,
+       "setup_ms": 6346.94075,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 8.685770988464355,
+        "p95": 10.500540733337402,
+        "max": 16.986793518066406,
+        "mean": 9.107400703430176
+       },
+       "parts_ms_median": {
+        "player": 2.049999966402538e-05,
+        "dyn": 7.199145555496216,
+        "city": 0.3077079951763153
+       },
+       "fetch_ms": {
+        "median": 5.844083070755005,
+        "p95": 6.842082977294922,
+        "sum": 374.5128355026245
+       },
+       "gpu_wait_ms": {
+        "median": 5.556583404541016,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 586,
+        "iterations_per_tick": 9.766666666666667,
+        "iterations_max": 16,
+        "unconverged_ticks": 23,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 24,
+        "contacts_max": 137
+       },
+       "score_value": 10.500540733337402,
+       "setup_ms": 6391.426917000001,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "fleet-drive": {
+     "kind": "live",
+     "values": [
+      10.500959396362305,
+      10.395666122436523,
+      10.413707733154297
+     ],
+     "value": 10.413707733154297,
+     "cv": 0.005395361750586394,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 9.806270122528076,
+        "p95": 10.500959396362305,
+        "max": 10.961250305175781,
+        "mean": 9.865118789672852
+       },
+       "parts_ms_median": {
+        "player": 0.000708000035956502,
+        "dyn": 8.406437397003174,
+        "city": 0.3113750070333481
+       },
+       "fetch_ms": {
+        "median": 6.623020887374878,
+        "p95": 6.961166858673096,
+        "sum": 398.5166668891907
+       },
+       "gpu_wait_ms": {
+        "median": 6.73799991607666,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 960,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 60,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 13,
+        "contacts_max": 138
+       },
+       "score_value": 10.500959396362305,
+       "setup_ms": 6408.250167,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 9.848312854766846,
+        "p95": 10.395666122436523,
+        "max": 10.910374641418457,
+        "mean": 9.869809738794963
+       },
+       "parts_ms_median": {
+        "player": 0.0006670000148005784,
+        "dyn": 8.43081283569336,
+        "city": 0.3165005147457123
+       },
+       "fetch_ms": {
+        "median": 6.678874969482422,
+        "p95": 6.962041854858398,
+        "sum": 400.59604263305664
+       },
+       "gpu_wait_ms": {
+        "median": 6.558291435241699,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 960,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 60,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 13,
+        "contacts_max": 138
+       },
+       "score_value": 10.395666122436523,
+       "setup_ms": 6346.94075,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 9.835124492645264,
+        "p95": 10.413707733154297,
+        "max": 10.741167068481445,
+        "mean": 9.861304171880086
+       },
+       "parts_ms_median": {
+        "player": 0.000666000007186085,
+        "dyn": 8.355458736419678,
+        "city": 0.3131459951400757
+       },
+       "fetch_ms": {
+        "median": 6.6307289600372314,
+        "p95": 6.970375061035156,
+        "sum": 398.70666790008545
+       },
+       "gpu_wait_ms": {
+        "median": 6.537645578384399,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 960,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 60,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 13,
+        "contacts_max": 138
+       },
+       "score_value": 10.413707733154297,
+       "setup_ms": 6391.426917000001,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "town-bombard": {
+     "kind": "live",
+     "values": [
+      37.87966537475586,
+      38.0015869140625,
+      37.78208541870117
+     ],
+     "value": 37.87966537475586,
+     "cv": 0.0029026632380122395,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 11.463103771209717,
+        "p95": 37.87966537475586,
+        "max": 48.24491500854492,
+        "mean": 15.938895426856147
+       },
+       "parts_ms_median": {
+        "player": 4.099999932805076e-05,
+        "dyn": 9.759666442871094,
+        "city": 0.3788750022649765
+       },
+       "fetch_ms": {
+        "median": 7.765000581741333,
+        "p95": 34.195499420166016,
+        "sum": 1105.6833052635193
+       },
+       "gpu_wait_ms": {
+        "median": 7.136875152587891,
+        "samples": 5
+       },
+       "stress": {
+        "iterations": 1440,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 90,
+        "passes": 107,
+        "correction_passes": 17
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 6707,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 1569,
+        "contacts_max": 39852
+       },
+       "score_value": 37.87966537475586,
+       "setup_ms": 6408.250167,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 11.271833419799805,
+        "p95": 38.0015869140625,
+        "max": 49.21066665649414,
+        "mean": 15.794574218326145
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 9.676270961761475,
+        "city": 0.3717084974050522
+       },
+       "fetch_ms": {
+        "median": 7.699063062667847,
+        "p95": 34.17920684814453,
+        "sum": 1104.5562887191772
+       },
+       "gpu_wait_ms": {
+        "median": 7.192500114440918,
+        "samples": 5
+       },
+       "stress": {
+        "iterations": 1440,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 90,
+        "passes": 107,
+        "correction_passes": 17
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 6707,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 1569,
+        "contacts_max": 39852
+       },
+       "score_value": 38.0015869140625,
+       "setup_ms": 6346.94075,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 10.956499576568604,
+        "p95": 37.78208541870117,
+        "max": 47.2119140625,
+        "mean": 15.588355594211155
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 9.471083641052246,
+        "city": 0.35383349657058716
+       },
+       "fetch_ms": {
+        "median": 7.617708444595337,
+        "p95": 34.080543518066406,
+        "sum": 1098.3898429870605
+       },
+       "gpu_wait_ms": {
+        "median": 7.176084041595459,
+        "samples": 5
+       },
+       "stress": {
+        "iterations": 1440,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 90,
+        "passes": 107,
+        "correction_passes": 17
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 6707,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 1569,
+        "contacts_max": 39852
+       },
+       "score_value": 37.78208541870117,
+       "setup_ms": 6391.426917000001,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "truck-house": {
+     "kind": "live",
+     "values": [
+      5.323958873748779,
+      5.439499855041504,
+      5.41083288192749
+     ],
+     "value": 5.41083288192749,
+     "cv": 0.011159284352558984,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 240,
+       "step_ms": {
+        "median": 3.170083522796631,
+        "p95": 5.323958873748779,
+        "max": 35.09516525268555,
+        "mean": 4.087305717666944
+       },
+       "parts_ms_median": {
+        "player": 8.30000062705949e-05,
+        "dyn": 3.099604606628418,
+        "city": 0.028229501098394394
+       },
+       "fetch_ms": {
+        "median": 2.9931869506835938,
+        "p95": 5.136750221252441,
+        "sum": 935.2815902233124
+       },
+       "gpu_wait_ms": {
+        "median": 2.9685420989990234,
+        "samples": 15
+       },
+       "stress": {
+        "iterations": 3116,
+        "iterations_per_tick": 12.983333333333333,
+        "iterations_max": 64,
+        "unconverged_ticks": 7,
+        "passes": 243,
+        "correction_passes": 3
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 2841,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 801,
+        "contacts_max": 36153
+       },
+       "score_value": 5.323958873748779,
+       "setup_ms": 595.164334,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 240,
+       "step_ms": {
+        "median": 3.1901044845581055,
+        "p95": 5.439499855041504,
+        "max": 32.900333404541016,
+        "mean": 4.088960776726405
+       },
+       "parts_ms_median": {
+        "player": 0.0001250000059371814,
+        "dyn": 3.1182289123535156,
+        "city": 0.03193799965083599
+       },
+       "fetch_ms": {
+        "median": 3.0114794969558716,
+        "p95": 5.269333839416504,
+        "sum": 934.8083293437958
+       },
+       "gpu_wait_ms": {
+        "median": 3.0053749084472656,
+        "samples": 15
+       },
+       "stress": {
+        "iterations": 3117,
+        "iterations_per_tick": 12.9875,
+        "iterations_max": 64,
+        "unconverged_ticks": 8,
+        "passes": 243,
+        "correction_passes": 3
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 2841,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 801,
+        "contacts_max": 36131
+       },
+       "score_value": 5.439499855041504,
+       "setup_ms": 602.475833,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 240,
+       "step_ms": {
+        "median": 3.208958387374878,
+        "p95": 5.41083288192749,
+        "max": 34.810791015625,
+        "mean": 4.101476733883222
+       },
+       "parts_ms_median": {
+        "player": 8.30000062705949e-05,
+        "dyn": 3.1333335638046265,
+        "city": 0.03220850229263306
+       },
+       "fetch_ms": {
+        "median": 3.017562508583069,
+        "p95": 5.196249961853027,
+        "sum": 936.3032972812653
+       },
+       "gpu_wait_ms": {
+        "median": 3.0399999618530273,
+        "samples": 15
+       },
+       "stress": {
+        "iterations": 3117,
+        "iterations_per_tick": 12.9875,
+        "iterations_max": 64,
+        "unconverged_ticks": 8,
+        "passes": 243,
+        "correction_passes": 3
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 2841,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 801,
+        "contacts_max": 36131
+       },
+       "score_value": 5.41083288192749,
+       "setup_ms": 599.917625,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "cannonball-house": {
+     "kind": "live",
+     "values": [
+      4.892999649047852,
+      4.876084327697754,
+      4.852665901184082
+     ],
+     "value": 4.876084327697754,
+     "cv": 0.004155602758711268,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 4.577270984649658,
+        "p95": 4.892999649047852,
+        "max": 26.939708709716797,
+        "mean": 4.420807880825467
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 4.4214372634887695,
+        "city": 0.11262499913573265
+       },
+       "fetch_ms": {
+        "median": 4.34389591217041,
+        "p95": 4.65595817565918,
+        "sum": 377.2632930278778
+       },
+       "gpu_wait_ms": {
+        "median": 4.252812623977661,
+        "samples": 6
+       },
+       "stress": {
+        "iterations": 538,
+        "iterations_per_tick": 5.977777777777778,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 92,
+        "correction_passes": 2
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 2983,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 909,
+        "contacts_max": 27295
+       },
+       "score_value": 4.892999649047852,
+       "setup_ms": 589.854667,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 4.5517919063568115,
+        "p95": 4.876084327697754,
+        "max": 27.21512222290039,
+        "mean": 4.428578172789679
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 4.387728691101074,
+        "city": 0.1172499991953373
+       },
+       "fetch_ms": {
+        "median": 4.309270858764648,
+        "p95": 4.597167015075684,
+        "sum": 377.1412124633789
+       },
+       "gpu_wait_ms": {
+        "median": 4.2726874351501465,
+        "samples": 6
+       },
+       "stress": {
+        "iterations": 538,
+        "iterations_per_tick": 5.977777777777778,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 92,
+        "correction_passes": 2
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 2983,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 909,
+        "contacts_max": 27295
+       },
+       "score_value": 4.876084327697754,
+       "setup_ms": 590.3117500000001,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 4.581979513168335,
+        "p95": 4.852665901184082,
+        "max": 27.282751083374023,
+        "mean": 4.434061119291518
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 4.4252705574035645,
+        "city": 0.11789550259709358
+       },
+       "fetch_ms": {
+        "median": 4.3509581089019775,
+        "p95": 4.574334144592285,
+        "sum": 377.8235423564911
+       },
+       "gpu_wait_ms": {
+        "median": 4.237687826156616,
+        "samples": 6
+       },
+       "stress": {
+        "iterations": 538,
+        "iterations_per_tick": 5.977777777777778,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 92,
+        "correction_passes": 2
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 2983,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 909,
+        "contacts_max": 27295
+       },
+       "score_value": 4.852665901184082,
+       "setup_ms": 589.0466250000001,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "meteor-house": {
+     "kind": "live",
+     "values": [
+      4.632750034332275,
+      4.746584415435791,
+      4.687707901000977
+     ],
+     "value": 4.687707901000977,
+     "cv": 0.01214081027566643,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 120,
+       "step_ms": {
+        "median": 3.0572293996810913,
+        "p95": 4.632750034332275,
+        "max": 26.273622512817383,
+        "mean": 3.8193465332190195
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 2.990083932876587,
+        "city": 0.03816649876534939
+       },
+       "fetch_ms": {
+        "median": 2.920020580291748,
+        "p95": 4.3807501792907715,
+        "sum": 432.55274653434753
+       },
+       "gpu_wait_ms": {
+        "median": 3.315874934196472,
+        "samples": 8
+       },
+       "stress": {
+        "iterations": 324,
+        "iterations_per_tick": 2.7,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 121,
+        "correction_passes": 1
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3067,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 993,
+        "contacts_max": 16075
+       },
+       "score_value": 4.632750034332275,
+       "setup_ms": 586.0517910000001,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 120,
+       "step_ms": {
+        "median": 3.0052289962768555,
+        "p95": 4.746584415435791,
+        "max": 26.440500259399414,
+        "mean": 3.821686488389969
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 2.9357705116271973,
+        "city": 0.03829149901866913
+       },
+       "fetch_ms": {
+        "median": 2.8627500534057617,
+        "p95": 4.392624855041504,
+        "sum": 431.8543756008148
+       },
+       "gpu_wait_ms": {
+        "median": 3.450229048728943,
+        "samples": 8
+       },
+       "stress": {
+        "iterations": 324,
+        "iterations_per_tick": 2.7,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 121,
+        "correction_passes": 1
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3067,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 993,
+        "contacts_max": 16075
+       },
+       "score_value": 4.746584415435791,
+       "setup_ms": 592.268417,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 120,
+       "step_ms": {
+        "median": 3.068271040916443,
+        "p95": 4.687707901000977,
+        "max": 26.338790893554688,
+        "mean": 3.828275046745936
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 2.9970000982284546,
+        "city": 0.04758300073444843
+       },
+       "fetch_ms": {
+        "median": 2.923646092414856,
+        "p95": 4.408999919891357,
+        "sum": 432.7465763092041
+       },
+       "gpu_wait_ms": {
+        "median": 3.3394159078598022,
+        "samples": 8
+       },
+       "stress": {
+        "iterations": 324,
+        "iterations_per_tick": 2.7,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 121,
+        "correction_passes": 1
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3067,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 993,
+        "contacts_max": 16075
+       },
+       "score_value": 4.687707901000977,
+       "setup_ms": 591.633458,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "calib-collapse": {
+     "kind": "live",
+     "values": [
+      10.2527494430542,
+      10.290833473205566,
+      10.251167297363281
+     ],
+     "value": 10.2527494430542,
+     "cv": 0.0021878879649809752,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 150,
+       "step_ms": {
+        "median": 3.780041456222534,
+        "p95": 10.2527494430542,
+        "max": 12.548999786376953,
+        "mean": 5.022811926205953
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 3.6732290983200073,
+        "city": 0.11702049896121025
+       },
+       "fetch_ms": {
+        "median": 3.6691874265670776,
+        "p95": 10.112833976745605,
+        "sum": 734.776918888092
+       },
+       "gpu_wait_ms": {
+        "median": 4.501334190368652,
+        "samples": 9
+       },
+       "stress": {
+        "iterations": 1240,
+        "iterations_per_tick": 8.266666666666667,
+        "iterations_max": 12,
+        "unconverged_ticks": 0,
+        "passes": 177,
+        "correction_passes": 27
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 43,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 867,
+        "contacts_max": 15830
+       },
+       "score_value": 10.2527494430542,
+       "setup_ms": 310.278667,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 150,
+       "step_ms": {
+        "median": 3.8087915182113647,
+        "p95": 10.290833473205566,
+        "max": 13.11504077911377,
+        "mean": 5.063261143366495
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 3.6463749408721924,
+        "city": 0.12608350068330765
+       },
+       "fetch_ms": {
+        "median": 3.6401870250701904,
+        "p95": 10.152000427246094,
+        "sum": 739.3433730602264
+       },
+       "gpu_wait_ms": {
+        "median": 4.583083152770996,
+        "samples": 9
+       },
+       "stress": {
+        "iterations": 1240,
+        "iterations_per_tick": 8.266666666666667,
+        "iterations_max": 12,
+        "unconverged_ticks": 0,
+        "passes": 177,
+        "correction_passes": 27
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 43,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 867,
+        "contacts_max": 15830
+       },
+       "score_value": 10.290833473205566,
+       "setup_ms": 304.979333,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 150,
+       "step_ms": {
+        "median": 3.8024165630340576,
+        "p95": 10.251167297363281,
+        "max": 12.59475040435791,
+        "mean": 5.028531721433004
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 3.686666488647461,
+        "city": 0.11927099898457527
+       },
+       "fetch_ms": {
+        "median": 3.682333469390869,
+        "p95": 10.11762523651123,
+        "sum": 735.072747707367
+       },
+       "gpu_wait_ms": {
+        "median": 4.481500148773193,
+        "samples": 9
+       },
+       "stress": {
+        "iterations": 1240,
+        "iterations_per_tick": 8.266666666666667,
+        "iterations_max": 12,
+        "unconverged_ticks": 0,
+        "passes": 177,
+        "correction_passes": 27
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 43,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 867,
+        "contacts_max": 15830
+       },
+       "score_value": 10.251167297363281,
+       "setup_ms": 300.837875,
+       "complete": true
+      }
+     ],
+     "delta": null
+    }
+   },
+   "geomean_ms": 9.121186640463426,
+   "score": null
+  },
+  "high": {
+   "scenarios": {
+    "town-idle": {
+     "kind": "live",
+     "values": [
+      9.151000022888184,
+      9.330082893371582,
+      9.327082633972168
+     ],
+     "value": 9.327082633972168,
+     "cv": 0.011062047619639987,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 7.363333225250244,
+        "p95": 9.151000022888184,
+        "max": 15.374709129333496,
+        "mean": 7.8333417495091755
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 5.9345622062683105,
+        "city": 0.3335835039615631
+       },
+       "fetch_ms": {
+        "median": 4.612104177474976,
+        "p95": 5.740209102630615,
+        "sum": 295.5197491645813
+       },
+       "gpu_wait_ms": {
+        "median": 4.3303749561309814,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 848,
+        "iterations_per_tick": 14.133333333333333,
+        "iterations_max": 16,
+        "unconverged_ticks": 52,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 19,
+        "contacts_max": 0
+       },
+       "score_value": 9.151000022888184,
+       "setup_ms": 9657.56825,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 7.225604295730591,
+        "p95": 9.330082893371582,
+        "max": 14.992875099182129,
+        "mean": 7.740796637535095
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 5.869853973388672,
+        "city": 0.3165629804134369
+       },
+       "fetch_ms": {
+        "median": 4.638979196548462,
+        "p95": 5.734375,
+        "sum": 296.25187516212463
+       },
+       "gpu_wait_ms": {
+        "median": 4.374457836151123,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 848,
+        "iterations_per_tick": 14.133333333333333,
+        "iterations_max": 16,
+        "unconverged_ticks": 52,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 19,
+        "contacts_max": 0
+       },
+       "score_value": 9.330082893371582,
+       "setup_ms": 9617.163375,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 7.3967084884643555,
+        "p95": 9.327082633972168,
+        "max": 15.064417839050293,
+        "mean": 7.834063935279846
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 5.9500203132629395,
+        "city": 0.33162499964237213
+       },
+       "fetch_ms": {
+        "median": 4.5752081871032715,
+        "p95": 5.849332809448242,
+        "sum": 296.04578948020935
+       },
+       "gpu_wait_ms": {
+        "median": 4.2638328075408936,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 848,
+        "iterations_per_tick": 14.133333333333333,
+        "iterations_max": 16,
+        "unconverged_ticks": 52,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 19,
+        "contacts_max": 0
+       },
+       "score_value": 9.327082633972168,
+       "setup_ms": 9590.402792,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "fleet-drive": {
+     "kind": "live",
+     "values": [
+      9.479166030883789,
+      9.311124801635742,
+      9.360708236694336
+     ],
+     "value": 9.360708236694336,
+     "cv": 0.009201202111455909,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 8.866583347320557,
+        "p95": 9.479166030883789,
+        "max": 10.018290519714355,
+        "mean": 8.882500696182252
+       },
+       "parts_ms_median": {
+        "player": 0.0005419999943114817,
+        "dyn": 7.462521076202393,
+        "city": 0.3328544944524765
+       },
+       "fetch_ms": {
+        "median": 5.645458221435547,
+        "p95": 5.950375080108643,
+        "sum": 339.67045497894287
+       },
+       "gpu_wait_ms": {
+        "median": 5.453104019165039,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 960,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 60,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 8,
+        "contacts_max": 0
+       },
+       "score_value": 9.479166030883789,
+       "setup_ms": 9657.56825,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 8.749104499816895,
+        "p95": 9.311124801635742,
+        "max": 10.257166862487793,
+        "mean": 8.80170628229777
+       },
+       "parts_ms_median": {
+        "player": 0.000708000035956502,
+        "dyn": 7.4255006313323975,
+        "city": 0.3200624883174896
+       },
+       "fetch_ms": {
+        "median": 5.664103984832764,
+        "p95": 5.834041118621826,
+        "sum": 340.67982816696167
+       },
+       "gpu_wait_ms": {
+        "median": 5.478729486465454,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 960,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 60,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 8,
+        "contacts_max": 0
+       },
+       "score_value": 9.311124801635742,
+       "setup_ms": 9617.163375,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 60,
+       "step_ms": {
+        "median": 8.819021224975586,
+        "p95": 9.360708236694336,
+        "max": 9.556708335876465,
+        "mean": 8.827389685312907
+       },
+       "parts_ms_median": {
+        "player": 0.0007085000106599182,
+        "dyn": 7.396479368209839,
+        "city": 0.3326665014028549
+       },
+       "fetch_ms": {
+        "median": 5.6269166469573975,
+        "p95": 5.927792072296143,
+        "sum": 338.92324924468994
+       },
+       "gpu_wait_ms": {
+        "median": 5.574166536331177,
+        "samples": 4
+       },
+       "stress": {
+        "iterations": 960,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 60,
+        "passes": 60,
+        "correction_passes": 0
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 0,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 8,
+        "contacts_max": 0
+       },
+       "score_value": 9.360708236694336,
+       "setup_ms": 9590.402792,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "town-bombard": {
+     "kind": "live",
+     "values": [
+      45.64899826049805,
+      41.891170501708984,
+      44.49345397949219
+     ],
+     "value": 44.49345397949219,
+     "cv": 0.04373362712364082,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 26.204023361206055,
+        "p95": 45.64899826049805,
+        "max": 55.24524688720703,
+        "mean": 23.982394981384278
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 24.438937187194824,
+        "city": 0.5043125152587891
+       },
+       "fetch_ms": {
+        "median": 22.599458694458008,
+        "p95": 39.757999420166016,
+        "sum": 1820.0434947013855
+       },
+       "gpu_wait_ms": {
+        "median": 22.46758460998535,
+        "samples": 5
+       },
+       "stress": {
+        "iterations": 1440,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 90,
+        "passes": 141,
+        "correction_passes": 51
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 7442,
+        "crushed": 378,
+        "error_ticks": 0,
+        "awake_max": 1945,
+        "contacts_max": 47268
+       },
+       "score_value": 45.64899826049805,
+       "setup_ms": 9657.56825,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 26.03810405731201,
+        "p95": 41.891170501708984,
+        "max": 45.65071105957031,
+        "mean": 23.76753618452284
+       },
+       "parts_ms_median": {
+        "player": 4.099999932805076e-05,
+        "dyn": 24.515334129333496,
+        "city": 0.4610835015773773
+       },
+       "fetch_ms": {
+        "median": 22.648791313171387,
+        "p95": 38.12787628173828,
+        "sum": 1820.0927486419678
+       },
+       "gpu_wait_ms": {
+        "median": 22.26816749572754,
+        "samples": 5
+       },
+       "stress": {
+        "iterations": 1440,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 90,
+        "passes": 141,
+        "correction_passes": 51
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 7370,
+        "crushed": 325,
+        "error_ticks": 0,
+        "awake_max": 1877,
+        "contacts_max": 46287
+       },
+       "score_value": 41.891170501708984,
+       "setup_ms": 9617.163375,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 26.145395278930664,
+        "p95": 44.49345397949219,
+        "max": 47.993709564208984,
+        "mean": 23.658463997311063
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 24.474541664123535,
+        "city": 0.46772949397563934
+       },
+       "fetch_ms": {
+        "median": 22.67237377166748,
+        "p95": 39.98649978637695,
+        "sum": 1809.4006214141846
+       },
+       "gpu_wait_ms": {
+        "median": 22.489999771118164,
+        "samples": 5
+       },
+       "stress": {
+        "iterations": 1440,
+        "iterations_per_tick": 16.0,
+        "iterations_max": 16,
+        "unconverged_ticks": 90,
+        "passes": 141,
+        "correction_passes": 51
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 7442,
+        "crushed": 378,
+        "error_ticks": 0,
+        "awake_max": 1945,
+        "contacts_max": 47268
+       },
+       "score_value": 44.49345397949219,
+       "setup_ms": 9590.402792,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "truck-house": {
+     "kind": "live",
+     "values": [
+      8.267749786376953,
+      8.238333702087402,
+      8.190457344055176
+     ],
+     "value": 8.238333702087402,
+     "cv": 0.004738951973431012,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 240,
+       "step_ms": {
+        "median": 2.9764580726623535,
+        "p95": 8.267749786376953,
+        "max": 48.733497619628906,
+        "mean": 4.6698079695304235
+       },
+       "parts_ms_median": {
+        "player": 8.399999933317304e-05,
+        "dyn": 2.904603958129883,
+        "city": 0.03220800310373306
+       },
+       "fetch_ms": {
+        "median": 2.801563024520874,
+        "p95": 8.081666946411133,
+        "sum": 1074.869414806366
+       },
+       "gpu_wait_ms": {
+        "median": 2.6911659240722656,
+        "samples": 15
+       },
+       "stress": {
+        "iterations": 4669,
+        "iterations_per_tick": 19.454166666666666,
+        "iterations_max": 64,
+        "unconverged_ticks": 50,
+        "passes": 245,
+        "correction_passes": 5
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3187,
+        "crushed": 102,
+        "error_ticks": 0,
+        "awake_max": 1091,
+        "contacts_max": 44099
+       },
+       "score_value": 8.267749786376953,
+       "setup_ms": 775.294791,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 240,
+       "step_ms": {
+        "median": 2.954917073249817,
+        "p95": 8.238333702087402,
+        "max": 47.12129211425781,
+        "mean": 4.646224162975947
+       },
+       "parts_ms_median": {
+        "player": 8.30000062705949e-05,
+        "dyn": 2.888437032699585,
+        "city": 0.029333001002669334
+       },
+       "fetch_ms": {
+        "median": 2.785896420478821,
+        "p95": 8.072709083557129,
+        "sum": 1070.9785487651825
+       },
+       "gpu_wait_ms": {
+        "median": 2.6573750972747803,
+        "samples": 15
+       },
+       "stress": {
+        "iterations": 4669,
+        "iterations_per_tick": 19.454166666666666,
+        "iterations_max": 64,
+        "unconverged_ticks": 50,
+        "passes": 245,
+        "correction_passes": 5
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3187,
+        "crushed": 102,
+        "error_ticks": 0,
+        "awake_max": 1091,
+        "contacts_max": 44089
+       },
+       "score_value": 8.238333702087402,
+       "setup_ms": 775.119458,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 240,
+       "step_ms": {
+        "median": 3.0027084350585938,
+        "p95": 8.190457344055176,
+        "max": 49.04658508300781,
+        "mean": 4.7010946293671925
+       },
+       "parts_ms_median": {
+        "player": 0.0001250000059371814,
+        "dyn": 2.9214999675750732,
+        "city": 0.03420799970626831
+       },
+       "fetch_ms": {
+        "median": 2.8172495365142822,
+        "p95": 8.016834259033203,
+        "sum": 1080.867496728897
+       },
+       "gpu_wait_ms": {
+        "median": 2.6747500896453857,
+        "samples": 15
+       },
+       "stress": {
+        "iterations": 4669,
+        "iterations_per_tick": 19.454166666666666,
+        "iterations_max": 64,
+        "unconverged_ticks": 50,
+        "passes": 245,
+        "correction_passes": 5
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3187,
+        "crushed": 102,
+        "error_ticks": 0,
+        "awake_max": 1091,
+        "contacts_max": 44089
+       },
+       "score_value": 8.190457344055176,
+       "setup_ms": 786.983625,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "cannonball-house": {
+     "kind": "live",
+     "values": [
+      4.822333812713623,
+      4.919083595275879,
+      4.937958717346191
+     ],
+     "value": 4.919083595275879,
+     "cv": 0.01267685500470569,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 4.460083484649658,
+        "p95": 4.822333812713623,
+        "max": 34.693416595458984,
+        "mean": 4.541854609383477
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 4.272875070571899,
+        "city": 0.1391874998807907
+       },
+       "fetch_ms": {
+        "median": 4.199728965759277,
+        "p95": 4.551208019256592,
+        "sum": 386.0339572429657
+       },
+       "gpu_wait_ms": {
+        "median": 4.139478921890259,
+        "samples": 6
+       },
+       "stress": {
+        "iterations": 432,
+        "iterations_per_tick": 4.8,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 93,
+        "correction_passes": 3
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3222,
+        "crushed": 204,
+        "error_ticks": 0,
+        "awake_max": 1044,
+        "contacts_max": 34274
+       },
+       "score_value": 4.822333812713623,
+       "setup_ms": 768.918334,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 4.45704197883606,
+        "p95": 4.919083595275879,
+        "max": 35.34016799926758,
+        "mean": 4.566923623614841
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 4.266270875930786,
+        "city": 0.1445624977350235
+       },
+       "fetch_ms": {
+        "median": 4.186103820800781,
+        "p95": 4.64995813369751,
+        "sum": 387.00428652763367
+       },
+       "gpu_wait_ms": {
+        "median": 4.146021127700806,
+        "samples": 6
+       },
+       "stress": {
+        "iterations": 433,
+        "iterations_per_tick": 4.811111111111111,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 93,
+        "correction_passes": 3
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3222,
+        "crushed": 204,
+        "error_ticks": 0,
+        "awake_max": 1044,
+        "contacts_max": 34274
+       },
+       "score_value": 4.919083595275879,
+       "setup_ms": 779.610083,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 90,
+       "step_ms": {
+        "median": 4.446249961853027,
+        "p95": 4.937958717346191,
+        "max": 35.45249938964844,
+        "mean": 4.534918061892191
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 4.259250164031982,
+        "city": 0.13935400545597076
+       },
+       "fetch_ms": {
+        "median": 4.177854061126709,
+        "p95": 4.642250061035156,
+        "sum": 384.7420811653137
+       },
+       "gpu_wait_ms": {
+        "median": 4.212270498275757,
+        "samples": 6
+       },
+       "stress": {
+        "iterations": 432,
+        "iterations_per_tick": 4.8,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 93,
+        "correction_passes": 3
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3222,
+        "crushed": 204,
+        "error_ticks": 0,
+        "awake_max": 1044,
+        "contacts_max": 34274
+       },
+       "score_value": 4.937958717346191,
+       "setup_ms": 766.766709,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "meteor-house": {
+     "kind": "live",
+     "values": [
+      5.089959144592285,
+      5.129542350769043,
+      5.073791027069092
+     ],
+     "value": 5.089959144592285,
+     "cv": 0.005626676308065088,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 120,
+       "step_ms": {
+        "median": 2.777832865715027,
+        "p95": 5.089959144592285,
+        "max": 32.11616897583008,
+        "mean": 3.793989243110021
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 2.70968759059906,
+        "city": 0.04097900167107582
+       },
+       "fetch_ms": {
+        "median": 2.6444374322891235,
+        "p95": 4.808416843414307,
+        "sum": 427.8690390586853
+       },
+       "gpu_wait_ms": {
+        "median": 3.2730835676193237,
+        "samples": 8
+       },
+       "stress": {
+        "iterations": 302,
+        "iterations_per_tick": 2.5166666666666666,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 121,
+        "correction_passes": 1
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3251,
+        "crushed": 521,
+        "error_ticks": 0,
+        "awake_max": 1062,
+        "contacts_max": 17846
+       },
+       "score_value": 5.089959144592285,
+       "setup_ms": 775.360375,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 120,
+       "step_ms": {
+        "median": 2.8220624923706055,
+        "p95": 5.129542350769043,
+        "max": 31.915206909179688,
+        "mean": 3.803960072994232
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 2.746021032333374,
+        "city": 0.03985400125384331
+       },
+       "fetch_ms": {
+        "median": 2.6717084646224976,
+        "p95": 4.84516716003418,
+        "sum": 428.1168715953827
+       },
+       "gpu_wait_ms": {
+        "median": 3.2529585361480713,
+        "samples": 8
+       },
+       "stress": {
+        "iterations": 302,
+        "iterations_per_tick": 2.5166666666666666,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 121,
+        "correction_passes": 1
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3251,
+        "crushed": 521,
+        "error_ticks": 0,
+        "awake_max": 1062,
+        "contacts_max": 17846
+       },
+       "score_value": 5.129542350769043,
+       "setup_ms": 789.1829580000001,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 120,
+       "step_ms": {
+        "median": 2.7526040077209473,
+        "p95": 5.073791027069092,
+        "max": 32.28495788574219,
+        "mean": 3.7765252848466235
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 2.6830209493637085,
+        "city": 0.04458349943161011
+       },
+       "fetch_ms": {
+        "median": 2.613792061805725,
+        "p95": 4.81374979019165,
+        "sum": 426.119588136673
+       },
+       "gpu_wait_ms": {
+        "median": 3.202770948410034,
+        "samples": 8
+       },
+       "stress": {
+        "iterations": 302,
+        "iterations_per_tick": 2.5166666666666666,
+        "iterations_max": 64,
+        "unconverged_ticks": 1,
+        "passes": 121,
+        "correction_passes": 1
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 3251,
+        "crushed": 521,
+        "error_ticks": 0,
+        "awake_max": 1062,
+        "contacts_max": 17846
+       },
+       "score_value": 5.073791027069092,
+       "setup_ms": 774.14725,
+       "complete": true
+      }
+     ],
+     "delta": null
+    },
+    "calib-collapse": {
+     "kind": "live",
+     "values": [
+      10.701665878295898,
+      10.605500221252441,
+      10.633832931518555
+     ],
+     "value": 10.633832931518555,
+     "cv": 0.00464134531072414,
+     "reps": [
+      {
+       "kind": "live",
+       "ticks": 150,
+       "step_ms": {
+        "median": 3.912166476249695,
+        "p95": 10.701665878295898,
+        "max": 12.814332962036133,
+        "mean": 4.59884610970815
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 3.7973955869674683,
+        "city": 0.11329200118780136
+       },
+       "fetch_ms": {
+        "median": 3.793645977973938,
+        "p95": 10.568416595458984,
+        "sum": 671.6887094974518
+       },
+       "gpu_wait_ms": {
+        "median": 3.7218329906463623,
+        "samples": 9
+       },
+       "stress": {
+        "iterations": 1393,
+        "iterations_per_tick": 9.286666666666667,
+        "iterations_max": 15,
+        "unconverged_ticks": 0,
+        "passes": 164,
+        "correction_passes": 14
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 19,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 854,
+        "contacts_max": 14294
+       },
+       "score_value": 10.701665878295898,
+       "setup_ms": 317.432459,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 150,
+       "step_ms": {
+        "median": 3.876833438873291,
+        "p95": 10.605500221252441,
+        "max": 12.49033260345459,
+        "mean": 4.602798310915629
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 3.758604049682617,
+        "city": 0.11643750220537186
+       },
+       "fetch_ms": {
+        "median": 3.7544374465942383,
+        "p95": 10.452709197998047,
+        "sum": 671.5938386917114
+       },
+       "gpu_wait_ms": {
+        "median": 3.748832941055298,
+        "samples": 9
+       },
+       "stress": {
+        "iterations": 1393,
+        "iterations_per_tick": 9.286666666666667,
+        "iterations_max": 15,
+        "unconverged_ticks": 0,
+        "passes": 164,
+        "correction_passes": 14
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 19,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 854,
+        "contacts_max": 14294
+       },
+       "score_value": 10.605500221252441,
+       "setup_ms": 307.865333,
+       "complete": true
+      },
+      {
+       "kind": "live",
+       "ticks": 150,
+       "step_ms": {
+        "median": 3.923291325569153,
+        "p95": 10.633832931518555,
+        "max": 12.429291725158691,
+        "mean": 4.602727454503377
+       },
+       "parts_ms_median": {
+        "player": 0.0,
+        "dyn": 3.8091665506362915,
+        "city": 0.1141039989888668
+       },
+       "fetch_ms": {
+        "median": 3.8052704334259033,
+        "p95": 10.495291709899902,
+        "sum": 672.0320808887482
+       },
+       "gpu_wait_ms": {
+        "median": 3.8255419731140137,
+        "samples": 9
+       },
+       "stress": {
+        "iterations": 1393,
+        "iterations_per_tick": 9.286666666666667,
+        "iterations_max": 15,
+        "unconverged_ticks": 0,
+        "passes": 164,
+        "correction_passes": 14
+       },
+       "impact": {
+        "evaluations": 0,
+        "solves": 0,
+        "steps": 0,
+        "capped": 0,
+        "diverged": 0,
+        "round_budget": 0,
+        "ms": 0,
+        "longest_dispatch_ms": 0.0,
+        "logged": false
+       },
+       "work": {
+        "bonds_broken": 19,
+        "crushed": 0,
+        "error_ticks": 0,
+        "awake_max": 854,
+        "contacts_max": 14294
+       },
+       "score_value": 10.633832931518555,
+       "setup_ms": 307.415167,
+       "complete": true
+      }
+     ],
+     "delta": null
+    }
+   },
+   "geomean_ms": 9.773910053245446,
+   "score": null
+  }
+ },
+ "baseline": null,
+ "comparability": []
+}

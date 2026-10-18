@@ -1,0 +1,260 @@
+# Build, publish and verify the GPU game server image.
+#
+# This is the single definition of that build: deploy.yml calls it through
+# `workflow_call` rather than repeating the steps, so what ships to production
+# is byte-for-byte what a pull request exercised.
+#
+# It runs on every pull request that touches the server or the image, which is
+# the point -- before this existed the only path that built the image was a
+# push to main, and that same push immediately deployed a Cloudflare Worker.
+# There was no way to shake out a Dockerfile without touching production.
+name: server-image
+
+on:
+  # Branch pushes, not pull_request: a same-repo PR would otherwise build the
+  # identical SHA twice, and each build is ~20 minutes. The push check still
+  # shows up on the PR. main is excluded because deploy.yml calls this instead.
+  # (GitHub Actions does not support YAML anchors, hence the repeated list.)
+  push:
+    branches-ignore: [main]
+    paths:
+      - 'server/**'
+      - 'netcode/**'
+      - 'shared/**'
+      - 'destruction/**'
+      - 'physx-bridge/**'
+      - 'docker/**'
+      # vibe-clone ships in the toolchain image, not this one.
+      - '!docker/vibe-clone'
+      - 'scripts/package-physx-server.sh'
+      - 'scripts/smoke-image.sh'
+      - '.github/workflows/server-image.yml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      builder_tag:
+        description: Toolchain image tag to compile against
+        type: string
+        required: false
+      publish_latest:
+        description: Also tag the result `latest`
+        type: boolean
+        default: false
+    outputs:
+      image:
+        description: The fully qualified image reference that was pushed
+        value: ${{ jobs.build.outputs.image }}
+
+concurrency:
+  group: server-image-${{ github.ref }}
+  # Superseding an in-flight branch build is right; cancelling one a deploy is
+  # waiting on is not.
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # This workflow and builder-image.yml are triggered by the same push and
+      # run in PARALLEL. When a commit changes the toolchain, this job would
+      # otherwise pull the previously published builder tag and fail on whatever
+      # that commit added to it.
+      #
+      # That is not hypothetical: commit 1884281 moved Node into the toolchain
+      # image, and this job finished in 5m20s against the builder published
+      # before it, dying with `npm: command not found` in the `web` stage while
+      # the correct builder was still ten minutes from being pushed.
+      #
+      # So wait for it. No builder run on this commit means the toolchain did
+      # not change and the published tag is already correct.
+      - name: Wait for a builder-image run on this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/builder-image.yml/runs?head_sha=$GITHUB_SHA"
+          for attempt in $(seq 1 80); do
+            run="$(curl -sS -H "Authorization: Bearer $GH_TOKEN" "$api" \
+                   | jq -r '.workflow_runs[0] // empty | "\(.id) \(.html_url)"')"
+            if [ -z "$run" ]; then
+              echo "No builder-image run for this commit; the published tag is current."
+              exit 0
+            fi
+            set -- $run
+            run_id="$1"; url="$2"
+
+            # The BUILD job, not the run. builder-image also runs a `verify` job
+            # that smoke-tests the image as a developer workstation -- ssh, the
+            # clone helper, the run script's remote mode. None of that affects
+            # whether the toolchain this image compiles against was published,
+            # so a verify failure must not block the server image. Watching the
+            # run's overall conclusion got that wrong on a9ed019: build passed
+            # and pushed, verify failed, and this job refused to start.
+            jobs="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs"
+            job="$(curl -sS -H "Authorization: Bearer $GH_TOKEN" "$jobs" \
+                   | jq -r '.jobs[] | select(.name == "build") | "\(.status) \(.conclusion)"' | head -1)"
+            if [ -z "$job" ]; then
+              echo "builder-image run $run_id has no build job yet (attempt ${attempt}/80); waiting 30s"
+              sleep 30
+              continue
+            fi
+            set -- $job
+            status="$1"; conclusion="$2"
+            case "$status:$conclusion" in
+              completed:success)
+                echo "::notice::Toolchain rebuilt and published on this commit: $url"
+                exit 0 ;;
+              completed:*)
+                echo "::error::builder-image's build job ${conclusion} on this commit ($url)."
+                echo "This image compiles against that toolchain, so building now would"
+                echo "either fail confusingly or silently use a stale one. Fix the"
+                echo "builder first, then re-run this."
+                exit 1 ;;
+            esac
+            echo "builder-image build job is ${status} (attempt ${attempt}/80); waiting 30s -- $url"
+            sleep 30
+          done
+          echo "::error::Timed out after 40 minutes waiting for builder-image."
+          exit 1
+
+      # The builder image is ~15 GB; a standard runner has ~14 GB free.
+      - name: Reclaim disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          large-packages: true
+          docker-images: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        env:
+          BUILDER_TAG: ${{ inputs.builder_tag || vars.BUILDER_IMAGE_TAG }}
+        run: |
+          # Falls back to the tag builder-image.yml publishes by default, so a
+          # fresh clone needs no repository variable set by hand. Point
+          # BUILDER_IMAGE_TAG at something else to compile against a different
+          # toolchain -- that is what a PhysX or Blast bump looks like.
+          if [ -z "$BUILDER_TAG" ]; then
+            BUILDER_TAG=cuda12.8-physx-ovphysx-5.5.1
+            echo "::notice::BUILDER_IMAGE_TAG is unset; using ${BUILDER_TAG}."
+          fi
+          # Lowercase: OCI repository names must be, and the owner is not.
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          # Tags are immutable and traceable to a commit: the fleet records
+          # exactly which build is deployed, and a moving tag would make a
+          # rollback ambiguous. `latest` exists only so a person can pull one.
+          tag="sha-$(echo "${GITHUB_SHA}" | cut -c1-12)"
+          image="ghcr.io/${owner}/vibe-land-server:${tag}"
+          {
+            echo "tag=${tag}"
+            echo "image=${image}"
+            echo "builder=ghcr.io/${owner}/vibe-land-builder:${BUILDER_TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+          tags="${image}"
+          if [ "${{ inputs.publish_latest }}" = "true" ]; then
+            tags="${tags}"$'\n'"ghcr.io/${owner}/vibe-land-server:latest"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "${tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BUILDER_IMAGE=${{ steps.meta.outputs.builder }}
+            VIBE_LAND_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Server image published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.image }}"
+            echo '```'
+            echo
+            echo "Built against \`${{ steps.meta.outputs.builder }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # GitHub runners have no GPU, so this cannot assert the PhysX GPU backend --
+  # that is what `smoke-image.sh` without --cpu is for, on a rented box. What it
+  # can prove is everything that has actually gone wrong in this image before:
+  # a library the runtime layer forgot, a missing scene, an entrypoint that
+  # advertises the wrong address.
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Smoke the image without a GPU
+        run: ./scripts/smoke-image.sh --cpu "${{ needs.build.outputs.image }}"
+
+      # The sha- tag says which vibe-land commit built the image, but not which
+      # PhysX or Blast commit is compiled into it -- and BLAST_REF is a branch,
+      # so the toolchain tag alone cannot answer that either. Printing it here
+      # puts the answer in the run log for whoever has to reproduce a result.
+      - name: Report what the image was built from
+        run: |
+          manifest="$(docker run --rm --entrypoint cat \
+            "${{ needs.build.outputs.image }}" /opt/vibe-land/manifest.txt)"
+          echo "$manifest"
+          # This one is passed straight in as a build-arg, so an unresolved
+          # value means the wiring is broken and the whole point is lost.
+          grep -q '^vibe_land_commit=[0-9a-f]\{40\}$' <<<"$manifest" \
+            || { echo "the image does not record its own commit"; exit 1; }
+          # These two come from the toolchain image, which is published under a
+          # fixed tag by a workflow that fires on the *same* push as this one.
+          # So a build that lands first legitimately sees a toolchain image
+          # predating the stamping, and failing here would block the image on a
+          # race rather than on a defect. It resolves on the next build.
+          for key in physx_commit blast_commit; do
+            grep -q "^${key}=[0-9a-f]\{40\}$" <<<"$manifest" \
+              || echo "::warning::${key} unresolved; rebuild builder-image"
+          done
+          {
+            echo "### Built from"
+            echo
+            echo '```'
+            echo "$manifest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report the image size a player waits through
+        run: |
+          bytes="$(docker image inspect "${{ needs.build.outputs.image }}" \
+            --format '{{.Size}}')"
+          echo "image size: $(( bytes / 1024 / 1024 )) MiB" >> "$GITHUB_STEP_SUMMARY"

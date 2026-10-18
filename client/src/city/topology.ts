@@ -1,0 +1,1767 @@
+// The client-side topology ledger: the same "ledger of globally unique
+// objects" the server keeps, reconstructed purely from reliable topology
+// events plus the static manifest.
+//
+// Chunks live in exactly one body at a time. The intact structure is body
+// serial 0 (the kinematic support actor, pose = the structure's world
+// transform, never streamed). When an island is promoted, each member chunk's
+// body-local offset is derived from its previous body's pose at the promotion
+// moment: localOffset = inverse(promotionPose) ∘ chunkWorldPose. Islands are
+// rigid, so offsets stay valid until the chunk migrates again.
+
+import type { CityManifest } from './manifest';
+import { bondCountOf, bondEndpoints, chunkMassCentre } from './manifest';
+import type { BootstrapMessage, TopologyMessage } from './wire';
+
+/** Which writer produced a body pose. See `updateBodyPose`. */
+export type BodyPoseSource = 'raw' | 'presented' | 'settle' | 'promote' | 'reoffset' | 'bootstrap';
+
+/** Wire position quantum (1 cm); anything below it is encoding dither. */
+const POSE_QUANTUM_M = 0.01;
+import {
+  EPSILON,
+  Quat,
+  Vec3,
+  composePose,
+  qIdentity,
+  qRotate,
+  relativePose,
+  vAdd,
+  vClone,
+  vLength,
+} from './vec';
+
+export const SUPPORT_SERIAL = 0;
+
+/** `chunkBody` of a chunk a bootstrap or repair found retired: no body has this key. */
+const RETIRED_BODY = -1;
+
+/** Matches destruction/src/ids.rs: namespace + 8 structure bits + 20 island bits. */
+export const bodyKey = (structureId: number, islandSerial: number): number =>
+  0x8000_0000 + structureId * 0x10_0000 + islandSerial;
+
+export const bodyKeyParts = (key: number): { structureId: number; islandSerial: number } => ({
+  structureId: Math.floor((key - 0x8000_0000) / 0x10_0000),
+  islandSerial: (key - 0x8000_0000) % 0x10_0000,
+});
+
+export interface LedgerBody {
+  key: number;
+  structureId: number;
+  islandSerial: number;
+  /** Global chunk index (into the flat chunk arrays) of each member. */
+  chunkSlots: number[];
+  /** Authoritative pose (updated by stream/topology), body frame -> world. */
+  position: Vec3;
+  rotation: Quat;
+  settled: boolean;
+  /**
+   * The newest pose the server has told this client for the body, and its
+   * sim tick: from its promotion, a bootstrap, a streamed record, a settle or
+   * a wake. `motionKnownPosition` is that pose as sent, not the presented
+   * (interpolated) pose above. `moving` means the body was free to move at
+   * that tick, so without a newer record it may be anywhere now. See
+   * `settleVerdict`.
+   */
+  motionKnownTick?: number;
+  motionKnownMoving?: boolean;
+  motionKnownPosition?: Vec3;
+}
+
+/** What a settle does to the ledger; see `CityTopology.settleVerdict`. */
+export type SettleVerdict = 'apply' | 'afterSilence' | 'superseded' | 'reject';
+
+export interface CityTopologyStats {
+  brokenBonds: number;
+  liveIslands: number;
+  settledIslands: number;
+  topoSeqGaps: number;
+  /**
+   * Chunks whose owning body is no longer in the ledger. Must stay 0: an
+   * orphaned chunk has no world transform, so anything it renders is a guess.
+   */
+  orphanedChunks: number;
+  /** Cumulative chunks orphaned by a retire, including transient windows. */
+  orphanedByRetire: number;
+  /**
+   * Streamed pose writes that moved a body further than the stream could
+   * honestly account for, binned by size. This is the artefact a player calls
+   * "things teleporting": a body arrives somewhere its last known position and
+   * velocity could not have carried it, because an update was lost, arrived
+   * late, or arrived out of order.
+   *
+   * Counted on `raw` writes only. The presented (interpolated) writer moves
+   * bodies smoothly by construction, so counting it would measure the
+   * interpolator rather than the link.
+   */
+  poseJumpsOver1m: number;
+  poseJumpsOver4m: number;
+  poseJumpsOver16m: number;
+  /** The largest single streamed pose jump seen, metres. */
+  poseJumpMaxM: number;
+  /**
+   * The same measurement on the writer the renderer actually reads.
+   *
+   * A raw write is usually invisible: `samplePresentation` writes every live
+   * body once per frame and runs before the renderer composes, so a raw pose
+   * that lands between frames is overwritten before anyone sees it. The raw
+   * counters above are therefore an upper bound on the link's roughness, not a
+   * count of what a player saw -- and quoting them as the latter overstates the
+   * artefact, sometimes by a lot. These count steps in the presented pose,
+   * which is the one that reaches the screen. The interpolator moves bodies
+   * smoothly by construction, so a step here is a real visible discontinuity:
+   * a correction too large to glide, or a body whose track was replaced.
+   */
+  presentedJumpsOver1m: number;
+  presentedJumpsOver4m: number;
+  presentedJumpMaxM: number;
+  /// Chunks carried by those steps, and the largest island that took one.
+  /// A step on one fragment is invisible; the same step on a half-standing
+  /// building is what a player reports.
+  /// Chunk world poses displaced by a topology re-parent, which should be
+  /// continuous across one. The fracture discontinuity.
+  /// Island frames rebased because membership changed, and the total local
+  /// displacement that involved. A rebase must not move anything on screen.
+  reoffsets: number;
+  reoffsetMetres: number;
+  adoptionJumps: number;
+  adoptionJumpMaxM: number;
+  adoptionJumpMetres: number;
+  /// Of those, the ones caused by a migration rather than a promotion.
+  adoptionJumpsFromMigration: number;
+  adoptionJumpMetresFromMigration: number;
+  presentedJumpChunks: number;
+  presentedJumpWorstChunks: number;
+  presentedJumpWorstChunksM: number;
+}
+
+/**
+ * How far a settle may legitimately move a body.
+ *
+ * A settling body is where the stream last showed it, give or take the
+ * interpolation delay and a distance stride -- debris travels tens of metres
+ * per second, so a few metres is normal and generous. Tens of metres is not
+ * lag; it is a different frame.
+ */
+const SETTLE_MAX_DRIFT_M = 10;
+
+/**
+ * How long after the body's last streamed pose a settle can still be checked
+ * against it (0.5 s at 60 Hz): the playout delay plus a send interval and the
+ * encoder's rest stride, with room to spare.
+ *
+ * The drift check above assumes the stream has been showing the body. The
+ * server's per-client interest filter stops streaming a body that is outside
+ * this client's view and proximity, so debris thrown out of range keeps
+ * moving on the server while this ledger holds its last streamed pose. Its
+ * settle, which the reliable stream sends to every client, is then the first
+ * pose this client has had in seconds, and it can be any distance away. That
+ * is not a membership disagreement. Both 2026-09-24 sessions show it: all 17
+ * settle rejects were single-chunk (one 3-chunk) debris whose last record was
+ * ballistic, 155-537 ticks before the settle, 11-174 m away, with 0 ledger
+ * hash mismatches, and they caused every structure repair of both sessions
+ * (5 and 9, batched by the resync rate limit) on links with no loss.
+ */
+const SETTLE_FRESH_TICKS = 30;
+
+/** The encoder's rest thresholds (`REST_SPEED_MPS` / `REST_ANGULAR_RPS`). */
+const REST_SPEED_MPS = 0.05;
+const REST_ANGULAR_RPS = 0.05;
+
+export class CityTopology {
+  /** Flat chunk addressing: slotOf[structureId][nodeIndex] -> global slot. */
+  readonly chunkCount: number;
+  private readonly slotBase: Map<number, number> = new Map();
+  private readonly slotStructure: Uint32Array;
+  private readonly slotNode: Uint32Array;
+
+  /** Per-slot current body and body-local offset. */
+  readonly chunkBody: Float64Array;
+  /** 1 while a chunk's island has been retired and no body has adopted it since. */
+  private readonly retiredSlot: Uint8Array;
+  private readonly retiredAtTick: Float64Array;
+  private readonly localPos: Float32Array;
+  private readonly localRot: Float32Array;
+  /**
+   * Slots whose body or body-local offset changed since the last drain.
+   *
+   * The renderer composes chunk poses on the GPU from a per-chunk record of
+   * (body, offset) and a per-body pose; this is how it learns which records
+   * to rewrite without walking every chunk. Every site that assigns
+   * `chunkBody`, `localPos` or `localRot` marks the slot. A rebuild of the
+   * whole ledger (bootstrap, structure repair) bumps the epoch the renderer
+   * already watches instead of marking every slot.
+   */
+  private slotChanges: number[] = [];
+  private readonly slotChanged: Uint8Array;
+  /** The same changes for a second reader (the vehicle colliders). */
+  private collisionChanges: number[] = [];
+  private readonly collisionChanged: Uint8Array;
+  /** Bumped when every slot may have changed (reset, bootstrap). */
+  private collisionEpochValue = 0;
+  /**
+   * Manifest rest offset per chunk, in its structure's frame.
+   *
+   * The adapter builds every chunk shape at its authored local pose and reuses
+   * the same shape across body migrations, so an island body's pose is a full
+   * transform from structure-rest coordinates to world:
+   *   chunkWorld = bodyPose ∘ restLocal
+   * That is the canonical body-frame invariant documented in
+   * netcode/src/destruction_backend.rs, and it is exactly what
+   * `applyBootstrap` uses to rebuild a damaged city for a late joiner.
+   */
+  private readonly restPos: Float32Array;
+  /**
+   * Manifest centre of mass per chunk (`centroid + massOffset`), in its
+   * structure's frame: what an island's centre of mass weighs.
+   *
+   * Not `restPos`. That is the chunk's geometry origin, which is where the
+   * renderer draws it from and where the server's shape sits in its body, but
+   * a hull measured from a corner (the town kit's rafters, roof tiles and
+   * gables) has its mass a metre away from it. The server centres each body
+   * on the real centre of mass, so weighing origins put a freshly split
+   * veneer roof 0.46 m above where the server had it.
+   */
+  private readonly restMassCentre: Float32Array;
+  /** Manifest mass per chunk, for reconstructing an island's centre of mass. */
+  private readonly restMass: Float32Array;
+  /** Manifest bounding radius per chunk, m. */
+  private readonly restRadius: Float32Array;
+
+  private readonly bodies: Map<number, LedgerBody> = new Map();
+  private readonly aliveBonds: Map<number, Uint8Array> = new Map();
+  private brokenBonds = 0;
+  private orphanedByRetire = 0;
+  private poseJumpsOver1m = 0;
+  private poseJumpsOver4m = 0;
+  private poseJumpsOver16m = 0;
+  private poseJumpMaxM = 0;
+  private presentedJumpsOver1m = 0;
+  private presentedJumpsOver4m = 0;
+  private presentedJumpMaxM = 0;
+  private reoffsetSeq = 0;
+  private reoffsets = 0;
+  private reoffsetMetres = 0;
+  private readonly reoffsetAt = new Map<number, number>();
+
+  /** Rebase sequence number for a body, for the teleport probe's correlation. */
+  reoffsetSeqOf(key: number): number {
+    return this.reoffsetAt.get(key) ?? -1;
+  }
+
+  /** The current rebase sequence, so a caller can say "this one is recent". */
+  currentReoffsetSeq(): number {
+    return this.reoffsetSeq;
+  }
+
+  private adoptionJumps = 0;
+  private adoptionJumpsFromMigration = 0;
+  private adoptionJumpMetresFromMigration = 0;
+  private readonly adoptionCause = new Map<number, 'promotion' | 'migration'>();
+  private adoptionJumpMaxM = 0;
+  private adoptionJumpMetres = 0;
+  private presentedJumpChunks = 0;
+  private presentedJumpWorstChunks = 0;
+  private presentedJumpWorstChunksM = 0;
+  private lastTopoSeq = 0;
+  private topoSeqGaps = 0;
+  /** Topology messages ignored as already-applied; see apply(). */
+  duplicateDrops = 0;
+  /** Set when a gap was detected; cleared by bootstrap. */
+  needsResync = false;
+  /**
+   * Structures whose ledger CONTENT is wrong at a known-good stream position —
+   * a migration named an island this client was never told about, or a settle
+   * pose disagreed with our membership. These repair with a structure-scoped
+   * bootstrap; only `needsResync` (a seq gap — the POSITION itself is lost)
+   * still demands the full rebuild. The distinction is what broke the
+   * 3.0-second full-bootstrap loop: every cascade fault used to escalate to a
+   * whole-world repaint, which read as the entire rubble field popping on the
+   * resync rate-limiter's exact cadence.
+   */
+  readonly resyncStructures = new Set<number>();
+  /**
+   * Settles refused because their pose would have teleported the body.
+   *
+   * Must be 0. Each one is a body whose membership this client and the server
+   * disagree about, caught before it could be drawn in the wrong place.
+   */
+  settleFrameRejects = 0;
+  /**
+   * Settles applied although they moved the body more than
+   * `SETTLE_MAX_DRIFT_M`, because the stream had not shown the body since it
+   * was last seen moving (it left this client's interest). Informational: the
+   * settle is the server's pose for a body whose motion this client was never
+   * sent. Membership is still checked by the periodic ledger hash.
+   */
+  settlesAfterSilence = 0;
+  /**
+   * Settles older than a pose the stream had already shown (a reliable
+   * message delayed behind newer datagrams on a slow link). Kept the newer
+   * pose. Informational.
+   */
+  settlesSuperseded = 0;
+  /**
+   * Notified when a body's centre-of-mass frame shifts, with the body-local
+   * delta. The pose stream is buffered for smoothing, so whoever holds that
+   * buffer has to carry the same shift or it will compose old-frame poses
+   * with the new-frame offsets written here.
+   */
+  onReoffset: ((bodyKey: number, deltaLocal: Vec3) => void) | null = null;
+
+  constructor(private readonly manifest: CityManifest) {
+    let total = 0;
+    for (const structure of manifest.structures) {
+      this.slotBase.set(structure.structureId, total);
+      total += structure.chunks.length;
+    }
+    this.chunkCount = total;
+    this.slotStructure = new Uint32Array(total);
+    this.slotNode = new Uint32Array(total);
+    this.chunkBody = new Float64Array(total);
+    this.retiredSlot = new Uint8Array(total);
+    this.retiredAtTick = new Float64Array(total);
+    this.localPos = new Float32Array(total * 3);
+    this.localRot = new Float32Array(total * 4);
+    this.slotChanged = new Uint8Array(total);
+    this.collisionChanged = new Uint8Array(total);
+    this.restPos = new Float32Array(total * 3);
+    this.restMass = new Float32Array(total);
+    this.restMassCentre = new Float32Array(total * 3);
+    this.restRadius = new Float32Array(total);
+    for (const structure of manifest.structures) {
+      const base = this.slotBase.get(structure.structureId)!;
+      for (const chunk of structure.chunks) {
+        this.restMass[base + chunk.nodeIndex] = chunk.mass;
+        this.restMassCentre.set(chunkMassCentre(chunk), (base + chunk.nodeIndex) * 3);
+        this.restRadius[base + chunk.nodeIndex] = chunk.radius;
+      }
+    }
+    this.reset();
+  }
+
+  /** Reset every chunk to its intact support body with manifest rest poses. */
+  reset(): void {
+    this.collisionEpochValue += 1;
+    this.bodies.clear();
+    this.aliveBonds.clear();
+    this.brokenBonds = 0;
+    for (const structure of this.manifest.structures) {
+      const base = this.slotBase.get(structure.structureId)!;
+      const supportKey = bodyKey(structure.structureId, SUPPORT_SERIAL);
+      const slots: number[] = [];
+      for (const chunk of structure.chunks) {
+        const slot = base + chunk.nodeIndex;
+        slots.push(slot);
+        this.slotStructure[slot] = structure.structureId;
+        this.slotNode[slot] = chunk.nodeIndex;
+        this.chunkBody[slot] = supportKey;
+        this.retiredSlot[slot] = 0;
+        this.localPos[slot * 3] = chunk.centroid[0];
+        this.localPos[slot * 3 + 1] = chunk.centroid[1];
+        this.localPos[slot * 3 + 2] = chunk.centroid[2];
+        this.restPos[slot * 3] = chunk.centroid[0];
+        this.restPos[slot * 3 + 1] = chunk.centroid[1];
+        this.restPos[slot * 3 + 2] = chunk.centroid[2];
+        this.localRot[slot * 4] = 0;
+        this.localRot[slot * 4 + 1] = 0;
+        this.localRot[slot * 4 + 2] = 0;
+        this.localRot[slot * 4 + 3] = 1;
+      }
+      this.bodies.set(supportKey, {
+        key: supportKey,
+        structureId: structure.structureId,
+        islandSerial: SUPPORT_SERIAL,
+        chunkSlots: slots,
+        position: vClone(structure.worldPosition),
+        rotation: [...structure.worldRotation] as Quat,
+        settled: true,
+      });
+      const bondCount = bondCountOf(structure);
+      const bits = new Uint8Array(Math.ceil(bondCount / 8));
+      bits.fill(0xff);
+      // Clear padding bits past bondCount.
+      const excess = bits.length * 8 - bondCount;
+      if (excess > 0 && bits.length > 0) {
+        bits[bits.length - 1] &= 0xff >>> excess;
+      }
+      this.aliveBonds.set(structure.structureId, bits);
+    }
+  }
+
+  slotOf(structureId: number, nodeIndex: number): number {
+    return (this.slotBase.get(structureId) ?? 0) + nodeIndex;
+  }
+
+  /** Ledger body key currently owning this chunk (diagnostics). */
+  chunkBodyKey(slot: number): number {
+    return this.chunkBody[slot];
+  }
+
+  body(key: number): LedgerBody | undefined {
+    return this.bodies.get(key);
+  }
+
+  allBodies(): IterableIterator<LedgerBody> {
+    return this.bodies.values();
+  }
+
+  /** Which body a chunk is currently bound to. */
+  bodyKeyOf(slot: number): number {
+    return this.chunkBody[slot];
+  }
+
+  /**
+   * This chunk's offset within its body's frame, in body-local coordinates.
+   *
+   * One of the two terms of `chunk_world = body_pose ∘ local_offset`. A
+   * capture that records only the composed result can show a body moving and
+   * cannot say whether the pose moved or the frame was rebased underneath it;
+   * reading both terms separates those.
+   */
+  localOffsetInto(slot: number, out: Float32Array): void {
+    out[0] = this.localPos[slot * 3];
+    out[1] = this.localPos[slot * 3 + 1];
+    out[2] = this.localPos[slot * 3 + 2];
+  }
+
+  localRotationInto(slot: number, out: Float32Array, at = 0): void {
+    out[at] = this.localRot[slot * 4];
+    out[at + 1] = this.localRot[slot * 4 + 1];
+    out[at + 2] = this.localRot[slot * 4 + 2];
+    out[at + 3] = this.localRot[slot * 4 + 3];
+  }
+
+  private markSlotChanged(slot: number): void {
+    if (this.slotChanged[slot] === 0) {
+      this.slotChanged[slot] = 1;
+      this.slotChanges.push(slot);
+    }
+    if (this.collisionChanged[slot] === 0) {
+      this.collisionChanged[slot] = 1;
+      this.collisionChanges.push(slot);
+    }
+  }
+
+  /** Slots whose body changed since the vehicle colliders last looked. */
+  drainCollisionChanges(): number[] {
+    const out = this.collisionChanges;
+    if (out.length === 0) return out;
+    for (const slot of out) this.collisionChanged[slot] = 0;
+    this.collisionChanges = [];
+    return out;
+  }
+
+  /** Changes when every slot may have changed: look at all of them again. */
+  collisionEpoch(): number {
+    return this.collisionEpochValue;
+  }
+
+  /** Whether the chunk in `slot` is part of its structure's standing (support) body. */
+  isStanding(slot: number): boolean {
+    return this.bodies.get(this.chunkBody[slot])?.islandSerial === SUPPORT_SERIAL;
+  }
+
+  /** How many chunk slots there are. */
+  slotCount(): number {
+    return this.slotStructure.length;
+  }
+
+  /** Slots whose (body, offset) changed since the last call; each at most once. */
+  drainSlotChanges(): number[] {
+    const out = this.slotChanges;
+    if (out.length === 0) return out;
+    for (const slot of out) this.slotChanged[slot] = 0;
+    this.slotChanges = [];
+    return out;
+  }
+
+  chunkLocalOffset(slot: number): { position: Vec3; rotation: Quat } {
+    return {
+      position: [
+        this.localPos[slot * 3],
+        this.localPos[slot * 3 + 1],
+        this.localPos[slot * 3 + 2],
+      ],
+      rotation: [
+        this.localRot[slot * 4],
+        this.localRot[slot * 4 + 1],
+        this.localRot[slot * 4 + 2],
+        this.localRot[slot * 4 + 3],
+      ],
+    };
+  }
+
+  /** Current world pose of one chunk (bodyPose ∘ localOffset). */
+  chunkWorldPose(slot: number): { position: Vec3; rotation: Quat } {
+    const body = this.bodies.get(this.chunkBody[slot]);
+    const local = this.chunkLocalOffset(slot);
+    if (!body) {
+      return local;
+    }
+    return composePose(body.position, body.rotation, local.position, local.rotation);
+  }
+
+  /**
+   * Same compose, written into caller storage: 7 floats (x,y,z, qx,qy,qz,qw)
+   * at `out[at..at+7]`.
+   *
+   * The allocating form builds two arrays for the local offset, four more
+   * inside composePose and a wrapper object -- seven allocations per chunk,
+   * per call. That is invisible for one chunk and ruinous for the paths that
+   * do it per dirty chunk per frame, or across all 24k slots in the telemetry
+   * sweep. `body` is passed in because every caller already holds it, and the
+   * Map lookup was being repeated for every chunk of the same body.
+   */
+  /**
+   * Returns false when the chunk's body is missing from the ledger.
+   *
+   * The allocating form answers that case with the chunk's BODY-LOCAL offset,
+   * which is not a world pose at all -- for a structure sited away from the
+   * origin it is tens or hundreds of metres from where the chunk belongs. Any
+   * caller that draws it puts the chunk somewhere it has never been, which on
+   * screen is a hole in the building. A chunk whose body the ledger cannot
+   * resolve has no known pose, and the only correct thing to draw is whatever
+   * was drawn last, so this reports the failure instead of inventing one.
+   */
+  chunkWorldPoseInto(
+    slot: number,
+    body: LedgerBody | undefined,
+    out: Float32Array,
+    at: number,
+  ): boolean {
+    // The caller's body is a hint, not the authority. The allocating form
+    // always resolved the slot's CURRENT owner, so it was correct even mid
+    // migration; taking the caller's word for it instead meant that during a
+    // fracture -- exactly when membership is churning -- a chunk could be
+    // composed against the body it just LEFT, and get drawn somewhere it is
+    // not. On screen that is a hole opening where the building was, with the
+    // pieces appearing a moment later once the write path caught up.
+    if (body !== undefined && this.chunkBody[slot] !== body.key) {
+      body = this.bodies.get(this.chunkBody[slot]);
+    }
+    const l3 = slot * 3;
+    const l4 = slot * 4;
+    const lx = this.localPos[l3];
+    const ly = this.localPos[l3 + 1];
+    const lz = this.localPos[l3 + 2];
+    const lqx = this.localRot[l4];
+    const lqy = this.localRot[l4 + 1];
+    const lqz = this.localRot[l4 + 2];
+    const lqw = this.localRot[l4 + 3];
+    if (!body) {
+      out[at] = lx;
+      out[at + 1] = ly;
+      out[at + 2] = lz;
+      out[at + 3] = lqx;
+      out[at + 4] = lqy;
+      out[at + 5] = lqz;
+      out[at + 6] = lqw;
+      return false;
+    }
+    const bp = body.position;
+    const bq = body.rotation;
+    const bqx = bq[0];
+    const bqy = bq[1];
+    const bqz = bq[2];
+    const bqw = bq[3];
+    // v' = q * v * q^-1, expanded (t = 2 * q_vec x v).
+    const tx = 2 * (bqy * lz - bqz * ly);
+    const ty = 2 * (bqz * lx - bqx * lz);
+    const tz = 2 * (bqx * ly - bqy * lx);
+    out[at] = bp[0] + lx + bqw * tx + bqy * tz - bqz * ty;
+    out[at + 1] = bp[1] + ly + bqw * ty + bqz * tx - bqx * tz;
+    out[at + 2] = bp[2] + lz + bqw * tz + bqx * ty - bqy * tx;
+    // Hamilton product, then normalise: the body rotation is streamed and
+    // quantised, so the product drifts off the unit sphere without it.
+    let rx = bqw * lqx + bqx * lqw + bqy * lqz - bqz * lqy;
+    let ry = bqw * lqy - bqx * lqz + bqy * lqw + bqz * lqx;
+    let rz = bqw * lqz + bqx * lqy - bqy * lqx + bqz * lqw;
+    let rw = bqw * lqw - bqx * lqx - bqy * lqy - bqz * lqz;
+    const lengthSq = rx * rx + ry * ry + rz * rz + rw * rw;
+    if (!Number.isFinite(lengthSq) || lengthSq <= 1e-6) {
+      // Matches qNormalize's degenerate case: identity, not NaN.
+      rx = 0;
+      ry = 0;
+      rz = 0;
+      rw = 1;
+    } else {
+      const inv = 1 / Math.sqrt(lengthSq);
+      rx *= inv;
+      ry *= inv;
+      rz *= inv;
+      rw *= inv;
+    }
+    out[at + 3] = rx;
+    out[at + 4] = ry;
+    out[at + 5] = rz;
+    out[at + 6] = rw;
+    return true;
+  }
+
+  stats(): CityTopologyStats {
+    let live = 0;
+    let settled = 0;
+    for (const body of this.bodies.values()) {
+      if (body.islandSerial === SUPPORT_SERIAL) {
+        continue;
+      }
+      live += 1;
+      if (body.settled) {
+        settled += 1;
+      }
+    }
+    let orphaned = 0;
+    for (let slot = 0; slot < this.chunkCount; slot += 1) {
+      if (!this.bodies.has(this.chunkBody[slot])) {
+        orphaned += 1;
+      }
+    }
+    return {
+      brokenBonds: this.brokenBonds,
+      liveIslands: live,
+      settledIslands: settled,
+      topoSeqGaps: this.topoSeqGaps,
+      orphanedChunks: orphaned,
+      orphanedByRetire: this.orphanedByRetire,
+      poseJumpsOver1m: this.poseJumpsOver1m,
+      poseJumpsOver4m: this.poseJumpsOver4m,
+      poseJumpsOver16m: this.poseJumpsOver16m,
+      poseJumpMaxM: this.poseJumpMaxM,
+      presentedJumpsOver1m: this.presentedJumpsOver1m,
+      presentedJumpsOver4m: this.presentedJumpsOver4m,
+      presentedJumpMaxM: this.presentedJumpMaxM,
+      reoffsets: this.reoffsets,
+      reoffsetMetres: this.reoffsetMetres,
+      adoptionJumps: this.adoptionJumps,
+      adoptionJumpMaxM: this.adoptionJumpMaxM,
+      adoptionJumpMetres: this.adoptionJumpMetres,
+      adoptionJumpsFromMigration: this.adoptionJumpsFromMigration,
+      adoptionJumpMetresFromMigration: this.adoptionJumpMetresFromMigration,
+      presentedJumpChunks: this.presentedJumpChunks,
+      presentedJumpWorstChunks: this.presentedJumpWorstChunks,
+      presentedJumpWorstChunksM: this.presentedJumpWorstChunksM,
+    };
+  }
+
+  lastSeq(): number {
+    return this.lastTopoSeq;
+  }
+
+  /**
+   * Re-applies the part of an already-applied message that concerns
+   * `structures`, after a structure repair restated them at an earlier seq
+   * (the repair waited on the reliable stream behind this message's datagram
+   * copy). The sequence position does not move.
+   */
+  reapplyForStructures(message: TopologyMessage, structures: ReadonlySet<number>): void {
+    const filtered: TopologyMessage = {
+      topoSeq: message.topoSeq,
+      simTick: message.simTick,
+      batches: message.batches.filter((batch) => structures.has(batch.structureId)),
+      settled: message.settled.filter((settle) => structures.has(settle.structureId)),
+      wakes: message.wakes.filter((wake) => structures.has(wake.structureId)),
+    };
+    if (filtered.batches.length === 0 && filtered.settled.length === 0 && filtered.wakes.length === 0) {
+      return;
+    }
+    const last = this.lastTopoSeq;
+    this.lastTopoSeq = message.topoSeq - 1;
+    this.apply(filtered);
+    this.lastTopoSeq = last;
+  }
+
+  /** Applies a reliable topology message. Returns false on a sequence gap. */
+  apply(message: TopologyMessage): boolean {
+    if (this.lastTopoSeq !== 0 && message.topoSeq !== this.lastTopoSeq + 1) {
+      if (message.topoSeq <= this.lastTopoSeq) {
+        // Duplicate OR a new world whose sequence restarted below ours. The
+        // second case is invisible without this: every message of the fresh
+        // world is silently swallowed as "already applied".
+        this.duplicateDrops += 1;
+        if (this.duplicateDrops === 1 || this.duplicateDrops % 25 === 0) {
+          console.warn(
+            `[city] topology dropped as duplicate seq=${message.topoSeq} last=${this.lastTopoSeq} drops=${this.duplicateDrops}`,
+          );
+        }
+        return true;
+      }
+      this.topoSeqGaps += 1;
+      this.needsResync = true;
+      return false;
+    }
+    this.lastTopoSeq = message.topoSeq;
+
+    // A chunk is the same physical object before and after a topology batch
+    // re-parents it, so its world pose should be continuous across the batch.
+    // Displacement here is the fracture discontinuity a player sees as chunks
+    // jumping the instant a building breaks.
+    let poseBefore: Map<number, Vec3> | null = null;
+    if (this.watchPoseSources && this.onAdoptionJump) {
+      poseBefore = new Map();
+      // Split by cause, because the two have different handling and only one
+      // of them has any: a promotion seeds the new body's presented pose so
+      // its anchor chunk stays where it was drawn (see captureDrawnPoses in
+      // cityClient), and a migration does nothing of the kind.
+      for (const batch of message.batches) {
+        for (const node of batch.promotions.flatMap((p) => p.nodes)) {
+          const slot = this.slotOf(batch.structureId, node);
+          if (!poseBefore.has(slot)) {
+            poseBefore.set(slot, this.chunkWorldPose(slot).position);
+            this.adoptionCause.set(slot, 'promotion');
+          }
+        }
+        for (const migration of batch.migrations) {
+          const slot = this.slotOf(batch.structureId, migration.node);
+          if (!poseBefore.has(slot)) {
+            poseBefore.set(slot, this.chunkWorldPose(slot).position);
+            this.adoptionCause.set(slot, 'migration');
+          }
+        }
+      }
+    }
+
+    for (const batch of message.batches) {
+      const bits = this.aliveBonds.get(batch.structureId);
+      if (bits) {
+        for (const bondIndex of batch.brokenBondIndices) {
+          const byte = bondIndex >> 3;
+          const mask = 1 << (bondIndex & 7);
+          if (byte < bits.length && (bits[byte] & mask) !== 0) {
+            bits[byte] &= ~mask;
+            this.brokenBonds += 1;
+          }
+        }
+      }
+      for (const promotion of batch.promotions) {
+        this.promote(
+          batch.structureId,
+          promotion.islandId,
+          promotion.nodes,
+          promotion.position,
+          promotion.rotation,
+        );
+        // A promoted island has just broken loose: free to move, whatever
+        // its velocity at the fracture tick.
+        const promoted = this.bodies.get(bodyKey(batch.structureId, promotion.islandId));
+        if (promoted) {
+          promoted.motionKnownTick = message.simTick;
+          promoted.motionKnownMoving = true;
+          promoted.motionKnownPosition = vClone(promotion.position);
+        }
+      }
+      // After promotions: a chunk can be promoted into a new island and then
+      // migrate in the same batch, and the server orders it that way.
+      for (const migration of batch.migrations ?? []) {
+        this.migrateChunk(
+          batch.structureId,
+          migration.node,
+          migration.fromIslandSerial,
+          migration.toIslandSerial,
+        );
+      }
+      for (const retired of batch.retiredIslandIds) {
+        this.retire(bodyKey(batch.structureId, retired), message.simTick);
+      }
+    }
+    for (const settle of message.settled) {
+      const body = this.bodies.get(bodyKey(settle.structureId, settle.islandId));
+      if (body) {
+        // A settle says a body STOPPED MOVING. The pose it carries is where
+        // the body already is -- that is the whole meaning of the event. So a
+        // settle pose that relocates the body by tens of metres is not a
+        // settle at all: it is proof that the two sides disagree about this
+        // body's MEMBERSHIP, because both derive the pose from the centre of
+        // mass of their own member set and a mismatched set moves the COM.
+        //
+        // Applying it anyway composes every member through a frame the offsets
+        // were not built for, which is a whole island jumping and coming back
+        // -- seen as a fracture-shaped hole opening in a building for a frame.
+        // Measured here at 74 m from a message carrying nothing but one settle.
+        //
+        // So: take the rest state, refuse the impossible pose, and repair the
+        // real fault by rebuilding the ledger.
+        //
+        // That reasoning needs a pose the server told this client recently,
+        // before the settle; `settleVerdict` says when there is one.
+        body.settled = true;
+        const verdict = this.settleVerdict(body, settle.position, message.simTick);
+        if (verdict === 'reject') {
+          this.settleFrameRejects += 1;
+          // Membership disagreement in ONE structure; the stream position is
+          // fine. Structure-scoped repair, not a world rebuild.
+          this.resyncStructures.add(settle.structureId);
+        } else if (verdict === 'superseded') {
+          // The stream has already shown the body after this settle (the
+          // reliable message was delayed behind newer datagrams, and the body
+          // has been woken since). Its pose is older than ours; keep ours.
+          this.settlesSuperseded += 1;
+          continue;
+        } else {
+          if (verdict === 'afterSilence') {
+            this.settlesAfterSilence += 1;
+          }
+          body.position = vClone(settle.position);
+          body.rotation = [...settle.rotation] as Quat;
+        }
+        body.motionKnownTick = message.simTick;
+        body.motionKnownMoving = false;
+        body.motionKnownPosition = vClone(settle.position);
+      }
+    }
+    for (const wake of message.wakes) {
+      const body = this.bodies.get(bodyKey(wake.structureId, wake.islandSerial));
+      if (body) {
+        body.settled = false;
+        if (body.motionKnownTick === undefined || message.simTick >= body.motionKnownTick) {
+          body.motionKnownTick = message.simTick;
+          body.motionKnownMoving = true;
+          body.motionKnownPosition ??= vClone(body.position);
+        }
+      }
+    }
+
+    if (poseBefore) {
+      for (const [slot, before] of poseBefore) {
+        const after = this.chunkWorldPose(slot).position;
+        const step = Math.hypot(
+          after[0] - before[0],
+          after[1] - before[1],
+          after[2] - before[2],
+        );
+        if (step > POSE_QUANTUM_M) {
+          // Counted as well as reported. A chunk is the same physical object
+          // before and after a batch re-parents it, so any displacement here is
+          // the ledger disagreeing with itself about where that object is --
+          // the fracture discontinuity, which a live report showed landing
+          // within 150 ms of a fracture batch 400 times out of 400.
+          this.adoptionJumps += 1;
+          if (step > this.adoptionJumpMaxM) this.adoptionJumpMaxM = step;
+          this.adoptionJumpMetres += step;
+          if (this.adoptionCause.get(slot) === 'migration') {
+            this.adoptionJumpsFromMigration += 1;
+            this.adoptionJumpMetresFromMigration += step;
+          }
+          this.onAdoptionJump?.(slot, step);
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Records that the pose stream showed `key` at sim `tick` at this pose and
+   * with these velocities (every applied record, whether or not it writes the
+   * ledger pose). Older ticks than the newest knowledge are ignored.
+   */
+  noteStreamedMotion(
+    key: number,
+    tick: number,
+    position: Vec3,
+    linearVelocity: Vec3,
+    angularVelocity: Vec3,
+  ): void {
+    this.noteStreamedPose(
+      key,
+      tick,
+      position[0],
+      position[1],
+      position[2],
+      Math.hypot(linearVelocity[0], linearVelocity[1], linearVelocity[2]) > REST_SPEED_MPS
+        || Math.hypot(angularVelocity[0], angularVelocity[1], angularVelocity[2]) > REST_ANGULAR_RPS,
+    );
+  }
+
+  /**
+   * `noteStreamedMotion` for a pose without velocities. Allocation-free once
+   * the body has a known pose: wire v3 calls it per sampled body per frame.
+   */
+  noteStreamedPose(key: number, tick: number, x: number, y: number, z: number, moving: boolean): void {
+    const body = this.bodies.get(key);
+    if (!body || (body.motionKnownTick !== undefined && tick < body.motionKnownTick)) {
+      return;
+    }
+    body.motionKnownTick = tick;
+    body.motionKnownMoving = moving;
+    const known = body.motionKnownPosition;
+    if (known) {
+      known[0] = x;
+      known[1] = y;
+      known[2] = z;
+    } else {
+      body.motionKnownPosition = [x, y, z];
+    }
+  }
+
+  /**
+   * What a settle at `tick` with pose `position` does to `body`.
+   *
+   * - `reject`: the server told this client where the body was, before the
+   *   settle and recently (at rest, or within `SETTLE_FRESH_TICKS`), and the
+   *   settle is more than `SETTLE_MAX_DRIFT_M` from it. Both sides derive
+   *   the pose from their own member set, so that is a membership
+   *   disagreement: refuse the pose and repair the structure.
+   * - `afterSilence`: the body was last shown moving, longer ago than that
+   *   (it left this client's interest), and the settle is far from where it
+   *   was shown. The settle is the first pose this client gets; apply it.
+   * - `superseded`: the stream has already shown the body after the settle's
+   *   tick (the reliable message arrived after newer datagrams). Keep the
+   *   newer pose.
+   * - `apply`: an ordinary settle.
+   *
+   * The drift is measured from the pose the server sent, not the presented
+   * pose, which trails it by the playout delay (hundreds of milliseconds on
+   * a slow link). A body with no recorded knowledge is compared with its
+   * ledger pose, as before this was tracked.
+   */
+  settleVerdict(body: LedgerBody, position: Vec3, tick: number): SettleVerdict {
+    const known = body.motionKnownTick;
+    const from = known === undefined ? body.position : (body.motionKnownPosition ?? body.position);
+    const drift = Math.hypot(position[0] - from[0], position[1] - from[1], position[2] - from[2]);
+    if (drift <= SETTLE_MAX_DRIFT_M) {
+      return 'apply';
+    }
+    if (known === undefined) {
+      return 'reject';
+    }
+    if (known > tick) {
+      return 'superseded';
+    }
+    if (body.motionKnownMoving && tick - known > SETTLE_FRESH_TICKS) {
+      return 'afterSilence';
+    }
+    return 'reject';
+  }
+
+  /**
+   * Updates a live body's authoritative pose.
+   *
+   * `source` says which writer this is. There are two in normal operation:
+   * `raw` (newest streamed pose, written at packet arrival) and `presented`
+   * (the interpolated pose, one interpolation delay behind). A body whose
+   * writes alternate between them is being drawn at two different times in
+   * consecutive frames, which is visible as a flicker — so while recording,
+   * alternation with real displacement is reported.
+   */
+  updateBodyPose(
+    key: number,
+    position: Vec3,
+    rotation: Quat,
+    source: BodyPoseSource = 'raw',
+    /** The caller hands over arrays nothing else holds: kept, not copied. */
+    owned = false,
+  ): void {
+    const body = this.bodies.get(key);
+    if (!body) return;
+    if (this.watchPoseSources) {
+      this.observePoseWrite(key, body.position, position, source);
+    }
+    if (source === 'raw') {
+      // Always on, unlike the pose-source watch: this is cheap, and the whole
+      // point is to know the link was bad on the run where it was bad, not on
+      // a later one someone remembered to instrument.
+      const jump = Math.hypot(
+        position[0] - body.position[0],
+        position[1] - body.position[1],
+        position[2] - body.position[2],
+      );
+      if (jump > 1) {
+        this.poseJumpsOver1m += 1;
+        if (jump > 4) this.poseJumpsOver4m += 1;
+        if (jump > 16) this.poseJumpsOver16m += 1;
+        if (jump > this.poseJumpMaxM) this.poseJumpMaxM = jump;
+      }
+    } else if (source === 'presented') {
+      // Every live body, every frame: a plain square root (Math.hypot's
+      // overflow care is slow in V8, and positions are metres).
+      const dx = position[0] - body.position[0];
+      const dy = position[1] - body.position[1];
+      const dz = position[2] - body.position[2];
+      const jump = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      // 1 m in one frame is 60 m/s, which no piece of falling masonry reaches;
+      // the interpolator is supposed to make this impossible.
+      if (jump > 1) {
+        this.presentedJumpsOver1m += 1;
+        if (jump > 4) this.presentedJumpsOver4m += 1;
+        if (jump > this.presentedJumpMaxM) this.presentedJumpMaxM = jump;
+        // Weighted by how much of the world moved with it. A step on a
+        // single-chunk fragment is a speck; the same step on the island that
+        // is still most of a building is the whole building lurching, which is
+        // what gets reported from play. Counting bodies alone cannot tell
+        // those apart, and there are thousands of fragments and a handful of
+        // large islands, so the fragments win every average.
+        this.presentedJumpChunks += body.chunkSlots.length;
+        if (body.chunkSlots.length > this.presentedJumpWorstChunks) {
+          this.presentedJumpWorstChunks = body.chunkSlots.length;
+          this.presentedJumpWorstChunksM = jump;
+        }
+      }
+    }
+    body.position = owned ? position : vClone(position);
+    body.rotation = owned ? rotation : ([...rotation] as Quat);
+  }
+
+  /**
+   * Records which writer last set each body's pose, and how far that write
+   * moved it.
+   *
+   * Note this alone is NOT an artefact: `samplePresentation` writes every live
+   * body once per frame and runs before the renderer reads, so a raw write
+   * that lands between frames is normally overwritten before anyone sees it.
+   * What matters is the source in effect at the moment the renderer composes
+   * the chunk — see `poseSourceOf`, sampled by the render layer.
+   */
+  private observePoseWrite(
+    key: number,
+    previousPosition: Vec3,
+    nextPosition: Vec3,
+    source: BodyPoseSource,
+  ): void {
+    this.lastPoseSource.set(key, source);
+    const dx = nextPosition[0] - previousPosition[0];
+    const dy = nextPosition[1] - previousPosition[1];
+    const dz = nextPosition[2] - previousPosition[2];
+    // The wire quantises position to 1 cm, so anything below that is dither.
+    const delta = Math.hypot(dx, dy, dz);
+    this.lastPoseDelta.set(key, delta < POSE_QUANTUM_M ? 0 : delta);
+  }
+
+  /** Enable pose-source tracking (measurement only; off in normal play). */
+  watchPoseSources = false;
+  private readonly lastPoseSource = new Map<number, BodyPoseSource>();
+  private readonly lastPoseDelta = new Map<number, number>();
+
+  /** Which writer last set this body's pose, and how far that write moved it. */
+  poseSourceOf(key: number): { source: BodyPoseSource | undefined; deltaM: number } {
+    return { source: this.lastPoseSource.get(key), deltaM: this.lastPoseDelta.get(key) ?? 0 };
+  }
+
+  /**
+   * Checks the two membership records agree: `chunkBody[slot]` names the body
+   * whose `chunkSlots` contains `slot`, and vice versa. They are written
+   * independently by promote/migrate/retire, and a divergence leaves "shadow
+   * members" — chunks a body still owns by one record but excludes from its
+   * centre of mass, so their offsets rot in a dead frame while the body keeps
+   * moving. This is the client-side analogue of the server's
+   * `duplicate_body_records` check.
+   */
+  membershipViolations(): number {
+    let violations = 0;
+    for (let slot = 0; slot < this.chunkCount; slot += 1) {
+      const key = this.chunkBody[slot];
+      const body = this.bodies.get(key);
+      if (!body) continue; // orphan; counted separately by stats()
+      if (!body.chunkSlots.includes(slot)) violations += 1;
+    }
+    for (const [key, body] of this.bodies) {
+      for (const slot of body.chunkSlots) {
+        if (this.chunkBody[slot] !== key) violations += 1;
+      }
+    }
+    return violations;
+  }
+
+  /**
+   * Flags islands whose members sit further from each other than the island
+   * could physically span — a small island pairing chunks tens of metres apart
+   * is membership the client cannot have derived correctly. Ported from the
+   * diagnostics that localised the district-scene position corruption.
+   */
+  diagnoseFrames(maxOffsetM = 5, maxMembers = 2): Array<{ key: number; worstOffsetM: number; members: number }> {
+    const suspects: Array<{ key: number; worstOffsetM: number; members: number }> = [];
+    for (const [key, body] of this.bodies) {
+      if (body.chunkSlots.length === 0 || body.chunkSlots.length > maxMembers) continue;
+      let worst = 0;
+      for (const slot of body.chunkSlots) {
+        const offset = Math.hypot(
+          this.localPos[slot * 3],
+          this.localPos[slot * 3 + 1],
+          this.localPos[slot * 3 + 2],
+        );
+        if (offset > worst) worst = offset;
+      }
+      if (worst > maxOffsetM) {
+        suspects.push({ key, worstOffsetM: worst, members: body.chunkSlots.length });
+      }
+    }
+    return suspects;
+  }
+
+  /** Migration events the ledger could not apply correctly. */
+  readonly migrateAnomalies = { missingDestination: 0, emptyDestination: 0 };
+
+  /**
+   * Re-parent `nodes` onto an island body and set their body-local offsets.
+   *
+   * Offsets come from the island's own rest geometry, never from where this
+   * client currently believes a chunk is. The adapter re-centres a split child
+   * on its centre of mass, so an island body's frame is the structure rest
+   * frame translated by the COM of its members — which the manifest pins down
+   * exactly (mass + centre of mass per chunk).
+   *
+   * The old promote path derived offsets as
+   * `inverse(promotionPose) ∘ chunkWorldPose(slot)`, which folded in however
+   * stale this client's view happened to be. Topology is reliable and
+   * immediate, but the parent's kinematic poses are unreliable, rate limited
+   * and interest culled, and a chunk re-parented by the physics without a
+   * promotion is not tracked at all. A chunk still believed to be resting on
+   * its structure (world y ≈ 1.2) while the server had it in an island 10 m up
+   * produced a −10.3 m offset; islands are rigid, so that error was frozen in
+   * for the rest of the match and the chunk rendered under the floor.
+   *
+   * Bootstrap and live promotion share this so a late joiner and a client that
+   * watched the collapse agree chunk for chunk.
+   */
+  private adoptIslandMembers(
+    structureId: number,
+    key: number,
+    nodes: number[],
+  ): number[] {
+    return this.adoptIslandMembersInner(structureId, key, nodes);
+  }
+
+  /**
+   * Reported when a topology batch moves a chunk's world pose.
+   *
+   * Measured across the whole batch, not inside adoption: `promote` adopts
+   * members before it inserts the body, so mid-adoption the chunk resolves
+   * through the missing-body fallback and any reading there is meaningless.
+   */
+  onAdoptionJump: ((slot: number, stepM: number) => void) | null = null;
+
+  private adoptIslandMembersInner(
+    structureId: number,
+    key: number,
+    nodes: number[],
+  ): number[] {
+    const memberSlots = nodes.map((node) => this.slotOf(structureId, node));
+    // Zero when the island has no members at all; the loop below then does
+    // nothing, and offsets relative to the structure origin are as good an
+    // answer as any for a body with no chunks in it.
+    const adoptCom = this.restCentreOfMassOf(memberSlots) ?? [0, 0, 0];
+    const [comX, comY, comZ] = adoptCom;
+
+    const slots: number[] = [];
+    // Bodies that lost members to this island. Their centre of mass moves when
+    // membership shrinks, and the server's pose for them moves with it, so
+    // their remaining chunks must be re-offset in the same breath or every one
+    // of them jumps by the centre-of-mass delta at the instant of fracture.
+    const drained = new Set<LedgerBody>();
+    for (const node of nodes) {
+      const slot = this.slotOf(structureId, node);
+      slots.push(slot);
+      const previousBody = this.bodies.get(this.chunkBody[slot]);
+      if (previousBody) {
+        const index = previousBody.chunkSlots.indexOf(slot);
+        if (index >= 0) {
+          previousBody.chunkSlots.splice(index, 1);
+          drained.add(previousBody);
+        }
+      }
+      this.chunkBody[slot] = key;
+      this.retiredSlot[slot] = 0;
+      this.localPos[slot * 3] = this.restPos[slot * 3] - comX;
+      this.localPos[slot * 3 + 1] = this.restPos[slot * 3 + 1] - comY;
+      this.localPos[slot * 3 + 2] = this.restPos[slot * 3 + 2] - comZ;
+      this.localRot[slot * 4] = 0;
+      this.localRot[slot * 4 + 1] = 0;
+      this.localRot[slot * 4 + 2] = 0;
+      this.localRot[slot * 4 + 3] = 1;
+      this.markSlotChanged(slot);
+    }
+    for (const body of drained) {
+      this.reoffsetBody(body);
+    }
+    return slots;
+  }
+
+  /**
+   * Recompute a body's chunk offsets against its current membership.
+   *
+   * An island body's wire pose is its centre of mass, so when it sheds chunks
+   * its pose moves even though the rigid body itself did not: the centre of
+   * mass of what remains is somewhere else. Leaving the offsets on the old
+   * centre of mass displaces every surviving chunk by that delta the moment a
+   * split lands, which reads as the building translating as it fractures.
+   *
+   * The support body is exempt and must stay exempt: it is never streamed (it
+   * is kinematic), so it keeps the structure-origin pose and plain rest
+   * offsets that `reset()` gave it.
+   */
+  /**
+   * Move one chunk between two islands that both already exist.
+   *
+   * Physics reparents chunks without issuing a promotion -- thousands of times
+   * over a demolition. Both islands' centres of mass move when it happens, so
+   * both have to be re-offset, and the destination's offset for this chunk has
+   * to be stated in the destination's frame rather than carried over from the
+   * source's.
+   */
+  private migrateChunk(
+    structureId: number,
+    node: number,
+    fromIslandSerial: number,
+    toIslandSerial: number,
+  ): void {
+    const slot = this.slotOf(structureId, node);
+    const destination = this.bodies.get(bodyKey(structureId, toIslandSerial));
+    if (!destination) {
+      // The destination should have been promoted already. Without it there is
+      // nowhere correct to put the chunk, and guessing is what produces
+      // chunks composed against the wrong frame. One structure's content is
+      // wrong; the stream position is not — structure-scoped repair.
+      this.migrateAnomalies.missingDestination += 1;
+      this.resyncStructures.add(structureId);
+      return;
+    }
+    // An empty destination has no frame to leave, so `reoffsetBody` would fall
+    // back to reading the "old" centre of mass off the chunk that just arrived
+    // -- which still carries the SOURCE body's frame. That yields a delta the
+    // size of the gap between the two islands, and shifts the destination's
+    // pose and its whole buffered track by it. Handled separately below.
+    const destinationWasEmpty = destination.chunkSlots.length === 0;
+    if (destinationWasEmpty) {
+      this.migrateAnomalies.emptyDestination += 1;
+    }
+    const source = this.bodies.get(bodyKey(structureId, fromIslandSerial));
+    // Both frames have to be read before membership changes: afterwards they
+    // are no longer recoverable from the members' offsets. The support body's
+    // frame is never re-offset (reoffsetBody returns for it), and it is the
+    // one body with tens of thousands of members: reading its centre of mass
+    // for every chunk that leaves it was 12% of all CPU time in a collapse.
+    const sourceOldCom = source && source.islandSerial !== SUPPORT_SERIAL && source.chunkSlots.length > 0
+      ? this.centreOfMass(source)
+      : null;
+    const destinationOldCom = this.centreOfMass(destination);
+    if (source) {
+      const index = source.chunkSlots.indexOf(slot);
+      if (index >= 0) {
+        source.chunkSlots.splice(index, 1);
+      }
+    }
+    if (!destination.chunkSlots.includes(slot)) {
+      destination.chunkSlots.push(slot);
+    }
+    this.chunkBody[slot] = destination.key;
+    this.retiredSlot[slot] = 0;
+    this.localRot[slot * 4] = 0;
+    this.localRot[slot * 4 + 1] = 0;
+    this.localRot[slot * 4 + 2] = 0;
+    this.localRot[slot * 4 + 3] = 1;
+    this.markSlotChanged(slot);
+    // Membership changed on both sides, so both centres of mass moved.
+    // reoffsetBody restates every member offset and shifts the body pose to
+    // match, which also covers this chunk's new offset.
+    if (source) {
+      this.reoffsetBody(source, sourceOldCom);
+    }
+    if (destinationWasEmpty) {
+      // With one member the frame is fully determined: the centre of mass is
+      // that chunk's own (its centroid plus its mass offset). The body's pose is
+      // left alone -- it heals on the next streamed record rather than being
+      // shifted by a delta recovered from the wrong frame.
+      const com = this.centreOfMass(destination);
+      this.localPos[slot * 3] = com ? this.restPos[slot * 3] - com[0] : 0;
+      this.localPos[slot * 3 + 1] = com ? this.restPos[slot * 3 + 1] - com[1] : 0;
+      this.localPos[slot * 3 + 2] = com ? this.restPos[slot * 3 + 2] - com[2] : 0;
+      this.markSlotChanged(slot);
+    } else {
+      this.reoffsetBody(destination, destinationOldCom);
+    }
+  }
+
+  /**
+   * Centre of mass of a body's current members, in structure-rest coordinates.
+   */
+  /**
+   * Centre of mass of these chunk slots, in structure-rest coordinates.
+   *
+   * The wire contract is `chunk_world = body_pose ∘ (rest_local − island_com)`,
+   * and the server expresses every body pose in the frame of a REAL centre of
+   * mass. So this has to be the real one: each chunk weighs in at its own
+   * centre of mass (`restMassCentre`, not its geometry origin `restPos`), and
+   * a zero-mass support node contributes nothing to it.
+   *
+   * Weighting supports uniformly instead -- which all three copies of this
+   * calculation used to do -- shifts the frame by a fraction of the support's
+   * offset, and then every chunk of that body is drawn at a fixed distance
+   * from where the server put it. Worse, the error CHANGES whenever the body
+   * gains or loses a chunk, because the support's share of the total weight
+   * changes with it, so each membership change steps the whole body sideways.
+   * A capture of a single tower collapsing showed 393 of 400 tracked chunks
+   * displaced by one identical vector within a single frame, and the exact
+   * inverse vector applied hundreds of frames later: a building stepping back
+   * and forth, not debris moving.
+   *
+   * The uniform fallback survives for the case it was actually written for --
+   * a body with no mass anywhere, which has no centre of mass to find and
+   * would otherwise divide by zero.
+   */
+  private restCentreOfMassOf(slots: readonly number[]): Vec3 | null {
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    let mass = 0;
+    for (const slot of slots) {
+      const weight = this.restMass[slot];
+      if (!(weight > 0)) continue;
+      x += this.restMassCentre[slot * 3] * weight;
+      y += this.restMassCentre[slot * 3 + 1] * weight;
+      z += this.restMassCentre[slot * 3 + 2] * weight;
+      mass += weight;
+    }
+    if (mass > 0) {
+      return [x / mass, y / mass, z / mass];
+    }
+    // No mass anywhere: fall back to the geometric centre so an all-support
+    // island still resolves to a frame instead of NaN.
+    x = 0;
+    y = 0;
+    z = 0;
+    let count = 0;
+    for (const slot of slots) {
+      x += this.restMassCentre[slot * 3];
+      y += this.restMassCentre[slot * 3 + 1];
+      z += this.restMassCentre[slot * 3 + 2];
+      count += 1;
+    }
+    return count > 0 ? [x / count, y / count, z / count] : null;
+  }
+
+  private centreOfMass(body: LedgerBody): Vec3 | null {
+    return this.restCentreOfMassOf(body.chunkSlots);
+  }
+
+  /**
+   * `knownOldCom` is required when the caller has already changed membership,
+   * because the frame is otherwise recovered from a member's current offset --
+   * and a chunk that just arrived from another body carries that body's frame.
+   */
+  private reoffsetBody(body: LedgerBody, knownOldCom?: Vec3 | null): void {
+    if (body.islandSerial === SUPPORT_SERIAL || body.chunkSlots.length === 0) {
+      return;
+    }
+    const com = this.restCentreOfMassOf(body.chunkSlots);
+    if (!com) {
+      return;
+    }
+    const [comX, comY, comZ] = com;
+    // Every surviving offset is `rest - oldCom`, so any one of them recovers
+    // the frame we are leaving. Read it before the loop below overwrites it.
+    const anchor = body.chunkSlots[0];
+    const oldCom: Vec3 = knownOldCom ?? [
+      this.restPos[anchor * 3] - this.localPos[anchor * 3],
+      this.restPos[anchor * 3 + 1] - this.localPos[anchor * 3 + 1],
+      this.restPos[anchor * 3 + 2] - this.localPos[anchor * 3 + 2],
+    ];
+    const delta: Vec3 = [comX - oldCom[0], comY - oldCom[1], comZ - oldCom[2]];
+    for (const slot of body.chunkSlots) {
+      this.localPos[slot * 3] = this.restPos[slot * 3] - comX;
+      this.localPos[slot * 3 + 1] = this.restPos[slot * 3 + 1] - comY;
+      this.localPos[slot * 3 + 2] = this.restPos[slot * 3 + 2] - comZ;
+      this.markSlotChanged(slot);
+    }
+    if (!delta.every(Number.isFinite) || vLength(delta) <= EPSILON) {
+      return;
+    }
+    // The offsets now describe a frame the streamed pose has not moved to
+    // yet. Shift the pose to match so the composed world placement is
+    // unchanged by this call, and tell the presentation layer to carry the
+    // same shift through its buffer -- otherwise the next several frames
+    // render new-frame offsets against old-frame poses.
+    const worldDelta = qRotate(body.rotation, delta);
+    body.position = vAdd(body.position, worldDelta);
+    // Marked so the render layer's teleport probe can tell a chunk that moved
+    // because its island's frame was rebased from one that moved for any other
+    // reason. A rebase is supposed to leave the composed world pose untouched;
+    // if the drawn instances move anyway, the compensation is the suspect.
+    this.reoffsetSeq += 1;
+    this.reoffsetAt.set(body.key, this.reoffsetSeq);
+    this.reoffsets += 1;
+    this.reoffsetMetres += vLength(delta);
+    this.onReoffset?.(body.key, delta);
+  }
+
+  private promote(
+    structureId: number,
+    islandId: number,
+    nodes: number[],
+    position: Vec3,
+    rotation: Quat,
+  ): void {
+    const key = bodyKey(structureId, islandId);
+    const slots = this.adoptIslandMembers(structureId, key, nodes);
+    this.bodies.set(key, {
+      key,
+      structureId,
+      islandSerial: islandId,
+      chunkSlots: slots,
+      position: vClone(position),
+      rotation: [...rotation] as Quat,
+      settled: false,
+    });
+  }
+
+  private retire(key: number, tick: number): void {
+    const body = this.bodies.get(key);
+    if (!body) {
+      return;
+    }
+    // Chunks still pointing at this body become orphans: `chunkWorldPose`
+    // has no transform for them. Count every one, cumulatively — a 2 Hz
+    // sample of the instantaneous orphan set misses short windows, and a
+    // short window is still enough to freeze a wrong matrix on screen.
+    //
+    // They are also GONE: the server's ledger drops a retired island's nodes
+    // and nothing adopts them. Marked, so the renderer stops drawing them
+    // (their record is rewritten) and a structure repair does not hand them
+    // back to the intact building.
+    for (const slot of body.chunkSlots) {
+      if (this.chunkBody[slot] === key) {
+        this.orphanedByRetire += 1;
+        this.retiredSlot[slot] = 1;
+        this.retiredAtTick[slot] = tick;
+        this.markSlotChanged(slot);
+      }
+    }
+    this.bodies.delete(key);
+  }
+
+  /**
+   * The tick a retired chunk's island was retired at (0 when a bootstrap or a
+   * repair found it retired). Wire v2 applies topology when it arrives, a
+   * playout delay ahead of what is drawn, so the renderer hides the chunk only
+   * once the presentation reaches this tick.
+   */
+  chunkRetiredAtTick(slot: number): number {
+    return this.retiredAtTick[slot];
+  }
+
+  /**
+   * Whether the server retired this chunk's island and nothing has adopted
+   * the chunk since: it is not drawn anywhere.
+   */
+  isChunkRetired(slot: number): boolean {
+    return this.retiredSlot[slot] === 1;
+  }
+
+  /**
+   * Rebuilds the whole ledger from a bootstrap message.
+   *
+   * Canonical body-frame invariant: every island body's wire pose maps
+   * structure-rest coordinates to world (`chunkWorld = bodyPose ∘ restLocal`),
+   * because each promotion pose equals the parent body's pose at the split
+   * instant. Late joiners therefore use manifest rest poses as local offsets
+   * directly — no split history required. The live `promote` path computes
+   * the same offsets via `relativePose` (exactly rest poses when the
+   * invariant holds).
+   */
+  applyBootstrap(message: BootstrapMessage): void {
+    this.collisionEpochValue += 1;
+    this.reset();
+    this.lastTopoSeq = message.topoSeq;
+    this.needsResync = false;
+    this.resyncStructures.clear();
+    this.brokenBonds = 0;
+    for (const structure of message.structures) {
+      const bits = this.aliveBonds.get(structure.structureId);
+      if (bits) {
+        for (let i = 0; i < structure.bondCount; i++) {
+          const alive = (structure.aliveBonds[i >> 3] & (1 << (i & 7))) !== 0;
+          if (!alive) {
+            const byte = i >> 3;
+            bits[byte] &= ~(1 << (i & 7));
+            this.brokenBonds += 1;
+          }
+        }
+      }
+    }
+    for (const island of message.islands) {
+      const key = bodyKey(island.structureId, island.islandId);
+      const slots = this.adoptIslandMembers(island.structureId, key, island.nodes);
+      this.bodies.set(key, {
+        key,
+        structureId: island.structureId,
+        islandSerial: island.islandId,
+        chunkSlots: slots,
+        position: vClone(island.position),
+        rotation: [...island.rotation] as Quat,
+        settled: island.settled,
+        // The bootstrap states the pose at its tick; an awake island may
+        // move on from it.
+        motionKnownTick: message.simTick,
+        motionKnownMoving: !island.settled,
+        motionKnownPosition: vClone(island.position),
+      });
+    }
+    this.retireDetachedChunks(message.structures.map((structure) => structure.structureId), null);
+  }
+
+  /**
+   * After a bootstrap or a repair: take the chunks the server has retired off
+   * the support body again.
+   *
+   * The server's ledger drops a retired island's nodes, and a bootstrap lists
+   * only islands, so a retired chunk and an intact one look the same on the
+   * wire: in no island. Both used to land on the support body, and every chunk
+   * the escape floor or the stage had retired was drawn back on the intact
+   * building at its rest pose (Netlab, 0a7d6ae5 systematic bundle: 247,773
+   * extra chunk-frames after the recorded repairs).
+   *
+   * Two kinds of evidence, either sufficient:
+   * - this client saw it retired (`retiredBefore`, for a repair) and the
+   *   message did not put it in an island;
+   * - no alive bond path joins it to one of its structure's anchor nodes (the
+   *   manifest's zero-mass `support` nodes). The physics holds an anchored
+   *   component static and makes every unanchored component its own island,
+   *   so a chunk in no island and cut off from every anchor is not standing.
+   *   Structures with no anchor node are left alone.
+   */
+  private retireDetachedChunks(structureIds: number[], retiredBefore: Set<number> | null): void {
+    for (const structureId of structureIds) {
+      const structure = this.manifest.structures.find((candidate) => candidate.structureId === structureId);
+      const supportKey = bodyKey(structureId, SUPPORT_SERIAL);
+      const support = this.bodies.get(supportKey);
+      if (!structure || !support) {
+        continue;
+      }
+      const base = this.slotBase.get(structureId)!;
+      const count = structure.chunks.length;
+      const anchored = new Uint8Array(count);
+      const bits = this.aliveBonds.get(structureId);
+      const onSupport = (node: number): boolean => this.chunkBody[base + node] === supportKey;
+      let anchors = 0;
+      const queue: number[] = [];
+      for (const chunk of structure.chunks) {
+        if (chunk.support && onSupport(chunk.nodeIndex)) {
+          anchored[chunk.nodeIndex] = 1;
+          queue.push(chunk.nodeIndex);
+          anchors += 1;
+        }
+      }
+      if (anchors > 0 && bits) {
+        const { node0, node1 } = bondEndpoints(structure);
+        const adjacency: number[][] = Array.from({ length: count }, () => []);
+        for (let bond = 0; bond < node0.length; bond += 1) {
+          if ((bits[bond >> 3] & (1 << (bond & 7))) === 0) continue;
+          adjacency[node0[bond]].push(node1[bond]);
+          adjacency[node1[bond]].push(node0[bond]);
+        }
+        while (queue.length > 0) {
+          const node = queue.pop()!;
+          for (const next of adjacency[node]) {
+            if (anchored[next] === 0 && onSupport(next)) {
+              anchored[next] = 1;
+              queue.push(next);
+            }
+          }
+        }
+      }
+      const kept: number[] = [];
+      for (const slot of support.chunkSlots) {
+        const node = slot - base;
+        const detached = anchors > 0 && anchored[node] === 0;
+        if (detached || retiredBefore?.has(slot)) {
+          this.chunkBody[slot] = RETIRED_BODY;
+          this.retiredSlot[slot] = 1;
+          this.retiredAtTick[slot] = 0;
+          this.markSlotChanged(slot);
+        } else {
+          kept.push(slot);
+        }
+      }
+      support.chunkSlots = kept;
+    }
+  }
+
+  /**
+   * Rebuild only the structures a scoped bootstrap names, leaving every other
+   * structure's ledger — and the stream position — untouched. The caller must
+   * have verified `message.topoSeq === lastSeq()`: this repairs content at the
+   * position both sides already agree on, it does not move the position.
+   */
+  applyStructureBootstrap(message: BootstrapMessage): void {
+    this.collisionEpochValue += 1;
+    // What this client knows the server retired, before the rebuild forgets it.
+    const retiredBefore = new Set<number>();
+    for (const structureMessage of message.structures) {
+      const base = this.slotBase.get(structureMessage.structureId);
+      const manifestStructure = this.manifest.structures.find(
+        (candidate) => candidate.structureId === structureMessage.structureId,
+      );
+      if (base === undefined || !manifestStructure) continue;
+      for (let node = 0; node < manifestStructure.chunks.length; node += 1) {
+        if (this.retiredSlot[base + node] === 1) retiredBefore.add(base + node);
+      }
+    }
+    for (const structureMessage of message.structures) {
+      this.resyncStructures.delete(structureMessage.structureId);
+      const manifestStructure = this.manifest.structures.find(
+        (candidate) => candidate.structureId === structureMessage.structureId,
+      );
+      if (!manifestStructure) {
+        continue;
+      }
+      const structureId = structureMessage.structureId;
+      // Every dynamic body of this structure is about to be restated; the
+      // support body is rebuilt to own every chunk again, exactly like
+      // `reset()`, and the message's islands then adopt theirs back out.
+      for (const key of [...this.bodies.keys()]) {
+        if (bodyKeyParts(key).structureId === structureId) {
+          this.bodies.delete(key);
+        }
+      }
+      const base = this.slotBase.get(structureId)!;
+      const supportKey = bodyKey(structureId, SUPPORT_SERIAL);
+      const slots: number[] = [];
+      for (const chunk of manifestStructure.chunks) {
+        const slot = base + chunk.nodeIndex;
+        slots.push(slot);
+        this.chunkBody[slot] = supportKey;
+        this.retiredSlot[slot] = 0;
+        this.markSlotChanged(slot);
+        this.localPos[slot * 3] = chunk.centroid[0];
+        this.localPos[slot * 3 + 1] = chunk.centroid[1];
+        this.localPos[slot * 3 + 2] = chunk.centroid[2];
+        this.localRot[slot * 4] = 0;
+        this.localRot[slot * 4 + 1] = 0;
+        this.localRot[slot * 4 + 2] = 0;
+        this.localRot[slot * 4 + 3] = 1;
+      }
+      this.bodies.set(supportKey, {
+        key: supportKey,
+        structureId,
+        islandSerial: SUPPORT_SERIAL,
+        chunkSlots: slots,
+        position: vClone(manifestStructure.worldPosition),
+        rotation: [...manifestStructure.worldRotation] as Quat,
+        settled: true,
+      });
+      // The bond bitmap comes straight from the message — the whole point of
+      // the repair is that ours was wrong in a way we could not enumerate.
+      this.aliveBonds.set(structureId, new Uint8Array(structureMessage.aliveBonds));
+    }
+    for (const island of message.islands) {
+      const key = bodyKey(island.structureId, island.islandId);
+      const slots = this.adoptIslandMembers(island.structureId, key, island.nodes);
+      this.bodies.set(key, {
+        key,
+        structureId: island.structureId,
+        islandSerial: island.islandId,
+        chunkSlots: slots,
+        position: vClone(island.position),
+        rotation: [...island.rotation] as Quat,
+        settled: island.settled,
+        // The bootstrap states the pose at its tick; an awake island may
+        // move on from it.
+        motionKnownTick: message.simTick,
+        motionKnownMoving: !island.settled,
+        motionKnownPosition: vClone(island.position),
+      });
+    }
+    this.retireDetachedChunks(message.structures.map((structure) => structure.structureId), retiredBefore);
+    // Recount rather than patch: the repaired structures' previous counts are
+    // exactly what we no longer trust.
+    let broken = 0;
+    for (const structure of this.manifest.structures) {
+      const bits = this.aliveBonds.get(structure.structureId);
+      if (!bits) {
+        continue;
+      }
+      // bondCountOf, not structure.bonds.length: the binary manifest path
+      // never materialises bond objects, so `bonds` is undefined there.
+      const count = bondCountOf(structure);
+      for (let i = 0; i < count; i++) {
+        if ((bits[i >> 3] & (1 << (i & 7))) === 0) {
+          broken += 1;
+        }
+      }
+    }
+    this.brokenBonds = broken;
+  }
+
+  /**
+   * Per-structure ledger hashes, the client half of the silent-divergence
+   * detector. MUST match `CityLedger::structure_hashes` in
+   * `destruction/src/topology.rs` byte for byte: two 32-bit FNV-1a lanes over
+   * the alive-bond bitmap then each dynamic island as
+   * `[serial u32][node_count u32][nodes ascending u32...]`, islands in
+   * ascending serial order, all little-endian. The shared test vector lives in
+   * both sides' tests.
+   */
+  structureHashes(): Map<number, { laneA: number; laneB: number }> {
+    const FNV_PRIME = 16777619;
+    const result = new Map<number, { laneA: number; laneB: number }>();
+    for (const structure of this.manifest.structures) {
+      const bits = this.aliveBonds.get(structure.structureId);
+      if (!bits) {
+        continue;
+      }
+      let laneA = 0x811c9dc5 >>> 0;
+      let laneB = 0xdeadbeef >>> 0;
+      const feed = (byte: number): void => {
+        laneA = Math.imul(laneA ^ byte, FNV_PRIME) >>> 0;
+        laneB = Math.imul(laneB ^ byte, FNV_PRIME) >>> 0;
+      };
+      const feedU32 = (value: number): void => {
+        feed(value & 0xff);
+        feed((value >>> 8) & 0xff);
+        feed((value >>> 16) & 0xff);
+        feed((value >>> 24) & 0xff);
+      };
+      for (const byte of bits) {
+        feed(byte);
+      }
+      const serials: number[] = [];
+      for (const body of this.bodies.values()) {
+        if (body.structureId === structure.structureId && body.islandSerial !== SUPPORT_SERIAL) {
+          serials.push(body.islandSerial);
+        }
+      }
+      serials.sort((a, b) => a - b);
+      for (const serial of serials) {
+        const body = this.bodies.get(bodyKey(structure.structureId, serial))!;
+        feedU32(serial);
+        feedU32(body.chunkSlots.length);
+        const nodes = body.chunkSlots.map((slot) => this.slotNode[slot]);
+        nodes.sort((a, b) => a - b);
+        for (const node of nodes) {
+          feedU32(node);
+        }
+      }
+      result.set(structure.structureId, { laneA, laneB });
+    }
+    return result;
+  }
+
+  chunkStructure(slot: number): number {
+    return this.slotStructure[slot];
+  }
+
+  chunkNode(slot: number): number {
+    return this.slotNode[slot];
+  }
+
+  /** Bonds broken since the last reset or bootstrap. Cheap; bumps whenever the standing set changes. */
+  brokenBondCount(): number {
+    return this.brokenBonds;
+  }
+
+  /** Manifest mass of one chunk, kg. */
+  restMassOf(slot: number): number {
+    return this.restMass[slot];
+  }
+
+  /** Manifest bounding radius of one chunk, m. */
+  chunkRadiusOf(slot: number): number {
+    return this.restRadius[slot];
+  }
+
+  /** Manifest rest centroid of one chunk, in its structure's frame, into out[at..at+3). */
+  restPositionInto(slot: number, out: Float32Array, at: number): void {
+    const base = slot * 3;
+    out[at] = this.restPos[base];
+    out[at + 1] = this.restPos[base + 1];
+    out[at + 2] = this.restPos[base + 2];
+  }
+}

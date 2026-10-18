@@ -1,5 +1,4 @@
 import {
-  decodeServerPacket,
   encodeBlockEditPacket,
   encodeFirePacket,
   encodeInputBundle,
@@ -14,12 +13,17 @@ import {
   type MeleeCmd,
   type ServerPacket,
 } from './protocol';
+import { routeInboundPacket, type RawPacketListener } from './inbound';
 
 export type GameSocketHandlers = {
   onOpen?: () => void;
   onClose?: (event: CloseEvent) => void;
   onError?: (event: Event) => void;
   onPacket?: (packet: ServerPacket) => void;
+  /** Raw city destruction packets (kinds 119-122). */
+  onCityPacket?: (bytes: Uint8Array) => void;
+  /** Every inbound packet, city or not, as received and before routing (the city tape). */
+  onRawPacket?: RawPacketListener;
   onRttUpdated?: (rttMs: number) => void;
 };
 
@@ -115,7 +119,15 @@ export class GameSocket {
   }
 
   private handleArrayBuffer(buffer: ArrayBuffer): void {
-    const packet = decodeServerPacket(buffer);
+    const bytes = new Uint8Array(buffer);
+    this.handlers.onRawPacket?.(bytes, 'websocket');
+    const routed = routeInboundPacket(bytes, 'websocket');
+    if (routed.route === 'city') {
+      this.handlers.onCityPacket?.(bytes);
+      return;
+    }
+    if (routed.route !== 'game') return;
+    const packet = routed.packet;
 
     if (packet.type === 'serverPing') {
       // Authoritative server latency measurement for lag compensation.

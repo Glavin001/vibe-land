@@ -1,4 +1,24 @@
 use crate::unit_conv::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug)]
+pub struct CityCameraDropCmd {
+    pub position: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl CityCameraDropCmd {
+    pub fn is_valid(&self) -> bool {
+        self.position
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= 10_000.0)
+            && self.yaw.is_finite()
+            && self.yaw.abs() <= 1_000_000.0
+            && self.pitch.is_finite()
+            && self.pitch.abs() <= std::f32::consts::FRAC_PI_2
+    }
+}
 
 // ── Core types ──────────────────────────────────
 
@@ -30,7 +50,7 @@ pub struct NetPlayerState {
     pub energy_centi: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NetBatteryState {
     pub id: u32,
     pub px_mm: i32,
@@ -137,9 +157,12 @@ pub struct ChunkDiffPacket {
     pub edits: Vec<BlockEditNet>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WelcomePacket {
     pub player_id: u32,
+    pub protocol_version: u16,
+    pub physics_backend: u8,
+    pub client_movement_mode: u8,
     pub sim_hz: u16,
     pub snapshot_hz: u16,
     pub server_time_us: u64,
@@ -157,7 +180,7 @@ pub struct SnapshotPacket {
     pub vehicle_states: Vec<NetVehicleState>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ShotResultPacket {
     pub shot_id: u32,
     pub weapon: u8,
@@ -175,7 +198,7 @@ pub const SHOT_RESOLUTION_PLAYER: u8 = 1;
 pub const SHOT_RESOLUTION_DYNAMIC: u8 = 2;
 pub const SHOT_RESOLUTION_BLOCKED_BY_WORLD: u8 = 3;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ShotFiredPacket {
     pub shooter_player_id: u32,
     pub shot_id: u32,
@@ -191,7 +214,7 @@ pub struct ShotFiredPacket {
     pub end_pz_mm: i32,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DamageEventPacket {
     pub attacker_player_id: u32,
     pub damage_amount: u8,
@@ -438,4 +461,199 @@ pub fn net_player_state_to_meters(state: &NetPlayerState) -> PlayerStateMeters {
         pitch: i16_to_angle(state.pitch_i16) as f64,
         flags: state.flags,
     }
+}
+
+// ── SnapshotV2 and the reliable state packets ───
+// Shared by the server's encoders and the client core's decoders (net_client).
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SelfPlayerStateV2 {
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub yaw_i16: i16,
+    pub pitch_i16: i16,
+    pub hp: u8,
+    pub flags: u8,
+    pub support_handle: u16,
+    pub support_local_q2_5mm: [i16; 3],
+    pub support_velocity_cms: [i16; 3],
+    pub support_flags: u8,
+    pub support_angular_velocity_mrads: [i16; 3],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RemotePlayerStateV2 {
+    pub handle: u8,
+    pub dx_q2_5mm: i16,
+    pub dy_q2_5mm: i16,
+    pub dz_q2_5mm: i16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub yaw_i16: i16,
+    pub pitch_i16: i16,
+    pub hp: u8,
+    pub flags: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DynamicSphereStateV2 {
+    pub handle: u16,
+    pub dx_q2_5mm: i16,
+    pub dy_q2_5mm: i16,
+    pub dz_q2_5mm: i16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub wx_mrads: i16,
+    pub wy_mrads: i16,
+    pub wz_mrads: i16,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DynamicBoxStateV2 {
+    pub handle: u16,
+    pub dx_q2_5mm: i16,
+    pub dy_q2_5mm: i16,
+    pub dz_q2_5mm: i16,
+    pub qx_snorm: i16,
+    pub qy_snorm: i16,
+    pub qz_snorm: i16,
+    pub qw_snorm: i16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub wx_mrads: i16,
+    pub wy_mrads: i16,
+    pub wz_mrads: i16,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VehicleStateV2 {
+    pub handle: u8,
+    pub vehicle_type: u8,
+    pub driver_handle: u8,
+    pub flags: u8,
+    pub dx_q2_5mm: i16,
+    pub dy_q2_5mm: i16,
+    pub dz_q2_5mm: i16,
+    pub qx_snorm: i16,
+    pub qy_snorm: i16,
+    pub qz_snorm: i16,
+    pub qw_snorm: i16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub wx_mrads: i16,
+    pub wy_mrads: i16,
+    pub wz_mrads: i16,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SnapshotV2Packet {
+    pub server_tick: u32,
+    pub ack_input_seq: u16,
+    pub anchor_px_mm: i32,
+    pub anchor_py_mm: i32,
+    pub anchor_pz_mm: i32,
+    pub self_state: SelfPlayerStateV2,
+    pub remote_players: Vec<RemotePlayerStateV2>,
+    pub sphere_states: Vec<DynamicSphereStateV2>,
+    pub box_states: Vec<DynamicBoxStateV2>,
+    pub vehicle_states: Vec<VehicleStateV2>,
+    /// The server's wall clock when the snapshot was produced, µs modulo
+    /// 2^32 on a process-local origin. Encoded as a 4-byte trailer after the
+    /// vehicles: clients that predate it stop reading before it, and clients
+    /// that know it detect it by length. Server time on the wire is
+    /// `tick × 16.67 ms`, which runs slower than wall time whenever a tick
+    /// overruns; against this clock the client measures the simulation rate
+    /// instead of mistaking a slow server for network delay.
+    pub server_wall_us: u32,
+    /// Leave the self state's 21-byte support block out (12 bytes instead of
+    /// 33). Every client since before 2026-09-24 length-detects the block
+    /// (`decodeSnapshotV2Packet`: 33, 27 or 12 bytes) and reads an absent one
+    /// as no support, so this is only set when the block says nothing the
+    /// client uses: no support, or a support that is not moving (the client
+    /// reads only the support velocity). Never set together with `removals`,
+    /// whose section follows the trailer: a 12-byte block is detected by the
+    /// bytes left after the entities, which the section would add to. The
+    /// 3-byte `input_queue` section may go with it: 12 + 4 + 3 = 19 left,
+    /// under the 27 that would read as a support block.
+    pub compact_self: bool,
+    /// Entities this recipient's stream has stopped carrying (retired by the
+    /// server, or out of its interest), each restated in a few consecutive
+    /// snapshots. Encoded after the wall-clock trailer as a section (tag
+    /// [`SNAPSHOT_V2_REMOVALS_TAG`], count, entries), which clients that
+    /// predate it never read.
+    pub removals: Vec<SnapshotRemoval>,
+    /// The recipient's vehicle input queue as the server holds it this tick:
+    /// (depth, target depth), the target from the measured jitter of its
+    /// input arrivals. Sent to a driver while vehicle input pacing is on
+    /// (`VIBE_VEHICLE_INPUT_PACING`), whose client then paces its inputs to
+    /// keep the queue at the target. A section after the removals (tag
+    /// [`SNAPSHOT_V2_INPUT_QUEUE_TAG`], depth, target) older clients never read.
+    pub input_queue: Option<(u8, u8)>,
+}
+
+/// First byte of the input-queue section (after the removals, when any).
+pub const SNAPSHOT_V2_INPUT_QUEUE_TAG: u8 = 0xE8;
+
+/// One entry of the SnapshotV2 removals section: `handle` is a dynamic body's
+/// handle, or `0x8000 | vehicle handle` (the convention of the self state's
+/// support handle); the entity was last in this recipient's stream before
+/// `server_tick - age_ticks`, and is not in it from that tick on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotRemoval {
+    pub handle: u16,
+    pub age_ticks: u8,
+}
+
+/// Bytes the SnapshotV2 wall-clock trailer adds.
+pub const SNAPSHOT_V2_TRAILER_BYTES: usize = 4;
+/// Bytes of the self state without its support block (`compact_self`).
+pub const SNAPSHOT_V2_COMPACT_SELF_PLAYER_BYTES: usize = 12;
+/// First byte of the removals section after the trailer.
+pub const SNAPSHOT_V2_REMOVALS_TAG: u8 = 0xE7;
+/// Bytes of one removals entry (u16 handle, u8 age).
+pub const SNAPSHOT_V2_REMOVAL_BYTES: usize = 3;
+/// Handle bit marking a vehicle in a removals entry.
+pub const SNAPSHOT_V2_REMOVAL_VEHICLE_BIT: u16 = 0x8000;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlayerRosterEntry {
+    pub handle: u8,
+    pub player_id: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlayerRosterPacket {
+    pub entries: Vec<PlayerRosterEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DynamicBodyMetaEntry {
+    pub handle: u16,
+    pub body_id: u32,
+    pub shape_type: u8,
+    pub hx_cm: u16,
+    pub hy_cm: u16,
+    pub hz_cm: u16,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DynamicBodyMetaPacket {
+    pub entries: Vec<DynamicBodyMetaEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LocalPlayerEnergyPacket {
+    pub energy_centi: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BatterySyncPacket {
+    pub full_resync: bool,
+    pub battery_states: Vec<NetBatteryState>,
+    pub removed_ids: Vec<u32>,
 }

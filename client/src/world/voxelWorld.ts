@@ -37,7 +37,7 @@ export class ClientVoxelWorld {
   private readonly chunks = new Map<string, ChunkState>();
 
   constructor(
-    private readonly sim: WasmSimWorldInstance,
+    private readonly sim: WasmSimWorldInstance | null,
     private readonly syncColliders = true,
   ) {}
 
@@ -72,7 +72,7 @@ export class ClientVoxelWorld {
     const key = packet.chunk;
     const id = keyToString(key);
     const existing = this.chunks.get(id);
-    if (existing && this.syncColliders) {
+    if (existing && this.syncColliders && this.sim) {
       for (const colId of existing.blockColliders.values()) {
         this.sim.removeCuboid(colId);
       }
@@ -90,7 +90,7 @@ export class ClientVoxelWorld {
       if (block.material === 0) continue;
       const idx = packLocalIndex(block.x, block.y, block.z);
       chunk.blocks.set(idx, block.material);
-      if (this.syncColliders) {
+      if (this.syncColliders && this.sim) {
         const center = chunkLocalToWorldCenter(key, [block.x, block.y, block.z]);
         const colId = this.sim.addCuboid(center.x, center.y, center.z, 0.5, 0.5, 0.5);
         chunk.blockColliders.set(idx, colId);
@@ -98,7 +98,7 @@ export class ClientVoxelWorld {
     }
 
     this.chunks.set(id, chunk);
-    if (this.syncColliders) {
+    if (this.syncColliders && this.sim) {
       this.sim.rebuildBroadPhase();
     }
   }
@@ -156,7 +156,7 @@ export class ClientVoxelWorld {
     }
 
     this.chunks.set(id, chunk);
-    if (this.syncColliders) {
+    if (this.syncColliders && this.sim) {
       this.sim.rebuildBroadPhase();
     }
   }
@@ -180,7 +180,7 @@ export class ClientVoxelWorld {
     this._applySingleEdit(chunk, cmd.op, idx, cmd.local, cmd.material);
     chunk.pending.push({ cmd, prevMaterial });
 
-    if (this.syncColliders) {
+    if (this.syncColliders && this.sim) {
       this.sim.rebuildBroadPhase();
     }
   }
@@ -218,7 +218,7 @@ export class ClientVoxelWorld {
   ): void {
     if (op === BLOCK_REMOVE) {
       chunk.blocks.delete(idx);
-      if (this.syncColliders) {
+      if (this.syncColliders && this.sim) {
         const colId = chunk.blockColliders.get(idx);
         if (colId !== undefined) {
           this.sim.removeCuboid(colId);
@@ -227,7 +227,7 @@ export class ClientVoxelWorld {
       }
     } else if (op === BLOCK_ADD) {
       chunk.blocks.set(idx, material);
-      if (this.syncColliders && !chunk.blockColliders.has(idx)) {
+      if (this.syncColliders && this.sim && !chunk.blockColliders.has(idx)) {
         const center = chunkLocalToWorldCenter(chunk.key, local);
         const colId = this.sim.addCuboid(center.x, center.y, center.z, 0.5, 0.5, 0.5);
         chunk.blockColliders.set(idx, colId);
@@ -242,7 +242,7 @@ export class ClientVoxelWorld {
       if (prevMaterial === 0) {
         // Block did not exist before — remove the optimistically-added block.
         chunk.blocks.delete(idx);
-        if (this.syncColliders) {
+        if (this.syncColliders && this.sim) {
           const colId = chunk.blockColliders.get(idx);
           if (colId !== undefined) {
             this.sim.removeCuboid(colId);
@@ -252,7 +252,7 @@ export class ClientVoxelWorld {
       } else {
         // Block existed before — restore it.
         chunk.blocks.set(idx, prevMaterial);
-        if (this.syncColliders && !chunk.blockColliders.has(idx)) {
+        if (this.syncColliders && this.sim && !chunk.blockColliders.has(idx)) {
           const center = chunkLocalToWorldCenter(chunk.key, cmd.local);
           const colId = this.sim.addCuboid(center.x, center.y, center.z, 0.5, 0.5, 0.5);
           chunk.blockColliders.set(idx, colId);

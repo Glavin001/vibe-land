@@ -1,0 +1,275 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["numpy>=1.26"]
+# ///
+"""vl: one entry point for autonomous reproduction, debugging and performance work.
+
+  vl perf explain <ticks.jsonl | dir ...> [--threshold MS] [--top N] [--json]
+      Why the costly ticks cost what they cost: per spike, the phases that grew
+      against its neighbours and the counts and events that grew with them; what
+      a steady tick is made of; a cost model per phase; the priority list.
+      Reads spike dumps (debug-reports/spike-*, written automatically by every
+      server when a tick exceeds VIBE_SPIKE_DUMP_MS) and session captures.
+
+  vl perf record --out DIR [--seconds S] [--url URL] [--match ID]
+      Pull a live server's tick flight recorder (GET /match-stats/:id/ticks,
+      the last ~10 s) every few seconds into DIR/ticks.jsonl, continuous and
+      de-duplicated, for S seconds; then `vl perf explain DIR`.
+
+  vl perf scenario <name | file.json> [--env K=V ...] [--label L] [--out DIR]
+      Run a declared scenario (scenarios/perf/<name>.json) on a private stack
+      (vite, server and a headless player on their own ports, the server under
+      the GPU lock), record every tick, explain the run and each step.
+      --reps N runs it N times on fresh servers and aggregates per step
+      (summary.json); the physics is not reproducible, so compare repetitions.
+
+  vl perf suite [suite] [--reps N] [--only a,b]
+      Run the declared suite (scenarios/perf/suite.json), check each
+      scenario's budgets, append results to bench-results/history.jsonl
+      (keyed by both repos' revisions); exit 1 on any budget failure.
+
+  vl perf history <scenario> [--step S] [--metric M]
+      The scenario's results over time, commit by commit.
+
+  vl perf compare <runA> <runB>
+      Two scenario runs (with --reps), step by step: B - A for every summary
+      metric with a 90% bootstrap interval over repetitions; * marks the
+      differences whose interval excludes zero.
+
+  vl perf diff <A ticks/dir> <B ticks/dir>
+      What changed between two runs (or steps): the median tick, the phases
+      whose medians moved most, and the counts that moved with them.
+
+  vl perf gpu <run-dir> | --log server.log --ticks ticks.jsonl
+      Real GPU time per tick on Metal from CuMetal's commit trace (run the
+      scenario with --gpu-trace, i.e. CUMETAL_TRACE_COMMITS=1): GPU busy vs
+      the CPU's wait, command buffers and dispatches per tick, GPU time by
+      kernel, per step.
+
+  vl perf spikes [debug-reports]
+      List the spike dumps a server wrote, newest first.
+
+  vl repro <dump-dir> [--reps N] [--emit-test NAME] [--max-gap-s S]
+      Reproduce a debug report, spike dump or anomaly dump from its repro
+      bundle (docs/repro-bundle.md) on a fresh private stack, N times; print
+      the reproduction rate; --emit-test writes scenarios/repro/NAME.json, a
+      test that fails while the bug is present.
+
+  vl triage [debug-reports] [--json]
+      Every report, spike and anomaly dump grouped by symptom, largest group
+      first, with whether it can be replayed and the vl repro command.
+
+Every command exits non-zero on failure. See docs/vl.md.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def perf_explain(args):
+    from vltools import perf_explain
+    perf_explain.run(args.paths, threshold=args.threshold, top=args.top, as_json=args.json)
+
+
+def perf_record(args):
+    import time
+    import urllib.request
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    seen, rows = set(), []
+    deadline = time.time() + args.seconds
+    while True:
+        url = f"{args.url}/match-stats/{args.match}/ticks"
+        try:
+            body = urllib.request.urlopen(url, timeout=5).read().decode()
+        except Exception as error:  # noqa: BLE001 - report and keep trying
+            print(f"vl perf record: {url}: {error}", file=sys.stderr)
+            body = ""
+        for line in body.splitlines():
+            if line.strip():
+                t = json.loads(line)
+                if t["tick"] not in seen:
+                    seen.add(t["tick"])
+                    rows.append(t)
+        if time.time() >= deadline:
+            break
+        time.sleep(min(4.0, max(0.0, deadline - time.time())))
+    rows.sort(key=lambda t: t["tick"])
+    gaps = sum(1 for a, b in zip(rows, rows[1:]) if b["tick"] - a["tick"] > 1)
+    (out / "ticks.jsonl").write_text("".join(json.dumps(t) + "\n" for t in rows))
+    (out / "meta.json").write_text(json.dumps({"kind": "record", "url": args.url, "match_id": args.match,
+                                               "seconds": args.seconds, "ticks": len(rows), "gaps": gaps}, indent=1))
+    print(f"{len(rows)} ticks ({gaps} gaps) -> {out / 'ticks.jsonl'}")
+    if not rows:
+        sys.exit(1)
+
+
+def perf_scenario(args):
+    from vltools import perf_scenario
+    perf_scenario.run(args)
+
+
+def perf_locked(args):
+    from vltools import perf_scenario
+    perf_scenario.locked(args)
+
+
+def perf_suite(args):
+    from vltools import perf_suite
+    perf_suite.suite(args)
+
+
+def perf_history(args):
+    from vltools import perf_suite
+    perf_suite.history(args)
+
+
+def perf_compare(args):
+    from vltools import perf_stats
+    perf_stats.compare(Path(args.a), Path(args.b))
+
+
+def perf_diff(args):
+    from vltools import perf_explain
+    perf_explain.diff(perf_explain.load([args.a]), perf_explain.load([args.b]), "A", "B")
+
+
+def perf_gpu(args):
+    from vltools import commit_trace
+    if args.run_dir:
+        d = Path(args.run_dir)
+        log = (d / "server.log").read_text(errors="replace")
+        if "CUMETAL_PROVENANCE event=kernel_launch" in log:
+            n = sum(1 for line in (d / "ticks.jsonl").read_text().splitlines() if line.strip())
+            commit_trace.kernels_exact(d / "server.log", n, top=args.top)
+        if "CUMETAL_COMMIT" in log:
+            commit_trace.run(d / "server.log", d / "ticks.jsonl", d / "steps.json", top=args.top)
+    else:
+        commit_trace.run(args.log, args.ticks, top=args.top)
+
+
+def repro(args):
+    from vltools import repro as repro_mod
+    repro_mod.run(args)
+
+
+def triage(args):
+    from vltools import triage as triage_mod
+    triage_mod.run(args.root, as_json=args.json)
+
+
+def perf_spikes(args):
+    root = Path(args.root)
+    dumps = sorted(root.glob("spike-*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for d in dumps:
+        meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
+        spikes = meta.get("spikes", [])
+        worst = max((s[1] for s in spikes), default=0)
+        print(f"{d}  spikes {len(spikes)}  worst {worst:.1f} ms  ticks {meta.get('ticks', '?')}")
+    if not dumps:
+        print(f"no spike dumps under {root}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="vl", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="area", required=True)
+    perf = sub.add_parser("perf").add_subparsers(dest="cmd", required=True)
+    e = perf.add_parser("explain")
+    e.add_argument("paths", nargs="+")
+    e.add_argument("--threshold", type=float, help="spike threshold, ms (default max(33, 2x median))")
+    e.add_argument("--top", type=int, default=10)
+    e.add_argument("--json", action="store_true")
+    e.set_defaults(func=perf_explain)
+    r = perf.add_parser("record")
+    r.add_argument("--out", required=True)
+    r.add_argument("--seconds", type=float, default=30)
+    r.add_argument("--url", default="http://127.0.0.1:4001")
+    r.add_argument("--match", default="city-default")
+    r.set_defaults(func=perf_record)
+    for name, func in (("scenario", perf_scenario), ("_locked", perf_locked)):
+        c = perf.add_parser(name)
+        c.add_argument("scenario")  if name == "scenario" else c.add_argument("--scenario", required=True)
+        c.add_argument("--env", action="append", help="server env override K=V (repeatable)")
+        c.add_argument("--match", default="city-default")
+        c.add_argument("--http-port", type=int, default=4311)
+        c.add_argument("--wt-port", type=int, default=4312)
+        c.add_argument("--client-port", type=int, default=3313)
+        c.add_argument("--warmup", type=float, default=10, help="seconds after joining before the first step")
+        c.add_argument("--binary")
+        c.add_argument("--sample", type=int, metavar="STEP",
+                       help="macOS: sample the server's CPU stacks (/usr/bin/sample, 1 ms) during step STEP (0-based); "
+                            "writes sample-step-STEP.txt in the run directory")
+        if name == "scenario":
+            c.add_argument("--gpu-trace", action="store_true", help="CUMETAL_TRACE_COMMITS=1 (Metal GPU time; adds overhead)")
+            c.add_argument("--reps", type=int, default=1)
+            c.add_argument("--label")
+            c.add_argument("--out")
+        else:
+            c.add_argument("--run-dir", required=True)
+        c.set_defaults(func=func)
+    sy = perf.add_parser("syncs", help="Metal: host GPU waits per tick (run with --env CUMETAL_TRACE_SYNC=1)")
+    sy.add_argument("run")
+    sy.set_defaults(func=lambda args: __import__("vltools.commit_trace", fromlist=["syncs"]).syncs(args.run))
+    st = perf.add_parser("stacks", help="macOS: functions by inclusive samples in a --sample call graph")
+    st.add_argument("file")
+    st.add_argument("thread", nargs="?", default="match-")
+    st.add_argument("top", nargs="?", type=int, default=45)
+    st.set_defaults(func=lambda args: sys.exit(__import__("vltools.sample_tree", fromlist=["main"]).main([args.file, args.thread, str(args.top)])))
+    su = perf.add_parser("suite")
+    su.add_argument("suite", nargs="?", default="suite")
+    su.add_argument("--reps", type=int)
+    su.add_argument("--only")
+    su.add_argument("--binary")
+    su.add_argument("--http-port", type=int, default=4311)
+    su.add_argument("--wt-port", type=int, default=4312)
+    su.add_argument("--client-port", type=int, default=3313)
+    su.set_defaults(func=perf_suite)
+    hi = perf.add_parser("history")
+    hi.add_argument("scenario")
+    hi.add_argument("--step")
+    hi.add_argument("--metric", default="median_ms")
+    hi.set_defaults(func=perf_history)
+    c = perf.add_parser("compare")
+    c.add_argument("a")
+    c.add_argument("b")
+    c.set_defaults(func=perf_compare)
+    g = perf.add_parser("gpu")
+    g.add_argument("run_dir", nargs="?")
+    g.add_argument("--log")
+    g.add_argument("--ticks")
+    g.add_argument("--top", type=int, default=15)
+    g.set_defaults(func=perf_gpu)
+    d = perf.add_parser("diff")
+    d.add_argument("a")
+    d.add_argument("b")
+    d.set_defaults(func=perf_diff)
+    s = perf.add_parser("spikes")
+    s.add_argument("root", nargs="?", default="debug-reports")
+    s.set_defaults(func=perf_spikes)
+    rp = sub.add_parser("repro")
+    rp.add_argument("dump")
+    rp.add_argument("--reps", type=int, default=3)
+    rp.add_argument("--emit-test")
+    rp.add_argument("--max-gap-s", type=float, default=20)
+    rp.add_argument("--env", action="append")
+    rp.add_argument("--out")
+    rp.add_argument("--warmup", type=float, default=10)
+    rp.add_argument("--binary")
+    rp.add_argument("--http-port", type=int, default=4311)
+    rp.add_argument("--wt-port", type=int, default=4312)
+    rp.add_argument("--client-port", type=int, default=3313)
+    rp.set_defaults(func=repro)
+    tr = sub.add_parser("triage")
+    tr.add_argument("root", nargs="?", default="debug-reports")
+    tr.add_argument("--json", action="store_true")
+    tr.set_defaults(func=triage)
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

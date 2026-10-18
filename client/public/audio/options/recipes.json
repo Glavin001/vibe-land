@@ -1,0 +1,16 @@
+{
+  "masonryImpact-natural": "Trim cejordi84 Bricks.wav HQ MP3 preview at original pitch; mono/48 kHz, 2 ms edge fade, DC removal and pair loudness match. Source creator already layered two real brick smashes.",
+  "masonryImpact-designed": "1.55 s: bricks at 5 ms/gain .35/rate .75; first 4.2 s of AlanCat rockfall at 17 ms/.58/.82; 80–950 Hz bricks at 8 ms/.5/.58. No added reverb, delay, noise or oscillator.",
+  "masonryCollapse-natural": "Unpitched 0.65–7.30 s excerpt of 21100495 rock slide; 250 ms seam crossfade gives 6.4 s loop; DC removal and pair level match. No added synthetic sound or room.",
+  "masonryCollapse-designed": "Four AlanCat rockfall layers (first 4.2 s excerpt) at -0.45/1.38/3.47/5.15 s, rates .76/.92/.68/1.05; six brick accents at .35/1.02/2.21/3.04/4.55/5.77 s. 250 ms seam; final 6.4 s. No added reverb, delay, noise or oscillator.",
+  "metalImpact-natural": "rubberduck metal_hit_03.ogg, original pitch; trim, mono/48 kHz, DC cleanup, edge fades and pair match only.",
+  "metalImpact-designed": "1.15 s: metal_slam_01 at 2 ms/.62/.81; metal_sheet_03 at 13 ms/.28/.68; 95–1500 Hz metal_hit_03 at 5 ms/.7/.58. No added synthetic ringing or room.",
+  "metalCollapse-natural": "metal_falling_01 at -0.24/1.05/2.38/3.72/5.14 s, original pitch with relative gains .55/.72/.52/.65/.64. Simple recorded-event assembly plus 250 ms loop seam; 6.4 s.",
+  "metalCollapse-designed": "Seven metal_falling_02 layers at -0.15/.76/1.79/2.7/3.83/4.79/5.8 s, rates .65–.95; metal_sheet_06 accents at .23/1.45/3.01/4.4/5.61 s at .71 rate. 250 ms loop seam; 6.4 s. No synthetic echo.",
+  "projectileFlyby-natural": "artisticdude swish-12.wav, original pitch, trimmed and aligned to .23 s active-envelope peak. Recorded hanger/wood Foley; not a recording of a live projectile.",
+  "projectileFlyby-designed": "swish-2 at .82 rate plus 900–7200 Hz metal_spring_02 at 1.9 rate/gain .15; short 60 ms end taper. Shifted to .23 s envelope peak. Source layers only; no synthetic wind or room.",
+  "debrisFlyby-natural": "swish-7 at .8 rate; envelope peak shifted to .27 s; mono, DC correction, edge fades and level match. Foley movement proxy, not an actual airborne brick recording.",
+  "debrisFlyby-designed": "swish-9 at .6 rate; 700–6500 Hz bricks at 1.65 rate/.19 gain; 550–5200 Hz metal_sheet_05 at 1.12 rate/.09 gain. 80 ms tail taper, peak .27 s. Recorded layers; no reverb or noise bed.",
+  "massiveFlyby-natural": "swish-3 at .48 rate; peak aligned to .31 s. The source is swung-object Foley and is explicitly not a meteor recording.",
+  "massiveFlyby-designed": "swish-3/.33 rate; 80–1250 Hz swish-8/.28 rate/gain1.2; 140–1900 Hz metal_sheet_03/.55/.18; 110–1250 Hz rocks/1.8/.15. 140 ms tail taper and peak .31 s. All body comes from recordings; no sub oscillator, synthetic noise or reverberation."
+}

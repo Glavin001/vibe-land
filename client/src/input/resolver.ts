@@ -86,6 +86,9 @@ export function resolveOnFootInput(
     materialSlot1Pressed: action?.materialSlot1Pressed ?? false,
     materialSlot2Pressed: action?.materialSlot2Pressed ?? false,
     meleePressed: action?.meleePressed ?? false,
+    weaponSwitch: action?.weaponSwitch ?? 0,
+    weaponSlot: action?.weaponSlot ?? 0,
+    resetWorldPressed: action?.resetWorldPressed ?? false,
   };
 }
 
@@ -114,5 +117,8 @@ export function resolveVehicleInput(
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
     meleePressed: false,
+    weaponSwitch: 0,
+    weaponSlot: 0,
+    resetWorldPressed: false,
   };
 }

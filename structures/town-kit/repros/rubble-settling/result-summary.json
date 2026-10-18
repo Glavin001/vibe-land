@@ -1,0 +1,508 @@
+{
+  "awakeBodies": 3658,
+  "backend": "physx-2-native-gpu",
+  "bonds": 13297,
+  "chunks": 5734,
+  "contactSolver": {
+    "actors": 1,
+    "configuredBeforeFirstStep": true,
+    "contactOffsetMetres": [
+      0.019999999552965164,
+      0.019999999552965164
+    ],
+    "positionIterations": [
+      16,
+      16
+    ],
+    "requested": "16,4",
+    "restOffsetsChanged": false,
+    "shapes": 5735,
+    "sleepSettingsChanged": false,
+    "velocityIterations": [
+      4,
+      4
+    ]
+  },
+  "destruction": {
+    "brokenBonds": 10875,
+    "furnishingChunksFallen": 0,
+    "peakUtilisation": 203.78045654296875,
+    "restConvergedTicks": 0,
+    "scenario": "collapse",
+    "seconds": 60.0,
+    "statusSamples": [
+      {
+        "awakeBodies": 0,
+        "brokenBonds": 0,
+        "converged": true,
+        "iterations": 4,
+        "second": 0
+      },
+      {
+        "awakeBodies": 192,
+        "brokenBonds": 874,
+        "converged": false,
+        "iterations": 64,
+        "second": 1
+      },
+      {
+        "awakeBodies": 273,
+        "brokenBonds": 1278,
+        "converged": false,
+        "iterations": 64,
+        "second": 2
+      },
+      {
+        "awakeBodies": 328,
+        "brokenBonds": 1562,
+        "converged": false,
+        "iterations": 64,
+        "second": 3
+      },
+      {
+        "awakeBodies": 392,
+        "brokenBonds": 1949,
+        "converged": false,
+        "iterations": 64,
+        "second": 4
+      },
+      {
+        "awakeBodies": 781,
+        "brokenBonds": 3948,
+        "converged": false,
+        "iterations": 64,
+        "second": 5
+      },
+      {
+        "awakeBodies": 3514,
+        "brokenBonds": 10624,
+        "converged": false,
+        "iterations": 64,
+        "second": 6
+      },
+      {
+        "awakeBodies": 3669,
+        "brokenBonds": 10837,
+        "converged": false,
+        "iterations": 64,
+        "second": 7
+      },
+      {
+        "awakeBodies": 3656,
+        "brokenBonds": 10852,
+        "converged": false,
+        "iterations": 64,
+        "second": 8
+      },
+      {
+        "awakeBodies": 3665,
+        "brokenBonds": 10859,
+        "converged": false,
+        "iterations": 64,
+        "second": 9
+      },
+      {
+        "awakeBodies": 3661,
+        "brokenBonds": 10861,
+        "converged": false,
+        "iterations": 64,
+        "second": 10
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10864,
+        "converged": false,
+        "iterations": 64,
+        "second": 11
+      },
+      {
+        "awakeBodies": 3670,
+        "brokenBonds": 10871,
+        "converged": false,
+        "iterations": 64,
+        "second": 12
+      },
+      {
+        "awakeBodies": 3676,
+        "brokenBonds": 10873,
+        "converged": false,
+        "iterations": 64,
+        "second": 13
+      },
+      {
+        "awakeBodies": 3672,
+        "brokenBonds": 10874,
+        "converged": false,
+        "iterations": 64,
+        "second": 14
+      },
+      {
+        "awakeBodies": 3669,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 15
+      },
+      {
+        "awakeBodies": 3660,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 16
+      },
+      {
+        "awakeBodies": 3656,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 17
+      },
+      {
+        "awakeBodies": 3657,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 18
+      },
+      {
+        "awakeBodies": 3657,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 19
+      },
+      {
+        "awakeBodies": 3657,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 20
+      },
+      {
+        "awakeBodies": 3657,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 21
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 22
+      },
+      {
+        "awakeBodies": 3661,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 23
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 24
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 25
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 26
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 27
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 28
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 29
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 30
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 31
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 32
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 33
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 34
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 35
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 36
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 37
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 38
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 39
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 40
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 41
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 42
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 43
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 44
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 45
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 46
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 47
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 48
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 49
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 50
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 51
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 52
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 53
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 54
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 55
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 56
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 57
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 58
+      },
+      {
+        "awakeBodies": 3658,
+        "brokenBonds": 10875,
+        "converged": false,
+        "iterations": 64,
+        "second": 59
+      }
+    ],
+    "targetBrokenBonds": 10875,
+    "unconvergedTransientTicks": 3594,
+    "upperChunksFallen": 3058,
+    "upperChunksTested": 3058
+  },
+  "error": "damaged assembly did not reach observed, converged physical rest within 60 seconds",
+  "gpuCapacity": {
+    "collisionStackBytes": 536870912,
+    "contacts": 8388608,
+    "heapBytes": 2147483648,
+    "patches": 8388608
+  },
+  "ground": "single 10 km box, depth 1.5 m",
+  "lastStatus": {
+    "converged": false,
+    "degraded": false,
+    "error": 0,
+    "frame": 5462,
+    "observed": true,
+    "tick": 5462
+  },
+  "metadataSha256": "72b8c650bc1a4cc1bc2662e362b718709bd9176cc7b94995ef93b0f9d814bd91",
+  "mode": "collapse",
+  "nativeMappingValid": true,
+  "pack": "out/diag-shell-stress64.json",
+  "packSha256": "20c474ddfc585687e2041fc7b7f9cb6f3d620051a565347e1aeb392b9de7742e",
+  "passed": false,
+  "recordingEncoding": "gzip",
+  "solver": {
+    "bendGainMax": 3,
+    "damageRate": 2,
+    "fibreBending": true,
+    "gpuIslandRepair": true,
+    "gravity": 9.81,
+    "maxIterations": "64",
+    "preserveContactPairs": true,
+    "tolerance": 1e-05,
+    "warmStart": true
+  },
+  "stability": {
+    "brokenBonds": 0,
+    "crushedChunks": 0,
+    "equilibriumTick": 62,
+    "gravity": 9.81,
+    "idleSeconds": 30,
+    "passed": true
+  },
+  "wallTimeSeconds": 106.263282935,
+  "omittedFromSummary": [
+    "destruction.events",
+    "shots"
+  ],
+  "fullEvidence": "out/reviews/diag-shell-stress64-collapse/"
+}

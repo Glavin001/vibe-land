@@ -1,0 +1,353 @@
+{
+  "date": "2026-09-26",
+  "device": "ANGLE Metal Renderer: Apple M3 Max",
+  "browser": "Codex in-app browser",
+  "resolution": [
+    1920,
+    1080
+  ],
+  "harness": "client/benchmarks/foliage-lod.html",
+  "method": "Median of 48 paired grass-on/off GPU timer query deltas per case; all pending patches drained before measurement. Private 24 m radius authored stand plus default surrounding meadow, hemisphere and directional light, no physics, no city buildings/shadow map. Readbacks run after timer queries. CPU values rounded to the browser 0.1 ms resolution; zero means below resolution. Not full-city frame rate or a guarantee across hardware.",
+  "cases": [
+    {
+      "preset": "vehicle",
+      "quality": "fast",
+      "distance": 12,
+      "gpuMedianMs": 1.202042,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "fast",
+      "distance": 35,
+      "gpuMedianMs": 0.870459,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0.1,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "fast",
+      "distance": 110,
+      "gpuMedianMs": 0.304541,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "pretty",
+      "distance": 12,
+      "gpuMedianMs": 1.903459,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "pretty",
+      "distance": 35,
+      "gpuMedianMs": 1.443584,
+      "renderCpuMedianMs": 0.2,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "pretty",
+      "distance": 110,
+      "gpuMedianMs": 1.088708,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "fast",
+      "distance": 12,
+      "gpuMedianMs": 0.739625,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "fast",
+      "distance": 35,
+      "gpuMedianMs": 0.57025,
+      "renderCpuMedianMs": 0.2,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "fast",
+      "distance": 110,
+      "gpuMedianMs": 0.297417,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "pretty",
+      "distance": 12,
+      "gpuMedianMs": 0.958459,
+      "renderCpuMedianMs": 0.2,
+      "updateCpuMedianMs": 0.1,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "pretty",
+      "distance": 35,
+      "gpuMedianMs": 1.013874,
+      "renderCpuMedianMs": 0.2,
+      "updateCpuMedianMs": 0.1,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "pretty",
+      "distance": 110,
+      "gpuMedianMs": 0.793416,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "wheat",
+      "quality": "fast",
+      "distance": 12,
+      "gpuMedianMs": 0.405167,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "wheat",
+      "quality": "fast",
+      "distance": 35,
+      "gpuMedianMs": 0.196958,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "wheat",
+      "quality": "fast",
+      "distance": 110,
+      "gpuMedianMs": 0.119917,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "wheat",
+      "quality": "pretty",
+      "distance": 12,
+      "gpuMedianMs": 1.064251,
+      "renderCpuMedianMs": 0.2,
+      "updateCpuMedianMs": 0.1,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "wheat",
+      "quality": "pretty",
+      "distance": 35,
+      "gpuMedianMs": 1.158,
+      "renderCpuMedianMs": 0.2,
+      "updateCpuMedianMs": 0.1,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    },
+    {
+      "preset": "wheat",
+      "quality": "pretty",
+      "distance": 110,
+      "gpuMedianMs": 0.745291,
+      "renderCpuMedianMs": 0.1,
+      "updateCpuMedianMs": 0.1,
+      "gpuSamples": 48,
+      "pendingPatches": 0
+    }
+  ],
+  "coverage": [
+    {
+      "preset": "vehicle",
+      "quality": "fast",
+      "distance": 12,
+      "exposedTargetPixels": 4950,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "fast",
+      "distance": 35,
+      "exposedTargetPixels": 840,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "fast",
+      "distance": 110,
+      "exposedTargetPixels": 120,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "pretty",
+      "distance": 12,
+      "exposedTargetPixels": 4950,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "pretty",
+      "distance": 35,
+      "exposedTargetPixels": 840,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "vehicle",
+      "quality": "pretty",
+      "distance": 110,
+      "exposedTargetPixels": 120,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "fast",
+      "distance": 12,
+      "exposedTargetPixels": 4950,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "fast",
+      "distance": 35,
+      "exposedTargetPixels": 840,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "fast",
+      "distance": 110,
+      "exposedTargetPixels": 120,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "pretty",
+      "distance": 12,
+      "exposedTargetPixels": 4950,
+      "visibleTargetPixels": 4
+    },
+    {
+      "preset": "corn",
+      "quality": "pretty",
+      "distance": 35,
+      "exposedTargetPixels": 840,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "corn",
+      "quality": "pretty",
+      "distance": 110,
+      "exposedTargetPixels": 120,
+      "visibleTargetPixels": 0
+    },
+    {
+      "preset": "wheat",
+      "quality": "fast",
+      "distance": 12,
+      "exposedTargetPixels": 4950,
+      "visibleTargetPixels": 2679
+    },
+    {
+      "preset": "wheat",
+      "quality": "fast",
+      "distance": 35,
+      "exposedTargetPixels": 840,
+      "visibleTargetPixels": 299
+    },
+    {
+      "preset": "wheat",
+      "quality": "fast",
+      "distance": 110,
+      "exposedTargetPixels": 120,
+      "visibleTargetPixels": 43
+    },
+    {
+      "preset": "wheat",
+      "quality": "pretty",
+      "distance": 12,
+      "exposedTargetPixels": 4950,
+      "visibleTargetPixels": 3263
+    },
+    {
+      "preset": "wheat",
+      "quality": "pretty",
+      "distance": 35,
+      "exposedTargetPixels": 840,
+      "visibleTargetPixels": 293
+    },
+    {
+      "preset": "wheat",
+      "quality": "pretty",
+      "distance": 110,
+      "exposedTargetPixels": 120,
+      "visibleTargetPixels": 42
+    }
+  ],
+  "contacts": [
+    {
+      "quality": "fast",
+      "distance": 35,
+      "flattenedVisiblePixels": 670,
+      "exposedPixels": 840
+    },
+    {
+      "quality": "pretty",
+      "distance": 35,
+      "flattenedVisiblePixels": 673,
+      "exposedPixels": 840
+    }
+  ],
+  "canopy": {
+    "vehicle": {
+      "clumps": 1553,
+      "draws": 4,
+      "bytes": 49696
+    },
+    "corn": {
+      "clumps": 1524,
+      "draws": 4,
+      "bytes": 48768
+    },
+    "wheat": {
+      "clumps": 1335,
+      "draws": 4,
+      "bytes": 42720
+    }
+  },
+  "geometriesAfterDisposal": 0
+}

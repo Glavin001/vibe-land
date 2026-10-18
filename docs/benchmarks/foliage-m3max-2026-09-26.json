@@ -1,0 +1,213 @@
+{
+  "gpu": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)",
+  "resolution": "1920x1080, DPR 1, MSAA",
+  "results": [
+    {
+      "quality": "pretty",
+      "preset": "meadow",
+      "stats": {
+        "patches": 134,
+        "visiblePatches": 41,
+        "blades": 116411,
+        "triangles": 602057,
+        "instanceBytes": 32299250,
+        "pendingPatches": 0
+      },
+      "timings": {
+        "off": {
+          "cpuMedianMs": 0.09999999403953552,
+          "gpuMedianMs": 1.405249,
+          "gpuSamples": 119
+        },
+        "on": {
+          "cpuMedianMs": 0.29999998211860657,
+          "gpuMedianMs": 2.149374,
+          "gpuSamples": 119
+        },
+        "updateCpuMedianMs": 0.09999999403953552,
+        "updateCpuP95Ms": 0.20000001788139343,
+        "contactTickCpuMedianMs": 0.4000000059604645,
+        "contactTickCpuP95Ms": 0.5,
+        "pairedGpuDeltaP95Ms": 2.043,
+        "pairedGpuDeltaMedianMs": 0.6393329999999997,
+        "movingUpdateCpuP95Ms": 0.4000000059604645,
+        "movingUpdateCpuMaxMs": 0.699999988079071
+      },
+      "aerialBlades": 0,
+      "geometriesAfterDisposal": 0
+    },
+    {
+      "quality": "fast",
+      "preset": "meadow",
+      "stats": {
+        "patches": 56,
+        "visiblePatches": 20,
+        "blades": 12776,
+        "triangles": 68776,
+        "instanceBytes": 2810591,
+        "pendingPatches": 0
+      },
+      "timings": {
+        "off": {
+          "cpuMedianMs": 0,
+          "gpuMedianMs": 1.214333,
+          "gpuSamples": 119
+        },
+        "on": {
+          "cpuMedianMs": 0.19999998807907104,
+          "gpuMedianMs": 1.184666,
+          "gpuSamples": 119
+        },
+        "updateCpuMedianMs": 0,
+        "updateCpuP95Ms": 0.09999999403953552,
+        "contactTickCpuMedianMs": 0.4000000059604645,
+        "contactTickCpuP95Ms": 0.5,
+        "pairedGpuDeltaP95Ms": 0.8789579999999999,
+        "pairedGpuDeltaMedianMs": 0.078376,
+        "movingUpdateCpuP95Ms": 0.20000001788139343,
+        "movingUpdateCpuMaxMs": 0.30000001192092896
+      },
+      "aerialBlades": 0,
+      "geometriesAfterDisposal": 0
+    },
+    {
+      "quality": "pretty",
+      "preset": "wheat",
+      "stats": {
+        "patches": 134,
+        "visiblePatches": 53,
+        "blades": 59063,
+        "triangles": 914069,
+        "instanceBytes": 28729928,
+        "pendingPatches": 0
+      },
+      "timings": {
+        "off": {
+          "cpuMedianMs": 0.09999999403953552,
+          "gpuMedianMs": 0.418666,
+          "gpuSamples": 119
+        },
+        "on": {
+          "cpuMedianMs": 0.29999998211860657,
+          "gpuMedianMs": 1.039791,
+          "gpuSamples": 119
+        },
+        "updateCpuMedianMs": 0.09999999403953552,
+        "updateCpuP95Ms": 0.19999998807907104,
+        "contactTickCpuMedianMs": 0.4000000059604645,
+        "contactTickCpuP95Ms": 0.5,
+        "pairedGpuDeltaP95Ms": 1.212709,
+        "pairedGpuDeltaMedianMs": 0.7340420000000001,
+        "movingUpdateCpuP95Ms": 0.29999998211860657,
+        "movingUpdateCpuMaxMs": 0.30000001192092896
+      },
+      "aerialBlades": 0,
+      "geometriesAfterDisposal": 0
+    },
+    {
+      "quality": "pretty",
+      "preset": "corn",
+      "stats": {
+        "patches": 134,
+        "visiblePatches": 55,
+        "blades": 38449,
+        "triangles": 176687,
+        "instanceBytes": 27600381,
+        "pendingPatches": 0
+      },
+      "timings": {
+        "off": {
+          "cpuMedianMs": 0.09999999403953552,
+          "gpuMedianMs": 0.928749,
+          "gpuSamples": 119
+        },
+        "on": {
+          "cpuMedianMs": 0.29999998211860657,
+          "gpuMedianMs": 1.569666,
+          "gpuSamples": 119
+        },
+        "updateCpuMedianMs": 0.09999999403953552,
+        "updateCpuP95Ms": 0.10000002384185791,
+        "contactTickCpuMedianMs": 0.3999999761581421,
+        "contactTickCpuP95Ms": 0.4000000059604645,
+        "pairedGpuDeltaP95Ms": 1.759126,
+        "pairedGpuDeltaMedianMs": 0.4833329999999999,
+        "movingUpdateCpuP95Ms": 0.29999998211860657,
+        "movingUpdateCpuMaxMs": 0.30000001192092896
+      },
+      "aerialBlades": 0,
+      "geometriesAfterDisposal": 0
+    },
+    {
+      "quality": "pretty",
+      "preset": "ferns",
+      "stats": {
+        "patches": 134,
+        "visiblePatches": 50,
+        "blades": 35952,
+        "triangles": 813356,
+        "instanceBytes": 27590864,
+        "pendingPatches": 0
+      },
+      "timings": {
+        "off": {
+          "cpuMedianMs": 0.09999999403953552,
+          "gpuMedianMs": 0.487833,
+          "gpuSamples": 119
+        },
+        "on": {
+          "cpuMedianMs": 0.20000001788139343,
+          "gpuMedianMs": 1.693208,
+          "gpuSamples": 119
+        },
+        "updateCpuMedianMs": 0.09999999403953552,
+        "updateCpuP95Ms": 0.19999998807907104,
+        "contactTickCpuMedianMs": 0.30000001192092896,
+        "contactTickCpuP95Ms": 0.4000000059604645,
+        "pairedGpuDeltaP95Ms": 2.978541,
+        "pairedGpuDeltaMedianMs": 0.834708,
+        "movingUpdateCpuP95Ms": 0.20000001788139343,
+        "movingUpdateCpuMaxMs": 0.30000001192092896
+      },
+      "aerialBlades": 0,
+      "geometriesAfterDisposal": 0
+    },
+    {
+      "quality": "pretty",
+      "preset": "vehicle",
+      "stats": {
+        "patches": 134,
+        "visiblePatches": 47,
+        "blades": 170056,
+        "triangles": 942376,
+        "instanceBytes": 32966122,
+        "pendingPatches": 0
+      },
+      "timings": {
+        "off": {
+          "cpuMedianMs": 0.09999999403953552,
+          "gpuMedianMs": 0.729208,
+          "gpuSamples": 119
+        },
+        "on": {
+          "cpuMedianMs": 0.19999998807907104,
+          "gpuMedianMs": 1.93475,
+          "gpuSamples": 119
+        },
+        "updateCpuMedianMs": 0,
+        "updateCpuP95Ms": 0.10000002384185791,
+        "contactTickCpuMedianMs": 0.3999999761581421,
+        "contactTickCpuP95Ms": 0.4000000059604645,
+        "pairedGpuDeltaP95Ms": 1.9040409999999999,
+        "pairedGpuDeltaMedianMs": 1.399251,
+        "movingUpdateCpuP95Ms": 0.20000001788139343,
+        "movingUpdateCpuMaxMs": 0.30000001192092896
+      },
+      "aerialBlades": 0,
+      "geometriesAfterDisposal": 0
+    }
+  ],
+  "shaderErrors": 0,
+  "scope": "Isolated foliage increment; not full-city FPS. Active canopy and impact effects; no scene packs or physics.",
+  "command": "GRASS_BENCH_WIDTH=1920 GRASS_BENCH_GPU_BUDGET_MS=2.5 node scripts/grass-smoke.mjs http://127.0.0.1:5197 /tmp/grass-final"
+}

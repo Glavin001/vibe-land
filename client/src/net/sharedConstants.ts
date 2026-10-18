@@ -28,6 +28,8 @@ export const PKT_VEHICLE_ENTER = 5;
 export const PKT_VEHICLE_EXIT = 6;
 export const PKT_DEBUG_STATS = 7;
 export const PKT_MELEE = 8;
+/// City inspection camera: place the sending player here, then resume gravity.
+export const PKT_CITY_CAMERA_DROP = 10;
 
 export const PKT_WELCOME = 101;
 export const PKT_SNAPSHOT = 102;
@@ -44,9 +46,103 @@ export const PKT_BATTERY_SYNC = 116;
 export const PKT_SHOT_FIRED = 117;
 export const PKT_DAMAGE_EVENT = 118;
 
+// ── Destructible city streams (destruction/src/wire.rs defines the layouts) ──
+export const PKT_CITY_RESYNC_REQUEST = 9;
+/// Client -> server: "I could not fetch the manifest; send it down the session."
+///
+/// Asked for rather than pushed, because the push is enormous and the reliable
+/// lane is ordered. See `PKT_CITY_MANIFEST`.
+export const PKT_CITY_MANIFEST_REQUEST = 11;
+export const PKT_CITY_CHUNKS = 119;
+export const PKT_CITY_TOPOLOGY = 120;
+export const PKT_CITY_BASELINE = 121;
+export const PKT_CITY_BOOTSTRAP = 122;
+/// The city manifest itself, gzipped, sent only when a client asks for it.
+///
+/// Clients fetch this over HTTP from the game server. That works only when the
+/// page and the server share an origin: a rented GPU box serves plain HTTP on a
+/// random port, which an HTTPS page may not fetch, and its WebTransport
+/// certificate is self-signed so an HTTPS fetch is refused too. Sending it down
+/// the session that is already open sidesteps all of it.
+///
+/// It used to be pushed to everyone at join, and that is expensive in a way the
+/// size alone does not show. Every reliable city packet shares ONE ordered QUIC
+/// stream, so 1.8 MB of manifest is 1.8 MB in front of the bootstrap and in
+/// front of every topology update behind it. Measured at +90 ms with 2% loss,
+/// the push had not finished by the end of a 45-second run and the client's
+/// ledger never advanced past join: it agreed with 0 of the server's 544 broken
+/// bonds, and its own desync detector never fired, because the hash that would
+/// have tripped it was queued behind the same megabytes.
+///
+/// So the client asks, and only when its fetch has actually failed.
+export const PKT_CITY_MANIFEST = 123;
+/// Per-match server telemetry for the stats overlay, pushed once a second.
+///
+/// The overlay used to poll `/match-stats` over HTTP, which a browser cannot
+/// reach on a rented box for the same reason it cannot fetch the manifest.
+/// Sent on the session so the numbers describe the server actually being
+/// played on, rather than whichever one the page happens to share an origin
+/// with.
+///
+/// A ~250-byte datagram carrying only the fields in
+/// `shared/match-stats-frame.json` (`server/src/match_stats_frame.rs`). It
+/// used to be the whole snapshot as JSON, ~15 kB a second on the ordered
+/// reliable stream in front of topology; older servers still send that, and
+/// the client tells the two apart by the byte after the kind (`{` for JSON).
+export const PKT_MATCH_STATS = 124;
+
+/// Wire-v3 debris pose packet: self-healing datagram stream from the live
+/// debris codec. Broadcast, loss-tolerant, dictionary-compressed.
+export const PKT_CITY_DEBRIS = 125;
+/// Client -> server: bodies whose chains a lost packet poisoned; the server
+/// restates exactly these. The loss-heal cost scales with actual loss.
+export const PKT_CITY_NACK = 126;
+/// Server -> clients: a meteor was launched. Carries the start, the launch
+/// velocity, the aimed point and the gravity it flies under, so a client can
+/// draw the whole flight itself: the body snapshot is relative to the viewer
+/// and quantised to +-82 m, so a rock launched 300 m out cannot be streamed
+/// until the last half second of its fall. Reliable, raw bytes, routed like
+/// the other city packets (127-129 are the destruction wire's, see
+/// `destruction/src/wire.rs`). Layout in `server/src/meteor.rs`.
+export const PKT_METEOR_LAUNCHED = 130;
+/// Server -> client: bounded, listener-relevant impact and scrape summaries.
+/// Version 1 format lives in server/src/contact_audio.rs. Loss-tolerant.
+export const PKT_AUDIO_CONTACTS = 131;
+// Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
+// 60 Hz: every tick, as the snapshots (30 Hz before; captures record theirs).
+export const CITY_CHUNK_STREAM_HZ = 60;
+export const CITY_BASELINE_INTERVAL_MS = 1000;
+// Per-client byte ceiling per 60 Hz send (~2.5 Mbps, as 10400 B per 30 Hz
+// send was); a cap, never a fill target.
+export const CITY_CLIENT_CEILING_BYTES_PER_SEND = 5200;
+
+// ── Protocol/runtime capabilities ───────────────
+export const PROTOCOL_VERSION = 3;
+export const PHYSICS_BACKEND_RAPIER = 0;
+export const PHYSICS_BACKEND_PHYSX_GPU = 1;
+export const CLIENT_MOVEMENT_FULL_PREDICTION = 0;
+export const CLIENT_MOVEMENT_THIN_AUTHORITATIVE = 1;
+export const CLIENT_MOVEMENT_CAP_FULL_PREDICTION = 1 << 0;
+export const CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE = 1 << 1;
+
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;
 export const WEAPON_ROCKET = 2;
+/// A visible, heavy ball thrown from the muzzle instead of an instant ray.
+///
+/// The native destruction stage takes loads only from contacts PhysX solved,
+/// so this is not a cosmetic variant of the hitscan shot: it is the shot the
+/// engine's own demos fire, and the thing you watch fly and land is the thing
+/// that does the damage.
+export const WEAPON_CANNONBALL = 3;
+/// A meteor: a very heavy rock that falls onto the point the shooter aimed at.
+///
+/// The shooter's ray picks the impact point; the server chooses a start high
+/// and far outside the city and solves the ballistic velocity that carries the
+/// rock through that point. It is the cannonball's mechanism -- a real body,
+/// damage from contacts PhysX solved -- at a mass and speed the cannon cannot
+/// reach, coming from a direction the shooter does not control.
+export const WEAPON_METEOR = 4;
 
 // ── Hit zones ───────────────────────────────────
 export const HIT_ZONE_NONE = 0;
@@ -60,6 +156,9 @@ export const BLOCK_REMOVE = 2;
 // ── Shape types ─────────────────────────────────
 export const SHAPE_BOX = 0;
 export const SHAPE_SPHERE = 1;
+
+// ── Vehicle interaction ─────────────────────────
+export const VEHICLE_INTERACT_RADIUS_M = 4.0;
 
 // ── Area-of-interest (AOI) radii ────────────────
 // The server uses these to decide which players, dynamic bodies, and vehicles
@@ -78,6 +177,25 @@ export const SNAPSHOT_HZ_MULTIPLAYER = 30;
 export const SNAPSHOT_HZ_LOCAL = SIM_HZ;
 export const MAX_PENDING_INPUTS = 120;
 export const VEHICLE_INPUT_CATCHUP_THRESHOLD = 4;
+/// On-foot backlog depth that triggers a jump to the newest input. Small on
+/// purpose: the point is to track the player's current intent, not to replay
+/// a queue. MAX_PENDING_INPUTS remains the hard cap for pathological cases.
+///
+/// UNUSED since the rubber-band fix: on foot the server now DRAINS the
+/// backlog (simulating each frame) instead of skipping to the newest, so
+/// there is no depth at which frames get discarded. Kept only so the vehicle
+/// path's threshold has an obvious sibling; see MAX_INPUT_FRAMES_PER_TICK.
+export const PLAYER_INPUT_CATCHUP_THRESHOLD = 3;
+/// Most 60 Hz input frames one tick may simulate for a player.
+///
+/// The tick's real budget is wall-clock elapsed / dt, so a client cannot buy
+/// speed by sending faster; this only bounds the worst case.
+///
+/// 8 frames = 133 ms of movement, ~0.24 ms of KCC work at the measured 0.03
+/// ms per frame. Was 4, which live reports showed was under the requirement:
+/// a heavy collapse produced 69 ms ticks (4.13 frames) with a p95 of 87 ms
+/// (5.2), so the cap itself became the thing holding the backlog open.
+export const MAX_INPUT_FRAMES_PER_TICK = 8;
 export const RIFLE_FIRE_INTERVAL_MS = 100;
 export const RIFLE_BODY_DAMAGE = 14;
 export const RIFLE_HEAD_DAMAGE = 16;
@@ -123,3 +241,7 @@ export const DEFAULT_BATTERY_HEIGHT_M = 0.8;
 /// Battery ids live in a separate range for easier debugging and to avoid
 /// collisions with other runtime entity ids.
 export const BATTERY_ID_RANGE_START = 0x40000000;
+
+/// Custom vehicle configuration (reliable) and authoritative wheel poses (latest wins).
+export const PKT_VEHICLE_ASSET = 140;
+export const PKT_VEHICLE_RIG = 141;

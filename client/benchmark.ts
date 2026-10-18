@@ -15,6 +15,7 @@ import type {
 import type { BenchmarkScenarioSpec, BenchmarkSuiteSpec } from './src/benchmark/spec.js';
 import type { GlobalStatsSnapshot, MatchStatsSnapshot } from './src/loadtest/serverStats.js';
 import { runWebSocketWorker } from './benchmark/wsWorker.js';
+import { websocketToolingEnabled } from './src/net/transportPolicy.js';
 
 type ParsedArgs = {
   suite: string;
@@ -861,6 +862,17 @@ async function main(): Promise<void> {
   console.log(`Client: ${environment.clientUrl}`);
   console.log(`Iterations: ${args.iterations}`);
 
+  const wsScenarios = scenarios.filter((scenario) => scenario.scenario.transportMix.websocket > 0);
+  if (wsScenarios.length > 0 && !websocketToolingEnabled(process.env)) {
+    // Fail before anything starts rather than mid-suite: the game's WebSocket
+    // transport is disabled, and the server refuses /ws/:match_id without
+    // VIBE_ENABLE_WEBSOCKET=1.
+    throw new Error(
+      `WebSocket bots requested by ${wsScenarios.map((s) => s.name).join(', ')}, but the WebSocket `
+        + 'game transport is disabled. Set VIBE_ENABLE_WEBSOCKET=1 for this tool and the server to '
+        + 'benchmark it deliberately.',
+    );
+  }
   if (scenarios.some((scenario) => scenario.scenario.transportMix.webtransport > 0)) {
     await assertWebTransportAutomationAvailable();
     await assertClientPageAvailable(environment.clientUrl, '/loadtest?benchmark=1');

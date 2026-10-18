@@ -1,0 +1,20 @@
+{
+ "t2_bonds_min": 126,
+ "t2_bonds_max": 2028,
+ "t2_bodies_max": 707,
+ "t3_height_retained_max": 0.55,
+ "t3_spread_fraction_min": 0.1,
+ "t4_retired_fraction_min": 0.6,
+ "t4_awake_end_over_peak_max": 0.1,
+ "t5_p95_ms_max": 91.4,
+ "calibrated_from": {
+  "t2_bonds": 507,
+  "t2_bodies": 163,
+  "t3_height_retained": 0.11917293071746826,
+  "t3_spread_fraction": 0.4262295067310333,
+  "t4_retired_fraction": 0.937,
+  "t4_awake_end_over_peak": 0.0,
+  "t5_p95_ms": 67.7,
+  "t5_bucket_ticks": 577
+ }
+}

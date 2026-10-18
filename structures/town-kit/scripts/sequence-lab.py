@@ -1,0 +1,464 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["numpy>=1.26", "scipy>=1.11"]
+# ///
+"""Failure sequencing within a step (FIDELITY_AUDIT C10), on the CPU: a research
+harness for choosing the engine's method, never a runtime path.
+
+The stage's static verdict breaks every bond past fatal in one elastic snapshot.
+Two principled ways to order failures, each run here on a calibration case:
+
+  cascade   the engine today (static-cascade.py's rounds): every bond past fatal
+            breaks at once, re-solve, repeat.
+  ramp      a quasi-static load ramp (event-by-event, as sequentially linear
+            analysis: Rots and Invernizzi 2004): the load goes from the last
+            equilibrium (lambda 0) to the new state (lambda 1); each bond's
+            critical load factor is where its utilisation reaches 1 on the
+            linear path J(lambda) = J_e + (lambda - lambda_e) dJ of the current
+            topology; the first one breaks, the structure is solved again at
+            that load, and the ramp goes on. Under proportional loading the first
+            event is the most utilised bond (u is homogeneous of degree 1 in J),
+            which is where "most overloaded first" comes from; after a removal
+            the path is not proportional and the order is the crossings'.
+  dynamic   explicit dynamics: rigid chunks (mass, rotational inertia), bonds as
+            elastic-brittle springs (k = E A / L, k r^2 in rotation; the engine's
+            one stiffness per bond), stiffness-proportional damping, symplectic
+            Euler. A bond breaks in the substep its force reaches capacity: the
+            order is the inertia's and the waves'.
+
+Two set-ups:
+  removal   (default) the intact house at equilibrium, then the case's members
+            removed: ramp releases their forces quasi-statically (the alternate
+            path method's load-controlled removal, GSA 2016 / UFC 4-023-03),
+            dynamic removes them in an instant (its dynamic counterpart).
+  asbuilt   the case's house as authored (the calibration: built with the gap),
+            its dead load ramped from 0 (ramp only).
+
+Re-bearing (C9, --rebearing, the high profile): a bearing joint whose fasteners
+fail is a unilateral contact (compression to its capacity, shear by friction
+mu 0.23, no tension): in the ramp it lifts out of the solve in tension and is
+readmitted when the displacement presses it; in the dynamic run its force is
+projected on the contact's cone every substep.
+
+    uv run structures/town-kit/scripts/sequence-lab.py SCENE --case truck-door --mode ramp [--rebearing] [--json OUT]
+"""
+import argparse, collections, importlib.util, json, os, time
+import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+
+here = os.path.dirname(os.path.abspath(__file__))
+_s = importlib.util.spec_from_file_location('stress_share', os.path.join(here, 'stress-share.py'))
+ss = importlib.util.module_from_spec(_s); _s.loader.exec_module(ss)
+G = 9.81
+MU = 0.23   # timber on timber, EN 1995-2:2004 Table 6.2 (PhysX kRebearingTimberFriction)
+SKIN = {'drywall', 'brick-veneer', 'veneer-lintel-course', 'ceiling-lining', 'glazing', 'window-frame', 'door-frame',
+        'roof-covering', 'ivory-trim', 'roof-batten', 'gable-weatherboard'}
+ROOF = {'rafter', 'ridge-board', 'ceiling-joist', 'hip-rafter', 'gable-frame'}
+CASES = {'intact': (0, None), 'bay1': (14, (1.45, 1.65)), 'bay2': (28, (0.9, 1.65)), 'truck': (42, (-1.5, 1.3)), 'truck-door': (56, (-1.5, 1.65))}
+
+
+# ------------------------------------------------------------------ structure
+def subscene(scene, group, dz):
+    s = scene['scenario']
+    keep = [i for i, g in enumerate(s['nodeGroups']) if g == group]
+    idx = {o: k for k, o in enumerate(keep)}
+    out = {k: [s[k][i] for i in keep] for k in ('nodes', 'nodeSizes', 'nodeColliders', 'nodeTypes', 'nodeMaterials', 'nodePieces', 'nodeGroups')}
+    out['shapeLibrary'] = s['shapeLibrary']
+    out['nodes'] = [dict(n, centroid={'x': n['centroid']['x'], 'y': n['centroid']['y'], 'z': n['centroid']['z'] - dz}) for n in out['nodes']]
+    out['bonds'] = []
+    for b in s['bonds']:
+        if b['node0'] in idx and b['node1'] in idx:
+            c = b['centroid']
+            out['bonds'].append(dict(b, node0=idx[b['node0']], node1=idx[b['node1']], centroid={'x': c['x'], 'y': c['y'], 'z': c['z'] - dz}))
+    return out
+
+
+class Structure:
+    def __init__(self, s, mats):
+        self.s, self.mats = s, mats
+        pack = {'scenario': s, 'defaults': {'solver': {'materials': mats}}}
+        tmp = '/tmp/sequence-lab-pack.json'
+        json.dump(pack, open(tmp, 'w'))
+        _, s2, _, self.pos, self.mass = ss.load(tmp)
+        self.sections = ss.fastener_twist(s, mats, ss.bond_sections(s))
+        n, m = len(s['nodes']), len(s['bonds'])
+        self.n, self.m = n, m
+        self.types = s['nodeTypes']
+        self._operator()
+        self._grading()
+
+    def _operator(self):
+        """B: node wrench rows (free nodes) x bond columns (6: force, moment), the
+        solver's convention (J acts on node1 +, node0 -); Wd: per-bond column
+        weights (w I3 linear, w R angular), so A = B Wd is stress-share's matrix."""
+        s, pos, mass = self.s, self.pos, self.mass
+        free = mass > 0
+        self.free = free
+        row = -np.ones(self.n, int); row[free] = np.arange(free.sum()); self.row = row
+        r, c, v = [], [], []
+        R = np.zeros((self.m, 3, 3)); w = np.zeros(self.m); k = np.zeros(self.m)
+        self.normal = np.zeros((self.m, 3))
+        for b, bd in enumerate(s['bonds']):
+            i, j = bd['node0'], bd['node1']
+            cen = np.array([bd['centroid'][q] for q in 'xyz'])
+            nrm = np.array([bd['normal'][q] for q in 'xyz'], float); nrm /= np.linalg.norm(nrm)
+            if nrm @ (pos[j] - pos[i]) < 0: nrm = -nrm
+            self.normal[b] = nrm
+            sec = self.sections[b]
+            if sec is None:
+                rr = np.sqrt(max(bd['area'], 1e-12) / 12); R[b] = np.eye(3) * rr + (np.sqrt(2) - 1) * rr * np.outer(nrm, nrm)
+            else:
+                e1, e2, _, _, _, r1, r2, rt = sec[:8]; R[b] = r1 * np.outer(e1, e1) + r2 * np.outer(e2, e2) + rt * np.outer(nrm, nrm)
+            mt = self.mats[bd['m']]
+            E = mt.get('bearingElasticModulus') or mt.get('elasticModulus') or 30e9
+            L = max(abs(nrm @ (pos[j] - pos[i])), np.sqrt(bd['area']))
+            k[b] = E * bd['area'] / L
+            w[b] = np.sqrt(k[b] / 30e9)
+            for node, sign in ((j, 1.0), (i, -1.0)):
+                if row[node] < 0: continue
+                arm = cen - pos[node]
+                X = np.array([[0, -arm[2], arm[1]], [arm[2], 0, -arm[0]], [-arm[1], arm[0], 0]])
+                for a in range(3):
+                    r.append(6 * row[node] + a); c.append(6 * b + a); v.append(sign)
+                    r.append(6 * row[node] + 3 + a); c.append(6 * b + 3 + a); v.append(sign)
+                    for q in range(3):
+                        if X[a, q] != 0: r.append(6 * row[node] + 3 + a); c.append(6 * b + q); v.append(sign * X[a, q])
+        self.B = sp.csr_matrix((v, (r, c)), shape=(6 * free.sum(), 6 * self.m))
+        blocks = []
+        for b in range(self.m):
+            blk = np.zeros((6, 6)); blk[:3, :3] = np.eye(3) * w[b]; blk[3:, 3:] = R[b] * w[b]; blocks.append(blk)
+        self.Wd = sp.csr_matrix(sp.block_diag(blocks, format='csr'))
+        self.A = (self.B @ self.Wd).tocsr()
+        self.R, self.w, self.k = R, w, k
+        # Gravity: the load the bonds must carry (+m g up on every free node).
+        self.fg = np.zeros(6 * free.sum())
+        for node in np.nonzero(free)[0]: self.fg[6 * row[node] + 1] = mass[node] * G
+
+    def _grading(self):
+        """Per-bond arrays for the vectorised stresses (stress-share stresses, section bending)."""
+        m, s = self.m, self.s
+        self.area = np.array([bd['area'] for bd in s['bonds']])
+        self.e1 = np.zeros((m, 3)); self.e2 = np.zeros((m, 3)); self.S1 = np.zeros(m); self.S2 = np.zeros(m); self.Zt = np.zeros(m)
+        self.hasSec = np.zeros(m, bool); self.d0 = np.zeros(m); self.d1 = np.zeros(m); self.bearing = np.zeros(m, bool)
+        lim = np.zeros((m, 6))
+        for b, bd in enumerate(s['bonds']):
+            mt = self.mats[bd['m']]
+            lim[b] = [mt['compressionElastic'], mt['compressionFatal'], mt['tensionElastic'], mt['tensionFatal'], mt['shearElastic'], mt['shearFatal']]
+            sec = self.sections[b]
+            if sec is not None:
+                self.hasSec[b] = True; self.e1[b], self.e2[b] = sec[0], sec[1]; self.S1[b], self.S2[b], self.Zt[b] = sec[2], sec[3], sec[4]
+                if mt.get('bearingJoint') and len(sec) >= 10: self.bearing[b] = True; self.d0[b], self.d1[b] = sec[8], sec[9]
+        self.lim = lim
+
+    def stresses(self, J):
+        """(fatal utilisation, normal (+ tension) N, shear V, compression stress, mode) per bond."""
+        n, a = self.normal, self.area
+        lin, ang = J[:, :3], J[:, 3:]
+        ln = (lin * n).sum(1); normal = -ln / a
+        shear = np.linalg.norm(lin - ln[:, None] * n, axis=1) / a
+        an = (ang * n).sum(1)
+        bendSec = np.abs((ang * self.e1).sum(1)) / np.where(self.S1 > 0, self.S1, 1) + np.abs((ang * self.e2).sum(1)) / np.where(self.S2 > 0, self.S2, 1)
+        bendSq = np.linalg.norm(ang - an[:, None] * n, axis=1) / a * 6.0 / np.sqrt(np.maximum(a, 1e-12))
+        bend = np.where(self.hasSec, bendSec, bendSq)
+        shear = shear + np.where(self.hasSec, np.abs(an) / np.where(self.Zt > 0, self.Zt, 1), np.abs(an) / a * 3 * np.sqrt(2) / np.sqrt(np.maximum(a, 1e-12)))
+        tension = np.maximum(normal + bend, 0); compression = np.maximum(bend - normal, 0)
+        T = np.abs((ang * self.e1).sum(1)) / np.where(self.d0 > 0, self.d0, 1) + np.abs((ang * self.e2).sum(1)) / np.where(self.d1 > 0, self.d1, 1) + normal * a
+        tension = np.where(self.bearing, np.maximum(T, 0) / a, tension)
+        L = self.lim
+        fatal = np.maximum.reduce([compression / L[:, 1], tension / L[:, 3], shear / L[:, 5]])
+        crush = compression / L[:, 1]
+        return fatal, normal * a, shear * a, crush
+
+
+# ------------------------------------------------------------------ solves
+class Solver:
+    """The min-norm static solve on a bond mask: J = Wd Wd^T B^T z, (A A^T) z = f."""
+    def __init__(self, S): self.S = S
+
+    def anchored(self, live):
+        S = self.S; adj = collections.defaultdict(list)
+        for b in np.nonzero(live)[0]:
+            bd = S.s['bonds'][b]; adj[bd['node0']].append(bd['node1']); adj[bd['node1']].append(bd['node0'])
+        seen = ~S.free.copy(); stack = list(np.nonzero(seen)[0])
+        while stack:
+            i = stack.pop()
+            for j in adj[i]:
+                if not seen[j]: seen[j] = True; stack.append(j)
+        return seen
+
+    def solve(self, live, f):
+        """Bond forces (m x 6) and displacement z (free node rows) under node load f, with
+        unanchored nodes dropped (their rows' load ignored: they fall)."""
+        S = self.S
+        keep = self.anchored(live)
+        on = live & keep[[bd['node0'] for bd in S.s['bonds']]] & keep[[bd['node1'] for bd in S.s['bonds']]]
+        rows = np.repeat(keep[S.free], 6)
+        cols = np.repeat(on, 6)
+        A = S.A[rows][:, cols]
+        L = (A @ A.T).tocsc()
+        z = spla.spsolve(L, f[rows])
+        J = np.zeros((S.m, 6)); J[on] = (S.Wd[cols][:, cols] @ (A.T @ z)).reshape(-1, 6)
+        zf = np.zeros(len(f)); zf[rows] = z
+        return J, zf, on, keep
+
+    def wouldbe(self, z, bonds):
+        """Forces the given (removed) bonds would carry under displacement z."""
+        S = self.S
+        cols = np.zeros(6 * S.m, bool)
+        for b in bonds: cols[6 * b:6 * b + 6] = True
+        A = S.A[:, cols]
+        J = np.zeros((S.m, 6)); J[bonds] = (S.Wd[cols][:, cols] @ (A.T @ z)).reshape(-1, 6)
+        return J
+
+
+# ------------------------------------------------------------------ report
+def classify(S, broken, gap):
+    c = collections.Counter()
+    for b in broken:
+        bd = S.s['bonds'][b]; t0, t1 = S.types[bd['node0']], S.types[bd['node1']]
+        kind = 'skin' if (t0 in SKIN or t1 in SKIN) else ('roof' if (t0 in ROOF or t1 in ROOF) else 'frame')
+        x, z = bd['centroid']['x'], bd['centroid']['z']
+        where = 'over' if gap and gap[0] - 0.6 <= x <= gap[1] + 0.6 else 'beyond'
+        c[f"{kind}:{'front' if z < -3.0 else 'rest'}:{where}"] += 1
+    return c
+
+
+def summary(S, broken, gap, extra):
+    c = classify(S, broken, gap)
+    fb = sum(v for k, v in c.items() if k.startswith('frame') and k.endswith('beyond'))
+    ffb = c.get('frame:front:beyond', 0)
+    return dict(extra, broken=len(broken), frameBeyond=fb, frontFrameBeyond=ffb, regions=dict(sorted(c.items())))
+
+
+# ------------------------------------------------------------------ modes
+def cascade(S, live0, f, rebearing, gap, rounds=60):
+    sol = Solver(S); live = live0.copy(); broken = []; solves = 0; contact = np.zeros(S.m, bool)
+    for r in range(rounds):
+        J, z, on, keep = sol.solve(live & ~contact | (contact & live), f); solves += 1
+        fatal, N, V, crush = S.stresses(J)
+        over = on & (fatal > 1)
+        if rebearing:
+            # fastenings fail to contact where it bears (and does not crush or slide)
+            conv = over & S.bearing & ~contact & (crush < 1) & (N < 0) & (V <= MU * -N)
+            contact |= conv; over &= ~conv
+            cbad = on & contact & ((crush >= 1) | (V > MU * np.maximum(-N, 0)) & (N < 0))
+            lift = on & contact & (N > 0)
+            over |= cbad; live[lift] = False   # lifted contacts leave (not broken)
+        if not over.any(): break
+        live[over] = False; broken += list(np.nonzero(over)[0])
+    return summary(S, broken, gap, {'mode': 'cascade', 'solves': solves, 'rounds': r + 1})
+
+
+def events_of(S, J, contact):
+    """Per bond: an event has happened (bool) and whether it is a lift (a contact pulled)."""
+    fatal, N, V, crush = S.stresses(J)
+    cbreak = (crush >= 1) | (V + MU * N > 0)
+    return np.where(contact, cbreak, fatal >= 1), N
+
+
+def ramp(S, live0, f0, df, rebearing, gap, max_solves=6000):
+    """Load f(lambda) = f0 + lambda df, lambda 0 -> 1, event by event. Each event is the
+    earliest crossing on the current topology's linear path; the structure is then solved
+    again at that load (a cascade at constant load is a run of events at one lambda)."""
+    sol = Solver(S); live = live0.copy(); contact = np.zeros(S.m, bool); lifted = np.zeros(S.m, bool)
+    lam = 0.0; broken = []; order = []; solves = 0; t0 = time.time(); lifts = closes = converts = 0; lam_closed = -1.0
+    while solves < max_solves:
+        Ja, za, on, keep = sol.solve(live & ~lifted, f0 + lam * df); solves += 1
+        # A lifted contact recloses when the load has moved on since it lifted (at one load the
+        # active set is not iterated: a contact the solve pulls at this lambda stays out).
+        if rebearing and lam > lam_closed and (lifted & live).any():
+            lb = np.nonzero(lifted & live)[0]
+            _, Nw, _, _ = S.stresses(sol.wouldbe(za, lb))
+            # the same zero the lift used: a pull of numerical size is no press
+            close = lb[Nw[lb] < -1e-6 * max(1.0, np.abs(Nw).max(), np.abs(S.stresses(Ja)[1]).max())]
+            lam_closed = lam
+            if len(close): lifted[close] = False; closes += len(close); continue
+        Jd = sol.solve(live & ~lifted, df)[0] if lam < 1 else np.zeros_like(Ja); solves += lam < 1
+        rem = 1.0 - lam
+        hit0, _ = events_of(S, Ja, contact)
+        hit1, _ = events_of(S, Ja + rem * Jd, contact)
+        cand = on & (hit0 | hit1)
+        if not cand.any(): break
+        lo, hi = np.zeros(S.m), np.full(S.m, rem); hi[hit0] = 0.0
+        for _ in range(36):
+            mid = 0.5 * (lo + hi); h, _ = events_of(S, Ja + mid[:, None] * Jd, contact)
+            hi = np.where(h, mid, hi); lo = np.where(h, lo, mid)
+        tc = np.where(cand, hi, np.inf); b = int(np.argmin(tc)); lam = min(1.0, lam + tc[b])
+        fatal, N, V, crush = S.stresses(Ja + tc[b] * Jd)
+        kind = None
+        if contact[b]:
+            if N[b] >= -1e-9 * max(1.0, abs(N).max()): lifted[b] = True; lifts += 1
+            else: kind = 'slid' if crush[b] < 1 else 'crushed'
+        elif rebearing and S.bearing[b] and crush[b] < 1:
+            contact[b] = True; converts += 1
+            if N[b] >= 0: lifted[b] = True; lifts += 1
+            elif V[b] + MU * N[b] > 0: kind = 'slid'
+        else: kind = 'fatal'
+        if kind: live[b] = False; broken.append(b); order.append((lam, b, kind))
+    keep = sol.anchored(live & ~lifted)
+    bd = S.s['bonds']
+    fell = int(sum(1 for b in range(S.m) if live[b] and not lifted[b] and not (keep[bd[b]['node0']] and keep[bd[b]['node1']])))
+    name = lambda b: S.types[bd[b]['node0']] + '|' + S.types[bd[b]['node1']]
+    return summary(S, broken, gap, {'mode': 'ramp', 'solves': solves, 'events': len(order) + lifts + closes + converts, 'breaks': len(order),
+                                    'converted': converts, 'lifts': lifts, 'closes': closes, 'lambda': round(lam, 4), 'bondsOnFallenPieces': fell,
+                                    'seconds': round(time.time() - t0, 1),
+                                    'order': [(round(l, 4), name(b), round(bd[b]['centroid']['x'], 2), round(bd[b]['centroid']['z'], 2), k) for l, b, k in order[:40]]})
+
+
+def inertia(S):
+    """Per chunk principal moments (kg m^2) from its collider's box (a hull's AABB)."""
+    out = np.zeros((S.n, 3))
+    for i, c in enumerate(S.s['nodeColliders']):
+        if c['kind'] == 'shape': c = S.s['shapeLibrary'][c['shape']]
+        if c['kind'] == 'cuboid': h = np.array([c['halfExtents'][q] for q in 'xyz'])
+        else:
+            pts = np.array(c.get('points', [0.05] * 3)).reshape(-1, 3); h = (pts.max(0) - pts.min(0)) / 2
+        m = S.mass[i]; out[i] = m / 3 * np.array([h[1] ** 2 + h[2] ** 2, h[0] ** 2 + h[2] ** 2, h[0] ** 2 + h[1] ** 2])
+    return np.maximum(out, 1e-9)
+
+
+def dynamic(S, live0, J0, g, removed, rebearing, gap, T=0.4, safety=0.8):
+    """Explicit dynamics from the intact equilibrium with the case's members gone at t = 0
+    (undamped: symplectic Euler conserves energy but for what breaks and slips release)."""
+    nf = int(S.free.sum()); fr = np.nonzero(S.free)[0]
+    Minv = np.zeros(6 * nf); I = inertia(S)
+    for k, i in enumerate(fr):
+        Minv[6 * k:6 * k + 3] = 1 / S.mass[i]; Minv[6 * k + 3:6 * k + 6] = 1 / I[i]
+    for i in removed:
+        if S.row[i] >= 0: Minv[6 * S.row[i]:6 * S.row[i] + 6] = 0   # gone: they take no part
+    R2 = np.einsum('bij,bjk->bik', S.R, S.R)
+    Bt = S.B.T.tocsr()
+    alive = live0.copy()
+    def kmul(D):   # bond force rate from deformation rate (m x 6 -> m x 6)
+        out = np.empty_like(D); out[:, :3] = S.k[:, None] * D[:, :3]; out[:, 3:] = S.k[:, None] * np.einsum('bij,bj->bi', R2, D[:, 3:]); return out
+    # the largest frequency (power iteration on M^-1 B K B^T)
+    x = np.random.default_rng(1).standard_normal(6 * nf) * (Minv > 0); lam_ = 0
+    for _ in range(120):
+        D = (Bt @ x).reshape(-1, 6) * alive[:, None]; y = Minv * (S.B @ kmul(D).reshape(-1))
+        lam_ = np.linalg.norm(y) / max(np.linalg.norm(x), 1e-30); x = y / max(np.linalg.norm(y), 1e-30)
+    wmax = np.sqrt(lam_ * 1.05); dt = safety * 2 / wmax
+    steps = int(np.ceil(T / dt))
+    print(f'dynamic: omega_max {wmax:.3g} rad/s, dt {dt * 1e6:.2f} us, {steps} substeps for {T} s')
+    J = J0.copy(); J[~alive] = 0; v = np.zeros(6 * nf); u = np.zeros(6 * nf)
+    Kinv_lin = 1 / S.k; R2inv = np.linalg.pinv(R2)
+    def strain(Jc, mask):   # sum 1/2 J K^-1 J over live bonds
+        a = (Jc[:, :3] ** 2).sum(1) * Kinv_lin; b = np.einsum('bi,bij,bj->b', Jc[:, 3:], R2inv, Jc[:, 3:]) * Kinv_lin
+        return 0.5 * float(((a + b) * mask).sum())
+    gy = g.copy()
+    E0 = strain(J, alive); dissipated = 0.0; worstGain = 0.0
+    contact = np.zeros(S.m, bool); broken = []; order = []; t0 = time.time(); Ptx = None
+    dpos = np.where(S.d0 > 0, np.minimum(S.d0, np.where(S.d1 > 0, S.d1, S.d0)), np.sqrt(S.area) / 2)
+    rp = np.linalg.norm(S.R, axis=(1, 2)) / np.sqrt(3)
+    peakKE = 0.0
+    for step in range(steps):
+        P = J * alive[:, None]
+        if contact.any():
+            n = S.normal; lin = P[:, :3]; ln = (lin * n).sum(1); Nn = -ln   # + tension
+            C = np.maximum(-Nn, 0)
+            closed = contact & (Nn < 0)
+            tang = lin - ln[:, None] * n; tv = np.linalg.norm(tang, axis=1)
+            sc = np.where(tv > MU * C, MU * C / np.maximum(tv, 1e-30), 1.0)
+            ang = P[:, 3:]; an = (ang * n).sum(1); bendv = ang - an[:, None] * n; bm = np.linalg.norm(bendv, axis=1)
+            bsc = np.where(bm > C * dpos, C * dpos / np.maximum(bm, 1e-30), 1.0)
+            tsc = np.where(np.abs(an) > MU * C * rp, MU * C * rp / np.maximum(np.abs(an), 1e-30), 1.0)
+            Pc = np.concatenate([ln[:, None] * n + sc[:, None] * tang, bsc[:, None] * bendv + (tsc * an)[:, None] * n], 1)
+            Pc[~closed] = 0
+            P = np.where(contact[:, None], Pc, P)
+            Ptx = P
+            # slip is permanent: the stored tangential force follows the cap
+            J[contact, :3] = np.where(closed[contact, None], ln[contact, None] * n[contact] + sc[contact, None] * tang[contact], J[contact, :3])
+        acc = Minv * (S.B @ P.reshape(-1) - g)
+        v += dt * acc; u += dt * v
+        D = (Bt @ v).reshape(-1, 6)
+        J -= dt * kmul(D) * alive[:, None]
+        if step % 4 == 0 or step == steps - 1:
+            fatal, N, V, crush = S.stresses(J * alive[:, None])
+            hit = alive & ~contact & (fatal >= 1)
+            if rebearing:
+                conv = hit & S.bearing & (crush < 1); contact |= conv; hit &= ~conv
+                hit |= alive & contact & (crush >= 1)
+            if hit.any():
+                for b in np.nonzero(hit)[0]: order.append((step * dt, int(b)))
+                # A brittle break releases its strain energy: a bond's, or a contact's at the force it transmits.
+                dissipated += strain(J, hit & ~contact) + (strain(Ptx, hit & contact) if contact.any() else 0.0)
+                alive[hit] = False; broken += list(np.nonzero(hit)[0]); J[hit] = 0
+            if step % 400 == 0 or step == steps - 1:
+                ke = 0.5 * np.sum(v * v / np.where(Minv > 0, Minv, np.inf)); peakKE = max(peakKE, ke)
+                # E = KE + strain - work of the dead load (u . -g): with no damping it can only fall
+                # (brittle breaks, contact slip). Slip work is not tallied, so the check is E <= E0.
+                E = ke + strain(J, alive & ~contact) + (strain(Ptx, alive & contact) if contact.any() else 0.0) - float(u @ -gy)
+                worstGain = max(worstGain, (E + dissipated - E0))
+    bd = S.s['bonds']; name = lambda b: S.types[bd[b]['node0']] + '|' + S.types[bd[b]['node1']]
+    return summary(S, broken, gap, {'mode': 'dynamic', 'substeps': steps, 'dtMicroseconds': round(dt * 1e6, 3), 'simulated': T,
+                                    'contacts': int(contact.sum()), 'seconds': round(time.time() - t0, 1), 'peakKineticJ': round(peakKE, 2),
+                                    'energyStartJ': round(E0, 2), 'releasedByBreaksJ': round(dissipated, 2), 'worstEnergyGainJ': round(worstGain, 3),
+                                    'order': [(round(t * 1e3, 2), name(b), round(bd[b]['centroid']['x'], 2), round(bd[b]['centroid']['z'], 2)) for t, b in order[:40]]})
+
+
+# ------------------------------------------------------------------ set-ups
+def match_removed(scene, case, dz, tol=0.005):
+    """Nodes of the intact house that the case removed: the intact nodes with no node of the
+    same type within tol (m) in the case's house (float32 positions after the case offset)."""
+    from scipy.spatial import cKDTree
+    s = scene['scenario']
+    P = lambda i, d: (s['nodes'][i]['centroid']['x'], s['nodes'][i]['centroid']['y'], s['nodes'][i]['centroid']['z'] - d)
+    intact = [i for i, g in enumerate(s['nodeGroups']) if g == 'case@intact']
+    other = [i for i, g in enumerate(s['nodeGroups']) if g == f'case@{case}']
+    removed = []
+    for t in set(s['nodeTypes'][i] for i in intact):
+        mine = [k for k, i in enumerate(intact) if s['nodeTypes'][i] == t]
+        theirs = [i for i in other if s['nodeTypes'][i] == t]
+        if not theirs: removed += mine; continue
+        tree = cKDTree([P(i, dz) for i in theirs]); used = set()
+        for k in mine:
+            hits = [h for h in tree.query_ball_point(P(intact[k], 0), tol) if h not in used]
+            if hits: used.add(hits[0])
+            else: removed.append(k)
+    return removed
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('scene'); p.add_argument('--case', default='truck-door')
+    p.add_argument('--mode', choices=['cascade', 'ramp', 'dynamic'], default='ramp')
+    p.add_argument('--setup', choices=['removal', 'asbuilt'], default='removal')
+    p.add_argument('--rebearing', action='store_true'); p.add_argument('--json')
+    p.add_argument('--T', type=float, default=0.4, help='dynamic: seconds simulated'); p.add_argument('--safety', type=float, default=0.8, help='dynamic: substep as this fraction of 2 / omega_max')
+    a = p.parse_args()
+    scene = json.load(open(a.scene)); mats = scene['defaults']['solver']['materials']
+    dz, gap = CASES[a.case]
+    t0 = time.time()
+    if a.setup == 'asbuilt':
+        S = Structure(subscene(scene, f'case@{a.case}', dz), mats)
+        live = np.ones(S.m, bool); f0 = np.zeros_like(S.fg); df = S.fg
+        print(f'{a.case} as built: {S.n} chunks, {S.m} bonds ({time.time() - t0:.0f} s to build)')
+        if a.mode == 'cascade': out = cascade(S, live, S.fg, a.rebearing, gap)
+        elif a.mode == 'ramp': out = ramp(S, live, f0, df, a.rebearing, gap)
+        else: raise SystemExit('dynamic needs --setup removal')
+    else:
+        S = Structure(subscene(scene, 'case@intact', 0), mats)
+        removed = set(match_removed(scene, a.case, dz))
+        bd = S.s['bonds']
+        cut = np.array([b['node0'] in removed or b['node1'] in removed for b in bd])
+        print(f'{a.case} by removal from the intact house: {S.n} chunks, {S.m} bonds, {len(removed)} chunks removed '
+              f'({", ".join(sorted(set(S.types[i] for i in removed)))}), {int(cut.sum())} bonds cut ({time.time() - t0:.0f} s to build)')
+        sol = Solver(S)
+        J0, z0, on0, _ = sol.solve(np.ones(S.m, bool), S.fg)
+        # The removed chunks' bonds' action on the rest, and their weight gone from the load.
+        fR = -(S.B[:, np.repeat(cut, 6)] @ J0[cut].reshape(-1))
+        g = S.fg.copy()
+        for i in removed:
+            if S.row[i] >= 0: g[6 * S.row[i]:6 * S.row[i] + 6] = 0; fR[6 * S.row[i]:6 * S.row[i] + 6] = 0
+        live = ~cut
+        if a.mode == 'cascade': out = cascade(S, live, g, a.rebearing, gap)
+        elif a.mode == 'ramp': out = ramp(S, live, g + fR, -fR, a.rebearing, gap)
+        else: out = dynamic(S, live, J0, g, removed, a.rebearing, gap, a.T, safety=a.safety)
+    out.update(case=a.case, setup=a.setup, rebearing=a.rebearing, wall=round(time.time() - t0, 1))
+    print(json.dumps(out, indent=1, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
+    if a.json: json.dump(out, open(a.json, "w"), indent=1, default=lambda o: o.item() if hasattr(o, "item") else str(o))
+
+
+if __name__ == '__main__':
+    main()

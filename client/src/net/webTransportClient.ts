@@ -1,13 +1,12 @@
 import {
-  PKT_PING,
   bytesFromHex,
-  decodeServerDatagramPacket,
-  decodeServerReliablePacket,
   encodeBlockEditPacket,
   encodeClientHello,
   encodeFirePacket,
   encodeInputBundle,
   encodeMeleePacket,
+  encodeCityCameraDrop,
+  type CityCameraDropCmd,
   encodePingPacket,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
@@ -21,6 +20,7 @@ import {
   type ServerReliablePacket,
   type WelcomePacket,
 } from './protocol';
+import { routeInboundPacket, type RawPacketListener } from './inbound';
 
 type WebTransportHash = {
   algorithm: string;
@@ -59,13 +59,32 @@ export type SessionConfigResponse = {
   sim_hz: number;
   snapshot_hz: number;
   interpolation_delay_ms: number;
+  protocol_version: number;
+  physics_backend: number;
+  client_movement_mode: number;
+  city_world?: boolean;
+  city_manifest_hash?: string;
+  city_wire_version?: number;
 };
+
+/** Generous enough for a cold server, short enough that a player is not stranded. */
+const WELCOME_TIMEOUT_MS = 8000;
 
 export type WebTransportGameClientOptions = {
   matchId: string;
   sessionConfigEndpoint?: string;
+  /**
+   * Session config resolved elsewhere (the control plane relays it, because a
+   * rented box's self-signed cert makes a direct fetch to it impossible).
+   * When set, no HTTP request is made.
+   */
+  sessionConfig?: SessionConfigResponse;
   onReliablePacket?: (packet: ServerReliablePacket) => void;
   onDatagramPacket?: (packet: ServerDatagramPacket, receivedLocalUs: number) => void;
+  /** Raw city destruction packets (kinds 119-122), reliable or datagram. */
+  onCityPacket?: (bytes: Uint8Array) => void;
+  /** Every inbound packet, city or not, as received and before routing (the city tape). */
+  onRawPacket?: RawPacketListener;
   onWelcome?: (packet: WelcomePacket) => void;
   onClose?: (reason?: unknown) => void;
 };
@@ -73,6 +92,24 @@ export type WebTransportGameClientOptions = {
 export class WebTransportGameClient {
   private transport: WebTransportLike | null = null;
   private datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  /**
+   * Uplink used for input and commands. Safari implements WebTransport
+   * datagram receive but not send, so rather than abandoning the session to
+   * WebSocket we keep the downlink on datagrams and move the (tiny) uplink
+   * onto the control stream.
+   */
+  private controlWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  private uplink: 'datagram' | 'stream' = 'datagram';
+  /**
+   * Resolves when the server admits us. A transport that opens but is never
+   * answered is indistinguishable from a healthy one until this times out --
+   * which is precisely how a client/server handshake mismatch turns into an
+   * endless "Connecting...".
+   */
+  private welcomeResolve: (() => void) | null = null;
+  private readonly welcomed = new Promise<void>((resolve) => {
+    this.welcomeResolve = resolve;
+  });
   private inputDatagramWriteInFlight = false;
   private queuedInputDatagram: Uint8Array | null = null;
   private closed = false;
@@ -88,8 +125,9 @@ export class WebTransportGameClient {
   }
 
   static async connect(options: WebTransportGameClientOptions): Promise<WebTransportGameClient> {
-    console.info('[webtransport] fetching session config for match:', options.matchId);
-    const sessionConfig = await fetchSessionConfig(options.matchId, options.sessionConfigEndpoint);
+    const sessionConfig =
+      options.sessionConfig ??
+      (await fetchSessionConfig(options.matchId, options.sessionConfigEndpoint));
     console.info('[webtransport] session config:', {
       url: sessionConfig.url,
       certMode: sessionConfig.server_certificate_hash_hex ? 'self-signed (pinned hash)' : 'CA-signed',
@@ -100,7 +138,30 @@ export class WebTransportGameClient {
     });
     const client = new WebTransportGameClient(sessionConfig, options);
     await client.open();
+    // Wait for the server to actually admit us before declaring this transport
+    // usable. Without this the caller's fallback can never trigger for a server
+    // that accepts the connection and then says nothing, and the player waits
+    // forever instead of dropping to a transport that works.
+    await client.awaitWelcome(WELCOME_TIMEOUT_MS);
     return client;
+  }
+
+  private async awaitWelcome(timeoutMs: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`server did not send Welcome within ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+    });
+    try {
+      await Promise.race([this.welcomed, timeout]);
+    } catch (error) {
+      this.close('no welcome from server');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async open(): Promise<void> {
@@ -135,13 +196,28 @@ export class WebTransportGameClient {
     await transport.ready;
     console.info(`[webtransport] QUIC connection ready (${(performance.now() - t0).toFixed(1)}ms handshake)`);
 
-    const datagramWriter = transport.datagrams.writable.getWriter();
-    this.datagramWriter = datagramWriter;
+    // `?uplink=stream` forces the Safari path on any browser, so it can be
+    // exercised without an iOS device.
+    const forceStream =
+      typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('uplink') === 'stream';
+    const canSendDatagrams = Boolean(transport.datagrams?.writable) && !forceStream;
+    this.uplink = canSendDatagrams ? 'datagram' : 'stream';
+    if (canSendDatagrams) {
+      this.datagramWriter = transport.datagrams.writable.getWriter();
+    } else {
+      console.info(
+        '[webtransport] datagram send unavailable — using the control stream for uplink ' +
+          '(downlink stays on datagrams)',
+      );
+    }
 
     const control = await transport.createBidirectionalStream();
     const controlWriter = control.writable.getWriter();
     await controlWriter.write(frameReliablePacket(encodeClientHello({ matchId: this.options.matchId })));
-    await controlWriter.close();
+    // Keep the control stream for one-shot reliable commands, even when
+    // movement uses datagrams. Losing a camera drop must not strand the player.
+    this.controlWriter = controlWriter;
     console.info('[webtransport] ClientHello sent, waiting for Welcome...');
 
     this.startReliableReader(control.readable);
@@ -151,53 +227,89 @@ export class WebTransportGameClient {
       .catch((error) => this.handleClosed(error));
   }
 
+  /** True when this session can still send, whichever uplink it settled on. */
+  private canSend(): boolean {
+    return !this.closed && (this.datagramWriter !== null || this.controlWriter !== null);
+  }
+
+  /**
+   * Send one client packet. Datagrams when available; otherwise the same bytes
+   * length-prefixed on the control stream, which the server reads identically.
+   */
+  private sendClientPacket(packet: Uint8Array): void {
+    if (this.closed) return;
+    if (this.datagramWriter) {
+      void this.datagramWriter.write(packet).catch((error) => this.handleClosed(error));
+      return;
+    }
+    if (this.controlWriter) {
+      void this.controlWriter
+        .write(frameReliablePacket(packet))
+        .catch((error) => this.handleClosed(error));
+    }
+  }
+
   sendInputBundle(frames: InputFrame[]): void {
-    if (this.closed || !this.datagramWriter || frames.length === 0) {
+    if (!this.canSend() || frames.length === 0) {
       return;
     }
     this.writeLatestInputDatagram(encodeInputBundle(frames));
   }
 
-  sendFire(command: FireCmd): void {
-    if (this.closed || !this.datagramWriter) {
+  sendCityResync(bytes: Uint8Array): void {
+    if (!this.canSend()) {
       return;
     }
-    void this.datagramWriter.write(encodeFirePacket(command)).catch((error) => this.handleClosed(error));
+    this.sendClientPacket(bytes);
+  }
+
+  sendFire(command: FireCmd): void {
+    if (!this.canSend()) {
+      return;
+    }
+    this.sendClientPacket(encodeFirePacket(command));
+  }
+
+  sendCityCameraDrop(command: CityCameraDropCmd): boolean {
+    if (this.closed || !this.controlWriter) return false;
+    void this.controlWriter.write(frameReliablePacket(encodeCityCameraDrop(command)))
+      .catch((error) => this.handleClosed(error));
+    return true;
   }
 
   sendMelee(command: MeleeCmd): void {
-    if (this.closed || !this.datagramWriter) {
+    if (!this.canSend()) {
       return;
     }
-    void this.datagramWriter.write(encodeMeleePacket(command)).catch((error) => this.handleClosed(error));
+    this.sendClientPacket(encodeMeleePacket(command));
   }
 
   sendBlockEdit(cmd: BlockEditCmd): void {
-    if (this.closed || !this.datagramWriter) {
+    if (!this.canSend()) {
       return;
     }
-    void this.datagramWriter.write(encodeBlockEditPacket(cmd)).catch((error) => this.handleClosed(error));
+    this.sendClientPacket(encodeBlockEditPacket(cmd));
   }
 
   sendVehicleEnter(vehicleId: number, seat = 0): void {
-    if (this.closed || !this.datagramWriter) {
+    if (!this.canSend()) {
       return;
     }
-    void this.datagramWriter.write(encodeVehicleEnterPacket(vehicleId, seat)).catch((error) => this.handleClosed(error));
+    this.sendClientPacket(encodeVehicleEnterPacket(vehicleId, seat));
   }
 
   sendVehicleExit(vehicleId: number): void {
-    if (this.closed || !this.datagramWriter) {
+    if (!this.canSend()) {
       return;
     }
-    void this.datagramWriter.write(encodeVehicleExitPacket(vehicleId)).catch((error) => this.handleClosed(error));
+    this.sendClientPacket(encodeVehicleExitPacket(vehicleId));
   }
 
   sendRawDatagram(packet: Uint8Array): void {
-    if (this.closed || !this.datagramWriter) {
+    if (!this.canSend()) {
       return;
     }
-    void this.datagramWriter.write(packet).catch((error) => this.handleClosed(error));
+    this.sendClientPacket(packet);
   }
 
   close(reason = 'client closed'): void {
@@ -209,12 +321,14 @@ export class WebTransportGameClient {
     this.queuedInputDatagram = null;
     this.datagramWriter?.releaseLock();
     this.datagramWriter = null;
+    this.controlWriter?.releaseLock();
+    this.controlWriter = null;
     this.transport?.close({ closeCode: 0, reason });
     this.transport = null;
   }
 
   private writeLatestInputDatagram(packet: Uint8Array): void {
-    if (this.closed || !this.datagramWriter) {
+    if (!this.canSend()) {
       return;
     }
     if (this.inputDatagramWriteInFlight) {
@@ -225,14 +339,17 @@ export class WebTransportGameClient {
   }
 
   private flushInputDatagram(packet: Uint8Array): void {
-    const writer = this.datagramWriter;
+    // Stale input is worthless -- the next bundle supersedes it -- so only one
+    // write is ever in flight and newer input replaces whatever is queued.
+    const writer = this.datagramWriter ?? this.controlWriter;
     if (this.closed || !writer) {
       this.inputDatagramWriteInFlight = false;
       this.queuedInputDatagram = null;
       return;
     }
+    const bytes = this.datagramWriter ? packet : frameReliablePacket(packet);
     this.inputDatagramWriteInFlight = true;
-    void writer.write(packet)
+    void writer.write(bytes)
       .then(() => {
         this.inputDatagramWriteInFlight = false;
         const queued = this.queuedInputDatagram;
@@ -262,12 +379,20 @@ export class WebTransportGameClient {
           const parsed = parseFramedReliablePackets(buffer, value);
           buffer = parsed.buffer;
           for (const packetBytes of parsed.packets) {
-            const packet = decodeServerReliablePacket(packetBytes);
+            this.options.onRawPacket?.(packetBytes, 'wt-reliable');
+            const routed = routeInboundPacket(packetBytes, 'wt-reliable');
+            if (routed.route === 'city') {
+              this.options.onCityPacket?.(packetBytes);
+              continue;
+            }
+            if (routed.route !== 'game') continue;
+            const packet = routed.packet as ServerReliablePacket;
             if (packet.type === 'welcome') {
               console.info('[webtransport] Welcome received — playerId:', packet.playerId, {
                 simHz: packet.simHz,
                 interpolationDelayMs: packet.interpolationDelayMs,
               });
+              this.welcomeResolve?.();
               this.options.onWelcome?.(packet);
             }
             this.options.onReliablePacket?.(packet);
@@ -291,14 +416,21 @@ export class WebTransportGameClient {
           if (done) break;
           if (!value) continue;
 
+          this.options.onRawPacket?.(value, 'wt-datagram');
+          const routed = routeInboundPacket(value, 'wt-datagram');
           // Auto-respond to server-initiated latency pings (PKT_PING = 110)
-          if (value[0] === PKT_PING && value.length >= 5) {
+          if (routed.route === 'ping') {
             const nonce = new DataView(value.buffer, value.byteOffset, value.byteLength).getUint32(1, true);
             void this.datagramWriter?.write(encodePingPacket(nonce))?.catch(() => {});
             continue;
           }
 
-          const packet = decodeServerDatagramPacket(value);
+          if (routed.route === 'city') {
+            this.options.onCityPacket?.(value);
+            continue;
+          }
+
+          const packet = routed.packet as ServerDatagramPacket;
           this.options.onDatagramPacket?.(packet, performance.now() * 1000);
         }
       } catch (error) {
@@ -329,7 +461,7 @@ export class WebTransportGameClient {
   }
 }
 
-async function fetchSessionConfig(matchId: string, endpoint = '/session-config'): Promise<SessionConfigResponse> {
+export async function fetchSessionConfig(matchId: string, endpoint = '/session-config'): Promise<SessionConfigResponse> {
   const url = new URL(endpoint, window.location.href);
   url.searchParams.set('match_id', matchId);
   console.info('[webtransport] GET', url.toString());

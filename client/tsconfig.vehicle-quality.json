@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
+    "types": [
+      "node",
+      "vite/client"
+    ]
+  },
+  "include": [
+    "netlab/vehicle/**/*.ts",
+    "scripts/qualify-vehicle-netcode.mts",
+    "scripts/score-vehicle-quality.mts",
+    "scripts/compare-vehicle-quality.mts"
+  ]
+}

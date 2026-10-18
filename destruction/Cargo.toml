@@ -1,0 +1,81 @@
+[package]
+name = "vibe-land-destruction"
+version = "0.1.0"
+edition = "2021"
+description = "Destructible mini-city: scene assembly, manifest, and the streaming codec core"
+publish = false
+
+[dependencies]
+# serde: the encoder checkpoint a mid-match netlab capture starts from.
+glam = { version = "0.27", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# Pinned exactly: it compresses the v3 debris wire against a shipped static
+# dictionary, so compressor drift is a wire change.
+zstd = "=0.13.3"
+vibe-netcode = { path = "../netcode" }
+# The per-player netcode's shared core: the same derivation, predictor and
+# wire the browser runs.
+vibe-land-perplayer = { path = "../perplayer" }
+# Fast, deterministic hashing for the per-player maps keyed by body (100k
+# bodies are hashed several times a tick).
+rustc-hash = "2.1"
+# The per-player netcode's worker pool (`PerPlayerConfig::send_threads`):
+# one persistent pool, work-stealing across clients of uneven cost.
+rayon = "1.10"
+# Diagnostics the match server logs (per-player derive-check disagreements).
+tracing = "0.1"
+# parry's convex hull, for a hull chunk's centre of mass (variants.rs
+# `collider_mass_offset`). Already in the tree through vibe-netcode; the same
+# features, so nothing new is compiled.
+rapier3d = { version = "0.30", default-features = false, features = ["dim3", "f32"] }
+
+[features]
+default = []
+# Native PhysX-backed runtime on the Blast stress solver (CityDestruction).
+# Gated so the crate core stays pure Rust and CI-safe on machines without
+# PhysX/CUDA.
+physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/destruction"]
+# The CUDA stress solver -- the one the match server runs.
+#
+# Without this a test built with `physx` silently gets the CPU CG solve, whose
+# 8-iteration residual is reported as real stress: a city nobody touches breaks
+# thousands of bonds at rest where the GPU path breaks none. Every number
+# measured on that path is an artefact of the solver rather than a property of
+# the structure, and it is indistinguishable from a real regression.
+cuda-stress = ["physx", "vibe-land-physx-bridge/cuda-stress"]
+# Drive destruction through the standardized blast-stress-solver core instead of
+# the bespoke ExtStressPhysXDestructible path. Both can be built at once so the
+# two can be A/B'd against the same scene before the old path is retired.
+blast-core = ["physx", "dep:blast-stress-solver"]
+# PhysX-native GPU destruction (physx-2). Needs no Blast checkout. Additive
+# with the Blast features so one binary can carry every backend and
+# `VIBE_CITY_DESTRUCTION` picks at runtime.
+native-destruction = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/native-destruction"]
+
+[dependencies.blast-stress-solver]
+# Cargo resolves every optional dependency of a workspace member, even when no
+# feature enables it, so this must be reachable from every machine: a missing
+# path here fails every cargo command. It is only fetched to resolve, and only
+# compiled under `blast-core`.
+#
+# Keep it on the revision BLAST_ROOT (physx-bridge/build.rs) is checked out at:
+# mixing two solver trees in one binary is not a thing anyone wants to debug.
+# To build against a local checkout instead, patch it in .cargo/config.toml:
+#   [patch."https://github.com/Glavin001/blast-stress-solver"]
+#   blast-stress-solver = { path = "<BLAST_ROOT>/blast-stress-solver-rs" }
+git = "https://github.com/Glavin001/blast-stress-solver"
+branch = "feature/physx-gpu-destruction-2"
+optional = true
+default-features = false
+features = ["physx", "scenarios"]
+
+[dependencies.vibe-land-physx-bridge]
+path = "../physx-bridge"
+optional = true
+
+# Audits a structure through the Blast rig; it has nothing to run without it.
+[[bin]]
+name = "structure-audit"
+required-features = ["physx"]

@@ -2,14 +2,20 @@ import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense, type ReactNode } from 'react';
 import type { GameMode } from '../app/gameMode';
-import { isTouchDevice } from '../device';
+import { RenderGovernor, sceneCanvasProps } from './RenderGovernor';
 import type { InputBindings } from '../input/bindings';
+import { FrameClock } from './FrameClock';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
 import type { WeatherPreset } from '../graphics/weatherPresets';
+import { CustomMaterialGuard } from '../graphics/webgpu/CustomMaterialGuard';
 
 type GameSceneProps = {
+  matchId?: string;
+  aerialMode?: boolean;
+  aerialSpeed?: number;
+  aerialDropRequest?: number;
   mode: GameMode;
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
@@ -47,8 +53,10 @@ type GameSceneProps = {
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
 
+
 export function GameScene({
   mode,
+  matchId,
   onWelcome,
   onDisconnect,
   onAimStateChange,
@@ -57,6 +65,9 @@ export function GameScene({
   onInputFrame,
   inputFamilyMode,
   inputBindings,
+  aerialMode,
+  aerialSpeed,
+  aerialDropRequest,
   onSnapshot,
   rapierDebugModeBits = 0,
   showRenderStats,
@@ -81,20 +92,19 @@ export function GameScene({
   damageFeedback,
   sceneExtras,
 }: GameSceneProps) {
-  const touchMode = isTouchDevice();
   return (
     <Canvas
       style={{ width: '100%', height: '100%', touchAction: 'none' }}
-      shadows
-      camera={{ fov: 75, near: 0.1, far: 200, position: [0, 5, 10] }}
+      // Pixel budget and context flags come from the quality tier, through
+      // the one function /cityreplay uses too. RenderGovernor handles dpr live.
+      {...sceneCanvasProps()}
       data-testid="game-canvas"
-      onPointerDown={(e) => {
-        if (touchMode) return;
-        (e.target as HTMLCanvasElement).requestPointerLock();
-      }}
     >
+      <RenderGovernor />
+      <FrameClock />
+      {__WEBGPU__ && import.meta.env.DEV && <CustomMaterialGuard />}
       <Suspense fallback={null}>
-        {showRenderStats && (
+        {showRenderStats && !__WEBGPU__ && (
           <StatsGl
             parent={renderStatsParent}
             trackGPU
@@ -103,6 +113,7 @@ export function GameScene({
         )}
         <GameWorld
           mode={mode}
+          matchId={matchId}
           worldDocument={worldDocument}
           onWelcome={onWelcome}
           onDisconnect={onDisconnect}
@@ -112,6 +123,9 @@ export function GameScene({
           onInputFrame={onInputFrame}
           inputFamilyMode={inputFamilyMode}
           inputBindings={inputBindings}
+          aerialMode={aerialMode}
+          aerialSpeed={aerialSpeed}
+          aerialDropRequest={aerialDropRequest}
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           showDebugHelpers={showDebugHelpers}
