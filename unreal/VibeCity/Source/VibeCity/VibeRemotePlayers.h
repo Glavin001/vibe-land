@@ -53,6 +53,10 @@ public:
 	 * feet) moving at `Velocity` (cm/s), with no server player behind it. Returns its id. */
 	uint32 DropTestRagdoll(const FVector& Centre, const FVector& Velocity);
 
+	/** Avatars live in a plain map, so their objects are reported to GC here (a collected tint
+	 * material crashed the next Tick). */
+	static void AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector);
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;

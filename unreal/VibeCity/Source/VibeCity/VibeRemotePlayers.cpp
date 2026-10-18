@@ -94,6 +94,24 @@ AVibeRemotePlayers::AVibeRemotePlayers()
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
 }
 
+void AVibeRemotePlayers::AddReferencedObjects(UObject* InThis, FReferenceCollector& Collector)
+{
+	Super::AddReferencedObjects(InThis, Collector);
+	for (TPair<uint32, FAvatar>& Pair : CastChecked<AVibeRemotePlayers>(InThis)->Avatars)
+	{
+		FAvatar& A = Pair.Value;
+		Collector.AddReferencedObject(A.Root);
+		Collector.AddReferencedObject(A.Skeletal);
+		Collector.AddReferencedObject(A.Body);
+		Collector.AddReferencedObject(A.Head);
+		Collector.AddReferencedObject(A.Shield);
+		Collector.AddReferencedObject(A.HpBack);
+		Collector.AddReferencedObject(A.HpFill);
+		Collector.AddReferencedObject(A.Tint);
+		Collector.AddReferencedObject(A.Body3D);
+	}
+}
+
 void AVibeRemotePlayers::BeginPlay()
 {
 	Super::BeginPlay();

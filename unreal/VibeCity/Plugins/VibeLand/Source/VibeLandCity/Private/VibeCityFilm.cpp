@@ -2,6 +2,7 @@
 
 #include "Async/Async.h"
 #include "Containers/Ticker.h"
+#include "Engine/Engine.h"
 #include "Engine/GameEngine.h"
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformTime.h"
@@ -53,6 +54,7 @@ namespace
 		TAtomic<int32> Written{ 0 };
 		TAtomic<int32> InFlight{ 0 };
 		TAtomic<int32> Busy{ 0 }; // slots holding a copy
+		bool bScreenMessages = true;
 	};
 	FRecorder* Recorder = nullptr;
 
@@ -189,6 +191,9 @@ namespace VibeCityFilm
 		Recorder->Dir = Dir;
 		Recorder->Fps = FMath::Max(1.0, Fps);
 		Recorder->Started = FPlatformTime::Seconds();
+		// No on-screen debug text (the director's status line) in a film.
+		Recorder->bScreenMessages = GAreScreenMessagesEnabled;
+		GAreScreenMessagesEnabled = false;
 		for (FSlot& Slot : Recorder->Ring)
 		{
 			Slot.Readback = MakeUnique<FRHIGPUTextureReadback>(TEXT("VibeCityFilm"));
@@ -234,6 +239,7 @@ namespace VibeCityFilm
 		{
 			FPlatformProcess::Sleep(0.01f);
 		}
+		GAreScreenMessagesEnabled = R->bScreenMessages;
 		const int32 Written = R->Written;
 		UE_LOG(LogTemp, Display, TEXT("VibeCityFilm: %d frames requested, %d copied, %d dropped (no free slot), %d written"), R->Requested, R->Copied, R->Dropped, Written);
 		Recorder = nullptr;
