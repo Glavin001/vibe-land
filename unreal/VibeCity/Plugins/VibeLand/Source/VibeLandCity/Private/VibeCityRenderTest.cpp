@@ -800,6 +800,23 @@ bool FVibeCityRenderDust::RunTest(const FString& Parameters)
 		AddInfo(FString::Printf(TEXT("dust mark: colour %s, strength %.2f"), *Look.Key.ToString(), Look.Value));
 		TestTrue(TEXT("the mark is an earth tone darker than mid grey"), Look.Key.GetLuminance() < 0.3f && Look.Key.R >= Look.Key.B);
 		TestTrue(TEXT("the mark is under half strength"), Look.Value > 0.0f && Look.Value < 0.5f);
+		TestTrue(TEXT("a new mark starts faint (the dust has not settled yet)"), D->NewestDustMarkStrength() < 0.1f * Look.Value);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(2.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this]()
+	{
+		const AVibeCityDirector* D = Find<AVibeCityDirector>();
+		const float Mid = D ? D->NewestDustMarkStrength() : -1.0f;
+		AddInfo(FString::Printf(TEXT("dust mark after 2 s: strength %.2f"), Mid));
+		TestTrue(TEXT("after 2 s the mark is building up, not yet full"), D && Mid > 0.0f && Mid < D->DustMarkLook().Value * 0.9f);
+		return true;
+	}));
+	ADD_LATENT_AUTOMATION_COMMAND(FWaitLatentCommand(5.0f));
+	ADD_LATENT_AUTOMATION_COMMAND(FFunctionLatentCommand([this]()
+	{
+		const AVibeCityDirector* D = Find<AVibeCityDirector>();
+		TestTrue(TEXT("after the dust settles (6 s) the mark is at full strength"), D && FMath::IsNearlyEqual(D->NewestDustMarkStrength(), D->DustMarkLook().Value, 0.01f));
 		return true;
 	}));
 	return true;

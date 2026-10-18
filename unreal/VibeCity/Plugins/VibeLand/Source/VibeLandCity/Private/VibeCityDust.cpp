@@ -94,6 +94,7 @@ void AVibeCityDirector::SpawnDust(const VlFrameView& Frame)
 
 void AVibeCityDirector::TickDust(float DeltaSeconds)
 {
+	TickDustMarks();
 	if (!DustInstances || LiveDustCount == 0)
 	{
 		return;
@@ -198,36 +199,79 @@ void AVibeCityDirector::TickDust(float DeltaSeconds)
 	DustInstances->MarkRenderStateDirty();
 }
 
+namespace
+{
+	// Settled dust, not paint: an earth tone a little lighter than asphalt, at under half strength so
+	// the street shows through.
+	const FLinearColor DustMarkColor(0.26f, 0.24f, 0.21f);
+	constexpr float DustMarkStrength = 0.45f;
+	// Dust does not land the instant a chunk hits: it settles out of the cloud (fine dust falls at
+	// centimetres a second), so a mark builds up and spreads over this long, eased in.
+	constexpr double DustSettleS = 6.0;
+}
+
 void AVibeCityDirector::MarkGround(const VlDustParcel& Impact)
 {
+	UMaterialInterface* Base = DustMarkMaterial ? DustMarkMaterial->Parent.Get()
+		: LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityScorch.M_VibeCityScorch"));
+	if (!Base)
+	{
+		return;
+	}
 	if (!DustMarkMaterial)
 	{
-		UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityScorch.M_VibeCityScorch"));
-		if (!Base)
-		{
-			return;
-		}
+		// The look the marks settle to (tests read it).
 		DustMarkMaterial = UMaterialInstanceDynamic::Create(Base, this);
-		// Settled dust: an earth tone a little lighter than asphalt, at under half strength, so the
-		// street shows through (full strength in pale grey read as white paint).
-		DustMarkMaterial->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.26f, 0.24f, 0.21f));
-		DustMarkMaterial->SetScalarParameterValue(TEXT("Fade"), 0.45f);
+		DustMarkMaterial->SetVectorParameterValue(TEXT("Color"), DustMarkColor);
+		DustMarkMaterial->SetScalarParameterValue(TEXT("Fade"), DustMarkStrength);
 	}
 	constexpr int32 MaxMarks = 64;
 	if (DustMarkDecals.Num() >= MaxMarks)
 	{
 		DustMarkDecals[0]->DestroyComponent();
 		DustMarkDecals.RemoveAt(0);
+		DustMarkMaterials.RemoveAt(0);
+		DustMarkBorn.RemoveAt(0);
+		DustMarkSize.RemoveAt(0);
 	}
+	UMaterialInstanceDynamic* Material = UMaterialInstanceDynamic::Create(Base, this);
+	Material->SetVectorParameterValue(TEXT("Color"), DustMarkColor);
+	Material->SetScalarParameterValue(TEXT("Fade"), 0.0f);
 	UDecalComponent* Decal = NewObject<UDecalComponent>(this);
-	Decal->SetDecalMaterial(DustMarkMaterial);
+	Decal->SetDecalMaterial(Material);
 	const double Size = Impact.radius0 * 3.0;
-	Decal->DecalSize = FVector(Size, Size, Size);
+	Decal->DecalSize = FVector(Size, Size * 0.6, Size * 0.6);
 	Decal->SetupAttachment(RootComponent);
 	Decal->RegisterComponent();
 	Decal->SetWorldLocationAndRotation(FVector(Impact.position[0], Impact.position[1], 0.0), FRotator(-90.0, (Impact.seed % 360), 0.0));
 	DustMarkDecals.Add(Decal);
+	DustMarkMaterials.Add(Material);
+	DustMarkBorn.Add(FPlatformTime::Seconds());
+	DustMarkSize.Add(Size);
 	++DustMarkCount;
+}
+
+void AVibeCityDirector::TickDustMarks()
+{
+	const double Now = FPlatformTime::Seconds();
+	for (int32 i = 0; i < DustMarkDecals.Num(); ++i)
+	{
+		const double T = FMath::Clamp((Now - DustMarkBorn[i]) / DustSettleS, 0.0, 1.0);
+		if (T >= 1.0 && DustMarkSize[i] < 0.0)
+		{
+			continue; // settled
+		}
+		const float Ease = static_cast<float>(T * T * (3.0 - 2.0 * T));
+		DustMarkMaterials[i]->SetScalarParameterValue(TEXT("Fade"), DustMarkStrength * Ease);
+		const double Full = FMath::Abs(DustMarkSize[i]);
+		const double Spread = Full * (0.6 + 0.4 * Ease);
+		DustMarkDecals[i]->DecalSize = FVector(Full, Spread, Spread);
+		DustMarkDecals[i]->MarkRenderStateDirty();
+		if (T >= 1.0)
+		{
+			DustMarkSize[i] = -Full;
+		}
+	}
 }
 
 void AVibeCityDirector::EmitTrails(const VlFrameView& Frame)
@@ -299,6 +343,16 @@ TOptional<FBox> AVibeCityDirector::DustBox(int32 Slot) const
 	DustInstances->GetInstanceTransform(Slot, T, /*bWorldSpace=*/true);
 	const FVector Half = T.GetScale3D() * 50.0; // the 100 cm sphere
 	return FBox(T.GetLocation() - Half, T.GetLocation() + Half);
+}
+
+float AVibeCityDirector::NewestDustMarkStrength() const
+{
+	float Fade = -1.0f;
+	if (DustMarkMaterials.Num() > 0)
+	{
+		DustMarkMaterials.Last()->GetScalarParameterValue(FHashedMaterialParameterInfo(TEXT("Fade")), Fade);
+	}
+	return Fade;
 }
 
 TPair<FLinearColor, float> AVibeCityDirector::DustMarkLook() const

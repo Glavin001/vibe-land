@@ -70,6 +70,8 @@ public:
 	int64 DustMarks() const { return DustMarkCount; }
 	/** The dust marks' colour and strength (tests). */
 	TPair<FLinearColor, float> DustMarkLook() const;
+	/** How strong the newest mark is now, as the dust settles (tests). */
+	float NewestDustMarkStrength() const;
 	/** Tests: the drawn box of ring slot `Slot` (centre and size, cm), unset while it is not live. */
 	TOptional<FBox> DustBox(int32 Slot) const;
 	/** Cells drawn from the imported city now, and cells in all. */
@@ -154,6 +156,12 @@ private:
 	void MarkGround(const VlDustParcel& Impact);
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<class UDecalComponent>> DustMarkDecals;
+	/** Each mark's own material (its strength builds up as the dust settles) and when it began. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UMaterialInstanceDynamic>> DustMarkMaterials;
+	TArray<double> DustMarkBorn;
+	TArray<double> DustMarkSize;
+	void TickDustMarks();
 	UPROPERTY(Transient)
 	TObjectPtr<class UMaterialInstanceDynamic> DustMarkMaterial;
 	int64 DustMarkCount = 0;
