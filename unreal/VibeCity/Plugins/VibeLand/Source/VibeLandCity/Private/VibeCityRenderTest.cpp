@@ -1105,6 +1105,20 @@ bool FVibeCityRenderProjectileLook::RunTest(const FString& Parameters)
 			C->SetWorldScale3D(FVector(DiameterM));
 		};
 		Add(Meteor, 1.0f, FVector(-2.2, 30.0, 130.0), 3.0);
+		// Its flames, flying to the left (server -x): the shell 1.45x across, 3x along, front at the rock.
+		if (UMaterialInterface* Fire = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityMeteorFire.M_VibeCityMeteorFire")))
+		{
+			UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(Holder);
+			C->SetStaticMesh(Sphere);
+			C->SetMaterial(0, Fire);
+			C->SetCastShadow(false);
+			C->SetupAttachment(Holder->GetRootComponent());
+			C->RegisterComponent();
+			const FVector Dir(0.0, 1.0, 0.0); // server -x in Unreal axes
+			const double R = 150.0;
+			C->SetWorldLocationAndRotation(FVector(13000.0, 220.0, 3000.0) - Dir * R * 1.8, FRotationMatrix::MakeFromZ(Dir).ToQuat());
+			C->SetWorldScale3D(FVector(2.9 * R, 2.9 * R, 6.0 * R) / 100.0);
+		}
 		Add(Meteor, 0.15f, FVector(1.8, 30.0, 130.0), 3.0);
 		Add(Iron, 1.0f, FVector(0.0, 28.4, 133.0), 0.6);
 		VibeCityCapture::Park(World, FVector3f(0.0f, 30.0f, 140.0f), FVector3f(0.0f, 30.0f, 130.0f), 40.0f);

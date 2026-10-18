@@ -700,6 +700,37 @@ def scorch_material():
     return m
 
 
+METEOR_FIRE = r"""
+// The meteor's flames: a shell around the rock stretched back along its path (local +Z = forward,
+// the engine sphere: q in [-1, 1]^3). Tongues of flame (value-noise fbm) stream backward with time,
+// white-yellow at the head, orange to red behind, brightest where the view meets the shell head on.
+struct F
+{
+    static float H(float3 p) { p = frac(p * 0.3183099 + 0.1); p *= 17.0; return frac(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+    static float N(float3 x)
+    {
+        float3 i = floor(x); float3 f = frac(x); f = f * f * (3.0 - 2.0 * f);
+        return lerp(lerp(lerp(H(i), H(i + float3(1, 0, 0)), f.x), lerp(H(i + float3(0, 1, 0)), H(i + float3(1, 1, 0)), f.x), f.y),
+                    lerp(lerp(H(i + float3(0, 0, 1)), H(i + float3(1, 0, 1)), f.x), lerp(H(i + float3(0, 1, 1)), H(i + float3(1, 1, 1)), f.x), f.y), f.z);
+    }
+};
+float3 q = LP / 50.0;
+float along = saturate(q.z * 0.5 + 0.5);           // 1 at the head, 0 at the tail
+float3 p = q * float3(5.0, 5.0, 1.6) + float3(0.0, 0.0, Time * 5.0) + Seed;
+float n = F::N(p) * 0.55 + F::N(p * 2.3 + 5.1) * 0.3 + F::N(p * 5.1 + 2.7) * 0.15;
+// Tongues with gaps between them, fuller at the head; the tail thins to nothing.
+float tongues = saturate((n - 0.62 + along * 0.4) * 3.5);
+float tail = pow(along, 0.8);
+// Strongest toward the shell's silhouette, so the molten rock shows through the middle and the
+// flames lick round and behind it.
+float facing = 0.25 + 0.75 * pow(saturate(1.0 - NdotV), 0.6);
+float heat = pow(along, 1.6);
+// Over a blue sky added red reads pink: flame colours lean yellow-orange (red only at the tips).
+float3 colour = lerp(float3(1.0, 0.24, 0.02), float3(1.0, 0.6, 0.14), heat);
+return colour * tongues * tail * facing * (0.5 + 1.5 * heat) * 12.0 * Glow;
+"""
+
+
 def projectile_materials():
     """The meteor, its fire trail, and the cannonball.
 
@@ -792,13 +823,35 @@ def projectile_materials():
     mel.connect_material_property(emissive, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
     mel.recompile_material(m)
 
+    # Flames around the rock in flight (M_VibeCityMeteorFire): additive, unlit.
+    fire = fresh_material("M_VibeCityMeteorFire")
+    fire.set_editor_property("blend_mode", unreal.BlendMode.BLEND_ADDITIVE)
+    fire.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
+    fire.set_editor_property("two_sided", False)
+    lp = expr(fire, unreal.MaterialExpressionLocalPosition, -900, 0)
+    ftime = expr(fire, unreal.MaterialExpressionTime, -900, 120)
+    fglow = expr(fire, unreal.MaterialExpressionScalarParameter, -900, 240)
+    fglow.set_editor_property("parameter_name", "Glow")
+    fglow.set_editor_property("default_value", 1.0)
+    fseed = expr(fire, unreal.MaterialExpressionScalarParameter, -900, 360)
+    fseed.set_editor_property("parameter_name", "Seed")
+    fseed.set_editor_property("default_value", 0.0)
+    flames = custom(fire, METEOR_FIRE, ["LP", "Time", "NdotV", "Glow", "Seed"], unreal.CustomMaterialOutputType.CMOT_FLOAT3, -400, 100)
+    mel.connect_material_expressions(lp, "", flames, "LP")
+    mel.connect_material_expressions(ftime, "", flames, "Time")
+    mel.connect_material_expressions(facing(fire, -600, 400), "", flames, "NdotV")
+    mel.connect_material_expressions(fglow, "", flames, "Glow")
+    mel.connect_material_expressions(fseed, "", flames, "Seed")
+    mel.connect_material_property(flames, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    mel.recompile_material(fire)
+
     # Trail.
     t = fresh_material("M_VibeCityMeteorTrail")
     t.set_editor_property("blend_mode", unreal.BlendMode.BLEND_ADDITIVE)
     t.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
     color = expr(t, unreal.MaterialExpressionVectorParameter, -900, -300)
     color.set_editor_property("parameter_name", "Color")
-    color.set_editor_property("default_value", unreal.LinearColor(1.0, 0.35, 0.08, 1.0))
+    color.set_editor_property("default_value", unreal.LinearColor(1.0, 0.25, 0.04, 1.0))
     head = expr(t, unreal.MaterialExpressionVectorParameter, -1300, 100)
     head.set_editor_property("parameter_name", "Head")
     length = expr(t, unreal.MaterialExpressionScalarParameter, -1300, 250)
@@ -826,7 +879,7 @@ def projectile_materials():
     rush.set_editor_property("constant", unreal.LinearColor(0.0, 0.0, 600.0, 0.0))
     flickpos = add(t, tworld, mul(t, ttime, rush, -1150, 440), -1000, 420)
     flicker = noise(t, flickpos, 0.01, 2, -850, 420, 0.4, 1.2)
-    bright = mul(t, mul(t, mul(t, fade, core, -550, 160), flicker, -420, 200), const(t, 18.0, -420, 320), -300, 220)
+    bright = mul(t, mul(t, mul(t, fade, core, -550, 160), flicker, -420, 200), const(t, 6.0, -420, 320), -300, 220)
     temission = mul(t, color, bright, -150, 0)
     mel.connect_material_property(temission, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
     mel.recompile_material(t)

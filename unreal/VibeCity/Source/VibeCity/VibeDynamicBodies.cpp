@@ -61,6 +61,7 @@ void AVibeDynamicBodies::BeginPlay()
 	UMaterialInterface* Basalt = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityMeteor.M_VibeCityMeteor"));
 	RubbleDecalBase = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityRubbleDecal.M_VibeCityRubbleDecal"));
 	ScorchBase = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityScorch.M_VibeCityScorch"));
+	FireBase = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityMeteorFire.M_VibeCityMeteorFire"));
 	TrailBase = LoadObject<UMaterialInterface>(nullptr, TEXT("/Game/VibeCity/Materials/M_VibeCityMeteorTrail.M_VibeCityMeteorTrail"));
 	BallMaterial = UMaterialInstanceDynamic::Create(Iron ? Iron : Base, this);
 	BallMaterial->SetVectorParameterValue(TEXT("Color"), CannonballColor);
@@ -113,6 +114,13 @@ void AVibeDynamicBodies::OnFrame(const VlFrameView& Frame)
 			F.Light->SetIntensity(MeteorLightIntensity);
 			F.Light->SetAttenuationRadius(6000.0f);
 			F.Light->RegisterComponent();
+			if (FireBase)
+			{
+				F.FireMaterial = UMaterialInstanceDynamic::Create(FireBase, this);
+				F.FireMaterial->SetScalarParameterValue(TEXT("Seed"), static_cast<float>(M.body_id % 97));
+				F.Fire = NewMesh(SphereMesh, F.FireMaterial, FString::Printf(TEXT("MeteorFire%u"), M.body_id));
+				F.Fire->SetCastShadow(false);
+			}
 			if (TrailBase)
 			{
 				F.TrailMaterial = UMaterialInstanceDynamic::Create(TrailBase, this);
@@ -170,6 +178,10 @@ void AVibeDynamicBodies::OnFrame(const VlFrameView& Frame)
 			{
 				It.Value().Trail->DestroyComponent();
 			}
+			if (It.Value().Fire)
+			{
+				It.Value().Fire->DestroyComponent();
+			}
 			BodiesSeen.Remove(It.Key());
 			It.RemoveCurrent();
 		}
@@ -198,7 +210,14 @@ void AVibeDynamicBodies::Tick(float DeltaSeconds)
 		FFlight& F = Pair.Value;
 		const double SinceImpact = Now - F.LaunchedAt - F.Meteor.flight_time_s;
 		const float Heat = SinceImpact <= 0.0 ? 1.0f : static_cast<float>(FMath::Exp(-SinceImpact / CoolingS));
-		F.Light->SetIntensity(MeteorLightIntensity * Heat);
+		// Firelight flickers: two incommensurate wobbles, +-15%.
+		const float Flicker = 1.0f + 0.1f * FMath::Sin(Now * 23.0 + Pair.Key) + 0.05f * FMath::Sin(Now * 41.0 + 2.0 * Pair.Key);
+		F.Light->SetIntensity(MeteorLightIntensity * Heat * (SinceImpact <= 0.0 ? Flicker : 1.0f));
+		if (F.Fire)
+		{
+			F.FireMaterial->SetScalarParameterValue(TEXT("Glow"), Heat);
+			F.Fire->SetVisibility(Heat > 0.02f && !F.FireDir.IsZero());
+		}
 		if (SinceImpact >= 0.0 && !F.bLanded)
 		{
 			Land(F);
@@ -303,6 +322,18 @@ void AVibeDynamicBodies::PlaceMeteor(FFlight& F, const FVector& Pos, const FVect
 	F.Mesh->SetVisibility(true);
 	F.LastPos = Pos;
 	F.LastPosAt = FPlatformTime::Seconds();
+	// The flames: a shell 1.45x the rock across and 3x along, its front 1.2 radii ahead of the rock,
+	// streaming back along the path (kept on the last known heading once the rock slows).
+	if (F.Fire && Velocity.SizeSquared() > 1.0)
+	{
+		F.FireDir = Velocity.GetSafeNormal();
+	}
+	if (F.Fire && !F.FireDir.IsZero())
+	{
+		const double R = F.Meteor.radius;
+		F.Fire->SetWorldLocationAndRotation(Pos - F.FireDir * R * 1.8, FRotationMatrix::MakeFromZ(F.FireDir).ToQuat());
+		F.Fire->SetWorldScale3D(FVector(2.9 * R, 2.9 * R, 6.0 * R) / BasicShapeCm);
+	}
 	if (!F.Trail || FPlatformTime::Seconds() > F.LaunchedAt + F.Meteor.flight_time_s)
 	{
 		return;

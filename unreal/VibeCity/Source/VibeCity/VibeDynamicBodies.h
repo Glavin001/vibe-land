@@ -50,6 +50,10 @@ private:
 		TObjectPtr<UMaterialInstanceDynamic> TrailMaterial;
 		/** Its own basalt, so its glow can cool on its own. */
 		TObjectPtr<UMaterialInstanceDynamic> Material;
+		/** The flames around the rock in flight, stretched back along its path. */
+		TObjectPtr<UStaticMeshComponent> Fire;
+		TObjectPtr<UMaterialInstanceDynamic> FireMaterial;
+		FVector FireDir = FVector::ZeroVector;
 		FVector LastPos = FVector::ZeroVector;
 		double LastPosAt = 0.0;
 		bool bLanded = false;
@@ -75,6 +79,8 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> MeteorMaterial;
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> TrailBase;
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInterface> FireBase;
 
 	TArray<TObjectPtr<UStaticMeshComponent>> Spheres;
 	TArray<TObjectPtr<UStaticMeshComponent>> Boxes;
